@@ -98,10 +98,12 @@ pub const SALVAGE_VERB: &str = "+salvage";
 pub const SALVAGE_HELP: &str = "+salvage  --  Salvage claims on hulls recovered into a carrier's custody. +salvage lists the claims you stand in. +salvage/claim <hull> [go] files the custodian's claim at the site's port registry; everyone who answers for the title, and the landholder on owned ground, are told by IC mail. +salvage/contest <hull>[=recovery|procedure|right] [go] contests it: recovery on your own record of an unlawful recovery, procedure on the registry's own records (for whoever answers for the title), right on an authorization of yours that bound the claimant; bare, on the best ground you hold, where bare title never defeats a lawful claim. +salvage/report <hull>=<who> [go] hands your evidence to another. +salvage/inspect <hull> reads the hull's black box from aboard the carrier that holds it. +salvage/authorize <hull>=<who> [until=<UTC seconds>] [go] authorizes a recovery of your hull; +salvage/authorize <site>/<block>=<who> [until=<IC seconds>] [go] a recovery off your block. +salvage/ask <site>/<block> [go] asks a block's landholder for consent to recover off it, by the registry's notice; 28 IC days of silence is consent. +salvage/refuse <site>/<block>=<who> [go] refuses one for 28 IC days. +salvage/forsale lists the hulls the recovery houses have restored for sale, at their reference price; +salvage/buy <hull> [go] buys one, her title passing at the next settlement. Bare, each previews and commits nothing; go commits exactly the preview.";
 /// The most witnesses a pin keeps.
 pub const MAX_WITNESSES: usize = 16;
-/// The most notice recipients a filed claim keeps (HIGH-56): strictly above `MAX_WITNESSES + 1`
-/// so the primary answerer, the block's landholder, a full pinned answerer list, and a full live
-/// answerer list all fit without truncation.
-pub const MAX_TOLD: usize = MAX_WITNESSES * 2 + 2;
+/// The most notice recipients a filed claim keeps (HIGH-56, P2-TSW-37): bounded by
+/// [`mush_economy::MAX_AUDIENCE`] (32) so salvage contract filing never fails with
+/// `ContractError::TooLarge`, while staying strictly above `MAX_WITNESSES + 1` (17) so the
+/// primary pinned answerer, the block's landholder, and every pinned answerer always fit without
+/// truncation before live answerers fill the remaining slots.
+pub const MAX_TOLD: usize = mush_economy::MAX_AUDIENCE;
 /// The most delivered or read evidence records one custody keeps.
 pub const MAX_EVIDENCE: usize = 16;
 /// Evidence slots reserved out of [`MAX_EVIDENCE`] for title parties and the block's landholder
@@ -2816,7 +2818,11 @@ fn claim_cmd(ctx: &mut Ctx<'_>, word: &str, go: bool) -> Result<(), CmdError> {
             }
         }
     }
-    let audience: Vec<PrincipalId> = told.iter().map(|who| PrincipalId::Object(*who)).collect();
+    let audience: Vec<PrincipalId> = told
+        .iter()
+        .take(mush_economy::MAX_AUDIENCE)
+        .map(|who| PrincipalId::Object(*who))
+        .collect();
     let contract = mush_economy::file_salvage_claim(
         ctx,
         mush_economy::SalvageClaimSpec {
@@ -5336,5 +5342,46 @@ mod tests {
             "saturated at-risk list must never prevent Settlement::Vacate"
         );
         assert!(record.custody.is_empty());
+    }
+
+    /// **P2-TSW-37**: `MAX_TOLD` never exceeds `mush_economy::MAX_AUDIENCE` (32), so rotating
+    /// org members after attach can never overflow `file_salvage_claim` with `TooLarge`, while
+    /// `pin.answering`, `pin.landholder`, and all `MAX_WITNESSES` pinned answerers keep priority.
+    #[test]
+    fn p2_tsw_37_told_caps_at_economy_max_audience_preserving_pinned_parties() {
+        const {
+            assert!(MAX_TOLD <= mush_economy::MAX_AUDIENCE);
+            assert!(MAX_TOLD > MAX_WITNESSES + 1);
+        }
+        let claimant = ObjId(10);
+        let landholder = ObjId(500);
+        let mut pin = pin_on(GroundTenure::Owned {
+            landholder,
+            claim_id: Some(smol_str::SmolStr::new("urvara/G")),
+        });
+        pin.title = Some(PrincipalId::Organization(mush_org::OrgId(11)));
+        pin.answering = Some(ObjId(100));
+        // 16 distinct pinned answerers (plus distinct pin.answering + distinct landholder = 18).
+        pin.answerers = (0..MAX_WITNESSES)
+            .map(|i| ObjId(110 + u32::try_from(i).unwrap_or(0)))
+            .collect();
+        // 24 distinct live answerers rotated in after attach -> 42 total unique principals.
+        let now_answering: Vec<ObjId> = (0..24)
+            .map(|i| ObjId(200 + u32::try_from(i).unwrap_or(0)))
+            .collect();
+
+        let told = build_told(claimant, Some(&pin), &now_answering);
+        assert_eq!(told.len(), mush_economy::MAX_AUDIENCE);
+        assert_eq!(told.first().copied(), Some(ObjId(100)));
+        assert_eq!(told.get(1).copied(), Some(landholder));
+        for who in &pin.answerers {
+            assert!(
+                told.contains(who),
+                "pinned answerer {who:?} must survive truncation"
+            );
+        }
+        let record = filed_record(pin, told);
+        assert!(record.check().is_ok());
+        assert_eq!(procedure_defect(&record.custody[0], None), None);
     }
 }

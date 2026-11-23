@@ -440,9 +440,10 @@ impl ActionProvider for Provider {
         if grants.first() != Some(&grant) {
             return Err(error("unit-grant agreement changed"));
         }
+        let facts = self.facts.facts(world);
         let mut next = match &intent.mutation {
             UnitGrantMutation::Issue(_) | UnitGrantMutation::IssueMany(_) => {
-                registry.pruned(world.now())
+                registry.pruned_for_facts(world.now(), facts.as_ref())
             }
             UnitGrantMutation::Revoke { .. } => registry,
         };

@@ -983,6 +983,7 @@ fn m17_active_world_rigs_prunes_idle_rigs_past_1024_and_done_provider_never_lock
                 repossessed: false,
                 written_off: false,
                 wreck_aboard_ic: None,
+                loans_issued: false,
             }),
         );
     }

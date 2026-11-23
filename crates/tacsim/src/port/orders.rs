@@ -782,6 +782,11 @@ pub const ORDERS_WHERE: &str =
 /// An unreadable plan: `{name}`.
 pub const ORDERS_DARK: &str =
     "The {name}'s sailing plan cannot be read right now. Ask staff to look at it.";
+/// Officer-authored org plan protected from deploy-only pilots (`P2-TSW-48`): `{name}`.
+pub const ORDERS_OFFICER_PLAN: &str =
+    "The {name} holds an officer's sailing plan; only an authorized officer may replace it.";
+/// Trade orders (`buy`/`sell`) require hold-trade authority (`P2-TSW-48`): `{name}`.
+pub const ORDERS_NO_TRADE: &str = "You may fly the {name}, not trade her hold; only an authorized officer may file buy or sell orders.";
 /// No plan (or another tenant's): `{name}`.
 pub const NO_PLAN: &str = "No sailing plan is filed for the {name}.";
 /// Sixteen orders, none finished.
@@ -1547,6 +1552,21 @@ fn inflight_refusal(n: u32) -> CmdError {
     CmdError::msg(ORDER_INFLIGHT.replace("{n}", &n.to_string()))
 }
 
+/// Whether an existing plan authored by another actor is an active organization officer's plan
+/// that a deploy-only pilot may not overwrite (`P2-TSW-48`).
+fn officer_plan_protected(w: &World, hull: ObjId, actor: ObjId, existing: &Orders) -> bool {
+    existing.orders.iter().any(|order| unfinished(order.state))
+        && !crate::port::owned::may_trade_hold(w, hull, actor)
+        && crate::port::owned::may_trade_hold(w, hull, existing.author)
+}
+
+/// Whether `actor` is authorized to file `edit` on `hull` (`P2-TSW-48`): `Buy`/`Sell` orders
+/// require [`crate::port::owned::may_trade_hold`].
+fn may_file_edit(w: &World, hull: ObjId, actor: ObjId, edit: &Edit) -> bool {
+    !matches!(edit, Edit::File(What::Buy { .. } | What::Sell { .. }))
+        || crate::port::owned::may_trade_hold(w, hull, actor)
+}
+
 /// **`+ship/order <sub-verb> …`** (doc 18 §4.4 "Verbs"; the IC11 brief's item 3):
 /// every gate in the brief's order — the charter, the document, where, the grammar and
 /// the document's rules — then ONE `put_orders` with `rev` bumped and the reply. Every
@@ -1567,13 +1587,17 @@ pub(crate) fn order_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let name = name_of(ctx.w, hull);
     let dark = || CmdError::msg(ORDERS_DARK.replace("{name}", &name));
     // 3. The document: an unreadable one fails closed; another author's reads as
-    // absent (a new tenant files a fresh plan, L14) unless its step is in flight.
+    // absent (a new tenant files a fresh plan, L14) unless its step is in flight or
+    // an organization officer's active plan is protected from a deploy-only pilot (`P2-TSW-48`).
     let existing: Option<Orders> = match orders_state(ctx.w, hull) {
         OrdersState::Unreadable => return Err(dark()),
         OrdersState::Present(orders) if orders.author == actor => Some(orders.clone()),
         OrdersState::Present(orders) => {
             if let Some(inflight) = &orders.inflight {
                 return Err(inflight_refusal(inflight.order));
+            }
+            if officer_plan_protected(ctx.w, hull, actor, orders) {
+                return Err(CmdError::msg(ORDERS_OFFICER_PLAN.replace("{name}", &name)));
             }
             None
         }
@@ -1595,6 +1619,9 @@ pub(crate) fn order_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         return Err(dark());
     };
     let edit = parse_edit(ctx.w, &goods, &raw)?;
+    if !may_file_edit(ctx.w, hull, actor, &edit) {
+        return Err(CmdError::msg(ORDERS_NO_TRADE.replace("{name}", &name)));
+    }
     let now = ctx.w.now();
     let mut orders = match (existing, &edit) {
         (Some(orders), _) => orders,
@@ -2520,5 +2547,147 @@ mod tests {
             "The sailing plan takes sell, buy, depart, await tv and stop. Boarding, leaving, \
              enrolling and buying out are done in person."
         );
+    }
+
+    /// **P2-TSW-48**: on an organization-owned commissioned hull, a deploy-only pilot (lacking
+    /// `owned::may_trade_hold`) cannot file `Buy`/`Sell` orders and cannot overwrite an officer's
+    /// active sailing plan, whereas an authorized officer can do both.
+    #[test]
+    fn p2_tsw_48_deploy_only_pilot_cannot_trade_or_overwrite_officer_org_plan() {
+        use crate::port::HullRow;
+        use crate::port::owned::{Held, OwnedBody, OwnedHull};
+
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![
+            Box::new(mush_org::OrgModule::new()),
+            Box::new(mush_economy::EconomyModule::new().with_title_issuers(vec![
+                mush_org::SystemPrincipalId::new("tacsim.registry").expect("sys"),
+            ])),
+            Box::new(crate::TacsimRuleset::default()),
+        ]);
+        let officer = tw.spawn_player("OrgOfficer");
+        let pilot = tw.spawn_player("DeployOnlyPilot");
+        let hull = tw
+            .world_mut()
+            .create(mush_core::ObjKind::Thing, "OrgDray", ObjId(1), None)
+            .expect("hull");
+        let org_id = mush_org::OrgId(55);
+        let root_scope = mush_org::OrgScopeId(550);
+        {
+            let engine = tw.engine_mut();
+            let mut out = mush_core::Outbox::default();
+            let mut ctx = Ctx {
+                w: &mut engine.world,
+                reg: &engine.registry,
+                out: &mut out,
+                actor: mush_core::GOD,
+                args: Default::default(),
+                switches: Default::default(),
+                module: Some(crate::NS.into()),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            let org_plan = mush_org::OrgMutationPlan::of(vec![
+                mush_org::OrgMutationOp::CreateOrg {
+                    org: mush_org::Organization {
+                        id: org_id,
+                        name: "Syndicate".into(),
+                        aliases: Vec::new(),
+                        status: mush_org::OrgStatus::Active,
+                        hidden: false,
+                        charter: String::new(),
+                        root_scope,
+                        revision: 1,
+                        ruleset_ext: mush_org::RulesValue::default(),
+                    },
+                    root: mush_org::OrgScope {
+                        id: root_scope,
+                        org: org_id,
+                        parent: None,
+                        name: "root".into(),
+                        status: mush_org::ScopeStatus::Active,
+                        depth: 0,
+                        created_rev: 1,
+                        revision: 1,
+                    },
+                },
+                mush_org::OrgMutationOp::PutGrant {
+                    grant: mush_org::CapabilityGrant {
+                        id: mush_org::GrantId(10),
+                        org: org_id,
+                        grantee: officer,
+                        capability: mush_org::CapabilityId::new("economy.account.post")
+                            .expect("cap"),
+                        scope: mush_org::ScopeSelector::Exact(root_scope),
+                        limit: None,
+                        delegable: false,
+                        valid_from: None,
+                        valid_until: None,
+                        revision: 1,
+                    },
+                },
+            ]);
+            mush_org::submit(
+                &mut ctx,
+                &org_plan,
+                mush_org::OrgAction {
+                    action: "test.org".into(),
+                    org: Some(org_id),
+                    detail: serde_json::Value::Null,
+                },
+            )
+            .expect("org setup");
+            mush_economy::issue_title(
+                &mut ctx,
+                hull,
+                mush_org::PrincipalId::Organization(org_id),
+                Some(root_scope),
+                mush_org::SystemPrincipalId::new("tacsim.registry").expect("sys"),
+                None,
+            )
+            .expect("asset register");
+            let store = ctx
+                .w
+                .module_state_mut::<crate::TacsimStore>()
+                .expect("store");
+            store.yard.owned.insert(
+                hull,
+                Held::Present(Box::new(OwnedHull {
+                    hull,
+                    design: cid("tacsim.unit.dray"),
+                    mark: "SYN-01".to_owned(),
+                    home: cid("ceres_port"),
+                    provenance: 1,
+                    body: OwnedBody::Ship(HullRow {
+                        n: 1,
+                        mark: "SYN-01".to_owned(),
+                        hull: hull.0,
+                        rooms: std::collections::BTreeMap::new(),
+                        exits: Vec::new(),
+                    }),
+                })),
+            );
+        }
+
+        let w = tw.world();
+        assert!(crate::port::owned::may_trade_hold(w, hull, officer));
+        assert!(!crate::port::owned::may_trade_hold(w, hull, pilot));
+
+        // 1. Deploy-only pilot cannot file Buy or Sell, while officer can.
+        let sell = Edit::File(sell_metals());
+        let stop = Edit::File(What::Stop);
+        assert!(!may_file_edit(w, hull, pilot, &sell));
+        assert!(may_file_edit(w, hull, officer, &sell));
+        assert!(may_file_edit(w, hull, pilot, &stop));
+
+        // 2. Officer's live plan is protected from being wiped by a deploy-only pilot.
+        let mut officer_plan = Orders::fresh(hull, officer, 1);
+        officer_plan.orders.push(pending(1, sell_metals()));
+        officer_plan.derive_cursor();
+        assert!(officer_plan_protected(w, hull, pilot, &officer_plan));
+        // Another officer (or same officer) is allowed to replace it.
+        assert!(!officer_plan_protected(w, hull, officer, &officer_plan));
+        // Once all orders are finished, the protection no longer blocks a fresh plan.
+        officer_plan.orders[0].state = OrderState::Done;
+        officer_plan.derive_cursor();
+        assert!(!officer_plan_protected(w, hull, pilot, &officer_plan));
     }
 }

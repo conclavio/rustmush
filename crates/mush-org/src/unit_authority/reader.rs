@@ -189,7 +189,7 @@ pub(crate) fn evaluate(
             .next()
             .ok_or(OwnerReadError::Refused),
         UnitGrantMutation::Issue(draft) => {
-            let working = registry.pruned(world.now());
+            let working = registry.pruned_for_facts(world.now(), facts.as_ref());
             let parent = match &draft.parent {
                 Some(parent) => parent.clone(),
                 None => {
@@ -289,7 +289,8 @@ pub(crate) fn evaluate_all(
     {
         return Err(OwnerReadError::Refused);
     }
-    let mut working = registry.pruned(world.now());
+    let facts = factory.facts(world);
+    let mut working = registry.pruned_for_facts(world.now(), facts.as_ref());
     let mut grants = Vec::with_capacity(drafts.len());
     for draft in drafts {
         let next = PendingIntent {

@@ -50,7 +50,7 @@ use crate::port::credit::own_account;
 use crate::port::market::{PortVenueGate, port_of_venue};
 use crate::port::ship::{
     Berth, berth_gallery_json, berth_of, hull_of_room, hull_stowage_json, hull_view,
-    resolve_actor_hull, simulator_lobby_json,
+    may_view_stowage, resolve_actor_hull, simulator_lobby_json,
 };
 use crate::store::TacsimStore;
 
@@ -2200,7 +2200,11 @@ fn build_port_trade_frame(
                 .map_or((0_u32, 0_i64), |e| (e.sales, e.buyout_minor)),
             None => (0_u32, 0_i64),
         };
-        let stowage = ctx.and_then(|c| hull_stowage_json(c, w, store, &view));
+        // P2-TSW-45: only reveal itemized hold stowage to authorized crew/operators (never
+        // visitors, passengers, stowaways, or held captives).
+        let stowage = ctx
+            .filter(|_| may_view_stowage(w, actor, resolved.hull))
+            .and_then(|c| hull_stowage_json(c, w, store, &view));
         Some(json!({
             "hull_id": resolved.hull.to_string(),
             "hull_name": name_of(w, resolved.hull),

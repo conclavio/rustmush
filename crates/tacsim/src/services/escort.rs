@@ -1551,6 +1551,15 @@ fn accept_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String>
     Ok(line)
 }
 
+/// Whether `actor` may withdraw `job` (`P2-TSW-48`): for an organization-owned job, live
+/// [`super::JOBS_POST_CAPABILITY`] on the posting organization; for a personal job, the poster.
+fn may_withdraw(w: &World, actor: ObjId, job: &EscortJob) -> bool {
+    match job.poster_org {
+        Some(org) => super::may_post_for_org(w, actor, mush_org::OrgId(org)),
+        None => job.poster == actor,
+    }
+}
+
 fn withdraw_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
     let word = rest.trim();
     let job = word
@@ -1558,7 +1567,7 @@ fn withdraw_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, Strin
         .parse::<u64>()
         .ok()
         .and_then(|c| escort_of(ctx.w, c))
-        .filter(|j| j.poster == ctx.actor && j.stage == EscortStage::Posted)
+        .filter(|j| j.stage == EscortStage::Posted && may_withdraw(ctx.w, ctx.actor, j))
         .ok_or_else(|| NOT_WITHDRAWABLE.to_owned())?;
     if !go {
         return Ok(format!(
@@ -1922,5 +1931,113 @@ mod tests {
             ),
             "IC grace ceiling blocks fast-clock grace abuse"
         );
+    }
+
+    /// **P2-TSW-48**: `+escort/withdraw` enforces live `JOBS_POST_CAPABILITY` for org-owned
+    /// escorts (blocking a revoked original poster and permitting an active officer), while
+    /// personal escorts continue checking `poster == actor`.
+    #[test]
+    fn p2_tsw_48_org_escort_withdraw_requires_live_capability() {
+        let mut tw =
+            mush_testkit::TestWorld::with_modules(vec![Box::new(mush_org::OrgModule::new())]);
+        let ex_poster = tw.spawn_player("ExEscortPoster");
+        let officer = tw.spawn_player("EscortOfficer");
+        let org_id = mush_org::OrgId(88);
+        let root_scope = mush_org::OrgScopeId(880);
+        {
+            let engine = tw.engine_mut();
+            let mut out = mush_core::Outbox::default();
+            let mut ctx = Ctx {
+                w: &mut engine.world,
+                reg: &engine.registry,
+                out: &mut out,
+                actor: mush_core::GOD,
+                args: Default::default(),
+                switches: Default::default(),
+                module: Some(crate::NS.into()),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            let plan = mush_org::OrgMutationPlan::of(vec![
+                mush_org::OrgMutationOp::CreateOrg {
+                    org: mush_org::Organization {
+                        id: org_id,
+                        name: "Occator".into(),
+                        aliases: Vec::new(),
+                        status: mush_org::OrgStatus::Active,
+                        hidden: false,
+                        charter: String::new(),
+                        root_scope,
+                        revision: 1,
+                        ruleset_ext: mush_org::RulesValue::default(),
+                    },
+                    root: mush_org::OrgScope {
+                        id: root_scope,
+                        org: org_id,
+                        parent: None,
+                        name: "root".into(),
+                        status: mush_org::ScopeStatus::Active,
+                        depth: 0,
+                        created_rev: 1,
+                        revision: 1,
+                    },
+                },
+                mush_org::OrgMutationOp::PutGrant {
+                    grant: mush_org::CapabilityGrant {
+                        id: mush_org::GrantId(2),
+                        org: org_id,
+                        grantee: officer,
+                        capability: mush_org::CapabilityId::new(super::super::JOBS_POST_CAPABILITY)
+                            .expect("cap"),
+                        scope: mush_org::ScopeSelector::Exact(root_scope),
+                        limit: None,
+                        delegable: false,
+                        valid_from: None,
+                        valid_until: None,
+                        revision: 1,
+                    },
+                },
+            ]);
+            mush_org::submit(
+                &mut ctx,
+                &plan,
+                mush_org::OrgAction {
+                    action: "test.org".into(),
+                    org: Some(org_id),
+                    detail: serde_json::Value::Null,
+                },
+            )
+            .expect("org setup");
+        }
+
+        let mut org_job = EscortJob {
+            schema: ESCORT_SCHEMA,
+            contract: 90,
+            poster: ex_poster,
+            poster_org: Some(org_id.0),
+            haul: None,
+            protected: ObjId(500),
+            journey: Journey::Passage {
+                from: "ceres".into(),
+                to: "stickney".into(),
+            },
+            venue: "ceres".into(),
+            fee_minor: 50_000,
+            bond_minor: 0,
+            posted_ic: 100,
+            accept_by_ic: 100 + DAY,
+            escort: None,
+            with: None,
+            accepted_ic: None,
+            due_ic: None,
+            watch: None,
+            why: None,
+            stage: EscortStage::Posted,
+        };
+        assert!(!may_withdraw(tw.world(), ex_poster, &org_job));
+        assert!(may_withdraw(tw.world(), officer, &org_job));
+
+        org_job.poster_org = None;
+        assert!(may_withdraw(tw.world(), ex_poster, &org_job));
+        assert!(!may_withdraw(tw.world(), officer, &org_job));
     }
 }

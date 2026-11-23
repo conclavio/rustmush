@@ -3843,6 +3843,123 @@ async fn rental_operational_rights_are_four_real_owner_loans_in_one_coordinator_
     );
     Ok(())
 }
+
+/// **P2-TSW-29**: revoking all four operational loans on an active rig lease and then triggering
+/// global `UnitGrantRegistry` pruning via an unrelated `IssueMany` retains the revoked lease
+/// tombstones and still blocks `+tv/1/permissions go` from self-reissuing, while returning the
+/// lease allows subsequent pruning to reclaim the dead-lease tombstones.
+#[tokio::test]
+async fn p2_tsw_29_revoked_rental_loans_stay_blocked_after_unrelated_global_issue_prune()
+-> TestResult {
+    use mush_org::unit_authority::UnitGrantStatus;
+    use mush_org::unit_authority::runtime::UnitAuthorityHandles;
+
+    let store = InMemoryStore::new();
+    let (mut rig, _) = rented_mining_fixture(&store).await?;
+    let agent = tacsim::port::coop::programme_port(rig.world.world())
+        .and_then(|p| p.map.vehicles.as_ref())
+        .and_then(|v| v.loan_roots.as_ref())
+        .ok_or("lender roots")?
+        .agent;
+
+    commit(
+        &mut rig.world,
+        &store,
+        rig.organizer,
+        "+tv/1/permissions go",
+    )
+    .await?;
+    ordinary(&mut rig.world, rig.organizer, "+tv/lease go")?;
+    persist_legacy(&mut rig.world, &store).await?;
+
+    for id in 1..=4 {
+        commit(
+            &mut rig.world,
+            &store,
+            agent,
+            &format!("@unitgrant/revoke {id}"),
+        )
+        .await?;
+    }
+
+    // Unrelated global issuance triggers `pruned_for_facts`; active-lease revoked rows must stay.
+    commit(
+        &mut rig.world,
+        &store,
+        rig.organizer,
+        "+tv/2/permissions go",
+    )
+    .await?;
+
+    let h = rig
+        .world
+        .world()
+        .module_state::<UnitAuthorityHandles>()
+        .ok_or("unit grants")?
+        .clone();
+    let reg = rig
+        .world
+        .engine()
+        .action_state()
+        .get(&h.registry, &())?
+        .ok_or("registry")?;
+    assert_eq!(
+        reg.grants.len(),
+        8,
+        "4 active-lease revoked tombstones + 4 active slot-2 grants"
+    );
+    assert_eq!(
+        reg.grants
+            .values()
+            .filter(|g| g.status == UnitGrantStatus::Revoked)
+            .count(),
+        4
+    );
+
+    // Lessee cannot self-restore the revoked loans on slot 1.
+    let report = text(&mut rig.world, rig.organizer, "+tv/1/permissions go");
+    assert_eq!(report.matches("allowed now").count(), 0, "{report}");
+    assert!(
+        report.contains("revoked loans are not renewed here"),
+        "{report}"
+    );
+    assert!(
+        rig.world.engine_mut().take_authoritative_submit().is_none(),
+        "revoked rental loans must never self-reissue after global pruning"
+    );
+
+    // Once the old lease is returned, subsequent global issuance prunes its dead tombstones.
+    ordinary(&mut rig.world, rig.organizer, "+tv/1 lease return go")?;
+    ordinary(&mut rig.world, rig.organizer, "+tv/lease go")?;
+    persist_legacy(&mut rig.world, &store).await?;
+    commit(
+        &mut rig.world,
+        &store,
+        rig.organizer,
+        "+tv/1/permissions go",
+    )
+    .await?;
+    let reg_after = rig
+        .world
+        .engine()
+        .action_state()
+        .get(&h.registry, &())?
+        .ok_or("registry after return")?;
+    assert_eq!(
+        reg_after.grants.len(),
+        8,
+        "dead-lease revoked tombstones must be reclaimed on subsequent issue"
+    );
+    assert_eq!(
+        reg_after
+            .grants
+            .values()
+            .filter(|g| g.status == UnitGrantStatus::Active)
+            .count(),
+        8
+    );
+    Ok(())
+}
 #[tokio::test]
 async fn returning_the_actual_rental_before_final_take_refuses_the_entire_permission_agreement()
 -> TestResult {

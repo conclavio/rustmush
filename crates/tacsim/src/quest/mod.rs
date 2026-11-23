@@ -224,27 +224,18 @@ pub(crate) fn transition_allowed(
 /// A durable completed record is the receipt. The NPC owner deduplicates its
 /// outcome and relationship update even after memory eviction or a restart.
 pub(crate) fn tick(ctx: &mut Ctx<'_>) {
-    if store::refresh(ctx).is_err() {
+    let Ok((rows, refreshed_actors)) = store::refresh_tick(ctx) else {
         return;
-    }
-    let mut rows = store::list(ctx).unwrap_or_default();
-    let actors: Vec<_> = ctx
-        .w
-        .connected()
-        .filter(|actor| *actor != ctx.actor)
-        .collect();
-    for actor in actors {
-        if let Ok(own) = store::refresh_for(ctx, actor) {
-            rows.extend(own);
-        }
-    }
-    rows.sort_by(|a, b| a.key.cmp(&b.key));
-    rows.dedup_by(|a, b| a.key == b.key);
+    };
+    evidence::prune_for_rows(ctx, &rows, &refreshed_actors);
     for row in rows.iter().filter(|row| row.is_active()) {
         let _ = evidence::watch(ctx, row);
     }
     evidence::reconcile(ctx);
     for row in rows.into_iter().filter(|r| r.completed.is_some()) {
+        if store::is_rewarded(ctx.w, &row.key) {
+            continue;
+        }
         if !evidence::completion_ready(ctx.w, &row) {
             continue;
         }
@@ -257,18 +248,21 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
             continue;
         };
         let cause = format!("quest:{}", hash.to_hex());
-        if let Ok(true) = mush_npc::record_completed_work_experience(
+        if let Ok(newly_recorded) = mush_npc::record_completed_work_experience(
             ctx,
             row.npc,
             row.actor,
             &cause,
             &row.definition.completion,
         ) {
-            mush_npc::notify_role_event(
-                ctx,
-                row.npc,
-                "A completed favor has been recorded in your own experience. Use quest.status for this asker's verified progress; do not reveal another person's private journal.",
-            );
+            store::mark_rewarded(ctx.w, row.key);
+            if newly_recorded {
+                mush_npc::notify_role_event(
+                    ctx,
+                    row.npc,
+                    "A completed favor has been recorded in your own experience. Use quest.status for this asker's verified progress; do not reveal another person's private journal.",
+                );
+            }
         }
     }
 }

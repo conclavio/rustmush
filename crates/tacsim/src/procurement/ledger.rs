@@ -10,7 +10,7 @@ use mush_roll::commerce::{CharterId, LicenceId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use super::PROCUREMENT_FAMILY;
+use super::{PROCUREMENT_FAMILY, PROCUREMENT_OP_FAMILY};
 
 /// **An IC calendar month** (P3): the civil date's year and month of an IC instant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -150,6 +150,65 @@ impl ProcurementKey {
     }
 }
 
+/// Operation-keyed index key (`P2-TSW-40`): `{org:020}/{operation_hex}`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ProcurementOpKey {
+    pub org: OrgId,
+    pub operation: CommitToken,
+}
+impl ProcurementOpKey {
+    #[must_use]
+    pub fn key_text(&self) -> String {
+        format!(
+            "{}{}",
+            ProcurementKey::prefix(self.org),
+            self.operation.to_hex()
+        )
+    }
+}
+
+/// Operation-keyed pointer back to a [`ProcurementRow`]'s original `(org, period, ordinal)` key
+/// so funded purchases older than two IC months never insert duplicate rows (`P2-TSW-40`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProcurementOpIndex {
+    pub format: u16,
+    pub org: OrgId,
+    pub period: Period,
+    pub ordinal: u32,
+    pub operation: CommitToken,
+}
+impl ProcurementOpIndex {
+    #[must_use]
+    pub const fn from_row(row: &ProcurementRow) -> Self {
+        Self {
+            format: 1,
+            org: row.org,
+            period: row.period,
+            ordinal: row.ordinal,
+            operation: row.operation,
+        }
+    }
+    #[must_use]
+    pub const fn row_key(&self) -> ProcurementKey {
+        ProcurementKey {
+            org: self.org,
+            period: self.period,
+            ordinal: self.ordinal,
+        }
+    }
+    /// Validate the operation index row bounds.
+    ///
+    /// # Errors
+    /// The one sentence naming what is wrong.
+    pub fn check(&self) -> Result<(), String> {
+        if self.format != 1 || !self.period.check() {
+            return Err("procurement operation index out of bounds".into());
+        }
+        Ok(())
+    }
+}
+
 /// Register the family (`tacsim.procurement`).
 pub(super) fn register(
     reg: &mut Registrar<'_>,
@@ -164,5 +223,22 @@ pub(super) fn register(
         |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
         ProcurementRow::check,
         |value: &ProcurementRow| serde_json::to_value(value).map_err(|e| e.to_string()),
+    )
+}
+
+/// Register the per-operation uniqueness index family (`tacsim.procurement_ops`, `P2-TSW-40`).
+pub(super) fn register_ops(
+    reg: &mut Registrar<'_>,
+) -> Result<StateFamilyHandle<ProcurementOpKey, ProcurementOpIndex>, ModError> {
+    reg.state_family::<ProcurementOpKey, ProcurementOpIndex, _, _, _, _>(
+        crate::port::families::family_descriptor(
+            PROCUREMENT_OP_FAMILY,
+            "tacsim.procurement_ops_key.v1",
+            "tacsim.procurement_ops",
+        )?,
+        |key: &ProcurementOpKey| Ok(key.key_text()),
+        |value: &Value| serde_json::from_value(value.clone()).map_err(|e| e.to_string()),
+        ProcurementOpIndex::check,
+        |value: &ProcurementOpIndex| serde_json::to_value(value).map_err(|e| e.to_string()),
     )
 }

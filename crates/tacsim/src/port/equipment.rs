@@ -587,6 +587,18 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), String> {
         }
         return Ok(());
     }
+    // P2-TSW-29: once operational loans have been issued for this lease, refuse re-issuance
+    // independent of global `UnitGrantRegistry::pruned` removing revoked or expired grant rows.
+    if rental.loans_issued {
+        if go {
+            return Err("The existing equipment loan needs lender review.".into());
+        }
+        super::coop::say(
+            ctx,
+            "The recorded equipment agreement is unchanged; revoked loans are not renewed here.",
+        );
+        return Ok(());
+    }
     super::coop::say(
         ctx,
         format!(
@@ -608,6 +620,9 @@ fn issue(
     counter: ObjId,
     lease: UnitLeaseBinding,
 ) -> Result<(), String> {
+    if rental.loans_issued {
+        return Err("The existing equipment loan needs lender review.".into());
+    }
     if rental.status != super::tv::TvLeaseStatus::Active
         || ctx.w.get(ctx.actor).and_then(|o| o.location) != Some(counter)
         || !ctx.w.get(roots.agent).is_some_and(|o| {
@@ -669,9 +684,81 @@ fn issue(
         )
     })
     .map_err(|_| "Occator's lender has an action pending; retry shortly.".to_owned())??;
+    // P2-TSW-29: `UnitGrantRegistry::pruned_for_facts` retains revoked `LeasedOrganizationGrant`
+    // rows for the lifetime of an active lease inside the authoritative Org state family, so
+    // `submit_from` stays a pure prepared action with no legacy module writes in the same step.
     super::coop::say(
         ctx,
         "Occator is recording the four operational loans. Use +tv/permissions to inspect the committed agreement.",
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **P2-TSW-29**: once `TvLease::loans_issued` is persisted `true`, `issue()` unconditionally
+    /// refuses re-issuance independent of whether `UnitGrantRegistry::pruned` removed all earlier
+    /// revoked/expired grant records.
+    #[test]
+    fn p2_tsw_29_issue_refuses_once_loans_issued_is_set() {
+        let mut tw = mush_testkit::TestWorld::new();
+        let pilot = tw.spawn_player("RevokedLessee");
+        let counter = tw
+            .world_mut()
+            .create(ObjKind::Room, "Counter", ObjId(1), None)
+            .expect("counter");
+        let agent = tw
+            .world_mut()
+            .create(ObjKind::Npc, "Lender", ObjId(1), None)
+            .expect("agent");
+        let rental = super::super::tv::TvLease {
+            schema: super::super::tv::TV_LEASE_SCHEMA,
+            lease: 41,
+            tv: ObjId(900),
+            mark: "OWP-ES-01".to_owned(),
+            pilot,
+            hull: ObjId(500),
+            slot: 1,
+            hold: 7,
+            fee_minor: 250_000,
+            deposit_minor: 1_500_000,
+            term_secs: 168 * 86_400,
+            leased_at_ic: 1_000,
+            term_ends_ic: 1_000 + 168 * 86_400,
+            terms_paid: 1,
+            status: super::super::tv::TvLeaseStatus::Active,
+            ended_at_ic: None,
+            repossessed: false,
+            written_off: false,
+            wreck_aboard_ic: None,
+            loans_issued: true,
+        };
+        let roots = LoanRoots {
+            agent,
+            grants: BTreeMap::new(),
+        };
+        let lease = UnitLeaseBinding {
+            contract: rental.lease,
+            unit: rental.tv,
+            tenant: pilot,
+            consent_hash: [0; 32],
+        };
+        let engine = tw.engine_mut();
+        let mut out = mush_core::Outbox::default();
+        let mut ctx = Ctx {
+            w: &mut engine.world,
+            reg: &engine.registry,
+            out: &mut out,
+            actor: pilot,
+            args: Default::default(),
+            switches: Default::default(),
+            module: Some(crate::NS.into()),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        let err = issue(&mut ctx, &rental, roots, OrgId(1), counter, lease)
+            .expect_err("must refuse re-issuance after loans_issued is set");
+        assert_eq!(err, "The existing equipment loan needs lender review.");
+    }
 }

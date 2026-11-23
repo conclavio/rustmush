@@ -347,9 +347,76 @@ pub(crate) fn reach_for_with_sky(
     Some(Reach { now_s, median_s })
 }
 
-/// **A bid's price as the port posts it**, major units (D-19-14): the authored
+/// Lowest same-port port-vendor public ask price for `good` in major units (`P2-TSW-33`),
+/// taking the minimum of authored factored asks on `def.vendors` and live public port-vendor
+/// asks in `MarketStore` at `def.venue`. Player asks are excluded so a player cannot post a
+/// low ask to suppress NPC standing bids.
+#[must_use]
+pub(crate) fn lowest_local_public_ask_major(
+    w: &World,
+    def: &PortDef,
+    good: &CanonicalId,
+) -> Option<u64> {
+    let ask_factor = factor_of(w, def, good, mush_market::PriceSide::Ask);
+    let authored_min = def
+        .vendors
+        .iter()
+        .flat_map(|v| v.asks.iter())
+        .filter(|ask| &ask.good == good)
+        .map(|ask| factored(ask.price_major, ask_factor))
+        .min();
+    let scale = 10_i64.pow(u32::from(crate::port::apply::credit_scale(w)));
+    let live_min = w
+        .module_state::<mush_market::MarketStore>()
+        .and_then(|market| {
+            market
+                .live_listings()
+                .filter(|listing| {
+                    listing.market.as_str() == def.venue.as_str()
+                        && listing.private_to.is_none()
+                        && listing.quantity > 0
+                        && !listing.source.is_wanted()
+                        && listing.catalog.ruleset.as_str() == crate::NS
+                        && listing.catalog.code.as_str() == good.as_str()
+                        && mush_market::VenueGate::port_seller(
+                            &crate::port::market::PortVenueGate,
+                            w,
+                            &listing.market,
+                            &listing.seller,
+                        )
+                })
+                .filter_map(|listing| u64::try_from(listing.price.minor().div_euclid(scale)).ok())
+                .min()
+        });
+    match (authored_min, live_min) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}
+
+/// Cap a same-port bid strictly below the lowest same-port port-vendor public ask (`P2-TSW-33`).
+#[must_use]
+fn cap_bid_below_local_ask_with(
+    w: &World,
+    def: &PortDef,
+    good: &CanonicalId,
+    bid_major: u64,
+    extra_ask_major: Option<u64>,
+) -> u64 {
+    let ask = match (lowest_local_public_ask_major(w, def, good), extra_ask_major) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    match ask {
+        Some(ask_major) => bid_major.min(ask_major.saturating_sub(1)),
+        None => bid_major,
+    }
+}
+
+/// **A bid's price as the port posts it**, major units (D-19-14; `P2-TSW-33`): the authored
 /// price under the port's premium for the bid's good, or the authored price when
-/// the port has no premium block or no reach.
+/// the port has no premium block or no reach, always capped strictly below the lowest
+/// same-port port-vendor public ask so no standing bid ever creates riskless same-port arbitrage.
 #[must_use]
 pub fn bid_price_major(w: &World, def: &PortDef, bid: &BidDef) -> u64 {
     // Doc 48 cut EX.8 (Q-48-18): the authored price under the stock rule's factor first, then the
@@ -358,32 +425,33 @@ pub fn bid_price_major(w: &World, def: &PortDef, bid: &BidDef) -> u64 {
         bid.price_major,
         factor_of(w, def, &bid.good, mush_market::PriceSide::Bid),
     );
-    let Some(policy) = def.premium.as_ref() else {
-        return base;
+    let raw = match (def.premium.as_ref(), reach_for(w, def, &bid.good)) {
+        (Some(policy), Some(reach)) => priced(
+            base,
+            premium_permille(policy.k_permille, policy.cap_permille, reach),
+        ),
+        _ => base,
     };
-    let Some(reach) = reach_for(w, def, &bid.good) else {
-        return base;
-    };
-    priced(
-        base,
-        premium_permille(policy.k_permille, policy.cap_permille, reach),
-    )
+    cap_bid_below_local_ask_with(w, def, &bid.good, raw, None)
 }
 
 /// **The most [`bid_price_major`] can read**, major units: the factored price under the
-/// premium's cap, with no reach read. `priced` rises with the premium and the premium never
-/// passes its cap, so the bid's price is never above this. The intake drip uses it to pass
-/// over a row cheaply: a house that funds the row's unfilled intake at this price funds it at
-/// the real one too.
+/// premium's cap, with no reach read, capped strictly below the lowest same-port port-vendor
+/// public ask (`P2-TSW-33`). `priced` rises with the premium and the premium never passes its
+/// cap, so the bid's price is never above this. The intake drip uses it to pass over a row
+/// cheaply: a house that funds the row's unfilled intake at this price funds it at the real one
+/// too.
 #[must_use]
 pub fn bid_price_ceiling_major(w: &World, def: &PortDef, bid: &BidDef) -> u64 {
     let base = factored(
         bid.price_major,
         factor_of(w, def, &bid.good, mush_market::PriceSide::Bid),
     );
-    def.premium
+    let raw = def
+        .premium
         .as_ref()
-        .map_or(base, |policy| priced(base, policy.cap_permille))
+        .map_or(base, |policy| priced(base, policy.cap_permille));
+    cap_bid_below_local_ask_with(w, def, &bid.good, raw, None)
 }
 
 // ---- doc 19 cut A.4b: the emergency bids ----------------------------------------
@@ -749,14 +817,33 @@ pub(crate) fn weekly_step(ctx: &mut mush_core::Ctx<'_>, map: &crate::port::PortM
                 .map_or(0, |(policy, reach)| {
                     premium_permille(policy.k_permille, policy.cap_permille, reach)
                 });
-            let price = priced(factored(bid.price_major, next), premium);
-            // An unchanged factor leaves the standing bid as posted (its reach premium is read
-            // at posting, as before); only a step re-prices it.
+            let stepped_ask_min = asks
+                .iter()
+                .filter(|(good, ..)| good == &bid.good)
+                .map(|(_, _, major, _)| *major)
+                .min();
+            let price = cap_bid_below_local_ask_with(
+                ctx.w,
+                def,
+                &bid.good,
+                priced(factored(bid.price_major, next), premium),
+                stepped_ask_min,
+            );
+            // An unchanged factor leaves the standing bid as posted unless its live price now
+            // exceeds the same-port ask cap (`P2-TSW-33`), in which case it re-prices down.
+            let over_cap = listing.is_some_and(|id| {
+                minor(ctx.w, price).is_some_and(|cap| {
+                    ctx.w
+                        .module_state::<mush_market::MarketStore>()
+                        .and_then(|s| s.listing(id))
+                        .is_some_and(|l| l.price > cap)
+                })
+            });
             bids.push((
                 bid.good.clone(),
                 next,
                 price,
-                listing.filter(|_| next != current),
+                listing.filter(|_| next != current || over_cap),
             ));
         }
     }
@@ -923,5 +1010,44 @@ mod tests {
         assert_eq!(median_of(&[3, 1, 2]), Some(2));
         assert_eq!(median_of(&[4, 1, 3, 2]), Some(2), "the lower median");
         assert_eq!(median_of(&[7]), Some(7));
+    }
+
+    #[test]
+    fn p2_tsw_33_bid_price_major_caps_strictly_below_same_port_authored_ask() {
+        let pack = crate::pack::load_pack(crate::definitions::content::LANE_JSON)
+            .expect("the shipped lane loads");
+        let stickney_id = CanonicalId::new("stickney_port").expect("id");
+        let Some(crate::pack::PackEntry::Port(stickney)) = pack.entry(&stickney_id) else {
+            panic!("stickney_port entry");
+        };
+        let alloys = CanonicalId::new("structural_alloys").expect("good");
+        let yards_bid = stickney
+            .vendors
+            .iter()
+            .find(|v| v.org.as_str() == "stickney_yards")
+            .and_then(|v| v.bids.iter().find(|b| b.good == alloys))
+            .expect("stickney_yards structural_alloys bid");
+        let kasei_ask = stickney
+            .vendors
+            .iter()
+            .find(|v| v.org.as_str() == "kasei")
+            .and_then(|v| v.asks.iter().find(|a| a.good == alloys))
+            .expect("kasei structural_alloys ask");
+        assert!(
+            yards_bid.price_major >= kasei_ask.price_major,
+            "shipped lane authors 460 bid vs 450 ask"
+        );
+        let w = World::default();
+        let capped = bid_price_major(&w, stickney, yards_bid);
+        assert_eq!(
+            capped,
+            kasei_ask.price_major - 1,
+            "standing bid must cap strictly below Kasei's same-port ask"
+        );
+        let ceiling = bid_price_ceiling_major(&w, stickney, yards_bid);
+        assert!(
+            ceiling < kasei_ask.price_major,
+            "bid ceiling must also cap strictly below Kasei's same-port ask: {ceiling}"
+        );
     }
 }

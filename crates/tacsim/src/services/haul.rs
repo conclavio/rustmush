@@ -756,11 +756,13 @@ fn post_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
     if origin == destination {
         return Err(SAME_PORT.to_owned());
     }
-    // Doc 50 cut OP.3 (Q-50-23): for an organization, its vault at the origin, and a vault at
-    // the destination (its own, or `into=`'s).
-    let org = match opts.get("as") {
-        Some(name) => Some(org_word(ctx, name)?),
-        None => None,
+    // Doc 50 cut OP.3 (Q-50-23) & P2-TSW-23: authorize `as=<org>` before inspecting any
+    // organization vault so `+haul/post` preview cannot act as an unauthenticated exact-inventory
+    // oracle on another organization's storefront vault.
+    let (poster, account) = super::poster(ctx, opts.get("as").map(String::as_str))?;
+    let org = match &poster {
+        PrincipalId::Organization(org) => Some(*org),
+        _ => None,
     };
     let source = match org {
         Some(org) => super::org_vault(ctx.w, org, origin.as_str()).ok_or_else(|| {
@@ -815,7 +817,6 @@ fn post_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
             .replace("{value}", &money_minor(ctx, declared))
             .replace("{bond}", &money_minor(ctx, bond)));
     }
-    let (poster, account) = super::poster(ctx, opts.get("as").map(String::as_str))?;
     let drop = match org_drop {
         Some(drop) => drop,
         None => {
@@ -1060,11 +1061,20 @@ fn deliver_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String
     Ok(DELIVERING.replace("{job}", &job.job()))
 }
 
+/// Whether `actor` may withdraw `job` (`P2-TSW-48`): for an organization-owned job, live
+/// [`super::JOBS_POST_CAPABILITY`] on the posting organization; for a personal job, the shipper.
+fn may_withdraw(w: &World, actor: ObjId, job: &HaulJob) -> bool {
+    match job.shipper_org {
+        Some(org) => super::may_post_for_org(w, actor, mush_org::OrgId(org)),
+        None => job.shipper == actor,
+    }
+}
+
 fn withdraw_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, String> {
     let word = rest.trim();
     let job = job_word(word)
         .and_then(|c| haul_of(ctx.w, c))
-        .filter(|j| j.shipper == ctx.actor && j.stage == HaulStage::Posted)
+        .filter(|j| j.stage == HaulStage::Posted && may_withdraw(ctx.w, ctx.actor, j))
         .ok_or_else(|| NOT_WITHDRAWABLE.to_owned())?;
     if !go {
         return Ok(format!(
@@ -2147,5 +2157,130 @@ mod tests {
         assert!(dels.contains(&haul_key(1)));
         assert!(dels.contains(&haul_key(5)));
         assert!(dels.contains(&haul_key(1_000)));
+    }
+
+    /// **P2-TSW-23 & P2-TSW-48**:
+    /// 1. `+haul/post ... as=<org>` preview runs `super::poster` before any `org_vault` /
+    ///    `read_pool` check, so an unprivileged player cannot binary-search an org's stock.
+    /// 2. `+haul/withdraw` on an org-owned job checks live `JOBS_POST_CAPABILITY`: a revoked
+    ///    original poster is blocked, while another active officer holding the capability succeeds.
+    #[test]
+    fn p2_tsw_23_48_org_haul_preview_auth_and_live_withdraw_capability() {
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![
+            Box::new(mush_org::OrgModule::new()),
+            Box::new(mush_economy::EconomyModule::new()),
+            Box::new(crate::TacsimRuleset::default()),
+        ]);
+        let ex_poster = tw.spawn_player("ExPoster");
+        let officer = tw.spawn_player("ActiveOfficer");
+        let outsider = tw.spawn_player("Outsider");
+        let org_id = mush_org::OrgId(77);
+        let root_scope = mush_org::OrgScopeId(770);
+        {
+            let engine = tw.engine_mut();
+            let mut out = mush_core::Outbox::default();
+            let mut ctx = Ctx {
+                w: &mut engine.world,
+                reg: &engine.registry,
+                out: &mut out,
+                actor: mush_core::GOD,
+                args: Default::default(),
+                switches: Default::default(),
+                module: Some(crate::NS.into()),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            let plan = mush_org::OrgMutationPlan::of(vec![
+                mush_org::OrgMutationOp::CreateOrg {
+                    org: mush_org::Organization {
+                        id: org_id,
+                        name: "Isidis Tank Farm".into(),
+                        aliases: Vec::new(),
+                        status: mush_org::OrgStatus::Active,
+                        hidden: false,
+                        charter: String::new(),
+                        root_scope,
+                        revision: 1,
+                        ruleset_ext: mush_org::RulesValue::default(),
+                    },
+                    root: mush_org::OrgScope {
+                        id: root_scope,
+                        org: org_id,
+                        parent: None,
+                        name: "root".into(),
+                        status: mush_org::ScopeStatus::Active,
+                        depth: 0,
+                        created_rev: 1,
+                        revision: 1,
+                    },
+                },
+                mush_org::OrgMutationOp::PutGrant {
+                    grant: mush_org::CapabilityGrant {
+                        id: mush_org::GrantId(1),
+                        org: org_id,
+                        grantee: officer,
+                        capability: mush_org::CapabilityId::new(super::super::JOBS_POST_CAPABILITY)
+                            .expect("cap"),
+                        scope: mush_org::ScopeSelector::Exact(root_scope),
+                        limit: None,
+                        delegable: false,
+                        valid_from: None,
+                        valid_until: None,
+                        revision: 1,
+                    },
+                },
+            ]);
+            mush_org::submit(
+                &mut ctx,
+                &plan,
+                mush_org::OrgAction {
+                    action: "test.org".into(),
+                    org: Some(org_id),
+                    detail: serde_json::Value::Null,
+                },
+            )
+            .expect("org setup");
+        }
+
+        // P2-TSW-48: org-owned haul checks live JOBS_POST_CAPABILITY, not original `shipper`.
+        let mut org_job = job();
+        org_job.shipper = ex_poster;
+        org_job.shipper_org = Some(org_id.0);
+        assert!(
+            !may_withdraw(tw.world(), ex_poster, &org_job),
+            "revoked original poster must not withdraw org haul"
+        );
+        assert!(
+            may_withdraw(tw.world(), officer, &org_job),
+            "active officer with JOBS_POST_CAPABILITY may withdraw org haul"
+        );
+        assert!(
+            !may_withdraw(tw.world(), outsider, &org_job),
+            "outsider must not withdraw org haul"
+        );
+
+        // Personal haul still checks `shipper == actor`.
+        let mut personal_job = job();
+        personal_job.shipper = ex_poster;
+        personal_job.shipper_org = None;
+        assert!(may_withdraw(tw.world(), ex_poster, &personal_job));
+        assert!(!may_withdraw(tw.world(), officer, &personal_job));
+
+        // P2-TSW-23: `super::poster` refuses an unprivileged caller for a visible org before any
+        // vault read happens.
+        let engine = tw.engine_mut();
+        let mut out = mush_core::Outbox::default();
+        let mut ctx = Ctx {
+            w: &mut engine.world,
+            reg: &engine.registry,
+            out: &mut out,
+            actor: outsider,
+            args: Default::default(),
+            switches: Default::default(),
+            module: Some(crate::NS.into()),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        let err = super::super::poster(&mut ctx, Some("Isidis Tank Farm"))
+            .expect_err("outsider must be refused by poster()");
+        assert_eq!(err, super::super::NOT_POSTER);
     }
 }

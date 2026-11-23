@@ -1649,8 +1649,13 @@ pub struct PortTickState {
     /// warned once a boot each (bounded by the lane's ports).
     pub(crate) stock_uncarried: BTreeSet<CanonicalId>,
     /// Doc 18 cut IC8: listings the release arm has already logged a skip or a
-    /// refusal for this boot (each is logged once).
+    /// refusal for this boot (each is logged once); pruned against live listings (`P2-TSW-49`).
     pub(crate) release_warned: BTreeSet<u64>,
+    /// **P2-TSW-32**: active or recently expired player private supply asks posted by
+    /// `crate::port::pools::board::list_for`, keyed by `(buyer, vendor_vault, good)` ->
+    /// `(listing_id, expires_at)`. Cleared when purchased; enforces a post-expiry cooldown when
+    /// a player lets a private ask lapse untaken.
+    pub(crate) player_ask_locks: BTreeMap<(ObjId, u64, CanonicalId), (u64, i64)>,
     /// Doc 18 cut IC8: listings whose release step was refused, by `ListingId.0` ->
     /// the fire it was refused on. The release agent passes over each for
     /// `crate::port::stock::RELEASE_GRACE_FIRES`, so one listing that is always refused
@@ -2242,6 +2247,10 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut PortTickState) -> PortFireStats {
     // first on every fire, whether or not any agent is offered. A notice pass: no
     // submission and no swap.
     crate::port::stock::release_verify(ctx, state);
+    let now = ctx.w.now();
+    state.player_ask_locks.retain(|_, (_, exp)| {
+        now < exp.saturating_add(crate::port::pools::PLAYER_ASK_COOLDOWN_SECS)
+    });
     // Doc 18 cut IC9: the launch arm's pull verification, likewise first (no
     // submission, no swap), then its RAM pruned of every hull whose sailing plan
     // has no pending passage any more (a launch, a lapse or a staff clear).

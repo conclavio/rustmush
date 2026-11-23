@@ -16,13 +16,16 @@ use mush_core::{
 };
 use serde_json::{Map, Value, json};
 
-use super::ledger::{ProcurementKey, ProcurementRow, RowPhase};
+use super::ledger::{
+    ProcurementKey, ProcurementOpIndex, ProcurementOpKey, ProcurementRow, RowPhase,
+};
 use crate::port_tick::port_error;
 
 pub(super) struct RecordProvider {
     pub(super) action: DefinitionRef,
     pub(super) outcome: DefinitionRef,
     pub(super) rows: StateFamilyHandle<ProcurementKey, ProcurementRow>,
+    pub(super) ops: StateFamilyHandle<ProcurementOpKey, ProcurementOpIndex>,
 }
 
 fn invalid() -> ActionError {
@@ -137,6 +140,10 @@ impl ActionProvider for RecordProvider {
             }
         }
         let key = row.key();
+        let op_key = ProcurementOpKey {
+            org: row.org,
+            operation: row.operation,
+        };
         let prior = txn
             .get(&self.rows, &key)
             .map_err(|_| {
@@ -146,14 +153,43 @@ impl ActionProvider for RecordProvider {
                 )
             })?
             .cloned();
+        let prior_op = txn
+            .get(&self.ops, &op_key)
+            .map_err(|_| {
+                port_error(
+                    ActionErrorCode::Integrity,
+                    "the procurement operation index is unavailable",
+                )
+            })?
+            .copied();
         let staged = match prior {
-            None if row.phase == RowPhase::Funded => txn.insert(&self.rows, &key, row.clone()),
+            None if row.phase == RowPhase::Funded => {
+                if prior_op.is_some() {
+                    return Err(port_error(
+                        ActionErrorCode::Conflict,
+                        "that procurement operation is already recorded",
+                    ));
+                }
+                txn.insert(&self.ops, &op_key, ProcurementOpIndex::from_row(&row))
+                    .and_then(|()| txn.insert(&self.rows, &key, row.clone()))
+            }
             Some(prior)
                 if prior.phase == RowPhase::Funded
                     && row.phase != RowPhase::Funded
                     && prior.with_phase(row.phase) == row =>
             {
-                txn.replace(&self.rows, &key, row.clone())
+                if prior_op.is_some_and(|existing| existing.row_key() != key) {
+                    return Err(port_error(
+                        ActionErrorCode::Conflict,
+                        "that procurement operation belongs to another ledger row",
+                    ));
+                }
+                let index_staged = if prior_op.is_none() {
+                    txn.insert(&self.ops, &op_key, ProcurementOpIndex::from_row(&row))
+                } else {
+                    Ok(())
+                };
+                index_staged.and_then(|()| txn.replace(&self.rows, &key, row.clone()))
             }
             _ => {
                 return Err(port_error(

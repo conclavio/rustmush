@@ -1487,20 +1487,18 @@ impl EventHook for ShipLook {
             )];
         }
         if let Some(map) = store.port_maps().find(|m| m.presentation == Some(room.0)) {
-            let docked = docked_hulls_at_gallery(w, room);
+            let resolved_own = resolve_actor_hull(w, looker, Some(room), None);
+            let own_hull_id = resolved_own.map(|r| r.hull);
+            let docked = docked_hulls_at_gallery(w, looker, room, own_hull_id);
             let docked_count = docked.len();
-            let (own_hull, own_hull_name, own_hull_docked_here) =
-                match resolve_actor_hull(w, looker, Some(room), None) {
-                    Some(resolved) => {
-                        let docked_here = docked.contains(&resolved.hull);
-                        (
-                            Some(resolved.hull.to_string()),
-                            Some(name_of(w, resolved.hull)),
-                            docked_here,
-                        )
-                    }
-                    None => (None, None, false),
-                };
+            let (own_hull, own_hull_name, own_hull_docked_here) = match own_hull_id {
+                Some(h) => (
+                    Some(h.to_string()),
+                    Some(name_of(w, h)),
+                    docked.contains(&h),
+                ),
+                None => (None, None, false),
+            };
             return vec![(
                 SmolStr::new_static("tacsim"),
                 serde_json::json!({
@@ -1691,10 +1689,41 @@ pub(crate) fn resolve_actor_hull(
         .map(|hull| standing_for_hull(w, actor, hull))
 }
 
-/// All live (non-`GOING`) hulls currently docked at `room`'s berth gallery across
-/// programme hulls, yard hulls, yard-commissioned ships (`owned::ships`), and EX.10
-/// NPC haulers (`VCC-01`/`VCC-02`), sorted and deduplicated by `ObjId` (`CS-H3`).
-fn docked_hulls_at_gallery(w: &World, room: ObjId) -> Vec<ObjId> {
+/// **Whether `actor` holds authorized crew or operator standing on `hull` to read its full
+/// itemized cargo manifest in `port.trade`** (`P2-TSW-45`): staff, charter/fleet/title/trade
+/// operators, or actors seated at a bridge/station billet on `hull` — excluding visitors,
+/// passengers, stowaways, and held captives (`crate::field::crew::held`).
+pub(crate) fn may_view_stowage(w: &World, actor: ObjId, hull: ObjId) -> bool {
+    if crate::commands::is_staff(w, actor) {
+        return true;
+    }
+    if crate::field::crew::held(w, actor).is_some() {
+        return false;
+    }
+    if helm_of(w, actor).is_some_and(|h| h.hull == hull)
+        || crate::port::coop::live_charter(w, actor).is_some_and(|c| c.hull == hull)
+        || crate::relay_mobile::assigned_hull(w, actor) == Some(hull)
+        || crate::port::pools::ferry_hull(w, actor) == Some(hull)
+        || crate::port::hauler::hauler_hull(w, actor) == Some(hull)
+        || crate::port::coop::trade_hulls(w, actor).contains(&hull)
+    {
+        return true;
+    }
+    w.module_state::<SpatialState>()
+        .and_then(|st| st.assignments.get(&hull))
+        .is_some_and(|a| a.seats.values().any(|seat| seat.actor == actor))
+}
+
+/// All live (non-`GOING`, and non-`DARK` unless `looker` is staff or owns the hull) hulls
+/// currently docked at `room`'s berth gallery across programme hulls, yard hulls,
+/// yard-commissioned ships (`owned::ships`), and EX.10 NPC haulers (`VCC-01`/`VCC-02`), sorted
+/// and deduplicated by `ObjId` (`CS-H3`, `P2-TSW-45`).
+fn docked_hulls_at_gallery(
+    w: &World,
+    looker: ObjId,
+    room: ObjId,
+    own_hull: Option<ObjId>,
+) -> Vec<ObjId> {
     let mut hulls: Vec<ObjId> = crate::port::coop::programme_ports(w)
         .into_iter()
         .flat_map(|p| p.map.hulls.iter().map(|r| ObjId(r.hull)))
@@ -1707,13 +1736,17 @@ fn docked_hulls_at_gallery(w: &World, room: ObjId) -> Vec<ObjId> {
         .collect();
     hulls.sort_unstable();
     hulls.dedup();
+    let staff = crate::commands::is_staff(w, looker);
+    let trade = crate::port::coop::trade_hulls(w, looker);
     hulls.retain(|&h| {
-        w.get(h)
-            .is_some_and(|o| !o.flags.contains(mush_core::Flags::GOING))
-            && matches!(
-                berth_of(w, h),
-                Berth::Docked { map: bm, .. } if bm.presentation == Some(room.0)
-            )
+        let is_own = own_hull == Some(h) || trade.contains(&h);
+        w.get(h).is_some_and(|o| {
+            !o.flags.contains(mush_core::Flags::GOING)
+                && (staff || is_own || !o.flags.contains(mush_core::Flags::DARK))
+        }) && matches!(
+            berth_of(w, h),
+            Berth::Docked { map: bm, .. } if bm.presentation == Some(room.0)
+        )
     });
     hulls
 }
@@ -1729,10 +1762,10 @@ pub(crate) fn berth_gallery_json(
     room: ObjId,
 ) -> Option<serde_json::Value> {
     let map = store.port_maps().find(|m| m.presentation == Some(room.0))?;
-    let docked = docked_hulls_at_gallery(w, room);
-    let docked_count = docked.len();
     let resolved_own = resolve_actor_hull(w, looker, Some(room), None);
     let own_hull_id = resolved_own.map(|r| r.hull);
+    let docked = docked_hulls_at_gallery(w, looker, room, own_hull_id);
+    let docked_count = docked.len();
 
     // Prioritize `looker`'s own docked hull first inside the 16-row cap so a crowded
     // gallery never hides the viewer's own ship.
@@ -2091,6 +2124,171 @@ mod tests {
         };
         check_eq!(aboard.hull, owned_hull);
         check_eq!(aboard.standing_word, "crew");
+        Ok(())
+    }
+
+    /// **P2-TSW-45**: `may_view_stowage` denies visitors/passengers and held captives while
+    /// allowing assigned station crew and staff; `berth_gallery_json` hides foreign `Flags::DARK`
+    /// docked hulls from non-staff lookers while still showing them to staff.
+    #[test]
+    fn p2_tsw_45_stowage_gating_and_dark_hull_filtering() -> Result<(), Box<dyn std::error::Error>>
+    {
+        use crate::field::crew::{CREW_FORMAT, CrewCondition, CrewLocation, CrewRecord};
+        use crate::port::owned::{Held, OwnedBody, OwnedHull};
+        use mush_core::Flags;
+        use mush_sim::data::Pose;
+
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![
+            Box::new(mush_sim::SimulationModule::new()),
+            Box::new(crate::TacsimRuleset::default()),
+        ]);
+        let gallery = tw.world_mut().create(
+            mush_core::ObjKind::Room,
+            "Ceres Berth Gallery",
+            ObjId(1),
+            None,
+        )?;
+        let visitor = tw.spawn_player("Visitor");
+        let crew_member = tw.spawn_player("BridgeCrew");
+        let captive = tw.spawn_player("Captive");
+        let staff = tw.spawn_player("Staff");
+        if let Some(o) = tw.world_mut().get_mut(staff) {
+            o.flags.insert(Flags::WIZARD);
+        }
+        let visible_hull =
+            tw.world_mut()
+                .create(mush_core::ObjKind::Thing, "Visible Ship", ObjId(1), None)?;
+        let dark_hull =
+            tw.world_mut()
+                .create(mush_core::ObjKind::Thing, "Dark Ship", ObjId(1), None)?;
+        if let Some(o) = tw.world_mut().get_mut(dark_hull) {
+            o.flags.insert(Flags::DARK);
+        }
+
+        let posture = mush_sim::passive_rules_value(serde_json::json!({}))?;
+        let domain = {
+            let mut out = mush_core::Outbox::new();
+            let engine = tw.engine_mut();
+            let mut ctx = mush_core::Ctx {
+                w: &mut engine.world,
+                actor: mush_core::GOD,
+                switches: mush_core::SwitchSet::default(),
+                args: mush_core::ParsedArgs::default(),
+                out: &mut out,
+                reg: &engine.registry,
+                module: Some(smol_str::SmolStr::new(crate::store::NS)),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            let domain = mush_sim::open_passive_domain(&mut ctx, gallery, gallery)
+                .map_err(|e| format!("open_passive_domain failed: {e}"))?;
+            let seat_id =
+                mush_sim::StationId::new("helm").ok_or_else(|| "station id".to_owned())?;
+            let channels = std::collections::BTreeSet::from([
+                mush_core::ChannelId::new("move").ok_or_else(|| "channel id".to_owned())?
+            ]);
+            for (hull, occupant) in [(visible_hull, crew_member), (dark_hull, captive)] {
+                mush_sim::place(&mut ctx, hull, domain, Pose::passive(posture.clone()))
+                    .map_err(|e| format!("place hull failed: {e}"))?;
+                mush_sim::declare_station(&mut ctx, hull, &seat_id, "helm", &channels, None, 0)
+                    .map_err(|e| format!("declare_station failed: {e}"))?;
+                // Also seat `captive` on `dark_hull` to prove `crew::held` overrides even a seat.
+                mush_sim::commands::assign_station(&mut ctx, hull, &seat_id, occupant)
+                    .map_err(|e| format!("assign_station failed: {e}"))?;
+            }
+            domain
+        };
+
+        let lane_id = CanonicalId::new(crate::definitions::content::LANE_PACK)?;
+        let ceres_entry = CanonicalId::new("ceres_port")?;
+        let dray = CanonicalId::new("tacsim.unit.dray")?;
+        let lane_pack = crate::pack::load_pack(crate::definitions::content::LANE_JSON)?;
+        let lane_ver = lane_pack.manifest().version();
+        {
+            let Some(store) = tw.world_mut().module_state_mut::<TacsimStore>() else {
+                return crate::test_checks::failed("store missing");
+            };
+            store.cfg.enabled = true;
+            store.stage_pack(crate::LoadedPack {
+                source: "<test lane>".to_owned(),
+                pack: lane_pack,
+            })?;
+            store.seeded_keys.insert((lane_id.clone(), lane_ver));
+            store.applied.insert(lane_id.clone(), lane_ver);
+            let mut map = PortMap::new(lane_id.clone(), ceres_entry.clone());
+            map.domain = Some(domain.0);
+            map.presentation = Some(gallery.0);
+            store.port_maps.insert((lane_id, ceres_entry.clone()), map);
+            for (idx, (hull, mark)) in [(visible_hull, "VIS-01"), (dark_hull, "DRK-01")]
+                .into_iter()
+                .enumerate()
+            {
+                let row = HullRow {
+                    n: idx as u32,
+                    mark: mark.to_owned(),
+                    hull: hull.0,
+                    rooms: BTreeMap::new(),
+                    exits: Vec::new(),
+                };
+                store.yard.owned.insert(
+                    hull,
+                    Held::Present(Box::new(OwnedHull {
+                        hull,
+                        design: dray.clone(),
+                        mark: mark.to_owned(),
+                        home: ceres_entry.clone(),
+                        provenance: (idx as u64) + 1,
+                        body: OwnedBody::Ship(row),
+                    })),
+                );
+            }
+        }
+        crate::field::crew::hold_for_tests(
+            tw.world_mut(),
+            CrewRecord {
+                format: CREW_FORMAT,
+                character: captive,
+                location: CrewLocation::Captured {
+                    carrier: dark_hull,
+                    captor: crew_member,
+                    since_ic: 100,
+                },
+                condition: CrewCondition::Fit,
+                at_ic: 100,
+                organizer: None,
+                extraction: None,
+                treatment: None,
+                resolve_permille: None,
+            },
+        );
+
+        let w = tw.world();
+        // 1. Stowage authorization gate.
+        check!(!may_view_stowage(w, visitor, visible_hull));
+        check!(may_view_stowage(w, crew_member, visible_hull));
+        check!(!may_view_stowage(w, captive, dark_hull));
+        check!(may_view_stowage(w, staff, visible_hull));
+        check!(may_view_stowage(w, staff, dark_hull));
+
+        // 2. DARK docked hull is hidden from ordinary lookers and visible to staff.
+        let Some(store_ref) = w.module_state::<TacsimStore>() else {
+            return crate::test_checks::failed("store missing");
+        };
+        let Some(visitor_berth) = berth_gallery_json(w, store_ref, visitor, gallery) else {
+            return crate::test_checks::failed("visitor berth gallery missing");
+        };
+        check_eq!(visitor_berth["docked_count"], serde_json::json!(1));
+        let visitor_marks: Vec<&str> = visitor_berth["docked_hulls"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|h| h["mark"].as_str())
+            .collect();
+        check_eq!(visitor_marks, vec!["VIS-01"]);
+
+        let Some(staff_berth) = berth_gallery_json(w, store_ref, staff, gallery) else {
+            return crate::test_checks::failed("staff berth gallery missing");
+        };
+        check_eq!(staff_berth["docked_count"], serde_json::json!(2));
         Ok(())
     }
 }

@@ -963,10 +963,22 @@ pub(crate) fn world_rigs(w: &World) -> Vec<ObjId> {
         .unwrap_or_default()
 }
 
-/// **Active rigs in the world** (M17): rigs from [`world_rigs`] whose durable `tacsim.excursion`
-/// record currently holds live surface work (`excursion`, `act`, `run`, `field_crew`, or a live
-/// mind claim cursor). Idle/finished lifetime rigs are pruned so cumulative fleet growth past
-/// [`crate::surface::excursion::MAX_EXCURSIONS_WORLD`] never bloats offers or stalls surface work.
+impl super::ActOrders {
+    /// **Whether `tv` currently holds a pending RAM act order** (P2-TSW-36), so the surface
+    /// tick's filtered scan retains its rig record for `prune_mine_orders` even when the rig
+    /// itself is otherwise idle.
+    #[must_use]
+    pub(crate) fn contains(w: &World, tv: ObjId) -> bool {
+        w.module_state::<Self>()
+            .is_some_and(|orders| orders.0.contains_key(&tv))
+    }
+}
+
+/// **Active rigs in the world** (M17, P2-TSW-36): rigs from [`world_rigs`] whose durable
+/// `tacsim.excursion` record currently holds live surface work (`excursion`, `act`, `run`,
+/// `queued`, `field_crew`, or a live mind claim cursor). Idle/finished lifetime rigs are pruned
+/// so cumulative fleet growth past [`crate::surface::excursion::MAX_EXCURSIONS_WORLD`] never
+/// bloats offers or stalls surface work.
 #[must_use]
 pub(crate) fn active_world_rigs(
     w: &World,
@@ -983,6 +995,7 @@ pub(crate) fn active_world_rigs(
                 record.excursion.is_some()
                     || record.act.is_some()
                     || record.run.is_some()
+                    || record.queued.is_some()
                     || record.field_crew.is_some()
                     || record
                         .claim

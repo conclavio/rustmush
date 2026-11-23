@@ -60,6 +60,10 @@ pub const MAX_ARENA_SIDE: u16 = 512;
 // Doc 32 cut S.0 (§18): the atlas composites a window as wide as an arena, and no wider.
 const _: () = assert!(MAX_ARENA_SIDE == mush_atlas::MAX_COMPOSITE_SIDE);
 
+/// Maximum absolute arena coordinate in meters (matches `mush_atlas::geom::MAX_COORD_M`,
+/// `P2-TSW-43`). Both `origin_m` and `origin_m + extent` must lie within `±MAX_ORIGIN_M`.
+pub const MAX_ORIGIN_M: i64 = 1_000_000;
+
 /// The most named key spots one arena may carry (doc 16 §3.2: *three or four*).
 ///
 /// **16b cut V.1 made it the alphabet's length.** Every spot is drawn on the
@@ -315,6 +319,33 @@ impl ArenaDef {
                     mush_atlas::record::RESOLUTIONS_CM,
                     self.cell_cm
                 ),
+            ));
+        }
+        // P2-TSW-43: bound origin_m and checked extent within ±MAX_ORIGIN_M so
+        // downstream atlas region/tile/room coordinate math cannot overflow or invert.
+        let [lo_x, lo_y] = self.origin_m;
+        if !(-MAX_ORIGIN_M..=MAX_ORIGIN_M).contains(&lo_x)
+            || !(-MAX_ORIGIN_M..=MAX_ORIGIN_M).contains(&lo_y)
+        {
+            return Err(DefinitionError::value(
+                entry,
+                format!("origin_m ({lo_x}, {lo_y}) must lie within ±{MAX_ORIGIN_M} m"),
+            ));
+        }
+        let hi_x = u64::from(self.cols)
+            .checked_mul(u64::from(self.cell_cm))
+            .and_then(|cm| i64::try_from(cm.div_ceil(100)).ok())
+            .and_then(|m| lo_x.checked_add(m))
+            .filter(|hi| (-MAX_ORIGIN_M..=MAX_ORIGIN_M).contains(hi) && *hi > lo_x);
+        let hi_y = u64::from(self.rows)
+            .checked_mul(u64::from(self.cell_cm))
+            .and_then(|cm| i64::try_from(cm.div_ceil(100)).ok())
+            .and_then(|m| lo_y.checked_add(m))
+            .filter(|hi| (-MAX_ORIGIN_M..=MAX_ORIGIN_M).contains(hi) && *hi > lo_y);
+        if hi_x.is_none() || hi_y.is_none() {
+            return Err(DefinitionError::value(
+                entry,
+                format!("arena extent from origin_m ({lo_x}, {lo_y}) exceeds ±{MAX_ORIGIN_M} m"),
             ));
         }
         if self.tiles.is_empty() || self.tiles.len() > MAX_ARENA_TILES {
@@ -1421,5 +1452,21 @@ mod tests {
                 Some(biome)
             );
         }
+    }
+
+    #[test]
+    fn p2_tsw_43_arena_check_rejects_overflowing_origin_m() {
+        let mut def = shipped();
+        def.origin_m = [i64::MAX, 0];
+        assert!(def.check("tacsim.arena.overflow_x").is_err());
+
+        let mut def2 = shipped();
+        def2.origin_m = [0, -MAX_ORIGIN_M - 1];
+        assert!(def2.check("tacsim.arena.underflow_y").is_err());
+
+        // Extent pushes hi_x past MAX_ORIGIN_M even though lo_x itself is within bounds.
+        let mut def3 = shipped();
+        def3.origin_m = [MAX_ORIGIN_M - 1, 0];
+        assert!(def3.check("tacsim.arena.extent_overflow").is_err());
     }
 }

@@ -533,6 +533,14 @@ pub struct TacsimStore {
 /// Maximum bytes one staffer's `@ground/stage` chunk buffer may hold in RAM (2 MiB).
 pub const MAX_GROUND_STAGE_BYTES: usize = 2 * 1024 * 1024;
 
+/// Maximum distinct arena drafts held in RAM in `TacsimStore::staged_drafts` (`P2-TSW-43`).
+pub const MAX_STAGED_DRAFTS: usize = 64;
+
+/// Maximum distinct standalone tables held in RAM in `TacsimStore::studio_tables` (`P2-TSW-44`).
+pub const MAX_STUDIO_TABLES: usize = 64;
+
+type BudgetMap = BTreeMap<CanonicalId, crate::definitions::mass::MassBudget>;
+
 /// **The black box below the boot's floors, for a test root** (doc 40 cut FR.7c): sets the
 /// layer's `[tacsim.arena.ledger].max_bytes` and `summary_ms` on its frozen block after the boot
 /// has validated it, so every arena started from then on (`match_::lobby::configs` reads this
@@ -1661,19 +1669,160 @@ impl TacsimStore {
         ),
         crate::definitions::DefinitionError,
     > {
-        let mut fielded = crate::definitions::Catalog::build_fielded(packs, crate::NS)?;
-        let fitted = crate::definitions::core_replacement::fitted_catalog(fielded.clone())
-            .unwrap_or_else(|error| {
-                tracing::warn!(%error, "tacsim: fitted cored-hull catalog fell back to fielded");
-                fielded.clone()
-            });
-        for (id, budget) in &fitted.budgets {
-            fielded
-                .budgets
+        let fielded = crate::definitions::Catalog::build_fielded(packs, crate::NS)?;
+        Self::bind_catalogs_from_fielded(fielded, None)
+    }
+
+    /// Extend a built `fielded` catalog with all unaffected cored-hull families (`P2-TSW-16`),
+    /// optionally refresh mass budgets against a hot-reloaded `goods` table (`P2-TSW-44`), and
+    /// merge cored budgets into `fielded.budgets`.
+    fn bind_catalogs_from_fielded(
+        mut fielded: crate::definitions::Catalog,
+        goods: Option<&crate::definitions::GoodsTable>,
+    ) -> Result<
+        (
+            std::sync::Arc<crate::definitions::Catalog>,
+            std::sync::Arc<crate::definitions::Catalog>,
+        ),
+        crate::definitions::DefinitionError,
+    > {
+        let mut fitted = match crate::definitions::core_replacement::fitted_catalog(fielded.clone())
+        {
+            Ok(fitted) => fitted,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "tacsim: full fitted cored-hull catalog could not bind; applying unaffected families"
+                );
+                let mut partial = fielded.clone();
+                if let Ok(line) =
+                    crate::definitions::core_replacement::GovernedLineCores::build(partial.clone())
+                {
+                    partial = line.catalog().clone();
+                }
+                if let Ok(rig) =
+                    crate::definitions::core_replacement::SurfaceRigCores::build(partial.clone())
+                {
+                    partial = rig.catalog().clone();
+                }
+                if let Ok(ship) =
+                    crate::definitions::core_replacement::ShipCores::build(partial.clone())
+                {
+                    partial = ship.catalog().clone();
+                }
+                partial
+            }
+        };
+        if let Some(table) = goods {
+            let (fielded_budgets, fitted_budgets) =
+                Self::recompute_catalog_budgets(&fielded, &fitted, table)?;
+            fielded.budgets = fielded_budgets;
+            fitted.budgets = fitted_budgets;
+        } else {
+            for (id, budget) in &fitted.budgets {
+                fielded
+                    .budgets
+                    .entry(id.clone())
+                    .or_insert_with(|| budget.clone());
+            }
+        }
+        Ok((std::sync::Arc::new(fielded), std::sync::Arc::new(fitted)))
+    }
+
+    /// Validate `table` against `fielded` and `fitted` stowage/core-commodity invariants and
+    /// recompute both catalogs' mass budgets (`P2-TSW-44`).
+    fn recompute_catalog_budgets(
+        fielded: &crate::definitions::Catalog,
+        fitted: &crate::definitions::Catalog,
+        table: &crate::definitions::GoodsTable,
+    ) -> Result<(BudgetMap, BudgetMap), crate::definitions::DefinitionError> {
+        use crate::definitions::goods::{Consumable, GoodClass};
+
+        let propellant = table
+            .goods
+            .iter()
+            .find(|g| g.consumable == Some(Consumable::Propellant))
+            .ok_or_else(|| {
+                crate::definitions::DefinitionError::value(
+                    "goods.json",
+                    "missing required propellant consumable",
+                )
+            })?;
+        if propellant.mass_kg_per_unit() != Some(crate::port::burn::PROPELLANT_KG_PER_UNIT) {
+            return Err(crate::definitions::DefinitionError::value(
+                "goods.json",
+                format!(
+                    "propellant `{}` must weigh {} kg per unit",
+                    propellant.id,
+                    crate::port::burn::PROPELLANT_KG_PER_UNIT
+                ),
+            ));
+        }
+        if !table
+            .goods
+            .iter()
+            .any(|g| g.consumable == Some(Consumable::Provisions))
+        {
+            return Err(crate::definitions::DefinitionError::value(
+                "goods.json",
+                "missing required provisions consumable",
+            ));
+        }
+        for required in [
+            crate::port::bay_work::ALLOYS_GOOD,
+            crate::port::bay_work::PARTS_GOOD,
+        ] {
+            let cid = CanonicalId::new(required).map_err(|e| {
+                crate::definitions::DefinitionError::value("goods.json", e.to_string())
+            })?;
+            if table.good(&cid).is_none() {
+                return Err(crate::definitions::DefinitionError::value(
+                    "goods.json",
+                    format!("missing required yard commodity `{required}`"),
+                ));
+            }
+        }
+        for cat in [fielded, fitted] {
+            for (slot, row) in &cat.parts {
+                if table
+                    .good(&row.commodity)
+                    .is_none_or(|good| good.class != GoodClass::Part)
+                {
+                    return Err(crate::definitions::DefinitionError::value(
+                        slot.as_str(),
+                        format!(
+                            "missing required part commodity `{}` in goods table",
+                            row.commodity
+                        ),
+                    ));
+                }
+            }
+        }
+        let compute = |cat: &crate::definitions::Catalog| -> Result<
+            BTreeMap<CanonicalId, crate::definitions::mass::MassBudget>,
+            crate::definitions::DefinitionError,
+        > {
+            let mut out = BTreeMap::new();
+            for (id, spec) in &cat.specs {
+                if let Some(logistics) = &spec.logistics {
+                    table.check_stowage(id.as_str(), logistics)?;
+                }
+                if let Some(budget) =
+                    crate::definitions::mass::partition(id, spec, table, &cat.cores, &cat.parts)?
+                {
+                    out.insert(id.clone(), budget);
+                }
+            }
+            Ok(out)
+        };
+        let mut fielded_budgets = compute(fielded)?;
+        let fitted_budgets = compute(fitted)?;
+        for (id, budget) in &fitted_budgets {
+            fielded_budgets
                 .entry(id.clone())
                 .or_insert_with(|| budget.clone());
         }
-        Ok((std::sync::Arc::new(fielded), std::sync::Arc::new(fitted)))
+        Ok((fielded_budgets, fitted_budgets))
     }
 
     /// Install the packs the host read and this module verified.
@@ -1708,16 +1857,7 @@ impl TacsimStore {
         }
     }
 
-    /// **Doc 30 §8 (`Q-30-5`)** — hot-shelve one verified pack into the runtime store
-    /// and re-bind [`Self::definitions`] without requiring a server restart.
-    ///
-    /// # Errors
-    ///
-    /// [`crate::definitions::DefinitionError`] if the updated pack set fails to bind.
-    pub fn stage_pack(
-        &mut self,
-        loaded: LoadedPack,
-    ) -> Result<(), crate::definitions::DefinitionError> {
+    fn candidate_packs_for_stage(&self, loaded: &LoadedPack) -> Vec<LoadedPack> {
         let key = (
             loaded.pack.manifest().id().clone(),
             loaded.pack.manifest().version(),
@@ -1734,11 +1874,183 @@ impl TacsimStore {
             let kb = (b.pack.manifest().id(), b.pack.manifest().version());
             ka.cmp(&kb)
         });
-        let (fielded, fitted) = Self::bind_catalogs(&candidate)?;
+        candidate
+    }
+
+    /// Dry-run [`Self::stage_pack`] without mutating the store (`P2-TSW-43`).
+    pub(crate) fn check_stage_pack(
+        &self,
+        loaded: &LoadedPack,
+    ) -> Result<(), crate::definitions::DefinitionError> {
+        let candidate = self.candidate_packs_for_stage(loaded);
+        let fielded = crate::definitions::Catalog::build_fielded(&candidate, crate::NS)?;
+        let _ = Self::bind_catalogs_from_fielded(fielded, self.goods.as_deref())?;
+        Ok(())
+    }
+
+    /// **Doc 30 §8 (`Q-30-5`)** — hot-shelve one verified pack into the runtime store
+    /// and re-bind [`Self::definitions`] without requiring a server restart.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::definitions::DefinitionError`] if the updated pack set fails to bind.
+    pub fn stage_pack(
+        &mut self,
+        loaded: LoadedPack,
+    ) -> Result<(), crate::definitions::DefinitionError> {
+        let key = (
+            loaded.pack.manifest().id().clone(),
+            loaded.pack.manifest().version(),
+        );
+        let candidate = self.candidate_packs_for_stage(&loaded);
+        let fielded = crate::definitions::Catalog::build_fielded(&candidate, crate::NS)?;
+        let (fielded, fitted) = Self::bind_catalogs_from_fielded(fielded, self.goods.as_deref())?;
         self.definitions = fielded;
         self.fitted_definitions = fitted;
         self.loaded.insert(key, loaded);
         self.reindex();
+        Ok(())
+    }
+
+    /// Build the merged pack set for a Content Studio `rules_definition` hot-reload (`P2-TSW-44`):
+    /// starts from compiled-in `fielded_sources()`, overlays the newest active operator/studio
+    /// pack per pack ID from `self.loaded`, and replaces/inserts `incoming` by pack ID.
+    fn studio_merged_packs(
+        &self,
+        incoming: &LoadedPack,
+    ) -> Result<Vec<LoadedPack>, crate::definitions::DefinitionError> {
+        let mut by_id: BTreeMap<CanonicalId, LoadedPack> = BTreeMap::new();
+        for src in crate::definitions::content::fielded_sources() {
+            let pack = crate::pack::load_pack(&src.bytes).map_err(|error| {
+                crate::definitions::DefinitionError::value(&src.name, error.to_string())
+            })?;
+            by_id.insert(
+                pack.manifest().id().clone(),
+                LoadedPack {
+                    source: src.name,
+                    pack,
+                },
+            );
+        }
+        // `self.loaded` is keyed by `(CanonicalId, u32)` so iterating in order leaves the
+        // highest loaded version per pack ID in `by_id`.
+        for ((id, _), loaded) in &self.loaded {
+            if id.as_str() == crate::hardware::PACK || id.as_str() == crate::sky::OUTER_BODIES_PACK
+            {
+                continue;
+            }
+            by_id.insert(id.clone(), loaded.clone());
+        }
+        by_id.insert(incoming.pack.manifest().id().clone(), incoming.clone());
+        Ok(by_id.into_values().collect())
+    }
+
+    /// Dry-run a Content Studio `rules_definition` catalog merge without mutating `self`
+    /// (`P2-TSW-44`).
+    pub(crate) fn check_studio_rules_pack(
+        &self,
+        incoming: &LoadedPack,
+    ) -> Result<(), crate::definitions::DefinitionError> {
+        let merged = self.studio_merged_packs(incoming)?;
+        let fielded = crate::definitions::Catalog::build(&merged, crate::NS)?;
+        let _ = Self::bind_catalogs_from_fielded(fielded, self.goods.as_deref())?;
+        Ok(())
+    }
+
+    /// Atomically hot-reload a Content Studio `rules_definition` pack, preserving all active
+    /// operator/studio packs and cored-hull definitions (`P2-TSW-44`). Fails closed without
+    /// mutating `self` if `Catalog::build` or goods stowage/budget binding fails.
+    pub(crate) fn stage_studio_rules_pack(
+        &mut self,
+        incoming: LoadedPack,
+    ) -> Result<(), crate::definitions::DefinitionError> {
+        let merged = self.studio_merged_packs(&incoming)?;
+        let fielded = crate::definitions::Catalog::build(&merged, crate::NS)?;
+        let (fielded, fitted) = Self::bind_catalogs_from_fielded(fielded, self.goods.as_deref())?;
+        let key = (
+            incoming.pack.manifest().id().clone(),
+            incoming.pack.manifest().version(),
+        );
+        self.definitions = fielded;
+        self.fitted_definitions = fitted;
+        self.loaded.insert(key, incoming);
+        self.reindex();
+        Ok(())
+    }
+
+    /// Whether `id` may be staged in `self.staged_drafts` without exceeding [`MAX_STAGED_DRAFTS`]
+    /// (`P2-TSW-43`).
+    #[must_use]
+    pub(crate) fn can_stage_draft(&self, id: &str) -> bool {
+        self.staged_drafts.contains_key(id) || self.staged_drafts.len() < MAX_STAGED_DRAFTS
+    }
+
+    /// Insert or update a staged draft in RAM, enforcing [`MAX_STAGED_DRAFTS`] (`P2-TSW-43`).
+    pub(crate) fn stage_draft(
+        &mut self,
+        id: String,
+        draft: crate::ground::GroundDraft,
+    ) -> Result<(), String> {
+        if !self.can_stage_draft(&id) {
+            return Err(format!(
+                "staged draft shelf is full ({MAX_STAGED_DRAFTS} distinct drafts); clear or reuse an existing draft id"
+            ));
+        }
+        self.staged_drafts.insert(id, draft);
+        Ok(())
+    }
+
+    /// Whether `repo_path` may be stored in `self.studio_tables` without exceeding
+    /// [`MAX_STUDIO_TABLES`] (`P2-TSW-44`).
+    #[must_use]
+    pub(crate) fn can_insert_studio_table(&self, repo_path: &str) -> bool {
+        self.studio_tables.contains_key(repo_path) || self.studio_tables.len() < MAX_STUDIO_TABLES
+    }
+
+    /// Insert or update a Content Studio standalone table in RAM, enforcing [`MAX_STUDIO_TABLES`]
+    /// (`P2-TSW-44`).
+    pub(crate) fn insert_studio_table(
+        &mut self,
+        repo_path: String,
+        doc: serde_json::Value,
+    ) -> Result<(), String> {
+        if !self.can_insert_studio_table(&repo_path) {
+            return Err(format!(
+                "studio table shelf is full ({MAX_STUDIO_TABLES} tables); reuse an existing table path"
+            ));
+        }
+        self.studio_tables.insert(repo_path, doc);
+        Ok(())
+    }
+
+    /// Validate a candidate hot-reloaded [`crate::definitions::GoodsTable`] against all live
+    /// fielded and fitted hull stowage rules, required commodities, and mass budgets without
+    /// mutating `self` (`P2-TSW-44`).
+    pub(crate) fn validate_goods_table(
+        &self,
+        table: &crate::definitions::GoodsTable,
+    ) -> Result<(), String> {
+        Self::recompute_catalog_budgets(&self.definitions, &self.fitted_definitions, table)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    /// Atomically validate and install a hot-reloaded [`crate::definitions::GoodsTable`],
+    /// refreshing mass budgets on both `definitions` and `fitted_definitions` (`P2-TSW-44`).
+    pub(crate) fn swap_goods_table(
+        &mut self,
+        table: crate::definitions::GoodsTable,
+    ) -> Result<(), String> {
+        let (fielded_budgets, fitted_budgets) =
+            Self::recompute_catalog_budgets(&self.definitions, &self.fitted_definitions, &table)
+                .map_err(|e| e.to_string())?;
+        let mut fielded = (*self.definitions).clone();
+        fielded.budgets = fielded_budgets;
+        let mut fitted = (*self.fitted_definitions).clone();
+        fitted.budgets = fitted_budgets;
+        self.definitions = std::sync::Arc::new(fielded);
+        self.fitted_definitions = std::sync::Arc::new(fitted);
+        self.goods = Some(std::sync::Arc::new(table));
         Ok(())
     }
 
@@ -4718,6 +5030,7 @@ mod tests {
             repossessed: false,
             written_off: false,
             wreck_aboard_ic: None,
+            loans_issued: false,
         };
         let docs = vec![
             (

@@ -1117,6 +1117,11 @@ pub struct TvLease {
     /// own carrier's bay — Q-38-7's second write-off clock, cleared if it is mended first.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wreck_aboard_ic: Option<i64>,
+    /// **P2-TSW-29**: whether Occator has already issued the four operational loans for this
+    /// lease, persisted independently of global `UnitGrantRegistry::pruned` so revoked loans
+    /// cannot be silently re-issued after pruning.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub loans_issued: bool,
 }
 
 /// The longest mark a record may carry, bytes.
@@ -1199,6 +1204,7 @@ impl TvLease {
             repossessed: false,
             written_off: false,
             wreck_aboard_ic: None,
+            loans_issued: false,
         }
     }
 
@@ -3980,6 +3986,7 @@ struct TakePlan {
     fee_minor: i64,
     deposit_minor: i64,
     term_secs: i64,
+    gate: LeaseGate,
     settle: Vec<Settle>,
 }
 
@@ -4015,6 +4022,20 @@ fn funds(w: &World, actor: ObjId) -> Option<(AccountId, i64)> {
 /// Major units at the credit scale, as minor.
 fn minor(w: &World, major: u64) -> Option<i64> {
     crate::port::apply::minor_of(major, crate::port::apply::credit_scale(w))
+}
+
+/// Refuse an armed escort lease when this same command's settle would forfeit a past-term rig
+/// lease (`P2-TSW-30`), preventing a delinquent lessee from bypassing [`ESCORT_FORFEIT`].
+fn escort_settle_check(gate: LeaseGate, settle: &[Settle]) -> Result<(), String> {
+    if gate == LeaseGate::Escort
+        && let Some(mark) = settle.iter().find_map(|step| match step {
+            Settle::Forfeit { record, .. } => Some(record.mark.as_str()),
+            Settle::Renew { .. } => None,
+        })
+    {
+        return Err(ESCORT_FORFEIT.replace("{mark}", mark));
+    }
+    Ok(())
 }
 
 /// **The take's checks, in order** (the `plan_buyout` order), read-only. `Err`
@@ -4196,6 +4217,7 @@ fn plan_take(
     let deposit_minor = minor(w, unit_deposit).ok_or_else(|| failed("the deposit"))?;
     let now = w.world_ic_now().at;
     let (settle, left) = plan_settle(w, actor, &lessor.principal, now, available);
+    escort_settle_check(gate, &settle).map_err(TakeRefusal::from)?;
     let total = fee_minor
         .checked_add(deposit_minor)
         .ok_or_else(|| failed("the total"))?;
@@ -4243,6 +4265,7 @@ fn plan_take(
         fee_minor,
         deposit_minor,
         term_secs,
+        gate,
         settle,
         lessor,
     })
@@ -4353,6 +4376,17 @@ fn take(
     }
     // 0. The term settle: its own committed unit (reviewer F5).
     let wrote = run_settle(ctx, &plan.settle, plan.pilot_account, &plan.lessor);
+    // P2-TSW-30: re-verify escort clearance after `run_settle` commits so no same-command
+    // forfeit can bypass `LeaseGate::Escort`.
+    if plan.gate == LeaseGate::Escort
+        && let Err(line) = escort_check(ctx.w, actor, now)
+    {
+        return Err(if wrote {
+            refuse_after_writes(ctx, line)
+        } else {
+            CmdError::msg(line)
+        });
+    }
     let refuse = |ctx: &mut Ctx<'_>, wrote: bool| {
         if wrote {
             refuse_after_writes(ctx, LEASE_FAILED)
@@ -4514,6 +4548,7 @@ fn take(
         repossessed: false,
         written_off: false,
         wreck_aboard_ic: None,
+        loans_issued: false,
     };
     if let Err(error) = record.check() {
         tracing::error!(lease = lease.0, %error, "tacsim: +tv/lease: the record does not check; it is written anyway so the lease is not lost");
@@ -4759,6 +4794,11 @@ fn plan_return(ctx: &Ctx<'_>, named: Option<u8>) -> Result<ReturnPlan, String> {
     // cost opens as debt consistent with `repossess()`. A write-off already keeps the whole
     // deposit and is not quoted.
     let charge = if write_off {
+        // P2-TSW-46: a write-off must capture the deposit to Occator's account; never proceed
+        // without a resolved lessor account (which would otherwise fail open and release it).
+        if lessor.account.is_none() {
+            return Err(failed("Occator's account"));
+        }
         None
     } else {
         let charge = restoration_charge(w, &port, record.tv).map_err(|error| {
@@ -5203,11 +5243,31 @@ fn give_back(ctx: &mut Ctx<'_>, named: Option<u8>, go: bool) -> Result<(), CmdEr
         say(ctx, line);
         return Ok(());
     }
+    execute_return(ctx, &plan, now)
+}
+
+/// Commit a planned rig return (`+tv[/n]/lease return go`).
+#[allow(clippy::too_many_lines)] // one ordered return commit seam
+fn execute_return(ctx: &mut Ctx<'_>, plan: &ReturnPlan, now: i64) -> Result<(), CmdError> {
     // 0. The term settle: its own committed unit (reviewer F5).
     let wrote = match plan.pilot_account {
         Some(account) => run_settle(ctx, &plan.settle, account, &plan.lessor),
         None => false,
     };
+    // P2-TSW-46: fail closed BEFORE ending the lease if a write-off or restoration charge lacks
+    // Occator's account (preventing any path from releasing a write-off deposit).
+    if (plan.write_off || plan.charge.is_some()) && plan.lessor.account.is_none() {
+        tracing::error!(
+            lease = plan.record.lease,
+            write_off = plan.write_off,
+            "tacsim: +tv/lease return: Occator's account is absent; refusing return before ending lease"
+        );
+        return Err(if wrote {
+            refuse_after_writes(ctx, LEASE_FAILED)
+        } else {
+            CmdError::msg(LEASE_FAILED)
+        });
+    }
     // a. The lease ends (`AlreadyEnded` is success: a lease staff ended).
     let key = LeaseKey {
         lessor: plan.lessor.principal.clone(),
@@ -5252,6 +5312,18 @@ fn give_back(ctx: &mut Ctx<'_>, named: Option<u8>, go: bool) -> Result<(), CmdEr
         .account
         .filter(|_| plan.write_off)
         .map(|account| (&plan.lessor.principal, account));
+    // P2-TSW-46: defense-in-depth fail-closed guard — never release a write-off or restoration
+    // deposit if Occator's account is absent.
+    if (plan.write_off && capture.is_none())
+        || (plan.charge.is_some() && plan.lessor.account.is_none())
+    {
+        tracing::error!(
+            lease = record.lease,
+            write_off = plan.write_off,
+            "tacsim: +tv/lease return: Occator's account is absent; refusing to release deposit"
+        );
+        return Err(refuse_after_writes(ctx, LEASE_FAILED));
+    }
     // Doc 36 cut GC.9: a damaged rig's restoration is taken from the deposit, capped at it,
     // and the rest released, by one capture of that part through the same seam.
     let charge = plan
@@ -5358,6 +5430,47 @@ fn give_back(ctx: &mut Ctx<'_>, named: Option<u8>, go: bool) -> Result<(), CmdEr
 }
 
 // ---- a charter's end with rigs aboard --------------------------------------------------
+
+/// Pure deposit/debt settlement decision for one active rig lease in [`repossess`]
+/// (`P2-TSW-27`, `P2-TSW-28`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RepossessDeposit {
+    /// Release the full deposit; `owed == 0`.
+    Release,
+    /// Capture the whole deposit; `owed` opens as a one-term debt.
+    CaptureWhole { owed: i64 },
+    /// Charge `charge_minor` from the deposit and release the rest; `owed` opens as a one-term debt.
+    ChargePartial { charge_minor: i64, owed: i64 },
+}
+
+fn active_repossess_deposit(
+    deposit_minor: i64,
+    restoration: i64,
+    fee: i64,
+    past_repair: bool,
+    wreck: bool,
+    overdue: bool,
+    ended_by_staff: bool,
+) -> RepossessDeposit {
+    let whole = (wreck || past_repair || overdue) && !ended_by_staff;
+    let due = restoration.saturating_add(fee);
+    if ended_by_staff || (!whole && due == 0) {
+        RepossessDeposit::Release
+    } else if whole {
+        // P2-TSW-27: an in-bay irrecoverable (`past_repair`) rig forfeits the deposit whole and
+        // owes only the retrieval fee (`0` in bay), matching an out-of-bay `wreck`.
+        // P2-TSW-28: a past-term active lease (`overdue`) forfeits the deposit for unpaid rent, so
+        // zero deposit credit applies against restoration or retrieval debt (`owed = due`),
+        // matching `TvLeaseStatus::Forfeit` and `give_back`.
+        let owed = if wreck || past_repair { fee } else { due };
+        RepossessDeposit::CaptureWhole { owed }
+    } else {
+        RepossessDeposit::ChargePartial {
+            charge_minor: due.min(deposit_minor),
+            owed: due.saturating_sub(deposit_minor).max(0),
+        }
+    }
+}
 
 /// **Doc 20 cut SM.3a (D16)**: every rig `hull` carries goes back to Occator
 /// because the hull's charter is ending (a revoke, the dormancy recall, the return
@@ -5526,45 +5639,63 @@ pub(crate) fn repossess(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<usize, String>
             0
         };
         let restoration = charge.as_ref().map_or(0, |c| c.total_minor);
+        let past_repair = charge.as_ref().is_some_and(|c| c.past_repair);
         // 1. The deposit, before the lease ends: doc 32 cut CF.6c, a wreck's captured whatever
-        // the term; past the term captured whole (D16); within it, doc 41 cut RS.5 (Q-41-13):
-        // the restoration and the fee taken from it, the rest released, and what they come to
-        // beyond it a debt.
+        // the term; P2-TSW-27, an in-bay irrecoverable (`past_repair`) rig likewise captures the
+        // deposit whole with `owed = fee`; P2-TSW-28, past-term active leases capture the deposit
+        // for unpaid rent with zero deposit credit against restoration/retrieval debt (`owed = due`);
+        // within term, doc 41 cut RS.5 (Q-41-13): the restoration and the fee are taken from the
+        // deposit, the rest released, and what they come to beyond it opens as debt.
         let mut owed = 0_i64;
         let forfeit = match record.status {
             TvLeaseStatus::Forfeit | TvLeaseStatus::Returned => {
-                owed = restoration.saturating_add(fee);
+                owed = if past_repair {
+                    fee
+                } else {
+                    restoration.saturating_add(fee)
+                };
                 true
             }
             TvLeaseStatus::Active => {
                 let ended_by_staff = !economy_lease_live(ctx.w, &lessor.principal, &record);
-                let whole = (wreck || now >= record.term_ends_ic) && !ended_by_staff;
+                let overdue = now >= record.term_ends_ic;
+                let decision = active_repossess_deposit(
+                    record.deposit_minor,
+                    restoration,
+                    fee,
+                    past_repair,
+                    wreck,
+                    overdue,
+                    ended_by_staff,
+                );
+                let whole = matches!(decision, RepossessDeposit::CaptureWhole { .. });
                 let due = restoration.saturating_add(fee);
-                let settled = if ended_by_staff || (!whole && due == 0) {
-                    settle_deposit(ctx, &record, None)
-                } else if whole {
-                    owed = if wreck {
-                        fee
-                    } else {
-                        due.saturating_sub(record.deposit_minor).max(0)
-                    };
-                    settle_deposit(ctx, &record, Some((&lessor.principal, lessor_account)))
-                } else {
-                    owed = due.saturating_sub(record.deposit_minor).max(0);
-                    charge_deposit(
-                        ctx,
-                        &record,
-                        &lessor.principal,
-                        lessor_account,
-                        due.min(record.deposit_minor),
-                    )
-                    .map(|charged| {
-                        if charged {
-                            Deposit::Captured
-                        } else {
-                            Deposit::Released
-                        }
-                    })
+                let settled = match decision {
+                    RepossessDeposit::Release => settle_deposit(ctx, &record, None),
+                    RepossessDeposit::CaptureWhole { owed: debt } => {
+                        owed = debt;
+                        settle_deposit(ctx, &record, Some((&lessor.principal, lessor_account)))
+                    }
+                    RepossessDeposit::ChargePartial {
+                        charge_minor,
+                        owed: debt,
+                    } => {
+                        owed = debt;
+                        charge_deposit(
+                            ctx,
+                            &record,
+                            &lessor.principal,
+                            lessor_account,
+                            charge_minor,
+                        )
+                        .map(|charged| {
+                            if charged {
+                                Deposit::Captured
+                            } else {
+                                Deposit::Released
+                            }
+                        })
+                    }
                 };
                 match settled {
                     Ok(deposit) => deposit == Deposit::Captured && (whole || due == 0),
@@ -5652,7 +5783,10 @@ pub(crate) fn repossess(ctx: &mut Ctx<'_>, hull: ObjId) -> Result<usize, String>
                 .replace("{name}", &name)
                 .replace("{deposit}", &money(ctx, record.deposit_minor))
         };
-        if let Some(charge) = charge.as_ref().filter(|c| !c.is_nothing()) {
+        if let Some(charge) = charge
+            .as_ref()
+            .filter(|c| !c.is_nothing() && !c.past_repair)
+        {
             line.push(' ');
             line.push_str(&charge_text(
                 ctx,
@@ -5933,6 +6067,7 @@ mod tests {
             repossessed: false,
             written_off: false,
             wreck_aboard_ic: None,
+            loans_issued: false,
         }
     }
 
@@ -6992,5 +7127,160 @@ mod tests {
             past_repair: true,
         };
         assert_eq!(past_repair.debt_minor(0, 0), 0);
+    }
+
+    /// **P2-TSW-27 & P2-TSW-28**: `repossess()` deposit/debt accounting for active leases:
+    /// - An in-bay irrecoverable (`past_repair`) rig forfeits the full deposit (`CaptureWhole`)
+    ///   with `owed = fee` (`0` in bay) instead of refunding the deposit.
+    /// - A past-term active lease (`overdue`) captures the deposit for unpaid rent with zero
+    ///   deposit credit against restoration/retrieval debt (`owed = restoration + fee`), matching
+    ///   `TvLeaseStatus::Forfeit` and `give_back`.
+    #[test]
+    fn p2_tsw_27_28_repossess_handles_in_bay_past_repair_and_overdue_debt() {
+        let deposit = 500_000_i64;
+        // P2-TSW-27: in-bay (`wreck = false`, `fee = 0`) irrecoverable rig within term.
+        assert_eq!(
+            active_repossess_deposit(deposit, 0, 0, true, false, false, false),
+            RepossessDeposit::CaptureWhole { owed: 0 }
+        );
+        // Out-of-bay irrecoverable rig with retrieval fee: deposit captured, only retrieval fee owed.
+        assert_eq!(
+            active_repossess_deposit(deposit, 0, 80_000, true, false, false, false),
+            RepossessDeposit::CaptureWhole { owed: 80_000 }
+        );
+        // P2-TSW-28: past-term active lease with restoration + retrieval fee: zero deposit credit.
+        assert_eq!(
+            active_repossess_deposit(deposit, 120_000, 80_000, false, false, true, false),
+            RepossessDeposit::CaptureWhole { owed: 200_000 }
+        );
+        // Within-term damaged active lease still deducts from deposit first.
+        assert_eq!(
+            active_repossess_deposit(deposit, 120_000, 80_000, false, false, false, false),
+            RepossessDeposit::ChargePartial {
+                charge_minor: 200_000,
+                owed: 0,
+            }
+        );
+        assert_eq!(
+            active_repossess_deposit(deposit, 600_000, 50_000, false, false, false, false),
+            RepossessDeposit::ChargePartial {
+                charge_minor: 500_000,
+                owed: 150_000,
+            }
+        );
+        // Undamaged within-term active lease releases deposit; staff-ended always releases deposit.
+        assert_eq!(
+            active_repossess_deposit(deposit, 0, 0, false, false, false, false),
+            RepossessDeposit::Release
+        );
+        assert_eq!(
+            active_repossess_deposit(deposit, 120_000, 80_000, true, true, true, true),
+            RepossessDeposit::Release
+        );
+    }
+
+    /// **P2-TSW-29**: `TvLease::loans_issued` defaults to `false` for legacy records without the
+    /// field, is omitted on the wire while `false`, and round-trips cleanly when `true`.
+    #[test]
+    fn p2_tsw_29_tv_lease_loans_issued_serde_backwards_compatible() {
+        let mut legacy = serde_json::to_value(sample()).expect("serializes");
+        assert!(legacy.get("loans_issued").is_none());
+        let decoded: TvLease = serde_json::from_value(legacy.clone()).expect("legacy decodes");
+        assert!(!decoded.loans_issued);
+        assert_eq!(decoded.check(), Ok(()));
+
+        legacy["loans_issued"] = serde_json::json!(true);
+        let stamped: TvLease = serde_json::from_value(legacy).expect("stamped decodes");
+        assert!(stamped.loans_issued);
+        assert_eq!(stamped.check(), Ok(()));
+        let wire = serde_json::to_value(&stamped).expect("stamped serializes");
+        assert_eq!(wire["loans_issued"], serde_json::json!(true));
+    }
+
+    /// **P2-TSW-30**: `LeaseGate::Escort` rejects same-command past-term lease forfeits with
+    /// `ESCORT_FORFEIT`, while allowing renewals and non-escort gates.
+    #[test]
+    fn p2_tsw_30_escort_gate_rejects_same_command_forfeit() {
+        let rec = sample();
+        let forfeit_steps = vec![Settle::Forfeit {
+            record: rec.clone(),
+            owed: 140_000,
+        }];
+        let err = escort_settle_check(LeaseGate::Escort, &forfeit_steps)
+            .expect_err("escort gate must refuse same-command forfeit");
+        assert_eq!(err, ESCORT_FORFEIT.replace("{mark}", &rec.mark));
+
+        // Non-escort lease gate is not barred by `ESCORT_FORFEIT`.
+        assert_eq!(
+            escort_settle_check(LeaseGate::Licence, &forfeit_steps),
+            Ok(())
+        );
+
+        // A funded renewal (not a forfeit) passes the escort settle gate.
+        let renew_steps = vec![Settle::Renew {
+            record: rec,
+            due: 1,
+            owed: 140_000,
+        }];
+        assert_eq!(escort_settle_check(LeaseGate::Escort, &renew_steps), Ok(()));
+    }
+
+    /// **P2-TSW-46**: `give_back` fails closed (refuses with `LEASE_FAILED`) rather than releasing
+    /// the deposit when `write_off == true` and `lessor.account` is absent.
+    #[test]
+    fn p2_tsw_46_give_back_write_off_refuses_when_lessor_account_absent() {
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![
+            Box::new(mush_org::OrgModule::new()),
+            Box::new(mush_economy::EconomyModule::new()),
+            Box::new(crate::TacsimRuleset::default()),
+        ]);
+        let pilot = tw.spawn_player("WriteOffPilot");
+        let pool = crate::port::def::VehiclesDef {
+            id: CanonicalId::new("occator.rig_lease").expect("id"),
+            org: CanonicalId::new("occator").expect("org"),
+            unit: CanonicalId::new("tacsim.unit.tv_prospector").expect("unit"),
+            issuer: "tacsim.registry".to_owned(),
+            counter: CanonicalId::new("exchange").expect("counter"),
+            shed: "Shed".to_owned(),
+            pool: 1,
+            registry_prefix: "OWP-TV-".to_owned(),
+            fee_major: 1_400,
+            deposit_major: 5_000,
+            term_ic_days: 168,
+            tools: Vec::new(),
+            designs: Vec::new(),
+        };
+        let plan = ReturnPlan {
+            lessor: Lessor {
+                pool,
+                principal: PrincipalId::Organization(mush_org::OrgId(9)),
+                scope: mush_org::OrgScopeId(1),
+                account: None,
+                counter: None,
+                counter_name: "Exchange".to_owned(),
+                port: "Ceres".to_owned(),
+                shed: None,
+            },
+            record: TvLease { pilot, ..sample() },
+            write_off: true,
+            charge: None,
+            settle: Vec::new(),
+            pilot_account: None,
+        };
+        let engine = tw.engine_mut();
+        let mut out = mush_core::Outbox::default();
+        let mut ctx = Ctx {
+            w: &mut engine.world,
+            reg: &engine.registry,
+            out: &mut out,
+            actor: pilot,
+            args: Default::default(),
+            switches: Default::default(),
+            module: Some(crate::NS.into()),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        let err = execute_return(&mut ctx, &plan, 1_000)
+            .expect_err("must refuse when lessor account is absent");
+        assert!(err.to_string().contains(LEASE_FAILED), "{err}");
     }
 }

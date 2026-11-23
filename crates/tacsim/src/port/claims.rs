@@ -2789,7 +2789,7 @@ pub(crate) fn stage(
                 at: lapse_at,
                 ..
             },
-            "release" | "lapse" | "unpaid" | "expired",
+            kind @ ("release" | "lapse" | "unpaid" | "expired"),
         ) => {
             let Some(claim) = record.claim.as_mut() else {
                 return Err(STAGE_DARK.to_owned());
@@ -2797,7 +2797,18 @@ pub(crate) fn stage(
             if claim.lapsed_ic.is_some() || &claim.holder != holder {
                 return Err(STAGE_DARK.to_owned());
             }
+            let term_start = claim.term_start_ic;
             claim.lapsed_ic = Some(*lapse_at);
+            // P2-TSW-47: if an unpaid or expired renewal lapses without fee settlement, restore
+            // the rival house's BlockPaper that this renewal suspended back to Contested.
+            if matches!(kind, "unpaid" | "expired")
+                && let Some(paper) = record.paper.as_mut()
+                && paper.state == PaperState::Suspended
+                && paper.suspended_ic == Some(term_start)
+            {
+                paper.state = PaperState::Contested;
+                paper.suspended_ic = None;
+            }
         }
         (
             TenureKind::Contest {
@@ -3359,5 +3370,134 @@ mod tests {
             .expect("claim");
         assert_eq!(after.holder, PrincipalId::Object(challenger));
         assert_eq!(after.account, Some(challenger_account));
+    }
+
+    #[test]
+    fn p2_tsw_47_unpaid_renewal_lapse_restores_suspended_rival_paper() {
+        let mut tw =
+            mush_testkit::TestWorld::with_modules(vec![Box::new(crate::TacsimRuleset::default())]);
+        let port_handles = tw
+            .world()
+            .module_state::<crate::port::families::PortHandles>()
+            .expect("port handles")
+            .clone();
+        let handles = ClaimHandles {
+            claims: port_handles.families.claims.clone(),
+            pockets: port_handles.families.pockets.clone(),
+        };
+        let site = CanonicalId::new("freeport_commons").expect("site");
+        let letter = 'A';
+        let key = BlockKey {
+            site: site.clone(),
+            letter,
+        };
+        let holder = ObjId(11);
+        let issuer = CanonicalId::new("pallas_syndicate").expect("issuer");
+        let paper_row = CanonicalId::new("occator_outer").expect("paper row");
+        let mut row = BlockTenure::new(site.clone(), letter, ObjId(500));
+        row.claim = Some(BlockClaim {
+            holder: PrincipalId::Object(holder),
+            account: Some(mush_core::AccountId::mint("holder", 11).expect("acct")),
+            epoch: 1,
+            opened_ic: Some(500),
+            registered_ic: 1_000,
+            term_start_ic: 1_000,
+            term_end_ic: 20_000,
+            worked_at_term_start: 0,
+            discovered_ic: Some(900),
+            declared: None,
+            fee: Some(1),
+            refund: None,
+            lapsed_ic: None,
+        });
+        row.paper = Some(BlockPaper {
+            issuer,
+            row: paper_row,
+            contract: 42,
+            state: PaperState::Contested,
+            suspended_ic: None,
+        });
+        let now = ClockStamp {
+            clock: tw.world().world_ic_now().clock,
+            at: 19_500,
+        };
+        let outcome = TenureOutcome {
+            epoch_before: 1,
+            epoch_after: 1,
+            since_before: Some(1_000),
+        };
+        let engine = tw.engine_mut();
+        {
+            let prepared = {
+                let mut txn = engine
+                    .action_transaction(&handles.claims)
+                    .expect("claims txn");
+                txn.insert(&handles.claims, &key, row).expect("insert");
+                txn.prepare().expect("prepares")
+            };
+            let (_, install) = prepared.into_parts();
+            engine.install_prepared_action(install).expect("installs");
+        }
+        let mut renew_game = TenureGame::new(&site, letter, "renew");
+        renew_game.contract = Some(2);
+        renew_game.suspend_paper = true;
+        renew_game.sites = vec![site.clone()];
+        let renew_act = TenureAct {
+            receipt: SmolStr::new_static("renew1"),
+            actor: holder,
+            place: ObjId(500),
+            kind: TenureKind::Renew {
+                claims: Vec::new(),
+                term_at: 40_000,
+                suspend: Vec::new(),
+                by: None,
+            },
+            summary: TENURE_SUMMARY.to_owned(),
+            game: serde_json::to_value(renew_game).expect("json"),
+        };
+        {
+            let prepared = {
+                let mut txn = engine
+                    .action_transaction(&handles.claims)
+                    .expect("claims txn");
+                stage(&mut txn, &handles, &renew_act, &outcome, &now).expect("renew stages");
+                let mid = txn.get(&handles.claims, &key).expect("read").expect("row");
+                assert_eq!(
+                    mid.paper.as_ref().map(|p| (p.state, p.suspended_ic)),
+                    Some((PaperState::Suspended, Some(20_000)))
+                );
+                txn.prepare().expect("prepares")
+            };
+            let (_, install) = prepared.into_parts();
+            engine.install_prepared_action(install).expect("installs");
+        }
+        let mut lapse_game = TenureGame::new(&site, letter, "unpaid");
+        lapse_game.sites = vec![site.clone()];
+        let lapse_act = TenureAct {
+            receipt: SmolStr::new_static("lapse1"),
+            actor: holder,
+            place: ObjId(500),
+            kind: TenureKind::Lapse {
+                holder: PrincipalId::Object(holder),
+                claims: Vec::new(),
+                at: 19_600,
+                cooling_until: 19_600,
+            },
+            summary: TENURE_SUMMARY.to_owned(),
+            game: serde_json::to_value(lapse_game).expect("json"),
+        };
+        {
+            let mut txn = engine
+                .action_transaction(&handles.claims)
+                .expect("claims txn");
+            stage(&mut txn, &handles, &lapse_act, &outcome, &now).expect("unpaid lapse stages");
+            let after = txn.get(&handles.claims, &key).expect("read").expect("row");
+            assert_eq!(
+                after.paper.as_ref().map(|p| (p.state, p.suspended_ic)),
+                Some((PaperState::Contested, None)),
+                "unpaid renewal lapse must restore suspended rival BlockPaper to Contested"
+            );
+            assert_eq!(after.claim.as_ref().and_then(|c| c.lapsed_ic), Some(19_600));
+        }
     }
 }

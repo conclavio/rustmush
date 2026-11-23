@@ -168,6 +168,21 @@ impl Families {
         })
     }
     pub(super) fn admit(&self, txn: &mut ActionTxn<'_>, kind: usize) -> Result<(), CoverageError> {
+        self.admit_with_pruned(txn, kind, 0)
+    }
+    pub(super) fn admit_quote(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        pruned: u64,
+    ) -> Result<(), CoverageError> {
+        self.admit_with_pruned(txn, 1, pruned)
+    }
+    fn admit_with_pruned(
+        &self,
+        txn: &mut ActionTxn<'_>,
+        kind: usize,
+        pruned: u64,
+    ) -> Result<(), CoverageError> {
         let key = "registry".to_owned();
         let before = txn
             .get(&self.counts, &key)
@@ -181,9 +196,25 @@ impl Families {
         });
         after.validate()?;
         let count = match kind {
-            0 => &mut after.products,
-            1 => &mut after.quotes,
-            2 => &mut after.policies,
+            0 => {
+                if pruned != 0 {
+                    return Err(CoverageError::Product);
+                }
+                &mut after.products
+            }
+            1 => {
+                after.quotes = after
+                    .quotes
+                    .checked_sub(pruned)
+                    .ok_or(CoverageError::Product)?;
+                &mut after.quotes
+            }
+            2 => {
+                if pruned != 0 {
+                    return Err(CoverageError::Product);
+                }
+                &mut after.policies
+            }
             _ => return Err(CoverageError::Product),
         };
         *count = count.checked_add(1).ok_or(CoverageError::Bound)?;

@@ -1078,6 +1078,31 @@ fn hold_carries(ctx: &Ctx<'_>, vault: VaultId, goods: &[GoodUnits]) -> Result<()
     Ok(())
 }
 
+/// Verify and resolve the carrier hold vault supplying `goods` and any fitted `lot`
+/// (`GC.8b`, `P2-TSW-24`): docked ships at a workshop must supply required structural repair
+/// materials from their hold and never silently skip material draws.
+fn require_hold_goods(
+    ctx: &Ctx<'_>,
+    hull: ObjId,
+    facility: &Facility,
+    record: &BayHull,
+    goods: &[act::GoodUnits],
+    fit: Option<LotId>,
+) -> Result<Option<u64>, String> {
+    if goods.is_empty() && fit.is_none() {
+        return Ok(None);
+    }
+    berth_stands(ctx, ctx.actor, record)?;
+    let vault = source_hold(ctx.w, hull, facility)?;
+    hold_carries(ctx, vault, goods)?;
+    if let Some(lot) = fit
+        && act::lot(ctx, lot)?.is_none_or(|l| l.endpoint() != EndpointRef(vault))
+    {
+        return Err("That part's lot is not in her carrier's hold.".to_owned());
+    }
+    Ok(Some(vault.0))
+}
+
 // ---- the order --------------------------------------------------------------------------
 
 fn fee_spec_with_deadline(
@@ -1510,32 +1535,17 @@ fn take(
             store_lot = Some((found, vault, component.clone(), part.condition));
         }
     }
-    // GC.8b: the goods come from the carrier's hold, checked now and drawn at completion.
-    let (mut goods, mut bale_after) = order_goods(ctx.w, hull, &picked, record.bale);
-    let vault = if goods.is_empty() && fit.is_none() {
-        None
-    } else if facility.class == FacilityClass::Workshop
-        && facility.carrier == Some(hull)
-        && fit.is_none()
-        && source_hold(ctx.w, hull, &facility)
-            .and_then(|v| hold_carries(ctx, v, &goods).map(|()| v))
-            .is_err()
-    {
-        // The workshop supplies the work itself and the hull's bale is not touched.
-        goods.clear();
-        bale_after = None;
-        None
-    } else {
-        berth_stands(ctx, ctx.actor, &record)?;
-        let vault = source_hold(ctx.w, hull, &facility)?;
-        hold_carries(ctx, vault, &goods)?;
-        if let Some((lot, _)) = &fit
-            && act::lot(ctx, *lot)?.is_none_or(|l| l.endpoint() != EndpointRef(vault))
-        {
-            return Err("That part's lot is not in her carrier's hold.".to_owned());
-        }
-        Some(vault.0)
-    };
+    // GC.8b & P2-TSW-24: structural repair materials and ground munitions come from the carrier's
+    // hold, checked now and drawn at completion; docked ships never silently skip material draws.
+    let (mut goods, bale_after) = order_goods(ctx.w, hull, &picked, record.bale);
+    let vault = require_hold_goods(
+        ctx,
+        hull,
+        &facility,
+        &record,
+        &goods,
+        fit.as_ref().map(|(lot, _)| *lot),
+    )?;
     // Doc 49 unit CC.7 part 2: a ship's space magazines take their rounds from her hold where
     // it carries them, and buy the shortfall from the workshop's stores at the goods' price.
     let mut vault = vault;
@@ -3239,6 +3249,156 @@ mod tests {
         assert_eq!(
             verified_fee_payee_in_snapshot(&snap_with(make_contract(), fee_minor - 1), &order),
             None
+        );
+    }
+
+    /// **P2-TSW-24**: for a docked ship at a workshop (`FacilityClass::Workshop`,
+    /// `carrier == Some(hull)`), `require_hold_goods` refuses when the hold lacks structural
+    /// repair materials instead of silently clearing `goods` and `bale_after`.
+    #[test]
+    fn p2_tsw_24_docked_ship_workshop_refuses_when_hold_lacks_repair_materials() {
+        use crate::port::owned::{Held, OwnedBody, OwnedHull};
+        use crate::port::{HullRow, PortMap};
+        use mush_sim::data::Pose;
+
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![
+            Box::new(mush_sim::SimulationModule::new()),
+            Box::new(mush_economy::EconomyModule::new()),
+            Box::new(mush_inventory::InventoryModule::new()),
+            Box::new(crate::TacsimRuleset::default()),
+        ]);
+        let gallery = tw
+            .world_mut()
+            .create(mush_core::ObjKind::Room, "Ceres Gallery", ObjId(1), None)
+            .expect("gallery");
+        let workshop_room = tw
+            .world_mut()
+            .create(mush_core::ObjKind::Room, "Workshop", ObjId(1), None)
+            .expect("workshop");
+        let stowage = tw
+            .world_mut()
+            .create(mush_core::ObjKind::Room, "Stowage", ObjId(1), None)
+            .expect("stowage");
+        let pilot = tw.spawn_player("ShipPilot");
+        let hull = tw
+            .world_mut()
+            .create(mush_core::ObjKind::Thing, "Dray", ObjId(1), None)
+            .expect("hull");
+        let posture = mush_sim::passive_rules_value(serde_json::json!({})).expect("posture");
+        let domain = {
+            let engine = tw.engine_mut();
+            let mut out = mush_core::Outbox::default();
+            let mut ctx = Ctx {
+                w: &mut engine.world,
+                reg: &engine.registry,
+                out: &mut out,
+                actor: mush_core::GOD,
+                args: Default::default(),
+                switches: Default::default(),
+                module: Some(crate::NS.into()),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            let domain = mush_sim::open_passive_domain(&mut ctx, gallery, gallery).expect("domain");
+            mush_sim::place(&mut ctx, hull, domain, Pose::passive(posture)).expect("place");
+            domain
+        };
+        let lane_id = CanonicalId::new(crate::definitions::content::LANE_PACK).expect("lane id");
+        let ceres_entry = CanonicalId::new("ceres_port").expect("entry");
+        let dray = CanonicalId::new("tacsim.unit.dray").expect("dray");
+        let lane_pack =
+            crate::pack::load_pack(crate::definitions::content::LANE_JSON).expect("lane");
+        let lane_ver = lane_pack.manifest().version();
+        {
+            let store = tw
+                .world_mut()
+                .module_state_mut::<TacsimStore>()
+                .expect("store");
+            store.cfg.enabled = true;
+            store
+                .stage_pack(crate::LoadedPack {
+                    source: "<test>".to_owned(),
+                    pack: lane_pack,
+                })
+                .expect("stage");
+            store.seeded_keys.insert((lane_id.clone(), lane_ver));
+            store.applied.insert(lane_id.clone(), lane_ver);
+            let mut map = PortMap::new(lane_id.clone(), ceres_entry.clone());
+            map.domain = Some(domain.0);
+            store.port_maps.insert((lane_id, ceres_entry.clone()), map);
+            let mut rooms = BTreeMap::new();
+            rooms.insert(CanonicalId::new("stowage").expect("id"), stowage.0);
+            let row = HullRow {
+                n: 1,
+                mark: "FPC-D-1".to_owned(),
+                hull: hull.0,
+                rooms,
+                exits: Vec::new(),
+            };
+            store.yard.owned.insert(
+                hull,
+                Held::Present(Box::new(OwnedHull {
+                    hull,
+                    design: dray,
+                    mark: "FPC-D-1".to_owned(),
+                    home: ceres_entry.clone(),
+                    provenance: 1,
+                    body: OwnedBody::Ship(row),
+                })),
+            );
+        }
+
+        let facility = Facility {
+            class: FacilityClass::Workshop,
+            room: workshop_room,
+            carrier: Some(hull),
+            port: Some(ceres_entry),
+            operator: Some((mush_org::OrgId(1), AccountId(1))),
+            multiplier_permille: 1_000,
+            cost: None,
+            site: None,
+        };
+        let record = BayHull {
+            schema: BAY_SCHEMA,
+            hull,
+            berth: None,
+            order: None,
+            orders: 0,
+            acts: 0,
+            owed: None,
+            scrapped_ic: None,
+            claim_lots: Vec::new(),
+            bale: None,
+            held_for: None,
+            loaded_kg: 0,
+            repaired_kg: 0,
+            scrapped_kg: 0,
+            sale: None,
+        };
+        let need = vec![act::GoodUnits {
+            good: CanonicalId::new(ALLOYS_GOOD).expect("alloys"),
+            units: 9,
+        }];
+        let engine = tw.engine_mut();
+        let mut out = mush_core::Outbox::default();
+        let ctx = Ctx {
+            w: &mut engine.world,
+            reg: &engine.registry,
+            out: &mut out,
+            actor: pilot,
+            args: Default::default(),
+            switches: Default::default(),
+            module: Some(crate::NS.into()),
+            typed_state: mush_core::ModuleActionState::unavailable(),
+        };
+        // No hold vault / empty hold must refuse rather than silently returning Ok(None).
+        let err = require_hold_goods(&ctx, hull, &facility, &record, &need, None)
+            .expect_err("docked ship workshop repair without hold materials must refuse");
+        assert!(!err.is_empty());
+
+        // Zero required goods and no fitted lot still returns Ok(None) (e.g. unjam/mend/magazine-only).
+        assert_eq!(
+            require_hold_goods(&ctx, hull, &facility, &record, &[], None),
+            Ok(None)
         );
     }
 }

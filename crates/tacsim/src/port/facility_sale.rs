@@ -63,6 +63,8 @@ pub const FACILITY_STORES_LADEN: &str =
 /// Stores that do not read: `{name}`.
 pub const FACILITY_STORES_DARK: &str =
     "The {name}'s stores cannot be read just now; nothing was listed.";
+/// Not at the facility's own port (`P2-TSW-25`): `{name}`.
+pub const FACILITY_ELSEWHERE: &str = "The {name} is listed and sold only at its own port.";
 
 /// **A sellable facility's kind**: a port's authored refinery, works or yard.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -129,20 +131,39 @@ pub fn catalog_entries() -> Result<Vec<mush_market::CatalogEntry>, String> {
         .collect()
 }
 
+/// **The kind and port venue of the facility `object`**, when it is a port's authored refinery,
+/// works or yard room.
+fn kind_and_venue_of(w: &World, object: ObjId) -> Option<(Kind, String)> {
+    crate::port::market::ports(w)
+        .into_iter()
+        .find_map(|(entry, def, _)| {
+            Kind::ALL.into_iter().find_map(|kind| {
+                (crate::port::plant::block_room(w, &entry, def, kind.word())
+                    .ok()
+                    .flatten()
+                    == Some(object))
+                .then(|| (kind, def.venue.as_str().to_owned()))
+            })
+        })
+}
+
 /// **The kind of the facility `object` is**, when it is a port's authored refinery, works or
 /// yard room.
 #[must_use]
 pub fn kind_of(w: &World, object: ObjId) -> Option<Kind> {
-    crate::port::market::ports(w)
-        .into_iter()
-        .find_map(|(entry, def, _)| {
-            Kind::ALL.into_iter().find(|kind| {
-                crate::port::plant::block_room(w, &entry, def, kind.word())
-                    .ok()
-                    .flatten()
-                    == Some(object)
-            })
-        })
+    kind_and_venue_of(w, object).map(|(kind, _)| kind)
+}
+
+/// **Whether `actor` asks from the facility's own port venue** (`P2-TSW-25`, matching
+/// `HullSale::admit`'s `docked_where_asked`): stands at `facility_venue`, or stands in no venue
+/// room (e.g., a port clerk in the staff spine, where `PortVenueGate::admit` separately checks
+/// venue presence for players).
+fn facility_at_asked_venue(w: &World, actor: ObjId, facility_venue: &str) -> bool {
+    let here = w
+        .get(actor)
+        .and_then(|o| o.location)
+        .and_then(|room| mush_market::venue_gate(w)?.venue_of_room(w, room));
+    here.is_none_or(|venue| venue.as_str() == facility_venue)
 }
 
 /// The sentence an unsellable facility hears, by what it is.
@@ -253,9 +274,12 @@ pub fn admit(
         .map(|o| o.name.to_string())
         .unwrap_or_default();
     let line = |text: &str| text.replace("{name}", &name);
-    let Some(kind) = kind_of(w, object) else {
+    let Some((kind, facility_venue)) = kind_and_venue_of(w, object) else {
         return Some(Err(line(not_sold(w, &facility))));
     };
+    if !facility_at_asked_venue(w, ctx.actor, &facility_venue) {
+        return Some(Err(line(FACILITY_ELSEWHERE)));
+    }
     if busy(w, object) {
         return Some(Err(line(FACILITY_BUSY)));
     }
@@ -284,15 +308,30 @@ pub fn admit(
 
 /// **What a facility's sale is priced against** (doc 48 unit PL.9): its record, whole; its
 /// running-cost standing (its debt and whether it is mothballed), so a debt run up after the
-/// quote voids the sale (production G1); and whether work is under way there, so an order
-/// booked between the purchase and the settlement voids it too (production G2).
+/// quote voids the sale (production G1); whether work is under way there, so an order
+/// booked between the purchase and the settlement voids it too (production G2); and the
+/// standing of its `stores_of` vault (presence, owner/status/revision, storefront status,
+/// pending deliveries/bids, and quarantine — `P2-TSW-25`).
 #[must_use]
 pub fn state_digest(w: &World, object: ObjId) -> Option<u64> {
     let facility = w.module_state::<IndustryStore>()?.facility(object)?;
     let standing = crate::port::upkeep::row_of(w, object)
         .map(|row| (row.debt_minor, row.mothballed))
         .unwrap_or_default();
-    let text = serde_json::to_string(&(facility, standing, busy(w, object))).ok()?;
+    let stores = stores_of(w, object).map(|vault| {
+        let meta = w
+            .module_state::<EconomyStore>()
+            .and_then(|e| e.snapshot().vault(vault).cloned())
+            .map(|v| (v.id.0, v.owner, v.status, v.revision));
+        let storefront = is_storefront(w, vault);
+        let pending = crate::port::voyage::goods_pending_aboard(w, EndpointRef(vault)).is_some()
+            || crate::port::buyout::open_bid_into(w, vault);
+        let quarantined = w
+            .module_state::<mush_inventory::InventoryStore>()
+            .is_some_and(|inv| inv.is_quarantined(EndpointRef(vault)));
+        (meta, storefront, pending, quarantined)
+    });
+    let text = serde_json::to_string(&(facility, standing, busy(w, object), stores)).ok()?;
     Some(mush_market::declared_hash(&text))
 }
 
@@ -360,10 +399,90 @@ mod tests {
             FACILITY_BUSY,
             FACILITY_STORES_LADEN,
             FACILITY_STORES_DARK,
+            FACILITY_ELSEWHERE,
         ] {
             let filled = line.replace("{name}", "Stickney Yards Maintenance Bay");
             assert!(filled.chars().count() <= 120, "{filled}");
             assert!(line.contains("{name}"), "{line}");
         }
+    }
+
+    #[test]
+    fn p2_tsw_25_facility_at_asked_venue_matches_only_own_venue_or_non_venue() {
+        use mush_core::{GOD, ObjKind, World};
+        use mush_market::{MarketId, Presence, VenueGate, VenueRefusal};
+
+        #[derive(Debug)]
+        struct FixedGate {
+            stickney: ObjId,
+            launch: ObjId,
+        }
+        impl VenueGate for FixedGate {
+            fn venue_of_room(&self, _: &World, room: ObjId) -> Option<MarketId> {
+                if room == self.stickney {
+                    MarketId::new("stickney")
+                } else if room == self.launch {
+                    MarketId::new("launch.counter")
+                } else {
+                    None
+                }
+            }
+            fn endpoint_for(
+                &self,
+                _: &World,
+                _: ObjId,
+                _: &MarketId,
+                _: Presence,
+            ) -> Option<EndpointRef> {
+                None
+            }
+            fn admit(
+                &self,
+                _: &World,
+                _: ObjId,
+                _: &MarketId,
+                _: Option<EndpointRef>,
+                _: Presence,
+            ) -> Result<(), VenueRefusal> {
+                Ok(())
+            }
+            fn governed(&self, _: &World, _: EndpointRef) -> bool {
+                false
+            }
+            fn port_seller(&self, _: &World, _: &MarketId, _: &PrincipalId) -> bool {
+                false
+            }
+        }
+
+        let stickney_room = ObjId(10);
+        let launch_room = ObjId(11);
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![Box::new(
+            mush_market::MarketModule::new().with_venue_gate(std::sync::Arc::new(FixedGate {
+                stickney: stickney_room,
+                launch: launch_room,
+            })),
+        )]);
+        let w = tw.world_mut();
+        let mut created = Vec::new();
+        while created.last().copied() != Some(ObjId(12)) {
+            let next = w
+                .create(ObjKind::Room, "Room", GOD, None)
+                .expect("create room");
+            created.push(next);
+        }
+        let spine_room = ObjId(12);
+        let actor = w
+            .create(ObjKind::Player, "Trader", GOD, Some(stickney_room))
+            .expect("create actor");
+        let mut check = |room: ObjId| {
+            w.get_mut(actor).expect("actor").location = Some(room);
+            facility_at_asked_venue(w, actor, "stickney")
+        };
+        assert!(check(stickney_room), "own port venue admitted");
+        assert!(!check(launch_room), "launch.counter refused");
+        assert!(
+            check(spine_room),
+            "non-venue clerk spine allowed (gate checks players)"
+        );
     }
 }

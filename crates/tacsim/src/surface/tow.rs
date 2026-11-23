@@ -657,14 +657,18 @@ impl TowOrder {
     }
 }
 
+/// **Maximum real-time age of a queued [`TowOrders`] row** (P2-TSW-35): rows dropped by
+/// back-pressure expire quickly instead of remaining replayable indefinitely via `SubmitSelf`.
+pub(crate) const TOW_ORDER_TTL_SECS: i64 = 120;
+
 /// **The tow orders** (RAM, keyed by the actor and the tug; doc 36a P1-3): each actor's own
 /// order on a rig, so one party's `+salvage/inspect` never clobbers another's queued contest on
 /// the same hull. Past [`crate::port::tv::MAX_POINTERS`] rows the oldest written goes, never the
 /// lowest id.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TowOrders {
-    /// `(actor, tug)` → (when it was written, the order).
-    rows: BTreeMap<(ObjId, ObjId), (u64, TowOrder)>,
+    /// `(actor, tug)` → `(nonce, written_at_real_secs, order)`.
+    rows: BTreeMap<(ObjId, ObjId), (u64, i64, TowOrder)>,
     /// The last write's sequence.
     written: u64,
 }
@@ -672,15 +676,23 @@ pub(crate) struct TowOrders {
 impl TowOrders {
     /// Write `order` as `actor`'s on `tug`, replacing that actor's earlier order on it, with a
     /// strictly greater nonce than both the RAM counter and any committed `min_nonce`.
-    fn put(&mut self, actor: ObjId, tug: ObjId, min_nonce: u64, order: TowOrder) -> u64 {
+    fn put(
+        &mut self,
+        actor: ObjId,
+        tug: ObjId,
+        min_nonce: u64,
+        written_at: i64,
+        order: TowOrder,
+    ) -> u64 {
+        self.prune_expired(written_at);
         let next = self.written.max(min_nonce).saturating_add(1);
         self.written = next;
-        self.rows.insert((actor, tug), (next, order));
+        self.rows.insert((actor, tug), (next, written_at, order));
         while self.rows.len() > crate::port::tv::MAX_POINTERS {
             let oldest = self
                 .rows
                 .iter()
-                .min_by_key(|(_, (at, _))| *at)
+                .min_by_key(|(_, (at, _, _))| *at)
                 .map(|(key, _)| *key);
             match oldest {
                 Some(key) => {
@@ -692,18 +704,32 @@ impl TowOrders {
         next
     }
 
-    /// `actor`'s orders, by tug, with each row's monotonic nonce.
-    fn of(&self, actor: ObjId) -> impl Iterator<Item = (ObjId, u64, &TowOrder)> {
+    /// `actor`'s unexpired orders at `now_real`, by tug, with each row's nonce and timestamp.
+    fn of(
+        &self,
+        actor: ObjId,
+        now_real: i64,
+    ) -> impl Iterator<Item = (ObjId, u64, i64, &TowOrder)> {
         self.rows
             .range((actor, ObjId(0))..=(actor, ObjId(u32::MAX)))
-            .map(|((_, tug), (nonce, order))| (*tug, *nonce, order))
+            .filter(move |(_, (_, written_at, _))| {
+                now_real <= written_at.saturating_add(TOW_ORDER_TTL_SECS)
+            })
+            .map(|((_, tug), (nonce, written_at, order))| (*tug, *nonce, *written_at, order))
+    }
+
+    /// Drop any queued order whose real-time TTL [`TOW_ORDER_TTL_SECS`] has elapsed (P2-TSW-35).
+    fn prune_expired(&mut self, now_real: i64) {
+        self.rows.retain(|_, (_, written_at, _)| {
+            now_real <= written_at.saturating_add(TOW_ORDER_TTL_SECS)
+        });
     }
 
     /// Snapshot of `(actor, tug, nonce)` keys for pruning against committed nonces.
     fn snapshot_keys(&self) -> Vec<(ObjId, ObjId, u64)> {
         self.rows
             .iter()
-            .map(|((actor, tug), (nonce, _))| (*actor, *tug, *nonce))
+            .map(|((actor, tug), (nonce, _, _))| (*actor, *tug, *nonce))
             .collect()
     }
 
@@ -713,7 +739,7 @@ impl TowOrders {
             if self
                 .rows
                 .get(&(*actor, *tug))
-                .is_some_and(|(current, _)| *current <= *nonce)
+                .is_some_and(|(current, _, _)| *current <= *nonce)
             {
                 self.rows.remove(&(*actor, *tug));
             }
@@ -1463,11 +1489,13 @@ pub(crate) struct TowHandles {
 }
 
 /// Wire wrapper carried in `fixed_parameters.orders[tv]` so each queued order carries its
-/// one-shot monotonic nonce (HIGH-43).
+/// one-shot monotonic nonce (HIGH-43) and creation timestamp (P2-TSW-35).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TowRow {
     nonce: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    written_at: Option<i64>,
     order: TowOrder,
 }
 
@@ -1603,8 +1631,9 @@ impl ActionProvider for TowProvider {
         };
         let actor = query.actor();
         let now_ic = w.world_ic_now().at;
+        let now_real = w.now();
         let mut rows = Map::new();
-        for (tv, nonce, order) in orders.of(actor) {
+        for (tv, nonce, written_at, order) in orders.of(actor, now_real) {
             let committed = engine
                 .action_state()
                 .get(&self.nonces, &(actor, tv))
@@ -1620,6 +1649,7 @@ impl ActionProvider for TowProvider {
             }
             if let Ok(value) = serde_json::to_value(TowRow {
                 nonce,
+                written_at: Some(written_at),
                 order: order.clone(),
             }) {
                 rows.insert(tv.0.to_string(), value);
@@ -1678,7 +1708,11 @@ impl ActionProvider for TowProvider {
                     "that rig has no tow order of yours",
                 )
             })?;
-        let TowRow { nonce, order } = row;
+        let TowRow {
+            nonce,
+            written_at,
+            order,
+        } = row;
         if nonce == 0 || order.word() != op {
             return Err(invalid());
         }
@@ -1711,6 +1745,13 @@ impl ActionProvider for TowProvider {
             Err(mush_core::participant::ParticipantError::Unavailable) => None,
             Err(_) => return Err(integrity("the world is unavailable")),
         };
+        // P2-TSW-35: enforce the TowOrders TTL against the live real clock so dropped rows cannot
+        // be replayed long after authorization, tenure, or friendship state has changed.
+        if let (Some(world), Some(created_at)) = (live_world, written_at)
+            && world.now() > created_at.saturating_add(TOW_ORDER_TTL_SECS)
+        {
+            return Err(refused("tow_order_expired"));
+        }
         // Doc 41 cut RS.1: the stores ops write the rig's record and its stores, never a site's.
         // Doc 41's RS.9a follow-up: the vent writes the wreck's tank, never a site's record.
         let vented = match &order {
@@ -1772,8 +1813,40 @@ impl ActionProvider for TowProvider {
             (None, _) => return Err(refused("tow_no_ground")),
         };
         self.verify_live_claim_txn(txn, actor, &order, now)?;
-        if let Some(world) = live_world {
+        let owner_grant_check = if let Some(world) = live_world {
             verify_live_site_order_world(world, Some(&record), (actor, tv), &order)?;
+            self.verify_live_tenure_txn(world, txn, Some(&record), (actor, tv), &order, now)?;
+            self.verify_live_load_carrier_txn(world, txn, tv, &order)?;
+            match &order {
+                TowOrder::Attach { facts } => facts
+                    .pin
+                    .as_ref()
+                    .and_then(|pin| pin.owner_grant.as_ref())
+                    .map(|pinned| {
+                        (
+                            world
+                                .module_state::<crate::detachment::planning::PlanningHandles>()
+                                .and_then(|h| h.unit_authority_reader.clone()),
+                            facts.casualty,
+                            *pinned,
+                            world.now(),
+                        )
+                    }),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        if let Some((reader, casualty, pinned, now_real)) = owner_grant_check {
+            verify_live_owner_grant(
+                context,
+                txn,
+                reader.as_ref(),
+                actor,
+                casualty,
+                &pinned,
+                now_real,
+            )?;
         }
         let promoted = record.open_field().is_some();
         let mut closing: Option<(ObjId, crate::surface::black_box::BlackBoxLine)> = None;
@@ -1973,7 +2046,9 @@ impl ActionProvider for TowProvider {
                 let op = record.tows.towing(tv).cloned();
                 match (
                     op,
-                    facts.filter(|f| f.carrier == carrier && (f.in_bay || f.handed_back)),
+                    facts.filter(|f| {
+                        f.carrier == carrier && f.own_carrier && (f.in_bay || f.handed_back)
+                    }),
                 ) {
                     (Some(op), Some(facts)) if op.casualty() == facts.casualty => {
                         self.complete_load(
@@ -2233,6 +2308,20 @@ fn verify_live_site_order_world(
             if !in_reach {
                 return Err(refused("scrap_out_of_reach"));
             }
+            // P2-TSW-35: verify the destination hold's carrier is still berthed and unlost at this
+            // site so a stale Scrap order cannot mint alloys into a departed carrier's hold.
+            let hold_present = crate::port::market::governed_hold(
+                world,
+                mush_inventory::EndpointRef(mush_economy::VaultId(facts.hold)),
+            )
+            .is_some_and(|view| {
+                !crate::field::boarding::carrier_lost(world, &facts.site, view.hull())
+                    && crate::surface::tick::hull_view_berth(world, view.hull())
+                        .is_some_and(|(there, ..)| there == facts.site)
+            });
+            if !hold_present {
+                return Err(refused("scrap_no_hold"));
+            }
         }
         TowOrder::Claim { order } => {
             use crate::surface::claim::ClaimOrder;
@@ -2249,9 +2338,31 @@ fn verify_live_site_order_world(
                         return Err(refused("claim_not_aboard"));
                     }
                 }
-                ClaimOrder::Contest { window_end, .. } => {
+                ClaimOrder::Contest {
+                    hull, window_end, ..
+                } => {
                     if world.now() >= *window_end {
                         return Err(refused("claim_window_closed"));
+                    }
+                    // P2-TSW-35: re-verify the live economy contract window and terminal state so
+                    // a cached Contest row cannot fire after the live window paused or closed.
+                    if let Some(custody) =
+                        record.and_then(|r| r.custody.iter().find(|row| row.hull == *hull))
+                        && let crate::surface::salvage::ClaimSeam::Filed { contract } =
+                            custody.claim
+                        && let Some(store) = world.module_state::<mush_economy::EconomyStore>()
+                    {
+                        let cid = mush_economy::ContractId(contract);
+                        let live_open = store
+                            .snapshot()
+                            .contract(cid)
+                            .is_some_and(|c| !c.state.is_terminal())
+                            && mush_economy::salvage_claim_window(world, cid).is_some_and(
+                                |(live_end, paused)| !paused && world.now() < live_end,
+                            );
+                        if !live_open {
+                            return Err(refused("claim_window_closed"));
+                        }
                     }
                 }
                 ClaimOrder::MarkProven { site, clerk, .. } => {
@@ -2312,6 +2423,293 @@ fn verify_live_site_order_world(
         | TowOrder::Tended { .. }
         | TowOrder::Stores { .. }
         | TowOrder::Vent { .. } => {}
+    }
+    Ok(())
+}
+
+/// Read the live block claim at `cell` on `site` via `read_claim` (P2-TSW-35).
+fn live_block_claim_at(
+    world: &World,
+    site: &CanonicalId,
+    cell: (i64, i64),
+    now_ic: i64,
+    read_claim: &mut impl FnMut(
+        &crate::surface::claims::BlockKey,
+    ) -> Result<
+        Option<crate::surface::claims::BlockTenure>,
+        mush_core::ActionError,
+    >,
+) -> Result<Option<(char, crate::surface::claims::BlockClaim)>, mush_core::ActionError> {
+    let scheme = crate::surface::chart::site_scheme(world, site);
+    let pose = FieldPose {
+        site: ObjId(1),
+        x_cm: cell.0.saturating_mul(1_000).saturating_add(500),
+        y_cm: cell.1.saturating_mul(1_000).saturating_add(500),
+    };
+    let Some(letter) = crate::field_ops::block_letter_at_site_pose(pose, scheme) else {
+        return Ok(None);
+    };
+    let key = crate::surface::claims::BlockKey {
+        site: site.clone(),
+        letter,
+    };
+    let claim = read_claim(&key)?
+        .and_then(|tenure| tenure.claim)
+        .filter(|claim| claim.live(now_ic));
+    Ok(claim.map(|c| (letter, c)))
+}
+
+/// Authoritative live equivalent of [`own_or_friends`] using resolved
+/// [`crate::field::parties::GroundParty`] rows (P2-TSW-35), so a dropped `TowOrder::Load` row
+/// cannot load into an ex-Friend's carrier bay.
+#[inline(never)]
+fn live_own_or_friends_with(
+    w: &World,
+    parties: &[crate::field::parties::GroundParty],
+    mut organizer_of: impl FnMut(crate::detachment::sortie::OperationId) -> Option<ObjId>,
+    tug: ObjId,
+    carrier: ObjId,
+) -> bool {
+    if w.module_state::<TacsimStore>()
+        .and_then(|store| store.tv_lease_on(tug))
+        .is_some_and(|lease| lease.hull == carrier)
+    {
+        return true;
+    }
+    if let Some(helm) = crate::port::coop::helm_holder(w, carrier)
+        && w.module_state::<mush_economy::EconomyStore>()
+            .and_then(|e| e.snapshot().asset(tug).map(|a| a.title_owner.clone()))
+            == Some(mush_org::PrincipalId::Object(helm))
+    {
+        return true;
+    }
+    let [a, b] = parties else {
+        return false;
+    };
+    if a.key == b.key {
+        return true;
+    }
+    let mut owner_of = |p: &crate::field::parties::GroundParty| match p.key {
+        crate::field::PartyKey::Operation { operation } => organizer_of(operation),
+        crate::field::PartyKey::Fixture { leader } => Some(leader),
+        crate::field::PartyKey::Unit { .. } => p.leader,
+    };
+    let owner_a = owner_of(a);
+    let owner_b = owner_of(b);
+    if owner_a.is_some() && owner_a == owner_b {
+        return true;
+    }
+    let affs = |leader: Option<ObjId>, owner: Option<ObjId>| {
+        let mut set = leader
+            .map(|who| crate::field::parties::affiliations(w, who))
+            .unwrap_or_default();
+        if let Some(who) = owner {
+            set.extend(crate::field::parties::affiliations(w, who));
+        }
+        set
+    };
+    let aff_a = affs(a.leader, owner_a);
+    let aff_b = affs(b.leader, owner_b);
+    !aff_a.is_disjoint(&aff_b)
+}
+
+/// Re-verify a pinned `unit.recover_load` owner grant against live `mush-org` unit authority via
+/// `PrepareCtx::read_owner_preimage` (P2-TSW-35).
+#[inline(never)]
+fn verify_live_owner_grant(
+    context: &mut mush_core::PrepareCtx<'_>,
+    txn: &mut ActionTxn<'_>,
+    reader: Option<
+        &mush_core::read_service::OwnerReadHandle<
+            mush_org::unit_authority::reader::UnitAuthorityReader,
+        >,
+    >,
+    actor: ObjId,
+    casualty: ObjId,
+    pinned: &crate::surface::claim::PinnedGrant,
+    now_real: i64,
+) -> Result<(), mush_core::ActionError> {
+    use mush_org::unit_authority::reader::{UnitAuthorityRequest, UnitAuthorityResponse};
+    use mush_org::unit_authority::{UnitCapability, UnitGrantStatus, UnitGrantee, UnitScope};
+    let Some(reader) = reader else {
+        return Err(refused("tow_grant_stale"));
+    };
+    let allowed = matches!(
+        context.read_owner_preimage(
+            txn,
+            reader,
+            UnitAuthorityRequest::Authorize {
+                unit: casualty,
+                capability: UnitCapability::RecoverLoad,
+                delegate: false,
+                mission: None,
+            },
+        ),
+        Ok(UnitAuthorityResponse::Authority { allowed: true })
+    );
+    if !allowed {
+        return Err(refused("tow_grant_stale"));
+    }
+    let Ok(UnitAuthorityResponse::Grants { grants, .. }) = context.read_owner_preimage(
+        txn,
+        reader,
+        UnitAuthorityRequest::List {
+            after: pinned.grant.saturating_sub(1),
+        },
+    ) else {
+        return Err(refused("tow_grant_stale"));
+    };
+    let matched = grants.iter().any(|g| {
+        g.id.0 == pinned.grant
+            && g.grantor == pinned.grantor
+            && g.grantor != actor
+            && g.capability == UnitCapability::RecoverLoad
+            && g.status == UnitGrantStatus::Active
+            && g.grantee == UnitGrantee::Character(actor)
+            && matches!(&g.scope, UnitScope::Units { units } if units.contains(&casualty))
+            && g.valid_from.is_none_or(|from| from <= now_real)
+            && g.valid_until.is_none_or(|until| now_real < until)
+    });
+    if !matched {
+        return Err(refused("tow_grant_stale"));
+    }
+    Ok(())
+}
+
+/// Re-verify live tenure, landholder consent, and lawfulness facts carried by `Attach`, `Pickup`,
+/// and `Scrap` orders against the durable `claims` family and `SiteRecord` (P2-TSW-35).
+#[inline(never)]
+fn verify_live_tenure_with(
+    world: &World,
+    record: Option<&SiteRecord>,
+    (actor, tv): (ObjId, ObjId),
+    order: &TowOrder,
+    now_ic: i64,
+    mut read_claim: impl FnMut(
+        &crate::surface::claims::BlockKey,
+    ) -> Result<
+        Option<crate::surface::claims::BlockTenure>,
+        mush_core::ActionError,
+    >,
+) -> Result<(), mush_core::ActionError> {
+    match order {
+        TowOrder::Attach { facts } => {
+            let Some(pin) = facts.pin.as_ref() else {
+                return Ok(());
+            };
+            if pin.casualty != facts.casualty || pin.tug != tv || pin.recoverer != actor {
+                return Err(refused("tow_pin_stale"));
+            }
+            let Some((cas_site, _, cas_pose)) = on_ground(world, facts.casualty) else {
+                return Err(refused("tow_not_lying"));
+            };
+            if cas_site != facts.site {
+                return Err(refused("tow_out_of_reach"));
+            }
+            let cell = site_cell(cas_pose.x_cm, cas_pose.y_cm);
+            let live_claim =
+                live_block_claim_at(world, &facts.site, cell, now_ic, &mut read_claim)?;
+            let live_tenure = match live_claim.as_ref() {
+                Some((letter, claim)) => match claim.holder {
+                    mush_org::PrincipalId::Object(landholder) if landholder.0 != 0 => {
+                        mush_tactics::field_ops::GroundTenure::Owned {
+                            landholder,
+                            claim_id: Some(smol_str::SmolStr::new(format!(
+                                "{}/{}",
+                                facts.site,
+                                letter.to_ascii_lowercase()
+                            ))),
+                        }
+                    }
+                    _ => mush_tactics::field_ops::GroundTenure::Unclaimed,
+                },
+                None => mush_tactics::field_ops::GroundTenure::Unclaimed,
+            };
+            let live_landholder_authorized = match (live_claim.as_ref(), record) {
+                (Some((letter, claim)), Some(rec)) => match claim.holder {
+                    mush_org::PrincipalId::Object(landholder) => {
+                        crate::surface::claim::consent_on(
+                            rec,
+                            *letter,
+                            (landholder, claim.registered_ic),
+                            actor,
+                            now_ic,
+                        ) == crate::surface::claim::Consent::Given
+                    }
+                    _ => true,
+                },
+                _ => false,
+            };
+            let live_title = crate::surface::claim::title_of(world, facts.casualty).0;
+            if pin.tenure != live_tenure
+                || pin.landholder_authorized != live_landholder_authorized
+                || pin.title != live_title
+            {
+                return Err(refused("tow_pin_stale"));
+            }
+        }
+        TowOrder::Pickup { facts } => {
+            let Some(obj) =
+                record.and_then(|r| r.objects.iter().find(|obj| obj.id == facts.object))
+            else {
+                return Err(refused("pickup_changed"));
+            };
+            let crate::surface::site_record::GroundKind::Cargo { from, .. } = &obj.kind else {
+                return Err(refused("pickup_changed"));
+            };
+            let live_claim =
+                live_block_claim_at(world, &facts.site, obj.pose.cell(), now_ic, &mut read_claim)?;
+            let live_landholder = live_claim.as_ref().and_then(|(_, c)| match c.holder {
+                mush_org::PrincipalId::Object(landholder) if landholder.0 != 0 => Some(landholder),
+                _ => None,
+            });
+            let from_own = from.is_some_and(|hull| {
+                crate::port::coop::helm_holder(world, hull) == Some(actor)
+                    || world
+                        .module_state::<TacsimStore>()
+                        .and_then(|store| store.tv_lease_on(hull))
+                        .is_some_and(|lease| lease.pilot == actor)
+            });
+            let live_lawful = if from_own {
+                true
+            } else {
+                match live_claim.as_ref() {
+                    None => true,
+                    Some((_, claim)) => claim.holder == mush_org::PrincipalId::Object(actor),
+                }
+            };
+            if facts.lawful != live_lawful || facts.landholder != live_landholder {
+                return Err(refused("pickup_tenure_changed"));
+            }
+        }
+        TowOrder::Scrap { facts } => {
+            let Some(obj) =
+                record.and_then(|r| r.objects.iter().find(|obj| obj.id == facts.object))
+            else {
+                return Err(refused("scrap_changed"));
+            };
+            let crate::surface::site_record::GroundKind::Remains { of, .. } = &obj.kind else {
+                return Err(refused("scrap_changed"));
+            };
+            let live_claim =
+                live_block_claim_at(world, &facts.site, obj.pose.cell(), now_ic, &mut read_claim)?;
+            let live_landholder = live_claim.as_ref().and_then(|(_, c)| match c.holder {
+                mush_org::PrincipalId::Object(landholder) if landholder.0 != 0 => Some(landholder),
+                _ => None,
+            });
+            let title = of
+                .map(|hull| crate::surface::claim::title_of(world, hull).0)
+                .unwrap_or_default();
+            let live_lawful = match &title {
+                Some(mush_org::PrincipalId::Object(holder)) if *holder == actor => true,
+                Some(_) => return Err(refused("scrap_not_titled")),
+                None => live_landholder.is_none_or(|holder| holder == actor),
+            };
+            if facts.lawful != live_lawful || facts.landholder != live_landholder {
+                return Err(refused("scrap_tenure_changed"));
+            }
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -2456,6 +2854,102 @@ impl TowProvider {
         Ok(())
     }
 
+    /// Re-verify live tenure, landholder consent, and lawfulness inside `ActionTxn` (P2-TSW-35).
+    #[inline(never)]
+    fn verify_live_tenure_txn(
+        &self,
+        world: &World,
+        txn: &mut ActionTxn<'_>,
+        record: Option<&SiteRecord>,
+        (actor, tv): (ObjId, ObjId),
+        order: &TowOrder,
+        now_ic: i64,
+    ) -> Result<(), mush_core::ActionError> {
+        verify_live_tenure_with(world, record, (actor, tv), order, now_ic, |k| {
+            txn.get(&self.claims, k)
+                .map(|v| v.cloned())
+                .map_err(|_| integrity("the claims are unavailable"))
+        })
+    }
+
+    /// Re-verify `TowOrder::Load`'s live `own_carrier` friendship inside `ActionTxn` (P2-TSW-35).
+    #[inline(never)]
+    fn verify_live_load_carrier_txn(
+        &self,
+        world: &World,
+        txn: &mut ActionTxn<'_>,
+        tv: ObjId,
+        order: &TowOrder,
+    ) -> Result<(), mush_core::ActionError> {
+        let TowOrder::Load { facts } = order else {
+            return Ok(());
+        };
+        if !facts.own_carrier {
+            return Err(refused("tow_foreign_carrier"));
+        }
+        let parties = crate::field::parties::ground_parties_in_txn(
+            world,
+            txn,
+            &self.excursions,
+            &facts.site,
+            &[tv, facts.carrier],
+        )?;
+        let ops = world
+            .module_state::<crate::detachment::sortie::SortieHandles>()
+            .map(|h| h.operations.clone());
+        let allowed = live_own_or_friends_with(
+            world,
+            &parties,
+            |op| {
+                ops.as_ref()
+                    .and_then(|handle| txn.get(handle, &op).ok().flatten())
+                    .map(|rec| rec.roster.organizer)
+            },
+            tv,
+            facts.carrier,
+        );
+        if !allowed {
+            return Err(refused("tow_foreign_carrier"));
+        }
+        Ok(())
+    }
+
+    /// Re-verify `TowOrder::Load`'s live `own_carrier` friendship in `project_offer` (P2-TSW-35).
+    #[inline(never)]
+    fn verify_live_load_carrier_engine(
+        &self,
+        engine: &mush_core::Engine,
+        tv: ObjId,
+        order: &TowOrder,
+    ) -> bool {
+        let TowOrder::Load { facts } = order else {
+            return true;
+        };
+        if !facts.own_carrier {
+            return false;
+        }
+        let Ok(parties) = crate::field::parties::ground_parties_in_engine(
+            engine,
+            &self.excursions,
+            &facts.site,
+            &[tv, facts.carrier],
+        ) else {
+            return false;
+        };
+        let world = &engine.world;
+        let ops = world.module_state::<crate::detachment::sortie::SortieHandles>();
+        live_own_or_friends_with(
+            world,
+            &parties,
+            |op| {
+                ops.and_then(|h| engine.action_state().get(&h.operations, &op).ok().flatten())
+                    .map(|rec| rec.roster.organizer)
+            },
+            tv,
+            facts.carrier,
+        )
+    }
+
     /// Re-verify live world proximity, authority, and state during `project_offer` (HIGH-43) so
     /// stale or invalidated `TowOrders` rows are never offered.
     #[inline(never)]
@@ -2501,7 +2995,19 @@ impl TowProvider {
                         .map_err(|_| integrity("the claims are unavailable"))
                 })
                 .is_ok();
-                claim_ok && verify_live_site_order_world(world, record, (actor, tv), other).is_ok()
+                let tenure_ok =
+                    verify_live_tenure_with(world, record, (actor, tv), other, now_ic, |k| {
+                        engine
+                            .action_state()
+                            .get(&self.claims, k)
+                            .map(|v| v.cloned())
+                            .map_err(|_| integrity("the claims are unavailable"))
+                    })
+                    .is_ok();
+                claim_ok
+                    && tenure_ok
+                    && self.verify_live_load_carrier_engine(engine, tv, other)
+                    && verify_live_site_order_world(world, record, (actor, tv), other).is_ok()
             }
         }
     }
@@ -3318,8 +3824,9 @@ pub(crate) fn submit(
                 .copied()
         })
         .unwrap_or(0);
+    let now_real = ctx.w.now();
     if let Some(orders) = ctx.w.module_state_mut::<TowOrders>() {
-        orders.put(actor, tug, committed_nonce, order);
+        orders.put(actor, tug, committed_nonce, now_real, order);
     }
     let saved = ctx.actor;
     ctx.actor = actor;
@@ -4120,6 +4627,10 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
             orders.prune_matching(&consumed);
         }
     }
+    let now_real = ctx.w.now();
+    if let Some(orders) = ctx.w.module_state_mut::<TowOrders>() {
+        orders.prune_expired(now_real);
+    }
     vent_wrecked_carriers(ctx);
     let now = ctx.w.world_ic_now().at;
     let sites: Vec<CanonicalId> = crate::surface::chart::lane_sites(ctx.w)
@@ -4299,6 +4810,11 @@ fn place_in_bay(
     if act::where_is(ctx.w, casualty) == (Where::Bay { hull: carrier })
         || crate::port::tv::in_shed(ctx.w, casualty)
     {
+        return Vec::new();
+    }
+    // P2-TSW-35: re-verify friendship/ownership at physical bay placement so a load whose
+    // friendship ended in flight cannot drop a casualty into an ex-Friend's bay.
+    if !own_or_friends(ctx, site, tug, carrier) {
         return Vec::new();
     }
     let Some((entry, _, ramp, room, slot)) = crate::surface::tick::hull_view_berth(ctx.w, carrier)
@@ -4641,6 +5157,7 @@ mod tests {
             actor,
             tug,
             0,
+            1_000,
             TowOrder::Release {
                 site: site.clone(),
                 field: false,
@@ -4653,6 +5170,7 @@ mod tests {
             actor,
             tug,
             50,
+            1_000,
             TowOrder::Release {
                 site: site.clone(),
                 field: false,
@@ -4662,11 +5180,130 @@ mod tests {
 
         // Pruning a stale nonce does not remove the newer order.
         orders.prune_matching(&[(actor, tug, 50)]);
-        assert_eq!(orders.of(actor).count(), 1);
+        assert_eq!(orders.of(actor, 1_010).count(), 1);
 
         // Pruning the committed nonce removes the executed order.
         orders.prune_matching(&[(actor, tug, 51)]);
-        assert_eq!(orders.of(actor).count(), 0);
+        assert_eq!(orders.of(actor, 1_010).count(), 0);
+    }
+
+    /// **P2-TSW-35**: `TowOrders` rows expire after `TOW_ORDER_TTL_SECS`, `verify_live_tenure_with`
+    /// rejects stale `Pickup`/`Scrap` lawfulness drift, and `live_own_or_friends_with` refuses
+    /// unrelated ex-Friend carrier parties.
+    #[test]
+    fn p2_tsw_35_tow_orders_ttl_and_live_tenure_and_friendship_rechecks() {
+        let mut orders = TowOrders::default();
+        let actor = ObjId(10);
+        let tug = ObjId(20);
+        let site = CanonicalId::new("tacsim.port.urvara").expect("an id");
+        orders.put(
+            actor,
+            tug,
+            0,
+            5_000,
+            TowOrder::Release {
+                site: site.clone(),
+                field: false,
+            },
+        );
+        assert_eq!(orders.of(actor, 5_000 + TOW_ORDER_TTL_SECS).count(), 1);
+        assert_eq!(orders.of(actor, 5_000 + TOW_ORDER_TTL_SECS + 1).count(), 0);
+        orders.prune_expired(5_000 + TOW_ORDER_TTL_SECS + 1);
+        assert!(orders.rows.is_empty());
+
+        // Unrelated parties with distinct leaders and no shared affiliations are refused.
+        let world = World::new_minimal();
+        let unrelated = vec![
+            crate::field::parties::GroundParty {
+                unit: tug,
+                key: crate::field::PartyKey::Unit { unit: tug },
+                leader: Some(ObjId(10)),
+            },
+            crate::field::parties::GroundParty {
+                unit: ObjId(30),
+                key: crate::field::PartyKey::Unit { unit: ObjId(30) },
+                leader: Some(ObjId(11)),
+            },
+        ];
+        assert!(!live_own_or_friends_with(
+            &world,
+            &unrelated,
+            |_| None,
+            tug,
+            ObjId(30),
+        ));
+        let same_owner = vec![
+            crate::field::parties::GroundParty {
+                unit: tug,
+                key: crate::field::PartyKey::Unit { unit: tug },
+                leader: Some(ObjId(10)),
+            },
+            crate::field::parties::GroundParty {
+                unit: ObjId(30),
+                key: crate::field::PartyKey::Unit { unit: ObjId(30) },
+                leader: Some(ObjId(10)),
+            },
+        ];
+        assert!(live_own_or_friends_with(
+            &world,
+            &same_owner,
+            |_| None,
+            tug,
+            ObjId(30),
+        ));
+
+        // Stale Pickup (facts.lawful = true when live ground is held by another landholder).
+        let mut site_rec = SiteRecord::new(site.clone());
+        site_rec
+            .objects
+            .push(crate::surface::site_record::GroundObject {
+                id: 7,
+                pose: crate::surface::site_record::SitePose::at_cell(10, 10),
+                footprint: 1,
+                kind: crate::surface::site_record::GroundKind::Cargo {
+                    manifest: BTreeMap::new(),
+                    from: None,
+                },
+                left_ic: 100,
+            });
+        let pickup = TowOrder::Pickup {
+            facts: Box::new(crate::surface::salvage::PickupFacts {
+                site: site.clone(),
+                object: 7,
+                manifest: BTreeMap::new(),
+                spoil: 1,
+                hopper: 2,
+                limits: BTreeMap::new(),
+                figures: BTreeMap::new(),
+                lawful: true,
+                landholder: None,
+            }),
+        };
+        let mut other_claim =
+            crate::surface::claims::BlockTenure::new(site.clone(), 'A', ObjId(500));
+        other_claim.claim = Some(crate::surface::claims::BlockClaim {
+            holder: mush_org::PrincipalId::Object(ObjId(99)),
+            account: None,
+            epoch: 1,
+            opened_ic: None,
+            registered_ic: 100,
+            term_start_ic: 100,
+            term_end_ic: 100_000,
+            worked_at_term_start: 0,
+            discovered_ic: None,
+            declared: None,
+            fee: None,
+            refund: None,
+            lapsed_ic: None,
+        });
+        let err =
+            verify_live_tenure_with(&world, Some(&site_rec), (actor, tug), &pickup, 500, |_| {
+                Ok(Some(other_claim.clone()))
+            });
+        assert!(
+            err.is_err(),
+            "stale lawful Pickup must be refused when live ground is owned by another landholder"
+        );
     }
 
     #[test]

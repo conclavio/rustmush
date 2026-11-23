@@ -689,8 +689,11 @@ fn house_throttled(w: &World, map: &PortMap, org: &CanonicalId) -> bool {
         .is_some_and(|row| crate::port::price::throttled(w, mush_org::OrgId(row.org)))
 }
 
-/// `price_major` in the credit's minor units on this world.
+/// `price_major` in the credit's minor units on this world (`None` when zero).
 fn ask_price(w: &World, price_major: u64) -> Option<Amount> {
+    if price_major == 0 {
+        return None;
+    }
     let scale = crate::port::apply::credit_scale(w);
     crate::port::apply::minor_of(price_major, scale).map(Amount::from_minor)
 }
@@ -2154,6 +2157,30 @@ enum EmergencyAct {
 /// reading's hour is spent only when nothing was due. `None` when the port has no
 /// emergency block, no premium, no vendor row for the org, or the hour has not
 /// passed — the stock arm goes on.
+/// Whether a port vendor at `def.venue` currently has a live public ask listing with positive
+/// quantity for `good` (`P2-TSW-33`).
+fn has_live_local_public_ask(
+    w: &World,
+    market: &MarketStore,
+    def: &PortDef,
+    good: &CanonicalId,
+) -> bool {
+    market.live_listings().any(|listing| {
+        listing.market.as_str() == def.venue.as_str()
+            && listing.private_to.is_none()
+            && listing.quantity > 0
+            && !listing.source.is_wanted()
+            && listing.catalog.ruleset.as_str() == crate::NS
+            && listing.catalog.code.as_str() == good.as_str()
+            && mush_market::VenueGate::port_seller(
+                &crate::port::market::PortVenueGate,
+                w,
+                &listing.market,
+                &listing.seller,
+            )
+    })
+}
+
 fn emergency_step(
     ctx: &mut Ctx<'_>,
     state: &mut PortTickState,
@@ -2165,10 +2192,22 @@ fn emergency_step(
     let emergency = def.emergency.as_ref()?;
     let premium = def.premium.as_ref()?;
     let now = ctx.w.now();
-    if state
-        .emergency_checked
-        .get(&map.entry)
-        .is_some_and(|&at| now < at.saturating_add(crate::port::price::EMERGENCY_CHECK_SECS))
+    // P2-TSW-33: if a standing emergency bid now coexists with a live local public port-vendor
+    // ask, bypass the hourly check interval so it is withdrawn immediately.
+    let must_withdraw_for_local_ask = !map.emergencies.is_empty()
+        && ctx.w.module_state::<MarketStore>().is_some_and(|market| {
+            emergency.goods.iter().any(|good| {
+                map.emergencies
+                    .get(good)
+                    .is_some_and(|r| market.listing(ListingId(r.listing)).is_some())
+                    && has_live_local_public_ask(ctx.w, market, def, good)
+            })
+        });
+    if !must_withdraw_for_local_ask
+        && state
+            .emergency_checked
+            .get(&map.entry)
+            .is_some_and(|&at| now < at.saturating_add(crate::port::price::EMERGENCY_CHECK_SECS))
     {
         return None;
     }
@@ -2186,10 +2225,26 @@ fn emergency_step(
         for good in &emergency.goods {
             let recorded = map.emergencies.get(good);
             let standing = recorded.is_some_and(|r| market.listing(ListingId(r.listing)).is_some());
+            let local_ask = has_live_local_public_ask(ctx.w, market, def, good);
+            if local_ask
+                && standing
+                && let Some(recorded) = recorded
+            {
+                act = Some(EmergencyAct::Withdraw {
+                    good: good.clone(),
+                    listing: ListingId(recorded.listing),
+                });
+                break;
+            }
+            if must_withdraw_for_local_ask {
+                continue;
+            }
             let crossed = crate::port::price::reach_for(ctx.w, def, good).is_some_and(|reach| {
                 crate::port::price::emergency_crossed(reach, emergency.ratio_permille)
             });
-            if crossed && !standing {
+            // P2-TSW-33: only post an emergency bid when live local public ask stock is depleted,
+            // preventing riskless same-port arbitrage against local 1.0x asks.
+            if crossed && !standing && !local_ask {
                 if recorded.is_some_and(|r| now < r.expires) {
                     continue;
                 }
@@ -2324,6 +2379,34 @@ pub fn release_notice(listing: u64, quantity: u64, name: &str) -> String {
     )
 }
 
+/// Hard cap on `PortTickState::release_warned` (`P2-TSW-49`).
+const MAX_RELEASE_WARNED: usize = 4_096;
+
+/// Record `listing` as warned once, enforcing [`MAX_RELEASE_WARNED`] (`P2-TSW-49`).
+fn note_release_warned(warned: &mut std::collections::BTreeSet<u64>, listing: u64) -> bool {
+    if !warned.insert(listing) {
+        return false;
+    }
+    while warned.len() > MAX_RELEASE_WARNED {
+        if warned.pop_first().is_none() {
+            break;
+        }
+    }
+    true
+}
+
+/// Prune `release_warned` to listings still present in `MarketStore` (`P2-TSW-49`).
+fn prune_release_warned(w: &World, state: &mut PortTickState) {
+    if state.release_warned.is_empty() {
+        return;
+    }
+    if let Some(market) = w.module_state::<MarketStore>() {
+        state
+            .release_warned
+            .retain(|&id| market.listing(ListingId(id)).is_some());
+    }
+}
+
 /// **The release arm's pull verification** (D-18-32 step 5), run at the top of every
 /// fire that finds the layer on, whether or not any agent is offered: a staged release
 /// whose listing is gone from the market — which the sweep does only once the hold
@@ -2331,6 +2414,7 @@ pub fn release_notice(listing: u64, quantity: u64, name: &str) -> String {
 /// [`RELEASE_WATCH_FIRES`] with its listing still standing is dropped and logged. It
 /// submits nothing and needs no swap.
 pub(crate) fn release_verify(ctx: &mut Ctx<'_>, state: &mut PortTickState) {
+    prune_release_warned(ctx.w, state);
     let entries: Vec<(u64, Releasing)> = state
         .releasing
         .iter()
@@ -2384,6 +2468,7 @@ fn clerk_of_storefront(w: &World, vault: u64) -> Option<(ObjId, ObjId)> {
 /// sweep keeps every lapsed hold-backed listing until its hold is gone (lead ruling
 /// L7) — and no listing that is always refused can starve a later player's release.
 pub(crate) fn release_agent(w: &World, state: &mut PortTickState) -> Option<(ObjId, ObjId, u64)> {
+    prune_release_warned(w, state);
     let economy = w.module_state::<mush_economy::EconomyStore>()?;
     let fires = state.fires;
     state
@@ -2424,7 +2509,7 @@ pub(crate) fn release_agent(w: &World, state: &mut PortTickState) -> Option<(Obj
                         true
                     }
                     _ => {
-                        if release_warned.insert(listing) {
+                        if note_release_warned(release_warned, listing) {
                             tracing::info!(
                                 listing,
                                 "tacsim: a lapsed hold-backed listing's org vault is no port vendor's;                                  it is left for its owner or staff to withdraw"
@@ -2435,7 +2520,7 @@ pub(crate) fn release_agent(w: &World, state: &mut PortTickState) -> Option<(Obj
                 }
             }
             _ => {
-                if release_warned.insert(listing) {
+                if note_release_warned(release_warned, listing) {
                     tracing::info!(
                         listing,
                         "tacsim: a lapsed hold-backed listing's vault has no live player \
@@ -2471,7 +2556,7 @@ pub(crate) fn release_step(
         return Step::Idle;
     };
     if state.releasing.len() >= MAX_RELEASING && !state.releasing.contains_key(&listing) {
-        if state.release_warned.insert(listing) {
+        if note_release_warned(&mut state.release_warned, listing) {
             tracing::warn!(
                 listing,
                 "tacsim: the release arm is watching as many releases as it holds; this one waits"
@@ -2496,7 +2581,7 @@ pub(crate) fn release_step(
             Step::Submitted
         }
         Ok(Err(error)) => {
-            if state.release_warned.insert(listing) {
+            if note_release_warned(&mut state.release_warned, listing) {
                 tracing::warn!(
                     listing,
                     holder = holder.0,
@@ -2743,6 +2828,29 @@ mod tests {
                 expires: 20_000,
                 posted_ic: Some(600),
             })
+        );
+    }
+
+    #[test]
+    fn p2_tsw_49_release_warned_is_capped_and_pruned_when_listings_leave_market() {
+        let mut state = PortTickState::default();
+        for id in 1..=(MAX_RELEASE_WARNED as u64 + 25) {
+            assert!(note_release_warned(&mut state.release_warned, id));
+        }
+        assert_eq!(state.release_warned.len(), MAX_RELEASE_WARNED);
+        assert!(!state.release_warned.contains(&1));
+        assert!(
+            state
+                .release_warned
+                .contains(&(MAX_RELEASE_WARNED as u64 + 25))
+        );
+
+        let tw =
+            mush_testkit::TestWorld::with_modules(vec![Box::new(mush_market::MarketModule::new())]);
+        prune_release_warned(tw.world(), &mut state);
+        assert!(
+            state.release_warned.is_empty(),
+            "listings gone from MarketStore must be pruned from release_warned"
         );
     }
 }

@@ -223,6 +223,51 @@ pub struct UpkeepRow {
     /// A closed day's worked slot-seconds, kept until that day's charge posts (services G10).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed: Option<ClosedDay>,
+    /// Up to [`MAX_CATCH_UP_DAYS`] closed IC days' worked slot-seconds retained so multi-day
+    /// catch-up never drops earlier worked-slot surcharges (`P2-TSW-34`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub closed_days: Vec<ClosedDay>,
+}
+
+impl UpkeepRow {
+    /// Record a newly closed day's worked slot-seconds, retaining at most [`MAX_CATCH_UP_DAYS`]
+    /// newest closed days and keeping `closed` synchronized for compatibility (`P2-TSW-34`).
+    pub(crate) fn record_closed_day(&mut self, day: i64, slot_secs: u64) {
+        if let Some(prev) = self.closed
+            && !self.closed_days.iter().any(|c| c.day == prev.day)
+        {
+            self.closed_days.push(prev);
+        }
+        if let Some(existing) = self.closed_days.iter_mut().find(|c| c.day == day) {
+            existing.slot_secs = existing.slot_secs.max(slot_secs);
+        } else {
+            self.closed_days.push(ClosedDay { day, slot_secs });
+        }
+        self.closed_days.sort_by_key(|c| c.day);
+        let max_keep = usize::try_from(MAX_CATCH_UP_DAYS).unwrap_or(7);
+        while self.closed_days.len() > max_keep {
+            self.closed_days.remove(0);
+        }
+        self.closed = self.closed_days.last().copied();
+    }
+
+    /// Worked slot-seconds recorded for `day`, reading both `closed_days` and legacy `closed`.
+    #[must_use]
+    pub(crate) fn closed_slot_secs(&self, day: i64) -> u64 {
+        self.closed_days
+            .iter()
+            .find(|c| c.day == day)
+            .or_else(|| self.closed.as_ref().filter(|c| c.day == day))
+            .map_or(0, |c| c.slot_secs)
+    }
+
+    /// Drop closed-day tallies at or before `day` once charged.
+    pub(crate) fn clear_closed_through(&mut self, day: i64) {
+        self.closed_days.retain(|c| c.day > day);
+        if self.closed.is_some_and(|c| c.day <= day) {
+            self.closed = self.closed_days.last().copied();
+        }
+    }
 }
 
 /// **A closed IC day's worked slot-seconds**, not yet charged.
@@ -427,11 +472,69 @@ fn payer_of(w: &World, owner: &PrincipalId) -> Option<AccountId> {
     }
 }
 
-/// What an account can pay now: its balance less its holds, minor units.
-fn available(w: &World, account: AccountId) -> i64 {
+/// Raw available balance of `account`, floored at 0 (used by authored mill-run refineries so
+/// G11 holds batches on a refused house transfer until the rule clears).
+fn raw_available(w: &World, account: AccountId) -> i64 {
     w.module_state::<EconomyStore>()
-        .and_then(|e| e.snapshot().account(account).and_then(Account::available))
+        .and_then(|economy| economy.snapshot().account(account))
+        .and_then(mush_economy::Account::available)
         .map_or(0, Amount::minor)
+        .max(0)
+}
+
+/// Pure cap applying an optional account `ApprovalRule` threshold and rolling-window headroom
+/// to an account's raw available balance (`P2-TSW-34`).
+fn payable_cap(
+    avail: i64,
+    approval: Option<&mush_economy::ApprovalRule>,
+    spent_in_window: i64,
+) -> i64 {
+    let mut cap = avail.max(0);
+    if let Some(rule) = approval {
+        cap = cap.min(rule.threshold.minor().max(0));
+        if let Some(window) = rule.window.as_ref() {
+            let left = window
+                .total
+                .minor()
+                .saturating_sub(spent_in_window.max(0))
+                .max(0);
+            cap = cap.min(left);
+        }
+    }
+    cap
+}
+
+/// What an account can pay unconditionally now without triggering an account `ApprovalRule`
+/// or exceeding its rolling spending window (`P2-TSW-34`).
+fn payable_available(w: &World, account: AccountId) -> i64 {
+    let Some(economy) = w.module_state::<EconomyStore>() else {
+        return 0;
+    };
+    let Some(acc) = economy.snapshot().account(account) else {
+        return 0;
+    };
+    let avail = acc.available().map_or(0, Amount::minor);
+    let spent = acc
+        .approval
+        .as_ref()
+        .and_then(|rule| rule.window.as_ref())
+        .map_or(0, |window| {
+            economy
+                .spent_in_window(account, w.now(), window.period_secs)
+                .minor()
+        });
+    payable_cap(avail, acc.approval.as_ref(), spent)
+}
+
+/// Outcome of one upkeep/faucet transfer attempt (`P2-TSW-34`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TransferOutcome {
+    /// Posted (or already posted) or zero amount.
+    Posted,
+    /// Blocked by an account approval rule / rolling window.
+    NeedsApproval,
+    /// Structural or transient posting failure.
+    Failed,
 }
 
 /// **The System account `name`**, opened create-only the first time (the port treasury's rule,
@@ -465,23 +568,22 @@ pub(crate) fn system_account(ctx: &mut Ctx<'_>, name: &str) -> Option<AccountId>
     Some(id)
 }
 
-/// **One keyed transfer** of `minor` from `from` to `to`, as the tick. `Ok(true)` when it is
-/// posted (now or before), `Ok(false)` when there is nothing to move, `Err` when it must wait.
+/// **One keyed transfer** of `minor` from `from` to `to`, as the tick.
 fn transfer(
     ctx: &mut Ctx<'_>,
     key: IdempotencyKey,
     (from, to): (AccountId, AccountId),
     minor: i64,
     (scope, id, description): (&'static str, u64, String),
-) -> Result<bool, ()> {
+) -> TransferOutcome {
     if minor <= 0 {
-        return Ok(false);
+        return TransferOutcome::Posted;
     }
     let (Some(debit), credit) = (
         Amount::from_minor(minor).checked_neg(),
         Amount::from_minor(minor),
     ) else {
-        return Err(());
+        return TransferOutcome::Failed;
     };
     let plan = EconomyPlan {
         description,
@@ -508,8 +610,11 @@ fn transfer(
         )
     };
     match mush_economy::post(ctx, &plan) {
-        Ok(PostOutcome::Posted(_) | PostOutcome::AlreadyPosted(_)) => Ok(true),
-        Ok(PostOutcome::NeedsApproval(_)) | Err(_) => Err(()),
+        Ok(PostOutcome::Posted(_) | PostOutcome::AlreadyPosted(_)) => TransferOutcome::Posted,
+        Ok(PostOutcome::NeedsApproval(_)) | Err(mush_economy::EconomyError::ApprovalRequired) => {
+            TransferOutcome::NeedsApproval
+        }
+        Err(_) => TransferOutcome::Failed,
     }
 }
 
@@ -649,8 +754,8 @@ fn running_costs(ctx: &mut Ctx<'_>) {
                 });
             if let Some((closed, worked)) = tallied {
                 if let Some((day, slot_secs)) = closed {
-                    // Kept until that day's charge posts.
-                    row.closed = Some(ClosedDay { day, slot_secs });
+                    // Kept up to MAX_CATCH_UP_DAYS until each day's charge posts (P2-TSW-34).
+                    row.record_closed_day(day, slot_secs);
                 }
                 if checkpoint_due(row.tally, now, closed.is_some()) {
                     row.tally = Some(worked);
@@ -679,10 +784,7 @@ fn running_costs(ctx: &mut Ctx<'_>) {
                         0
                     }
                 } else {
-                    let worked = row
-                        .closed
-                        .filter(|closed| closed.day == day)
-                        .map_or(0, |closed| closed.slot_secs);
+                    let worked = row.closed_slot_secs(day);
                     day_charge(&cost, slots, worked, row.mothballed)
                 };
                 let standing = if by_batch {
@@ -690,16 +792,18 @@ fn running_costs(ctx: &mut Ctx<'_>) {
                 } else {
                     standing_day(&cost, slots)
                 };
-                let (paid, debt, mothballed) = settle(
-                    charge,
-                    row.debt_minor,
-                    payer.map_or(0, |payer| available(ctx.w, payer)),
-                    row.mothballed,
-                    standing,
-                );
+                let avail = payer.map_or(0, |payer| {
+                    if by_batch {
+                        raw_available(ctx.w, payer)
+                    } else {
+                        payable_available(ctx.w, payer)
+                    }
+                });
+                let (mut paid, mut debt, mut mothballed) =
+                    settle(charge, row.debt_minor, avail, row.mothballed, standing);
                 if let Some(payer) = payer {
                     let key = IdempotencyKey::new(UPKEEP_KEY, format!("{}/{day}", room.0));
-                    if transfer(
+                    match transfer(
                         ctx,
                         key,
                         (payer, sink),
@@ -709,10 +813,19 @@ fn running_costs(ctx: &mut Ctx<'_>) {
                             u64::from(room.0),
                             format!("running costs of #{} for IC day {day}", room.0),
                         ),
-                    )
-                    .is_err()
-                    {
-                        break;
+                    ) {
+                        TransferOutcome::Posted => {}
+                        TransferOutcome::NeedsApproval if by_batch => break,
+                        TransferOutcome::NeedsApproval => {
+                            // P2-TSW-34: an approval rule or rolling window never freezes upkeep
+                            // on owner-held or slot facilities; treat the blocked payment as
+                            // unpaid so debt accrues, the facility mothballs, and `row.day`
+                            // advances. Authored mill-run refineries (`by_batch`) keep G11's
+                            // batch-hold semantics until the house account clears.
+                            (paid, debt, mothballed) =
+                                settle(charge, row.debt_minor, 0, row.mothballed, standing);
+                        }
+                        TransferOutcome::Failed => break,
                     }
                 }
                 if mothballed != row.mothballed {
@@ -726,9 +839,7 @@ fn running_costs(ctx: &mut Ctx<'_>) {
                 if let Some(batches) = batches {
                     row.batches = batches;
                 }
-                if row.closed.is_some_and(|closed| closed.day <= day) {
-                    row.closed = None;
-                }
+                row.clear_closed_through(day);
                 row.day = day;
                 row.charged_minor = charge;
                 row.paid_minor = row.paid_minor.saturating_add(paid);
@@ -827,8 +938,7 @@ fn refunds(ctx: &mut Ctx<'_>) {
                         vendor.org, act.units, row.good
                     ),
                 ),
-            )
-            .is_err()
+            ) != TransferOutcome::Posted
             {
                 break;
             }
@@ -1014,5 +1124,60 @@ mod tests {
         assert_eq!(worked.add(IC_DAY + 3_600, 1), Some((0, 7_200 + 3_600)));
         assert_eq!(worked.day, 1);
         assert_eq!(worked.slot_secs, 3_600);
+    }
+
+    #[test]
+    fn p2_tsw_34_closed_days_retain_up_to_max_catch_up_days_without_dropping_surcharges() {
+        let mut row = UpkeepRow::default();
+        for d in 1..=9 {
+            row.record_closed_day(d, u64::try_from(d).expect("pos") * 3_600);
+        }
+        assert_eq!(
+            row.closed_days.len(),
+            usize::try_from(MAX_CATCH_UP_DAYS).expect("cap")
+        );
+        // Days 1 and 2 rolled off past MAX_CATCH_UP_DAYS = 7; days 3..=9 all kept.
+        assert_eq!(row.closed_slot_secs(1), 0);
+        assert_eq!(row.closed_slot_secs(2), 0);
+        for d in 3..=9 {
+            assert_eq!(
+                row.closed_slot_secs(d),
+                u64::try_from(d).expect("pos") * 3_600
+            );
+        }
+        row.clear_closed_through(5);
+        assert_eq!(row.closed_slot_secs(5), 0);
+        assert_eq!(row.closed_slot_secs(6), 6 * 3_600);
+        assert_eq!(row.closed.map(|c| c.day), Some(9));
+    }
+
+    #[test]
+    fn p2_tsw_34_payable_available_respects_approval_threshold_and_window() {
+        let rule = mush_economy::ApprovalRule {
+            threshold: Amount::from_minor(500),
+            policy: mush_org::ApprovalPolicy::OneAuthorizedActor,
+            window: Some(mush_economy::ApprovalWindow {
+                total: Amount::from_minor(1_000),
+                period_secs: 86_400,
+            }),
+        };
+        assert_eq!(
+            payable_cap(50_000, Some(&rule), 0),
+            500,
+            "capped at approval threshold so upkeep never freezes on NeedsApproval"
+        );
+        assert_eq!(
+            payable_cap(50_000, Some(&rule), 800),
+            200,
+            "capped at remaining rolling approval window headroom"
+        );
+        assert_eq!(
+            payable_cap(50_000, Some(&rule), 1_000),
+            0,
+            "saturated rolling window leaves zero unconditionally payable funds"
+        );
+        // Unpaid portion accrues into debt and mothballs the facility.
+        assert_eq!(settle(2_000, 0, 500, false, 1_000), (500, 1_500, true));
+        assert_eq!(settle(2_000, 0, 0, false, 1_000), (0, 2_000, true));
     }
 }

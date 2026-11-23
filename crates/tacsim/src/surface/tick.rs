@@ -116,9 +116,15 @@ pub const MAX_DONE_ATTEMPTS: u8 = 8;
 pub const DONE_BACKOFF_FIRES: u64 = 60;
 /// One scan page of the family.
 pub const SCAN_PAGE: usize = 256;
-/// The most rig records one fire reads (past it the scan pages once a boot and prunes
-/// nothing).
+/// The most active rig records one fire collects before yielding to a cursor-resumed sweep
+/// (P2-TSW-36: idle records are skipped without consuming this budget).
 pub const MAX_RIG_RECORDS: usize = 1_024;
+/// The most raw family entries one fire scans before saving its cursor for the next fire,
+/// keeping per-fire scan latency bounded even when thousands of historical idle rig records
+/// accumulate in `tacsim.excursion`.
+const MAX_SCAN_ENTRIES_PER_FIRE: usize = MAX_RIG_RECORDS * 16;
+/// The most active rig records accumulated across a multi-fire cursor sweep.
+const MAX_SWEEP_RECORDS: usize = MAX_RIG_RECORDS * 2;
 
 /// `(tv.0, ordinal, cycle)`: one finish's key in the slot — an act's with cycle 0, a mining run's
 /// cycle `k` under the run's ordinal (doc 20 cut SM.7; the brief's 3.8) — and since doc 20 cut
@@ -171,6 +177,16 @@ pub struct SurfaceTickState {
     paged: BTreeSet<ActKey>,
     /// Whether the scan's cap has paged this boot.
     scan_paged: bool,
+    /// **P2-TSW-36**: encoded `RigKey` cursor saved when a fire hits [`MAX_RIG_RECORDS`] or
+    /// [`MAX_SCAN_ENTRIES_PER_FIRE`], so the next fire resumes where this one stopped instead of
+    /// permanently starving rigs sorting past slot 1,024.
+    scan_cursor: Option<String>,
+    /// **P2-TSW-36**: active rig records collected across earlier slices of an in-progress
+    /// multi-fire cursor sweep, merged when the sweep reaches the end of the family.
+    scan_sweep: Vec<RigRecord>,
+    /// **P2-TSW-36**: whether [`Self::scan_sweep`] reached [`MAX_SWEEP_RECORDS`] during the
+    /// current multi-fire sweep (so `complete` stays `false` when the sweep finishes).
+    scan_sweep_truncated: bool,
     /// **Doc 20 cut SM.11** (the brief's 3.8, D16; the reviewer's F10): each waiting plan's cached
     /// wait — its `seq` and the IC instant before which the tick does not decide for it again;
     /// honoured only while the plan's `seq` is unchanged. Lost to a restart, and re-derived.
@@ -481,47 +497,92 @@ fn surface_tick(ctx: &mut Ctx<'_>, _tag: &str, _scene: Option<SceneId>) {
     }
 }
 
-/// The family, read whole up to [`MAX_RIG_RECORDS`]: the records and whether the scan was
-/// complete. A record whose key disagrees with its value is skipped and paged once.
-fn scan(
-    ctx: &Ctx<'_>,
-    handles: &PortHandles,
+/// **Whether a durable rig record holds live or untold state for the surface tick** (P2-TSW-36):
+/// completely idle historical rigs are skipped during [`scan`] without counting against
+/// [`MAX_RIG_RECORDS`], so cumulative fleet churn past 1,024 rigs never starves active rigs or
+/// suppresses `complete` pruning.
+fn record_needs_scan(w: &World, record: &RigRecord) -> bool {
+    if record.excursion.is_some()
+        || record.act.is_some()
+        || record.run.is_some()
+        || record.queued.is_some()
+        || record.field_crew.is_some()
+        || record
+            .claim
+            .as_deref()
+            .is_some_and(crate::surface::excursion::ClaimCursor::is_live)
+        || record
+            .recovery
+            .as_deref()
+            .is_some_and(|r| r.pending || recovery_told_of(w, record.tv) != Some(r.ordinal))
+        || record
+            .plan
+            .as_ref()
+            .is_some_and(crate::surface::plan::FillPlan::live)
+        || crate::surface::act::ActOrders::contains(w, record.tv)
+    {
+        return true;
+    }
+    if let Some(last) = &record.last
+        && told_pair(last) != told_of(w, record.tv)
+    {
+        return true;
+    }
+    let shown = plan_shown_of(w, record.tv);
+    if record.plan.is_some() || shown.1.is_some() {
+        let lessee = crate::port::yard::rig_lease(w, record.tv).map(|lease| lease.pilot);
+        if plan_untold(record, lessee, &shown) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Core cursor-paginated family scan (P2-TSW-36): skips records that fail `needs_scan`, resumes
+/// across fires via `state.scan_cursor` when `max_active` or `max_raw` is reached, and merges
+/// accumulated slices when the end of the family is reached.
+fn scan_pages<E: std::fmt::Display>(
     state: &mut SurfaceTickState,
+    max_active: usize,
+    max_raw: usize,
+    mut read_page: impl FnMut(Option<&str>) -> Result<(Vec<(String, RigRecord)>, Option<String>), E>,
+    needs_scan: impl Fn(&RigRecord) -> bool,
 ) -> (Vec<RigRecord>, bool) {
     let mut records: Vec<RigRecord> = Vec::new();
-    let mut after: Option<String> = None;
+    let mut after: Option<String> = state.scan_cursor.take();
+    let started_from_beginning = after.is_none();
+    let mut last_key: Option<String> = None;
+    let mut raw_scanned: usize = 0;
+    let mut hit_cap = false;
     loop {
-        let page = match ctx.scan_action_state(
-            &handles.families.excursions,
-            after.as_deref(),
-            SCAN_PAGE,
-        ) {
+        if hit_cap {
+            break;
+        }
+        let (entries, next_after) = match read_page(after.as_deref()) {
             Ok(page) => page,
             Err(error) => {
-                if !state.scan_paged {
-                    state.scan_paged = true;
-                    tracing::error!(%error, "tacsim: the rig excursion family does not read; the surface tick waits");
-                }
-                return (records, false);
-            }
-        };
-        for entry in page.entries() {
-            if records.len() >= MAX_RIG_RECORDS {
+                state.scan_cursor = last_key.or(after);
                 if !state.scan_paged {
                     state.scan_paged = true;
                     tracing::error!(
-                        max = MAX_RIG_RECORDS,
-                        "tacsim: the rig excursion family holds more records than one surface \
-                         fire reads; the rest wait"
+                        %error,
+                        "tacsim: the rig excursion family does not read; the surface tick waits"
                     );
                 }
                 return (records, false);
             }
-            let record = entry.value();
-            if RigKey::parse(entry.encoded_key()) != Some(record.key()) {
+        };
+        for (encoded_key, record) in entries {
+            if records.len() >= max_active || raw_scanned >= max_raw {
+                hit_cap = true;
+                break;
+            }
+            raw_scanned = raw_scanned.saturating_add(1);
+            last_key = Some(encoded_key.clone());
+            if RigKey::parse(&encoded_key) != Some(record.key()) {
                 if state.paged.insert((record.tv.0, 0, 0)) {
                     tracing::error!(
-                        key = entry.encoded_key(),
+                        key = encoded_key,
                         tv = record.tv.0,
                         "tacsim: a rig excursion record disagrees with its own key; it is \
                          skipped until staff repair it"
@@ -529,13 +590,84 @@ fn scan(
                 }
                 continue;
             }
-            records.push(record.clone());
+            if !needs_scan(&record) {
+                continue;
+            }
+            records.push(record);
         }
-        match page.next_after() {
-            Some(next) => after = Some(next.to_string()),
-            None => return (records, true),
+        if hit_cap {
+            break;
+        }
+        match next_after {
+            Some(next) => {
+                after = Some(next);
+                if records.len() >= max_active || raw_scanned >= max_raw {
+                    last_key = after.clone();
+                    break;
+                }
+            }
+            None => {
+                let sweep = std::mem::take(&mut state.scan_sweep);
+                let truncated = std::mem::take(&mut state.scan_sweep_truncated);
+                if started_from_beginning && sweep.is_empty() {
+                    return (records, !truncated);
+                }
+                let mut merged: BTreeMap<ObjId, RigRecord> = BTreeMap::new();
+                for rec in sweep {
+                    merged.insert(rec.tv, rec);
+                }
+                for rec in records {
+                    merged.insert(rec.tv, rec);
+                }
+                return (merged.into_values().collect(), !truncated);
+            }
         }
     }
+    state.scan_cursor = last_key.or(after);
+    for rec in &records {
+        if state.scan_sweep.len() < MAX_SWEEP_RECORDS {
+            state.scan_sweep.push(rec.clone());
+        } else {
+            state.scan_sweep_truncated = true;
+            break;
+        }
+    }
+    if !state.scan_paged {
+        state.scan_paged = true;
+        tracing::warn!(
+            max = max_active,
+            raw = raw_scanned,
+            "tacsim: the rig excursion family exceeded one surface fire's scan slice; \
+             continuing from cursor on the next fire"
+        );
+    }
+    (records, false)
+}
+
+/// The family, read whole (or across a multi-fire cursor sweep when active or total entries exceed
+/// one fire's slice): returns active/untold rig records and whether the scan covered the whole
+/// family. A record whose key disagrees with its value is skipped and paged once.
+fn scan(
+    ctx: &Ctx<'_>,
+    handles: &PortHandles,
+    state: &mut SurfaceTickState,
+) -> (Vec<RigRecord>, bool) {
+    scan_pages(
+        state,
+        MAX_RIG_RECORDS,
+        MAX_SCAN_ENTRIES_PER_FIRE,
+        |after| {
+            let page = ctx.scan_action_state(&handles.families.excursions, after, SCAN_PAGE)?;
+            let entries: Vec<(String, RigRecord)> = page
+                .entries()
+                .iter()
+                .map(|entry| (entry.encoded_key().to_owned(), entry.value().clone()))
+                .collect();
+            let next = page.next_after().map(|s| s.as_str().to_owned());
+            Ok::<_, mush_core::ModuleActionStateReadError>((entries, next))
+        },
+        |record| record_needs_scan(ctx.w, record),
+    )
 }
 
 /// One candidate of a fire.
@@ -908,8 +1040,11 @@ fn walk(ctx: &mut Ctx<'_>, state: &mut SurfaceTickState) -> SurfaceFireStats {
     // refused for good, cancelled, or replaced) leaves the IC host before any claim is visited,
     // so a claim given up never refuses its operator's next one.
     crate::surface::mind_claim::release_stale(ctx.w, &records, complete);
-    // Doc 32 cut CF.1 (Q-CF-15): the presence picture, from this scan, before the records move.
-    state.presence = crate::surface::presence::publish(ctx.w, &records, now);
+    // Doc 32 cut CF.1 (Q-CF-15): the presence picture, from a complete scan (or the boot's first
+    // fire) before the records move, so a mid-sweep partial slice never drops moving legs.
+    if complete || state.fires <= 1 {
+        state.presence = crate::surface::presence::publish(ctx.w, &records, now);
+    }
     // Doc 32 cut CF.1 (Q-CF-30): a promoted site's starts wait for its flag to clear.
     let promoted = promoted_sites(ctx, &handles);
     // Durable staff recovery shares this fire's work ceiling.
@@ -1329,6 +1464,17 @@ fn still_due(records: &[RigRecord], now: i64) -> BTreeSet<ActKey> {
         }
     }
     due
+}
+
+/// The projection's told recovery ordinal, `None` when absent or unreadable.
+fn recovery_told_of(w: &World, tv: ObjId) -> Option<u32> {
+    match w
+        .module_state::<TacsimStore>()
+        .and_then(|store| store.tv_rec(tv))
+    {
+        Some(TvRecState::Present(rec)) => rec.recovery_told,
+        Some(TvRecState::Unreadable) | None => None,
+    }
 }
 
 /// The projection's told pair (`told`, `told_cycle`; doc 20 cut SM.7), `(0, 0)` when absent or
@@ -4684,5 +4830,78 @@ mod tests {
             assert!(!line.contains('{'), "{line}");
             assert!(!line.contains("holds :"), "{line}");
         }
+    }
+
+    /// **P2-TSW-36**: idle historical `RigRecord`s past `MAX_RIG_RECORDS` (1,024) are skipped
+    /// without starving active rigs sorting after them, and a slice that exceeds one fire's
+    /// active/raw budget paginates cleanly via `scan_cursor` until a complete sweep completes.
+    #[test]
+    fn p2_tsw_36_scan_skips_idle_past_1024_and_paginates_cursor_without_starvation() {
+        let mut table: BTreeMap<String, RigRecord> = BTreeMap::new();
+        // Insert 1,100 idle historical records sorting ahead of the active rigs.
+        for tv in 1_u32..=1_100 {
+            let rec = RigRecord::fresh_unread(ObjId(tv));
+            table.insert(rec.key().key_text(), rec);
+        }
+        // Insert 3 active rigs sorting past slot 1,024 (`9991`, `9992`, `9993`).
+        for tv in [9_991_u32, 9_992, 9_993] {
+            let rec = queued(tv, 9_000);
+            table.insert(rec.key().key_text(), rec);
+        }
+        type ScanPage = (Vec<(String, RigRecord)>, Option<String>);
+        let read_page = |after: Option<&str>| -> Result<ScanPage, &'static str> {
+            let page: Vec<(String, RigRecord)> = table
+                .iter()
+                .filter(|(k, _)| after.is_none_or(|a| k.as_str() > a))
+                .take(SCAN_PAGE)
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            let has_more = page
+                .last()
+                .is_some_and(|(last_k, _)| table.keys().any(|k| k.as_str() > last_k.as_str()));
+            let next = has_more
+                .then(|| page.last().map(|(k, _)| k.clone()))
+                .flatten();
+            Ok((page, next))
+        };
+
+        // 1) Normal single-fire budget: skips all 1,100 idle records, finds all 3 active rigs,
+        // and reports complete == true in one fire.
+        let mut state = SurfaceTickState::default();
+        let (records, complete) = scan_pages(
+            &mut state,
+            MAX_RIG_RECORDS,
+            MAX_SCAN_ENTRIES_PER_FIRE,
+            read_page,
+            |r| r.queued.is_some(),
+        );
+        assert!(
+            complete,
+            "idle historical rigs must not mark scan incomplete"
+        );
+        let found: Vec<u32> = records.iter().map(|r| r.tv.0).collect();
+        assert_eq!(found, vec![9_991, 9_992, 9_993]);
+        assert!(state.scan_cursor.is_none());
+
+        // 2) Forced multi-fire cursor pagination (small active/raw slice): visits every rig across
+        // consecutive fires with zero starvation and returns complete == true when the sweep ends.
+        let mut paged_state = SurfaceTickState::default();
+        let mut fires = 0_usize;
+        let (final_records, final_complete) = loop {
+            fires += 1;
+            let (recs, done) =
+                scan_pages(&mut paged_state, 2, 400, read_page, |r| r.queued.is_some());
+            if done {
+                break (recs, done);
+            }
+            assert!(fires < 10, "cursor sweep must terminate cleanly");
+        };
+        assert!(final_complete);
+        assert!(fires > 1, "expected multi-fire cursor sweep");
+        let mut paged_found: Vec<u32> = final_records.iter().map(|r| r.tv.0).collect();
+        paged_found.sort_unstable();
+        assert_eq!(paged_found, vec![9_991, 9_992, 9_993]);
+        assert!(paged_state.scan_cursor.is_none());
+        assert!(paged_state.scan_sweep.is_empty());
     }
 }

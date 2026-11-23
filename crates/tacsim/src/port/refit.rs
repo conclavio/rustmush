@@ -52,6 +52,12 @@ pub const REFIT_HOLD: &str =
 pub const REFIT_HOLD_DARK: &str = "The {name}'s hold cannot be read right now; nothing changes.";
 /// A rig in the bay: `{n}`, `{name}`.
 pub const REFIT_BAY: &str = "Rig {n} is still in the {name}'s bay; return it to Occator first.";
+/// A titled or unlisted rig still physically in the bay when sealing it (`P2-TSW-31`): `{name}`.
+pub const REFIT_BAY_OCCUPIED: &str =
+    "The {name}'s bay still holds a rig; berth or stow it ashore before sealing the bay.";
+/// Not a programme hull class (`P2-TSW-31`): `{name}`.
+pub const REFIT_WRONG_CLASS: &str =
+    "The Co-op's yard refits only Drays; the {name} is another class.";
 /// Already that unit: `{name}`, `{class}`.
 pub const REFIT_ALREADY: &str = "The {name} is already a {class}.";
 /// Away from the desk: `{office}`, `{port}`.
@@ -215,10 +221,35 @@ fn plan_refit(ctx: &Ctx<'_>) -> Result<RefitPlan, String> {
     if let Some(n) = crate::port::tv::bay_slot_word(w, &view) {
         return Err(refused(REFIT_BAY).replace("{n}", &n));
     }
+    // P2-TSW-31: for bayless targets (`standard`), also require the physical bay to be completely
+    // empty including titled rigs (which `bay_slot_word` intentionally excludes).
+    let target_bay_cap: usize = store
+        .definitions()
+        .specs
+        .get(&target)
+        .and_then(|spec| spec.interior.as_ref())
+        .map(|interior| {
+            interior
+                .bays
+                .iter()
+                .map(|bay| usize::try_from(bay.slot.maximum_items).unwrap_or(usize::MAX))
+                .fold(0usize, usize::saturating_add)
+        })
+        .unwrap_or(0);
+    if crate::port::vehicle::rigs_in_bay(w, &view).len() > target_bay_cap {
+        return Err(refused(REFIT_BAY_OCCUPIED));
+    }
     // 8. Not already the target (a held record answers at step 10's REFIT_FAILED,
     // never "already": reviewer F6).
     if view.unit_held {
         return Err(failed("the hull's unit record is held"));
+    }
+    // P2-TSW-31: only hulls belonging to the programme's own unit family (base or an authored
+    // refit) may be re-dressed here, preventing irreversible overwrites of other commissioned
+    // classes (such as `tycho_lifter`).
+    if view.unit != port.programme.unit && !port.programme.refits.values().any(|u| u == &view.unit)
+    {
+        return Err(refused(REFIT_WRONG_CLASS));
     }
     if view.unit == target {
         let class = if standard {
@@ -258,12 +289,16 @@ fn plan_refit(ctx: &Ctx<'_>) -> Result<RefitPlan, String> {
         .bindings
         .get(&target)
         .ok_or_else(|| failed("the target unit's binding"))?;
-    let (Some(base), Some(spec)) = (
+    let (Some(base), Some(current), Some(spec)) = (
         store.definitions().specs.get(&port.programme.unit),
+        store.definitions().specs.get(&view.unit),
         store.definitions().specs.get(&target),
     ) else {
         return Err(failed("the units' specs"));
     };
+    if view.unit != port.programme.unit {
+        crate::port::hull::refit_compatible(base, current).map_err(|why| failed(&why))?;
+    }
     if !standard {
         crate::port::hull::refit_compatible(base, spec).map_err(|why| failed(&why))?;
     }
@@ -349,4 +384,168 @@ pub(crate) fn refit_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .replace("{countersign}", COUNTERSIGN),
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **P2-TSW-31**: non-programme hull classes (`tycho_lifter`) are neither in the programme
+    /// refit family nor `refit_compatible` with the base Dray, and bayless `standard` refits
+    /// inspect `vehicle::rigs_in_bay` directly so titled rigs inside `"bay"` cannot be smuggled
+    /// or stranded behind `bay_slot_word`.
+    #[test]
+    fn p2_tsw_31_non_programme_class_and_titled_rig_in_bay_are_blocked() {
+        let catalog =
+            crate::definitions::Catalog::build_fielded(&[], crate::NS).expect("fielded catalog");
+        let dray = CanonicalId::new("tacsim.unit.dray").expect("dray");
+        let dray_p = CanonicalId::new("tacsim.unit.dray_p").expect("dray_p");
+        let lifter = CanonicalId::new("tacsim.unit.tycho_lifter").expect("lifter");
+        let base_spec = catalog.specs.get(&dray).expect("dray spec");
+        let dray_p_spec = catalog.specs.get(&dray_p).expect("dray_p spec");
+        let lifter_spec = catalog.specs.get(&lifter).expect("lifter spec");
+
+        // Programme refit family: dray <-> dray_p is compatible; tycho_lifter is rejected.
+        assert!(crate::port::hull::refit_compatible(base_spec, dray_p_spec).is_ok());
+        assert!(
+            crate::port::hull::refit_compatible(base_spec, lifter_spec).is_err(),
+            "tycho_lifter must fail refit_compatible against dray"
+        );
+        let target_bay_cap = base_spec
+            .interior
+            .as_ref()
+            .map(|interior| {
+                interior
+                    .bays
+                    .iter()
+                    .map(|bay| usize::try_from(bay.slot.maximum_items).unwrap_or(usize::MAX))
+                    .fold(0usize, usize::saturating_add)
+            })
+            .unwrap_or(0);
+        assert_eq!(target_bay_cap, 0, "standard Dray has zero bay capacity");
+
+        // A titled rig sitting in a Prospector Dray's bay has no TvLease (`bay_slot_word` is
+        // `None`), yet `vehicle::rigs_in_bay` finds it and exceeds `target_bay_cap` (0).
+        let mut tw = mush_testkit::TestWorld::with_modules(vec![
+            Box::new(mush_sim::SimulationModule::new()),
+            Box::new(crate::TacsimRuleset::default()),
+        ]);
+        let carrier = tw
+            .world_mut()
+            .create(
+                mush_core::ObjKind::Thing,
+                "DrayP",
+                mush_core::ObjId(1),
+                None,
+            )
+            .expect("carrier");
+        let bay_room = tw
+            .world_mut()
+            .create(mush_core::ObjKind::Room, "Bay", mush_core::ObjId(1), None)
+            .expect("bay");
+        let titled_rig = tw
+            .world_mut()
+            .create(
+                mush_core::ObjKind::Thing,
+                "TitledRig",
+                mush_core::ObjId(1),
+                None,
+            )
+            .expect("rig");
+        let lane_id = CanonicalId::new(crate::definitions::content::LANE_PACK).expect("lane id");
+        let ceres_entry = CanonicalId::new("ceres_port").expect("ceres");
+        let lane_pack =
+            crate::pack::load_pack(crate::definitions::content::LANE_JSON).expect("lane pack");
+        let lane_ver = lane_pack.manifest().version();
+        let row = crate::port::HullRow {
+            n: 1,
+            mark: "FPC-P-01".to_owned(),
+            hull: carrier.0,
+            rooms: BTreeMap::from([(CanonicalId::new("bay").expect("bay id"), bay_room.0)]),
+            exits: Vec::new(),
+        };
+        {
+            let store = tw
+                .world_mut()
+                .module_state_mut::<TacsimStore>()
+                .expect("store");
+            store.cfg.enabled = true;
+            store
+                .stage_pack(crate::LoadedPack {
+                    source: "<test>".to_owned(),
+                    pack: lane_pack,
+                })
+                .expect("stage");
+            store.seeded_keys.insert((lane_id.clone(), lane_ver));
+            store.applied.insert(lane_id.clone(), lane_ver);
+            store.port_maps.insert(
+                (lane_id.clone(), ceres_entry.clone()),
+                crate::port::PortMap::new(lane_id, ceres_entry.clone()),
+            );
+            store.yard.owned.insert(
+                carrier,
+                crate::port::owned::Held::Present(Box::new(crate::port::owned::OwnedHull {
+                    hull: carrier,
+                    design: dray_p,
+                    mark: "FPC-P-01".to_owned(),
+                    home: ceres_entry.clone(),
+                    provenance: 1,
+                    body: crate::port::owned::OwnedBody::Ship(row),
+                })),
+            );
+            store.yard.owned.insert(
+                titled_rig,
+                crate::port::owned::Held::Present(Box::new(crate::port::owned::OwnedHull {
+                    hull: titled_rig,
+                    design: CanonicalId::new("tacsim.unit.tv_prospector").expect("rig unit"),
+                    mark: "TIT-TV-01".to_owned(),
+                    home: ceres_entry,
+                    provenance: 2,
+                    body: crate::port::owned::OwnedBody::Rig(crate::port::RigRow {
+                        n: 1,
+                        mark: "TIT-TV-01".to_owned(),
+                        tv: titled_rig.0,
+                        rooms: BTreeMap::new(),
+                        vault: None,
+                    }),
+                })),
+            );
+        }
+        {
+            let rigs_slot = mush_sim::SlotId::new("rigs").expect("slot");
+            let engine = tw.engine_mut();
+            let mut out = mush_core::Outbox::default();
+            let mut ctx = Ctx {
+                w: &mut engine.world,
+                reg: &engine.registry,
+                out: &mut out,
+                actor: mush_core::GOD,
+                args: Default::default(),
+                switches: Default::default(),
+                module: Some(crate::NS.into()),
+                typed_state: mush_core::ModuleActionState::unavailable(),
+            };
+            crate::port::hull::declare_space(
+                &mut ctx,
+                bay_room,
+                mush_sim::SpaceAnchor::MovingObject { host: carrier },
+            )
+            .expect("bay space");
+            mush_sim::declare_compartment(&mut ctx, bay_room, rigs_slot.clone(), Some(1))
+                .expect("rigs compartment");
+            mush_sim::place_interior(&mut ctx, titled_rig, bay_room, Some(rigs_slot))
+                .expect("place titled rig in bay");
+        }
+        let view = hull_view(tw.world(), carrier).expect("view");
+        assert!(
+            crate::port::tv::bay_slot_word(tw.world(), &view).is_none(),
+            "titled rig without TvLease is invisible to bay_slot_word"
+        );
+        let rigs = crate::port::vehicle::rigs_in_bay(tw.world(), &view);
+        assert_eq!(
+            rigs.iter().map(|r| r.tv).collect::<Vec<_>>(),
+            vec![titled_rig]
+        );
+        assert!(rigs.len() > target_bay_cap);
+    }
 }

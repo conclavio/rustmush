@@ -29,9 +29,9 @@ use crate::arena::path::{PathScratch, path_with};
 use crate::arena::slope::steepness_pct;
 use crate::arena::state::{ArenaTerrain, CostRow, KeySpot as ArenaKeySpot, PartyId, TerrainCell};
 use crate::definitions::arena::{
-    ArenaBuildError, ArenaDef, ArenaModeDef, BIOMES, EntryZoneDef, KeySpot, MAX_ARENA_TILES,
-    MAX_WAYPOINT_EDGES, MAX_WAYPOINT_NODES, TankDef, WaypointGraph, WaypointNode,
-    arena_map_within_bound,
+    ArenaBuildError, ArenaDef, ArenaModeDef, BIOMES, EntryZoneDef, KeySpot, MAX_ARENA_SIDE,
+    MAX_ARENA_TILES, MAX_KEY_SPOTS, MAX_ORIGIN_M, MAX_WAYPOINT_EDGES, MAX_WAYPOINT_NODES, TankDef,
+    WaypointGraph, WaypointNode, arena_map_within_bound,
 };
 use crate::definitions::content;
 use crate::match_::cockpit::MAP_MAX_BYTES;
@@ -550,6 +550,15 @@ pub fn decode_classes(
         bytes.get(2).copied().unwrap_or(0),
         bytes.get(3).copied().unwrap_or(0),
     ]);
+    if expected_cols == 0
+        || expected_rows == 0
+        || expected_cols > MAX_ARENA_SIDE
+        || expected_rows > MAX_ARENA_SIDE
+    {
+        return Err(err(format!(
+            "classes dimensions must be in 1..={MAX_ARENA_SIDE}; got {expected_cols}×{expected_rows}"
+        )));
+    }
     if cols != expected_cols || rows != expected_rows {
         return Err(err(format!(
             "classes header is {cols}×{rows}, expected {expected_cols}×{expected_rows}"
@@ -618,6 +627,15 @@ pub fn decode_elev(
         id: id.to_owned(),
         detail,
     };
+    if expected_cols == 0
+        || expected_rows == 0
+        || expected_cols > MAX_ARENA_SIDE
+        || expected_rows > MAX_ARENA_SIDE
+    {
+        return Err(err(format!(
+            "elev dimensions must be in 1..={MAX_ARENA_SIDE}; got {expected_cols}×{expected_rows}"
+        )));
+    }
     let bytes =
         base64_decode(encoded.trim()).ok_or_else(|| err("elev is not valid base64".to_owned()))?;
     if bytes.len() % 2 != 0 {
@@ -654,6 +672,130 @@ impl GroundDraft {
             serde_json::to_string_pretty(self).map_err(|e| GroundError::Json(e.to_string()))?;
         s.push('\n');
         Ok(s)
+    }
+
+    /// Fast pre-validation of grid dimensions, coordinate bounds, rooms, spots, and entry zones
+    /// (`P2-TSW-43`). Runs BEFORE any grid decoding, `despeckle`, `relax_slopes`, or `route`
+    /// pass so oversized dimensions or room rectangles cannot trigger multi-GB allocations or
+    /// CPU stalls.
+    fn validate_bounds_and_rooms(&self) -> Result<(), GroundError> {
+        let err = |detail: String| GroundError::Invalid {
+            id: self.id.clone(),
+            detail,
+        };
+        if self.cols == 0
+            || self.rows == 0
+            || self.cols > MAX_ARENA_SIDE
+            || self.rows > MAX_ARENA_SIDE
+        {
+            return Err(err(format!(
+                "draft dimensions must be in 1..={MAX_ARENA_SIDE}; got {}×{}",
+                self.cols, self.rows
+            )));
+        }
+        let qx_count = usize::from(self.cols.div_ceil(QUAD));
+        let qy_count = usize::from(self.rows.div_ceil(QUAD));
+        let quadrants = qx_count.saturating_mul(qy_count);
+        if quadrants == 0 || quadrants > MAX_ARENA_TILES {
+            return Err(err(format!(
+                "draft requires {quadrants} quadrants of {QUAD}×{QUAD}, max is {MAX_ARENA_TILES}"
+            )));
+        }
+        if !mush_atlas::record::RESOLUTIONS_CM.contains(&self.cell_cm) {
+            return Err(err(format!(
+                "cell_cm must be one of {:?}; got {}",
+                mush_atlas::record::RESOLUTIONS_CM,
+                self.cell_cm
+            )));
+        }
+        let [lo_x, lo_y] = self.origin_m;
+        if !(-MAX_ORIGIN_M..=MAX_ORIGIN_M).contains(&lo_x)
+            || !(-MAX_ORIGIN_M..=MAX_ORIGIN_M).contains(&lo_y)
+        {
+            return Err(err(format!(
+                "origin_m ({lo_x}, {lo_y}) must lie within ±{MAX_ORIGIN_M} m"
+            )));
+        }
+        let hi_x = u64::from(self.cols)
+            .checked_mul(u64::from(self.cell_cm))
+            .and_then(|cm| i64::try_from(cm.div_ceil(100)).ok())
+            .and_then(|m| lo_x.checked_add(m))
+            .filter(|hi| (-MAX_ORIGIN_M..=MAX_ORIGIN_M).contains(hi) && *hi > lo_x);
+        let hi_y = u64::from(self.rows)
+            .checked_mul(u64::from(self.cell_cm))
+            .and_then(|cm| i64::try_from(cm.div_ceil(100)).ok())
+            .and_then(|m| lo_y.checked_add(m))
+            .filter(|hi| (-MAX_ORIGIN_M..=MAX_ORIGIN_M).contains(hi) && *hi > lo_y);
+        if hi_x.is_none() || hi_y.is_none() {
+            return Err(err(format!(
+                "arena extent from origin_m ({lo_x}, {lo_y}) exceeds ±{MAX_ORIGIN_M} m"
+            )));
+        }
+        if self.rooms.len() > MAX_DRAFT_ROOMS {
+            return Err(err(format!(
+                "draft has {} rooms, max is {MAX_DRAFT_ROOMS}",
+                self.rooms.len()
+            )));
+        }
+        for room in &self.rooms {
+            if room.x0 > room.x1
+                || room.y0 > room.y1
+                || room.x1 >= self.cols
+                || room.y1 >= self.rows
+            {
+                return Err(err(format!(
+                    "room `{}` rect [{}..={}, {}..={}] is invalid or out of {}×{} bounds",
+                    room.id, room.x0, room.x1, room.y0, room.y1, self.cols, self.rows
+                )));
+            }
+            let [dx, dy] = room.door;
+            if dx < room.x0 || dx > room.x1 || dy < room.y0 || dy > room.y1 {
+                return Err(err(format!(
+                    "room `{}` door ({dx}, {dy}) must lie inside its footprint [{}..={}, {}..={}]",
+                    room.id, room.x0, room.x1, room.y0, room.y1
+                )));
+            }
+        }
+        if self.key_spots.len() > MAX_KEY_SPOTS {
+            return Err(err(format!(
+                "draft has {} key spots, max is {MAX_KEY_SPOTS}",
+                self.key_spots.len()
+            )));
+        }
+        for spot in &self.key_spots {
+            if spot.x >= self.cols || spot.y >= self.rows {
+                return Err(err(format!(
+                    "key spot `{}` ({}, {}) is out of {}×{} bounds",
+                    spot.name, spot.x, spot.y, self.cols, self.rows
+                )));
+            }
+        }
+        if self.entry_zones.len() > PartyId::OOC.len() {
+            return Err(err(format!(
+                "draft has {} entry zones, max is {}",
+                self.entry_zones.len(),
+                PartyId::OOC.len()
+            )));
+        }
+        for zone in &self.entry_zones {
+            if zone.x0 > zone.x1
+                || zone.y0 > zone.y1
+                || zone.x1 >= self.cols
+                || zone.y1 >= self.rows
+            {
+                return Err(err(format!(
+                    "entry zone for {} [{}..={}, {}..={}] is invalid or out of {}×{} bounds",
+                    zone.team.as_str(),
+                    zone.x0,
+                    zone.x1,
+                    zone.y0,
+                    zone.y1,
+                    self.cols,
+                    self.rows
+                )));
+            }
+        }
+        Ok(())
     }
 
     /// Validate all structural, provenance, grid, and [`ArenaDef`] invariants,
@@ -920,13 +1062,15 @@ fn default_tanks_for_zones(zones: &[EntryZoneDef], rows: u16) -> Result<Vec<Tank
         id: "default_tanks".to_owned(),
         detail: e.to_string(),
     })?;
-    let mid_y = (rows / 2).clamp(4, rows.saturating_sub(5));
+    let hi = rows.saturating_sub(5);
+    let lo = 4_u16.min(hi);
+    let mid_y = (rows / 2).clamp(lo, hi);
     let mut red_x = 6_u16;
     let mut blue_x = 249_u16;
     for z in zones {
         match z.team {
-            PartyId::RED => red_x = (z.x0 + z.x1) / 2,
-            _ => blue_x = (z.x0 + z.x1) / 2,
+            PartyId::RED => red_x = z.x0.midpoint(z.x1),
+            _ => blue_x = z.x0.midpoint(z.x1),
         }
     }
     let offsets: [(i16, i16); 6] = [(0, 0), (0, -2), (0, 2), (0, -4), (0, 4), (-2, -3)];
@@ -1305,10 +1449,38 @@ fn build_atlas_pack_json(
     elev: &[i16],
     rooms: &[DraftRoomDef],
 ) -> Result<(String, DefinitionDigest), GroundError> {
-    let lo_x = origin_m[0];
-    let lo_y = origin_m[1];
-    let hi_x = lo_x + i64::from(cols) * i64::from(cell_cm) / 100;
-    let hi_y = lo_y + i64::from(rows) * i64::from(cell_cm) / 100;
+    let err = |detail: String| GroundError::Invalid {
+        id: id.to_owned(),
+        detail,
+    };
+    let [lo_x, lo_y] = origin_m;
+    if !(-MAX_ORIGIN_M..=MAX_ORIGIN_M).contains(&lo_x)
+        || !(-MAX_ORIGIN_M..=MAX_ORIGIN_M).contains(&lo_y)
+    {
+        return Err(err(format!(
+            "origin_m ({lo_x}, {lo_y}) must lie within ±{MAX_ORIGIN_M} m"
+        )));
+    }
+    let hi_x = u64::from(cols)
+        .checked_mul(u64::from(cell_cm))
+        .and_then(|cm| i64::try_from(cm.div_ceil(100)).ok())
+        .and_then(|m| lo_x.checked_add(m))
+        .filter(|hi| (-MAX_ORIGIN_M..=MAX_ORIGIN_M).contains(hi) && *hi > lo_x)
+        .ok_or_else(|| {
+            err(format!(
+                "arena east extent from {lo_x} exceeds ±{MAX_ORIGIN_M} m"
+            ))
+        })?;
+    let hi_y = u64::from(rows)
+        .checked_mul(u64::from(cell_cm))
+        .and_then(|cm| i64::try_from(cm.div_ceil(100)).ok())
+        .and_then(|m| lo_y.checked_add(m))
+        .filter(|hi| (-MAX_ORIGIN_M..=MAX_ORIGIN_M).contains(hi) && *hi > lo_y)
+        .ok_or_else(|| {
+            err(format!(
+                "arena north extent from {lo_y} exceeds ±{MAX_ORIGIN_M} m"
+            ))
+        })?;
     let region_id = format!("region.{id}");
     let locality_id = format!("locality.{id}");
     let pack_id = if id == "proving_ground" {
@@ -1369,8 +1541,26 @@ fn build_atlas_pack_json(
         for qx in 0..qx_count {
             let q_cols = QUAD.min(cols.saturating_sub(qx * QUAD));
             let q_rows = QUAD.min(rows.saturating_sub(qy * QUAD));
-            let ox = lo_x + i64::from(qx) * i64::from(QUAD) * i64::from(cell_cm) / 100;
-            let oy = lo_y + i64::from(qy) * i64::from(QUAD) * i64::from(cell_cm) / 100;
+            let ox = i64::from(qx)
+                .checked_mul(i64::from(QUAD))
+                .and_then(|c| c.checked_mul(i64::from(cell_cm)))
+                .and_then(|cm| lo_x.checked_add(cm / 100))
+                .filter(|v| (-MAX_ORIGIN_M..=MAX_ORIGIN_M).contains(v))
+                .ok_or_else(|| {
+                    err(format!(
+                        "quadrant field.q{qx}_{qy} east origin out of bounds"
+                    ))
+                })?;
+            let oy = i64::from(qy)
+                .checked_mul(i64::from(QUAD))
+                .and_then(|c| c.checked_mul(i64::from(cell_cm)))
+                .and_then(|cm| lo_y.checked_add(cm / 100))
+                .filter(|v| (-MAX_ORIGIN_M..=MAX_ORIGIN_M).contains(v))
+                .ok_or_else(|| {
+                    err(format!(
+                        "quadrant field.q{qx}_{qy} north origin out of bounds"
+                    ))
+                })?;
             entries.insert(
                 format!("field.q{qx}_{qy}"),
                 serde_json::json!({
@@ -1423,13 +1613,49 @@ fn build_atlas_pack_json(
         let half_cell_m = f64::from(cell_cm) / 200.0;
 
         for room in rooms {
-            let rx0 = lo_x + i64::from(room.x0) * cell_m;
-            let ry0 = lo_y + i64::from(room.y0) * cell_m;
-            let rx1 = lo_x + (i64::from(room.x1) + 1) * cell_m;
-            let ry1 = lo_y + (i64::from(room.y1) + 1) * cell_m;
+            let rx0 = i64::from(room.x0)
+                .checked_mul(cell_m)
+                .and_then(|d| lo_x.checked_add(d))
+                .filter(|v| (-MAX_ORIGIN_M..=MAX_ORIGIN_M).contains(v))
+                .ok_or_else(|| err(format!("room `{}` x0 coordinate out of bounds", room.id)))?;
+            let ry0 = i64::from(room.y0)
+                .checked_mul(cell_m)
+                .and_then(|d| lo_y.checked_add(d))
+                .filter(|v| (-MAX_ORIGIN_M..=MAX_ORIGIN_M).contains(v))
+                .ok_or_else(|| err(format!("room `{}` y0 coordinate out of bounds", room.id)))?;
+            let rx1 = (i64::from(room.x1) + 1)
+                .checked_mul(cell_m)
+                .and_then(|d| lo_x.checked_add(d))
+                .filter(|v| (-MAX_ORIGIN_M..=MAX_ORIGIN_M).contains(v))
+                .ok_or_else(|| err(format!("room `{}` x1 coordinate out of bounds", room.id)))?;
+            let ry1 = (i64::from(room.y1) + 1)
+                .checked_mul(cell_m)
+                .and_then(|d| lo_y.checked_add(d))
+                .filter(|v| (-MAX_ORIGIN_M..=MAX_ORIGIN_M).contains(v))
+                .ok_or_else(|| err(format!("room `{}` y1 coordinate out of bounds", room.id)))?;
             let [dx, dy] = room.door;
-            let door_x_m = (lo_x + i64::from(dx) * cell_m) as f64 + half_cell_m;
-            let door_y_m = (lo_y + i64::from(dy) * cell_m) as f64 + half_cell_m;
+            let door_base_x = i64::from(dx)
+                .checked_mul(cell_m)
+                .and_then(|d| lo_x.checked_add(d))
+                .filter(|v| (-MAX_ORIGIN_M..=MAX_ORIGIN_M).contains(v))
+                .ok_or_else(|| {
+                    err(format!(
+                        "room `{}` door x coordinate out of bounds",
+                        room.id
+                    ))
+                })?;
+            let door_base_y = i64::from(dy)
+                .checked_mul(cell_m)
+                .and_then(|d| lo_y.checked_add(d))
+                .filter(|v| (-MAX_ORIGIN_M..=MAX_ORIGIN_M).contains(v))
+                .ok_or_else(|| {
+                    err(format!(
+                        "room `{}` door y coordinate out of bounds",
+                        room.id
+                    ))
+                })?;
+            let door_x_m = door_base_x as f64 + half_cell_m;
+            let door_y_m = door_base_y as f64 + half_cell_m;
             let door_idx = usize::from(dy) * usize::from(cols) + usize::from(dx);
             let door_elev_m = f64::from(elev.get(door_idx).copied().unwrap_or(0)) / 100.0;
 
@@ -1808,6 +2034,7 @@ pub fn build_with_options(
     repair: bool,
     force: bool,
 ) -> Result<BuiltPacks, GroundError> {
+    draft.validate_bounds_and_rooms()?;
     let mut working = draft.clone();
     if repair || working.provenance.source == GroundSource::Extractor {
         let _ = despeckle(&mut working, DEFAULT_SPECKLE_MIN_CELLS)?;
@@ -2244,6 +2471,7 @@ pub fn check(draft: &GroundDraft) -> Result<CheckReport, GroundError> {
 ///
 /// [`GroundError`] if `draft.classes` or `draft.elev` fails to decode.
 pub fn relax_slopes(draft: &mut GroundDraft) -> Result<usize, GroundError> {
+    draft.validate_bounds_and_rooms()?;
     let classes = decode_classes(&draft.id, draft.cols, draft.rows, &draft.classes)?;
     let orig_elev = decode_elev(&draft.id, draft.cols, draft.rows, &draft.elev)?;
     let mut elev = orig_elev.clone();
@@ -2462,6 +2690,7 @@ pub fn relax_slopes(draft: &mut GroundDraft) -> Result<usize, GroundError> {
 ///
 /// [`GroundError`] if `draft.classes` fails to decode.
 pub fn despeckle(draft: &mut GroundDraft, min_region: usize) -> Result<usize, GroundError> {
+    draft.validate_bounds_and_rooms()?;
     let orig_classes = decode_classes(&draft.id, draft.cols, draft.rows, &draft.classes)?;
     if min_region <= 1 {
         return Ok(0);
@@ -2613,6 +2842,7 @@ pub fn despeckle(draft: &mut GroundDraft, min_region: usize) -> Result<usize, Gr
 ///
 /// [`GroundError`] if the draft's grid fails to decode or canonical IDs cannot be formed.
 pub fn route(draft: &mut GroundDraft) -> Result<(), GroundError> {
+    draft.validate_bounds_and_rooms()?;
     let classes = decode_classes(&draft.id, draft.cols, draft.rows, &draft.classes)?;
     let elev = decode_elev(&draft.id, draft.cols, draft.rows, &draft.elev)?;
     let terrain = build_priced_terrain(draft, &classes, &elev)?;
@@ -2663,7 +2893,7 @@ pub fn route(draft: &mut GroundDraft) -> Result<(), GroundError> {
         let (zx, zy) = seeds
             .first()
             .copied()
-            .unwrap_or(((z.x0 + z.x1) / 2, (z.y0 + z.y1) / 2));
+            .unwrap_or((z.x0.midpoint(z.x1), z.y0.midpoint(z.y1)));
         let _ = find_or_insert_node(&mut nodes, &format!("muster_{}", z.team.as_str()), zx, zy)?;
         zone_anchors.push((zx, zy));
     }
@@ -2785,6 +3015,15 @@ pub fn from_packs(atlas_json: &str, arena_json: &str) -> Result<GroundDraft, Gro
         .unwrap_or_else(|| arena_entry_id.as_str())
         .to_owned();
 
+    // P2-TSW-43: validate arena bounds, resolution, tiles, and origin_m BEFORE allocating
+    // cell grids or decoding heightfields.
+    arena_def
+        .check(arena_entry_id.as_str())
+        .map_err(|e| GroundError::ArenaCheck {
+            id: id.clone(),
+            detail: e.to_string(),
+        })?;
+
     let region_raw = atlas_pack.entries().get(&arena_def.region).ok_or_else(|| {
         GroundError::Pack(format!(
             "atlas pack has no region entry `{}`",
@@ -2799,7 +3038,7 @@ pub fn from_packs(atlas_json: &str, arena_json: &str) -> Result<GroundDraft, Gro
     let mut classes = vec![TerrainClass::Grass; total];
     let mut elev = vec![0_i16; total];
     let mut covered = vec![false; total];
-    let cell_m = i64::from(arena_def.cell_cm) / 100;
+    let cell_m = (i64::from(arena_def.cell_cm) / 100).max(1);
 
     for tile_id in &arena_def.tiles {
         let tile_raw = atlas_pack.entries().get(tile_id).ok_or_else(|| {
@@ -2808,6 +3047,12 @@ pub fn from_packs(atlas_json: &str, arena_json: &str) -> Result<GroundDraft, Gro
         let hf: HeightfieldDef =
             serde_json::from_value(serde_json::Value::Object(tile_raw.def().clone()))
                 .map_err(|e| GroundError::Json(format!("{tile_id}: {e}")))?;
+        if hf.cols == 0 || hf.rows == 0 || hf.cols > MAX_ARENA_SIDE || hf.rows > MAX_ARENA_SIDE {
+            return Err(GroundError::Pack(format!(
+                "{tile_id} dimensions {}×{} exceed 1..={MAX_ARENA_SIDE}",
+                hf.cols, hf.rows
+            )));
+        }
         let samples = hf.samples().map_err(GroundError::Pack)?;
         let class_grid = hf
             .class_grid()
@@ -2818,16 +3063,23 @@ pub fn from_packs(atlas_json: &str, arena_json: &str) -> Result<GroundDraft, Gro
             mush_atlas::geom::cm(hf.origin.0).map_err(|e| GroundError::Pack(e.to_string()))? / 100;
         let oy_m =
             mush_atlas::geom::cm(hf.origin.1).map_err(|e| GroundError::Pack(e.to_string()))? / 100;
-        let ox = u16::try_from((ox_m - arena_def.origin_m[0]) / cell_m.max(1))
+        let dx_m = ox_m
+            .checked_sub(arena_def.origin_m[0])
+            .ok_or_else(|| GroundError::Pack(format!("{tile_id} origin east offset overflow")))?;
+        let dy_m = oy_m
+            .checked_sub(arena_def.origin_m[1])
+            .ok_or_else(|| GroundError::Pack(format!("{tile_id} origin north offset overflow")))?;
+        let ox = u16::try_from(dx_m / cell_m)
             .map_err(|_| GroundError::Pack(format!("{tile_id} origin east offset out of range")))?;
-        let oy = u16::try_from((oy_m - arena_def.origin_m[1]) / cell_m.max(1)).map_err(|_| {
+        let oy = u16::try_from(dy_m / cell_m).map_err(|_| {
             GroundError::Pack(format!("{tile_id} origin north offset out of range"))
         })?;
 
         for y in 0..hf.rows {
             for x in 0..hf.cols {
-                let wx = ox + x;
-                let wy = oy + y;
+                let (Some(wx), Some(wy)) = (ox.checked_add(x), oy.checked_add(y)) else {
+                    continue;
+                };
                 if wx >= arena_def.cols || wy >= arena_def.rows {
                     continue;
                 }
@@ -3304,48 +3556,50 @@ pub fn stage_in_world(
     let quadrants =
         usize::from(working.cols.div_ceil(QUAD)) * usize::from(working.rows.div_ceil(QUAD));
 
-    // Hot-shelve into TacsimStore and re-bind definitions.
+    // Prepare pack artifacts and pre-validate all runtime constraints BEFORE mutating
+    // TacsimStore / AtlasState or applying packs (`P2-TSW-43`).
     let loaded = crate::LoadedPack {
         pack: arena_rules_pack.clone(),
         source: format!("staged:{}", working.id),
     };
+    let manifest = arena_rules_pack.pack().manifest();
+    let entries = u32::try_from(arena_rules_pack.pack().entries().len())
+        .map_err(|_| GroundError::Stage("arena pack entry count overflow".to_owned()))?;
+    let first_seen = ctx.world_ic_now();
+    let ledger_record = crate::record::PackRecord::new(
+        manifest.id().clone(),
+        manifest.version(),
+        manifest.kind(),
+        manifest.digest(),
+        entries,
+        first_seen,
+    )
+    .map_err(|e| GroundError::Stage(e.to_string()))?;
+
     let need_ledger_row = {
         let store = ctx
             .w
-            .module_state_mut::<crate::store::TacsimStore>()
+            .module_state::<crate::store::TacsimStore>()
             .ok_or_else(|| {
                 GroundError::Stage("the TacSim store is not composed on this world".to_owned())
             })?;
+        if !store.can_stage_draft(&working.id) {
+            return Err(GroundError::Stage(format!(
+                "staged draft shelf is full ({} distinct drafts); clear or reuse an existing draft id",
+                crate::store::MAX_STAGED_DRAFTS
+            )));
+        }
         store
-            .stage_pack(loaded)
+            .check_stage_pack(&loaded)
             .map_err(|e| GroundError::Stage(e.to_string()))?;
-        store
-            .staged_drafts
-            .insert(working.id.clone(), working.clone());
         let key = (rules_id.clone(), working.arena_version);
         !store.published.contains_key(&key)
     };
-    if need_ledger_row {
-        let manifest = arena_rules_pack.pack().manifest();
-        let entries = u32::try_from(arena_rules_pack.pack().entries().len())
-            .map_err(|_| GroundError::Stage("arena pack entry count overflow".to_owned()))?;
-        let first_seen = ctx.world_ic_now();
-        let record = crate::record::PackRecord::new(
-            manifest.id().clone(),
-            manifest.version(),
-            manifest.kind(),
-            manifest.digest(),
-            entries,
-            first_seen,
-        )
-        .map_err(|e| GroundError::Stage(e.to_string()))?;
-        crate::store::put_pack(ctx, record);
-        crate::store::persist_meta(ctx);
+    if ctx.w.module_state::<mush_atlas::AtlasState>().is_none() {
+        return Err(GroundError::Stage(
+            "the atlas is not composed on this world".to_owned(),
+        ));
     }
-
-    // Place both packs onto the atlas shelf.
-    mush_atlas::stage_pack(ctx, atlas_pack.clone()).map_err(GroundError::Stage)?;
-    mush_atlas::stage_pack(ctx, arena_rules_pack.pack().clone()).map_err(GroundError::Stage)?;
 
     let (atlas_plan, rules_plan) = {
         let content = ctx
@@ -3382,6 +3636,33 @@ pub fn stage_in_world(
                 )));
             }
         }
+    }
+
+    // Hot-shelve into TacsimStore and AtlasState ONLY after `apply_pack` succeeds with no anomaly.
+    {
+        let store = ctx
+            .w
+            .module_state_mut::<crate::store::TacsimStore>()
+            .ok_or_else(|| {
+                GroundError::Stage("the TacSim store is not composed on this world".to_owned())
+            })?;
+        store
+            .stage_pack(loaded)
+            .map_err(|e| GroundError::Stage(e.to_string()))?;
+        store
+            .stage_draft(working.id.clone(), working.clone())
+            .map_err(GroundError::Stage)?;
+    }
+    if need_ledger_row {
+        crate::store::put_pack(ctx, ledger_record);
+        crate::store::persist_meta(ctx);
+    }
+
+    // Place both packs onto the atlas shelf.
+    mush_atlas::stage_pack(ctx, atlas_pack.clone()).map_err(GroundError::Stage)?;
+    mush_atlas::stage_pack(ctx, arena_rules_pack.pack().clone()).map_err(GroundError::Stage)?;
+
+    if apply {
         let arena_entry = smol_str::SmolStr::new(format!("tacsim.arena.{}", working.id));
         let _ = crate::match_::definition_for(ctx.w, &arena_entry).map_err(GroundError::Stage)?;
     }
@@ -5785,6 +6066,103 @@ mod tests {
             .ok_or("cell not in composite window")?;
         check_eq!(surf.room_at(cx, cy), Some(hangar_geo.room));
 
+        Ok(())
+    }
+
+    #[test]
+    fn p2_tsw_43_default_tanks_does_not_panic_for_small_rows()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let zones = vec![
+            EntryZoneDef {
+                team: PartyId::RED,
+                x0: 0,
+                y0: 0,
+                x1: 3,
+                y1: 3,
+            },
+            EntryZoneDef {
+                team: PartyId::BLUE,
+                x0: 4,
+                y0: 0,
+                x1: 7,
+                y1: 3,
+            },
+        ];
+        for rows in 0..=10_u16 {
+            let tanks = default_tanks_for_zones(&zones, rows)?;
+            check_eq!(tanks.len(), 12);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn p2_tsw_43_rejects_oversized_dims_rooms_and_origin_before_allocation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // 1. decode_classes / decode_elev refuse 65535x65535 before allocating.
+        let bad_classes = decode_classes("oom", u16::MAX, u16::MAX, "/////");
+        check!(bad_classes.is_err());
+        let bad_elev = decode_elev("oom", u16::MAX, u16::MAX, "");
+        check!(bad_elev.is_err());
+
+        // 2. despeckle and build_with_options refuse oversized DraftRoomDef before allocating.
+        let mut draft = generate("proving_ground", 2350, None)?;
+        draft.rooms.push(DraftRoomDef {
+            id: "giant".to_owned(),
+            name: "Giant".to_owned(),
+            role: DraftRoomRole::Bunker,
+            x0: 0,
+            y0: 0,
+            x1: u16::MAX,
+            y1: u16::MAX,
+            door: [0, 0],
+            short_desc: String::new(),
+            desc: String::new(),
+            connects_to: None,
+        });
+        check!(despeckle(&mut draft, DEFAULT_SPECKLE_MIN_CELLS).is_err());
+        check!(build_with_options(&draft, true, true).is_err());
+
+        // 3. Overflowing origin_m rejected before repair/build.
+        draft.rooms.clear();
+        draft.origin_m = [i64::MAX, 0];
+        check!(build_with_options(&draft, true, true).is_err());
+
+        // 4. from_packs rejects oversized 65535x65535 arena pack BEFORE allocating cell arrays.
+        let built = build_with_options(&generate("proving_ground", 2350, None)?, false, true)?;
+        let mut bad_arena: serde_json::Value = serde_json::from_str(&built.arena_json)?;
+        if let Some(def) = bad_arena
+            .get_mut("entries")
+            .and_then(|e| e.get_mut("tacsim.arena.proving_ground"))
+            .and_then(|e| e.get_mut("def"))
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            def.insert("cols".to_owned(), serde_json::json!(u16::MAX));
+            def.insert("rows".to_owned(), serde_json::json!(u16::MAX));
+        }
+        let bad_arena_str = serde_json::to_string(&bad_arena)?;
+        check!(from_packs(&built.atlas_json, &bad_arena_str).is_err());
+
+        // 5. TacsimStore::stage_draft enforces MAX_STAGED_DRAFTS cap.
+        let mut store = crate::store::TacsimStore::default();
+        draft.origin_m = [ORIGIN_M, ORIGIN_M];
+        for idx in 0..crate::store::MAX_STAGED_DRAFTS {
+            check!(
+                store
+                    .stage_draft(format!("arena_{idx}"), draft.clone())
+                    .is_ok()
+            );
+        }
+        // Overwriting an existing key succeeds; adding a new key past cap fails.
+        check!(
+            store
+                .stage_draft("arena_0".to_owned(), draft.clone())
+                .is_ok()
+        );
+        check!(
+            store
+                .stage_draft("overflow_arena".to_owned(), draft)
+                .is_err()
+        );
         Ok(())
     }
 }

@@ -92,6 +92,8 @@ pub const NOT_AT_VENUE: &str =
 /// A venue no port authors and the game places nowhere (`{venue}`): it cannot trade.
 pub const VENUE_UNPLACED: &str =
     "The {venue} market has no place to trade in, so it cannot trade. Nothing was charged.";
+/// A port clerk's works/yard private supply ask delivers only into the order's escrow (`P2-TSW-32`).
+pub const WORKS_PRIVATE_ASK_ESCROW_ONLY: &str = "A port clerk's works or yard supply listing delivers only into your order's escrow. Nothing was charged.";
 
 /// The plan's schema version.
 pub const HOLD_PLAN_VERSION: u8 = 1;
@@ -498,6 +500,29 @@ fn check_container_vault(
     Ok(())
 }
 
+/// Whether `actor` holds an unactivated, unexpired quote at `venue` on a port-vendor private ask
+/// (the clerk-posted works/yard supply asks from `crate::port::pools::board::list_for`,
+/// `P2-TSW-32`).
+fn has_unactivated_works_private_quote(w: &World, actor: ObjId, venue: &MarketId) -> bool {
+    let Some(market) = w.module_state::<mush_market::MarketStore>() else {
+        return false;
+    };
+    let now = w.now();
+    let buyer = PrincipalId::Object(actor);
+    market.quotes_of_buyer(&buyer).any(|q| {
+        q.market == *venue
+            && !q.activated
+            && q.contract.is_none()
+            && q.settled.is_none()
+            && now < q.expires.at
+            && market.listing(q.listing).is_some_and(|l| {
+                l.private_to.as_ref() == Some(&buyer)
+                    && !l.source.is_wanted()
+                    && PortVenueGate.port_seller(w, &l.market, &l.seller)
+            })
+    })
+}
+
 // ---- the venue gate ------------------------------------------------------------
 
 /// **The port presence gate** (doc 18 §4.3 "Presence", D-18-12; lead rulings L10,
@@ -593,6 +618,13 @@ impl VenueGate for PortVenueGate {
         let place_name = port.map_or_else(|| venue.as_str().to_owned(), port_name);
         if let Some(endpoint) = endpoint {
             check_container_vault(w, Some(actor), venue, endpoint, &place_name)?;
+            // P2-TSW-32: clerk-posted works/yard private asks may only deliver into a works/yard
+            // escrow, never into a hull hold or personal locker for same-port resale.
+            if !crate::port::works::is_works_escrow(w, endpoint.vault())
+                && has_unactivated_works_private_quote(w, actor, venue)
+            {
+                return Err(refusal(WORKS_PRIVATE_ASK_ESCROW_ONLY.to_owned()));
+            }
         }
         match (endpoint, presence) {
             (Some(endpoint), _) => match governed_hold(w, endpoint) {

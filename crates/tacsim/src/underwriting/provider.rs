@@ -103,7 +103,7 @@ impl Provider {
         reg.readiness.issuer(w, &p.product)?;
         reg.readiness
             .references(p.product.hulls().iter().chain(p.product.zones()))?;
-        if p.product.adjudicator() != self.host.service {
+        if p.product.adjudicator() != self.host.inner.service {
             return Err(CoverageError::Authority);
         }
         Ok(p)
@@ -198,7 +198,52 @@ impl Provider {
                 },
             };
             q.matches_publication(&p)?;
-            self.families.admit(txn, 1)?;
+            let (for_open, expired_ops) =
+                self.host
+                    .quote_plan_candidates(inv.actor(), departure.open(), now)?;
+            let mut active_for_open = 0usize;
+            let mut to_prune = Vec::new();
+            let mut stale_missing = Vec::new();
+            for op in for_open {
+                match txn.get(&self.families.quotes, &op.to_hex()).map_err(bad)? {
+                    Some(existing) => {
+                        if existing.terms.expires_at_utc > now {
+                            active_for_open += 1;
+                        } else if !self.host.is_quote_bound_or_pending(op)
+                            && to_prune.len() < super::host::MAX_PRUNE_PER_QUOTE
+                        {
+                            to_prune.push(op);
+                        }
+                    }
+                    None => stale_missing.push(op),
+                }
+            }
+            if active_for_open >= super::host::MAX_ACTIVE_QUOTES_PER_OPEN {
+                return Err(CoverageError::Bound);
+            }
+            for op in expired_ops {
+                if to_prune.len() >= super::host::MAX_PRUNE_PER_QUOTE {
+                    break;
+                }
+                if to_prune.contains(&op) {
+                    continue;
+                }
+                match txn.get(&self.families.quotes, &op.to_hex()).map_err(bad)? {
+                    Some(existing)
+                        if existing.terms.expires_at_utc <= now
+                            && !self.host.is_quote_bound_or_pending(op) =>
+                    {
+                        to_prune.push(op);
+                    }
+                    Some(_) => {}
+                    None => stale_missing.push(op),
+                }
+            }
+            for op in &to_prune {
+                txn.remove(&self.families.quotes, &op.to_hex())
+                    .map_err(bad)?;
+            }
+            self.families.admit_quote(txn, to_prune.len() as u64)?;
             families::insert(txn, &self.families.quotes, &q)?;
             let check = super::fence::HostCheck::capture(
                 self.host.clone(),
@@ -212,6 +257,14 @@ impl Provider {
                 qualified.map(|(_, proof)| proof),
             );
             self.writer.quote(ctx, observed, check).map_err(bad)?;
+            self.host.prune_missing_quote_candidates(&stale_missing);
+            self.host.record_quote_candidate(
+                operation,
+                inv.actor(),
+                departure.open(),
+                request,
+                q.terms.expires_at_utc,
+            );
             "quoted"
         };
         Ok(kind)
@@ -356,6 +409,7 @@ impl Provider {
                 families::insert(txn, &self.families.hulls, &after)?;
             }
             ctx.reserve_hull_coverage_completion(txn).map_err(bad)?;
+            self.host.record_bind_candidate(operation, quote, request);
             "bound"
         };
         Ok(kind)
@@ -394,9 +448,10 @@ impl Provider {
                 families::read(txn, &self.families.products, c.basis.product.to_hex())?.product;
             let world_now = ctx.world().map_err(bad)?.world_ic_now();
             let voided = if covered {
-                self.host.voiding(&product, c, &world_now, |family, slot| {
-                    txn.get(family, slot).map(|row| row.cloned()).map_err(bad)
-                })?
+                self.host
+                    .voiding(&product, policy, c, &world_now, |family, slot| {
+                        txn.get(family, slot).map(|row| row.cloned()).map_err(bad)
+                    })?
             } else {
                 None
             };
@@ -407,7 +462,7 @@ impl Provider {
                     != if cancel {
                         c.terms.buyer
                     } else {
-                        self.host.service
+                        self.host.inner.service
                     }
             {
                 return Err(CoverageError::Authority);
@@ -513,6 +568,7 @@ impl Provider {
             families::insert(txn, &self.families.receipts, &Receipt::from_policy(&after)?)?;
             ctx.finish_hull_coverage_completion(txn, policy)
                 .map_err(bad)?;
+            self.host.record_terminal_candidate(policy, request);
             if pays { "claimed" } else { "released" }
         };
         Ok(kind)
