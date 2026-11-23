@@ -1412,12 +1412,18 @@ impl TryFrom<QuoteWire> for Quote {
         if w.booked_loss.minor() < 0 {
             return Err(RecordError("a quote's booked loss is negative"));
         }
-        // Doc 18 cut IC7: the frozen lot terms re-run their own invariants on load, and
-        // the draw mirror exists only on a Draw quote.
+        // Doc 18 cut IC7 + doc 48e exchange G2 + P2-MOD-71: the frozen lot terms re-run
+        // their own invariants on load, and the draw mirror (`drawn_at`) exists on both
+        // `PaidKind::Draw` and `PaidKind::Hold` quotes (`boot::reconcile_draws`).
         if let Some(lot) = &w.lot {
             lot.check()?;
         }
-        if w.drawn_at.is_some() && !w.lot.as_ref().is_some_and(|l| l.kind == PaidKind::Draw) {
+        if w.drawn_at.is_some()
+            && !w
+                .lot
+                .as_ref()
+                .is_some_and(|l| matches!(l.kind, PaidKind::Draw | PaidKind::Hold))
+        {
             return Err(RecordError("only a drawn sale records when it was drawn"));
         }
         // Doc 18 cut IC10: the proceeds split re-runs its caps on load — at most one

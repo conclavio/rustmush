@@ -644,6 +644,11 @@ fn a_party_who_did_not_accept_is_never_debited() {
     ok(
         &mut tw,
         r.johnson,
+        &format!("@contract/party {id}=#{}", r.b.0),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
         &format!("@contract/pay {id}={} 300", r.j_acct),
     );
     // A1: the Johnson cannot name Alder's wallet (he may not view it); Alder adds her
@@ -1042,7 +1047,7 @@ fn sale(tw: &mut TestWorld) -> Sale {
     );
     ok(
         tw,
-        buyer,
+        seller,
         &format!(
             "@contract/deliver {id}=title #{} #{}->#{}",
             widget.0, seller.0, buyer.0
@@ -1396,6 +1401,11 @@ fn an_expired_contract_refunds_and_a_forfeiting_one_pays_the_named_account() {
         ok(
             &mut tw,
             r.johnson,
+            &format!("@contract/party {id}=#{}", r.b.0),
+        );
+        ok(
+            &mut tw,
+            r.johnson,
             &format!("@contract/pay {id}={} 250", r.j_acct),
         );
         ok(
@@ -1430,6 +1440,7 @@ fn an_expired_contract_refunds_and_a_forfeiting_one_pays_the_named_account() {
         ok(&mut tw, r.johnson, &format!("@contract/offer {id}"));
         ok(&mut tw, r.johnson, &format!("@contract/accept {id}"));
         ok(&mut tw, r.a, &format!("@contract/accept {id}"));
+        ok(&mut tw, r.b, &format!("@contract/accept {id}"));
         assert_eq!(held(&tw, r.j_acct), 250);
 
         sweep_at(&mut tw, 1_000);
@@ -1471,6 +1482,11 @@ fn an_offered_contract_that_lapses_refunds_even_when_its_terms_say_forfeit() {
         &mut tw,
         r.johnson,
         &format!("@contract/party {id}=#{}", r.a.0),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/party {id}=#{}", r.b.0),
     );
     ok(
         &mut tw,
@@ -2837,8 +2853,7 @@ fn vf_a2_a_contract_refusal_hides_a_resource_the_actor_may_not_view() {
     );
     assert!(hidden.contains("No such vault."), "wrong refusal: {hidden}");
 
-    // At OFFER: the same rule, through `contract_refusal`. A closed account the
-    // Johnson may not view renders exactly like an account id that never existed.
+    // At DRAFT: an unviewable/closed account and a nonexistent one are one message (P2-MOD-13).
     let w_acct = account_of(&tw, r.watcher);
     ok(&mut tw, GOD, &format!("@account/close {w_acct}"));
     ok(
@@ -2856,22 +2871,35 @@ fn vf_a2_a_contract_refusal_hides_a_resource_the_actor_may_not_view() {
         r.johnson,
         &format!("@contract/split {id}={} 1000‰", r.a_acct),
     );
-    ok(
+    let hidden_draft = err(
         &mut tw,
         r.johnson,
         &format!("@contract/remainder {id}={w_acct}"),
     );
-    let hidden = err(&mut tw, r.johnson, &format!("@contract/offer {id}"));
-    ok(
+    let absent_draft = err(
         &mut tw,
         r.johnson,
         &format!("@contract/remainder {id}=4242"),
     );
-    let absent = err(&mut tw, r.johnson, &format!("@contract/offer {id}"));
     assert_eq!(
-        hidden, absent,
-        "an unviewable account and a missing one read differently at offer"
+        hidden_draft, absent_draft,
+        "an unviewable account and a missing one read differently at draft"
     );
+    assert!(
+        hidden_draft.contains("No such account."),
+        "wrong refusal: {hidden_draft}"
+    );
+
+    // At OFFER: the same rule, through `contract_refusal`. If a party's account closes
+    // after being drafted as remainder, offering still hides behind "No such account."
+    // for a non-viewer while staff see the real reason.
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/remainder {id}={}", r.a_acct),
+    );
+    ok(&mut tw, GOD, &format!("@account/close {}", r.a_acct));
+    let hidden = err(&mut tw, r.johnson, &format!("@contract/offer {id}"));
     assert!(
         hidden.contains("No such account."),
         "wrong refusal: {hidden}"
@@ -3021,7 +3049,7 @@ fn vf_a4_an_org_party_on_an_unscoped_contract_can_accept_dispute_and_agree() {
     ok(
         &mut tw,
         issuer,
-        &format!("@contract/split {id}={} 1000‰", o.payee_acct),
+        &format!("@contract/split {id}={i_acct} 1000‰"),
     );
     ok(
         &mut tw,
@@ -3422,12 +3450,26 @@ fn vf_m1_a_bystanders_asset_is_never_encumbered() {
         &format!("@contract/remainder {id}={}", r.j_acct),
     );
     // Somebody who is not a party, pledging something that is not the parties' to
-    // pledge. A pledge encumbers at activation, and an encumbered asset cannot be
-    // transferred — so this is a claim placed on a stranger's property by an
-    // agreement they were never shown.
-    ok(
+    // pledge. P2-MOD-13 refuses non-staff naming an unviewable asset right at draft
+    // with existence-hiding "No such asset.".
+    let non_staff_refused = err(
         &mut tw,
         r.johnson,
+        &format!(
+            "@contract/deliver {id}=collateral #{} #{}",
+            heirloom.0, bystander.0
+        ),
+    );
+    assert!(
+        non_staff_refused.contains("No such asset."),
+        "wrong refusal: {non_staff_refused}"
+    );
+
+    // Even when staff records the bystander collateral on the draft, `check_offerable`
+    // refuses it at offer ("not a party") and never encumbers the bystander's asset.
+    ok(
+        &mut tw,
+        GOD,
         &format!(
             "@contract/deliver {id}=collateral #{} #{}",
             heirloom.0, bystander.0
@@ -3504,6 +3546,11 @@ fn vf_m2_a_refused_forfeit_leaves_a_live_contract_and_recoverable_escrow() {
     ok(
         &mut tw,
         r.johnson,
+        &format!("@contract/party {id}=#{}", r.b.0),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
         &format!("@contract/pay {id}={} 250", r.j_acct),
     );
     ok(
@@ -3529,6 +3576,7 @@ fn vf_m2_a_refused_forfeit_leaves_a_live_contract_and_recoverable_escrow() {
     ok(&mut tw, r.johnson, &format!("@contract/offer {id}"));
     ok(&mut tw, r.johnson, &format!("@contract/accept {id}"));
     ok(&mut tw, r.a, &format!("@contract/accept {id}"));
+    ok(&mut tw, r.b, &format!("@contract/accept {id}"));
     // The forfeit target closes before the deadline.
     ok(&mut tw, r.b, &format!("@account/close {}", r.b_acct));
 
@@ -3983,6 +4031,11 @@ fn vf_b1_boot_finishes_a_transition_whose_doc_write_was_lost() {
         ok(
             &mut tw,
             r.johnson,
+            &format!("@contract/party {id}=#{}", r.b.0),
+        );
+        ok(
+            &mut tw,
+            r.johnson,
             &format!("@contract/pay {id}={} 300", r.j_acct),
         );
         ok(
@@ -4010,6 +4063,7 @@ fn vf_b1_boot_finishes_a_transition_whose_doc_write_was_lost() {
         ok(&mut tw, r.johnson, &format!("@contract/offer {id}"));
         ok(&mut tw, r.johnson, &format!("@contract/accept {id}"));
         ok(&mut tw, r.a, &format!("@contract/accept {id}"));
+        ok(&mut tw, r.b, &format!("@contract/accept {id}"));
         assert_eq!(held(&tw, r.j_acct), 300);
 
         // The doc as it stood BEFORE the transition — the write that gets lost.
@@ -4165,6 +4219,11 @@ fn vf_b3_a_refused_forfeit_is_paged_once_and_stays_resolvable() {
     ok(
         &mut tw,
         r.johnson,
+        &format!("@contract/party {id}=#{}", r.b.0),
+    );
+    ok(
+        &mut tw,
+        r.johnson,
         &format!("@contract/pay {id}={} 250", r.j_acct),
     );
     ok(
@@ -4190,6 +4249,7 @@ fn vf_b3_a_refused_forfeit_is_paged_once_and_stays_resolvable() {
     ok(&mut tw, r.johnson, &format!("@contract/offer {id}"));
     ok(&mut tw, r.johnson, &format!("@contract/accept {id}"));
     ok(&mut tw, r.a, &format!("@contract/accept {id}"));
+    ok(&mut tw, r.b, &format!("@contract/accept {id}"));
     ok(&mut tw, r.b, &format!("@account/close {}", r.b_acct));
 
     for n in 0..4 {
@@ -8029,6 +8089,11 @@ fn high22_build_outcome_enforces_max_shares_and_condition_bounds_external_ref() 
     let r = run_rig(&mut tw, 3_000);
     ok(&mut tw, r.johnson, "@contract/draft BoundedFields");
     let id = only_contract(&tw);
+    ok(
+        &mut tw,
+        r.johnson,
+        &format!("@contract/party {id}=#{}", r.a.0),
+    );
     ok(
         &mut tw,
         r.johnson,

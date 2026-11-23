@@ -2596,17 +2596,63 @@ fn econ_pay(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
     }
 
-    // Check source-account status and solvency BEFORE looking up `to` or calling
-    // `api::post`, so an empty or over-held source account cannot probe whether
-    // arbitrary destination IDs exist via "No such account." vs. credit/available
-    // errors.
+    // Check economy freeze, source-account status, instrument liveness, debit
+    // authority, and solvency BEFORE looking up `to` or calling `api::post`, so
+    // an empty, over-held, view-only, or inactive source account cannot probe
+    // whether arbitrary destination IDs exist (Tier 2A + P2-MOD-42).
     if let Some(a) = &source {
+        let (frozen, inst_status) =
+            ctx.w
+                .module_state::<EconomyStore>()
+                .map_or((true, None), |s| {
+                    (
+                        s.is_frozen(),
+                        s.snapshot().instrument(&a.instrument).map(|i| i.status),
+                    )
+                });
+        if frozen {
+            return Err(refuse(
+                ctx,
+                NamedResource::Account(from),
+                &[],
+                &EconomyError::EconomyFrozen,
+            ));
+        }
         if a.status != AccountStatus::Active {
             return Err(refuse(
                 ctx,
                 NamedResource::Account(from),
                 &[],
                 &EconomyError::InactiveAccount(from),
+            ));
+        }
+        match inst_status {
+            None => {
+                return Err(refuse(
+                    ctx,
+                    NamedResource::Account(from),
+                    &[],
+                    &EconomyError::NoSuchInstrument(a.instrument.clone()),
+                ));
+            }
+            Some(status) if status != InstrumentStatus::Active => {
+                return Err(refuse(
+                    ctx,
+                    NamedResource::Account(from),
+                    &[],
+                    &EconomyError::InactiveInstrument(a.instrument.clone()),
+                ));
+            }
+            Some(_) => {}
+        }
+        if !staff
+            && !(api::WorldAuth { w: ctx.w }).authorize(&PrincipalId::Object(ctx.actor), a, neg)
+        {
+            return Err(refuse(
+                ctx,
+                NamedResource::Account(from),
+                &[],
+                &EconomyError::Unauthorized,
             ));
         }
         let new_posted = a.posted_balance.checked_add(neg).ok_or_else(|| {
@@ -2643,6 +2689,8 @@ fn econ_pay(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
     }
 
+    let mask_dest_behind_approval = !staff && !may_view_account(ctx.w, ctx.actor, to);
+    let mut missing_asset_dest = false;
     if let Some(object) = asset_object {
         let dest = ctx
             .w
@@ -2651,15 +2699,25 @@ fn econ_pay(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .snapshot()
             .account(to)
             .cloned();
-        let Some(dest) = dest else {
+        if let Some(dest) = dest {
+            asset_ops.push(AssetOp::TransferTitle {
+                object,
+                to: dest.owner,
+                to_scope: dest.scope,
+            });
+        } else if mask_dest_behind_approval {
+            // P2-MOD-42: defer refusal until after `from`'s approval rule is evaluated so
+            // an approval-ruled source cannot probe whether `to` exists via `asset=`.
+            missing_asset_dest = true;
+            asset_ops.push(AssetOp::TransferTitle {
+                object,
+                to: PrincipalId::Object(ObjId(0)),
+                to_scope: None,
+            });
+        } else {
             note_refusal(ctx, true);
             return Err(CmdError::msg("No such account."));
-        };
-        asset_ops.push(AssetOp::TransferTitle {
-            object,
-            to: dest.owner,
-            to_scope: dest.scope,
-        });
+        }
         if let Some((_, op)) = pending_custody {
             custody_ops.push(op);
         }
@@ -2686,6 +2744,44 @@ fn econ_pay(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     );
     plan.asset_ops = asset_ops;
     plan.custody_ops = custody_ops;
+
+    // P2-MOD-42: when `to` is unviewable by a non-staff payer and `from` has an active
+    // `ApprovalRule`, evaluate `from`'s approval gate BEFORE `api::post` validates `to`
+    // so nonexistent, closed, wrong-instrument, and inactive-instrument destinations are
+    // indistinguishable from valid foreign accounts until approval is actually granted.
+    if mask_dest_behind_approval && source.as_ref().is_some_and(|a| a.approval.is_some()) {
+        match api::precheck_pay_approval(ctx, &plan, from, neg) {
+            Ok(Some(outcome)) => {
+                return match asset_object {
+                    Some(object) => finish_ops(
+                        ctx,
+                        NamedResource::Asset(object),
+                        &[NamedResource::Account(from), NamedResource::Account(to)],
+                        Ok(outcome),
+                        "Paid",
+                    ),
+                    None => finish_pay(ctx, from, to, Ok(outcome)),
+                };
+            }
+            Err(e) => {
+                return match asset_object {
+                    Some(object) => finish_ops(
+                        ctx,
+                        NamedResource::Asset(object),
+                        &[NamedResource::Account(from), NamedResource::Account(to)],
+                        Err(e),
+                        "Paid",
+                    ),
+                    None => finish_pay(ctx, from, to, Err(e)),
+                };
+            }
+            Ok(None) => {}
+        }
+    }
+    if missing_asset_dest {
+        note_refusal(ctx, true);
+        return Err(CmdError::msg("No such account."));
+    }
     let outcome = api::post(ctx, &plan);
     match asset_object {
         // Both accounts ride along as `also`: a refusal about the money half of a
@@ -3648,6 +3744,35 @@ fn asset_lien(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     finish_asset(ctx, object, outcome, "Lien recorded")
 }
 
+/// Encumbrances of `asset` that `ctx.actor` is permitted to know exist (P2-MOD-75).
+///
+/// Excludes a covert stolen report's `Disputed` claim for any viewer who fails
+/// [`may_view_stolen_report`], so both `@asset/show`'s count and `@asset/release`'s
+/// 1-based indexing operate over the exact same visible slice without index shifts
+/// leaking the hidden report.
+fn visible_encumbrances(
+    ctx: &Ctx<'_>,
+    object: ObjId,
+    asset: &crate::record::EconomicAsset,
+) -> Vec<Encumbrance> {
+    let hidden_claim = asset.stolen.as_ref().and_then(|r| {
+        (!may_view_stolen_report(ctx, object, r)).then(|| Encumbrance::Disputed {
+            claimant: r.by.clone(),
+            reason: r.reason.clone(),
+        })
+    });
+    let mut skipped_hidden = false;
+    let mut out = Vec::with_capacity(asset.encumbrances.len());
+    for e in &asset.encumbrances {
+        if !skipped_hidden && hidden_claim.as_ref() == Some(e) {
+            skipped_hidden = true;
+            continue;
+        }
+        out.push(e.clone());
+    }
+    out
+}
+
 fn asset_release(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let object = asset_target(ctx, ctx.args.lhs())?;
     let n: usize = ctx
@@ -3657,39 +3782,18 @@ fn asset_release(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .filter(|n| *n >= 1)
         .ok_or_else(|| CmdError::msg("Usage: @asset/release <obj>=<n>   (n from @asset/show)"))?;
     // Resolve the exact recorded claim BEFORE `post` — `Release` is an exact match.
-    let (encumbrance, hidden_claim) = {
+    // P2-MOD-75: index ONLY over `visible_encumbrances` so a covert stolen report never
+    // shifts the indices of subsequent visible encumbrances or leaks its presence.
+    let encumbrance = {
         let store = ctx
             .w
             .module_state::<EconomyStore>()
             .ok_or_else(|| CmdError::msg("No economy."))?;
-        let asset = store.snapshot().asset(object);
-        let encumbrance = asset.and_then(|a| a.encumbrances.get(n - 1).cloned());
-        // The claim a **hidden** theft report placed, reconstructed exactly as
-        // `AssetOp::ReportStolen` writes it.
-        let hidden_claim = asset.and_then(|a| a.stolen.as_ref()).map(|r| {
-            (
-                Encumbrance::Disputed {
-                    claimant: r.by.clone(),
-                    reason: r.reason.clone(),
-                },
-                r.clone(),
-            )
-        });
-        (encumbrance, hidden_claim)
+        store
+            .snapshot()
+            .asset(object)
+            .and_then(|a| visible_encumbrances(ctx, object, a).into_iter().nth(n - 1))
     };
-    // E6b independent verify fold (D2): **the index is not an oracle.** The resolve
-    // ran with no view gate at all, so an out-of-range index answered "No such
-    // encumbrance." and an in-range one answered "unauthorized" — and an assignee
-    // holds `may_view_asset`, so a covert theft report was readable off which of the
-    // two sentences came back. A claim the viewer may not be told about answers
-    // exactly as an index past the end does, which is the rule D2's own count fix
-    // already applies one line above the report in `@asset/show`.
-    if let (Some(e), Some((claim, report))) = (encumbrance.as_ref(), hidden_claim.as_ref())
-        && e == claim
-        && !may_view_stolen_report(ctx, object, report)
-    {
-        return Err(asset_refusal(ctx, object, "No such encumbrance."));
-    }
     let Some(encumbrance) = encumbrance else {
         return Err(asset_refusal(ctx, object, "No such encumbrance."));
     };
@@ -3891,21 +3995,11 @@ fn asset_show(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             )),
             None => v.push("  unassigned".to_string()),
         }
-        // E6b verify fold (D2): the **count** must not disclose what the line below
-        // hides. `ReportStolen` records a `Disputed` claim for every visibility
-        // including `Covert`, and the count sat one line above the gated report — so
-        // an assignee, or an `asset.*` grantee who is not staff and does not act for
-        // the owner, read a covert filing off the arithmetic. A claim the viewer may
-        // not be told about is not counted for them either.
-        let hidden_claims = usize::from(
-            a.stolen
-                .as_ref()
-                .is_some_and(|r| !may_view_stolen_report(ctx, object, r)),
-        );
-        v.push(format!(
-            "  encumbrances: {}",
-            a.encumbrances.len().saturating_sub(hidden_claims)
-        ));
+        // E6b verify fold (D2) + P2-MOD-75: count ONLY visible encumbrances, using the
+        // exact same helper `@asset/release` indexes against so counts and 1-based
+        // indices never diverge or disclose a covert theft report.
+        let visible_enc = visible_encumbrances(ctx, object, &a);
+        v.push(format!("  encumbrances: {}", visible_enc.len()));
         // E6b (B2): the theft report renders **behind its own visibility gate**, so
         // a covert claim is invisible to everyone but its reporter and staff — a
         // thief holding the object reads exactly what an unclaimed asset reads.
@@ -4022,39 +4116,44 @@ fn asset_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         },
         None => None,
     };
-    // The candidates come from the **owner index** when one is named, so the walk is
-    // over that principal's own titles rather than the registry; otherwise it is the
-    // registry in object order, resumed from the cursor and bounded at
-    // [`ASSET_PAGE_VISIT`] records visited.
-    let (candidates, last_visited) = {
+    // P2-MOD-44: seek strictly past `after` in O(log N), bound total raw records
+    // scanned BEFORE scope/visibility filtering, and filter visibility BEFORE
+    // computing the pagination cursor so a hidden asset's `ObjId` can never be leaked
+    // in `(more — @asset/list after=#...)` and rare/missing filters never scan the
+    // whole registry unboundedly.
+    const ASSET_PAGE_SCAN: usize = ASSET_PAGE_VISIT * 4;
+    let (visible, has_more) = {
         let store = ctx
             .w
             .module_state::<EconomyStore>()
             .ok_or_else(|| CmdError::msg("No economy."))?;
         let snapshot = store.snapshot();
-        let walk: Vec<ObjId> = match owner.as_ref() {
-            Some(o) => snapshot
-                .assets_of(o)
-                .filter(|a| after.is_none_or(|c| a.object > c))
-                .filter(|a| scope.is_none_or(|s| a.scope == Some(s)))
-                .map(|a| a.object)
-                .take(ASSET_PAGE_VISIT)
-                .collect(),
-            None => snapshot
-                .assets()
-                .filter(|a| after.is_none_or(|c| a.object > c))
-                .filter(|a| scope.is_none_or(|s| a.scope == Some(s)))
-                .map(|a| a.object)
-                .take(ASSET_PAGE_VISIT)
-                .collect(),
-        };
-        let last = walk.last().copied();
-        (walk, last)
+        let mut visible: Vec<ObjId> = Vec::new();
+        let mut has_more = false;
+        let scan_iter: Box<dyn Iterator<Item = &crate::record::EconomicAsset> + '_> =
+            match owner.as_ref() {
+                Some(o) => Box::new(snapshot.assets_of_after(o, after, ASSET_PAGE_SCAN)),
+                None => Box::new(snapshot.assets_after(after).take(ASSET_PAGE_SCAN)),
+            };
+        for a in scan_iter {
+            if scope.is_some_and(|s| a.scope != Some(s)) {
+                continue;
+            }
+            if !may_view_asset(ctx.w, ctx.actor, a.object) {
+                continue;
+            }
+            if visible.len() < ASSET_PAGE_VISIT {
+                visible.push(a.object);
+            } else {
+                has_more = true;
+                break;
+            }
+        }
+        (visible, has_more)
     };
-    let visited = candidates.len();
-    let rows: Vec<String> = candidates
+    let last_visible = visible.last().copied();
+    let rows: Vec<String> = visible
         .into_iter()
-        .filter(|o| may_view_asset(ctx.w, ctx.actor, *o))
         .map(|o| {
             let a = {
                 let store = ctx.w.module_state::<EconomyStore>().expect("economy store");
@@ -4070,12 +4169,8 @@ fn asset_list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             )
         })
         .collect();
-    let more = visited >= ASSET_PAGE_VISIT;
     emit_list(ctx, rows, "No assets.");
-    // The cursor is the last record **visited**, not the last one shown: a page that
-    // filtered everything out still advances, so a viewer with narrow standing walks
-    // the same number of pages a staffer does and the two truncate identically.
-    if more && let Some(cursor) = last_visited {
+    if has_more && let Some(cursor) = last_visible {
         info(ctx, format!("(more — @asset/list after=#{})", cursor.0));
     }
     Ok(())

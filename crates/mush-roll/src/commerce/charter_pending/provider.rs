@@ -9,7 +9,7 @@ use crate::commerce::{
     CharterId,
     charter_transfer::{
         economic::{PendingEconomic, TransferEconomic},
-        records::{CharterOwnershipHead, CharterTransfer},
+        records::{CharterOwnershipHead, CharterOwnershipRef, CharterTransfer},
     },
     families::CommerceFamilies,
     participant::{RootParticipant, RootRequest},
@@ -54,30 +54,52 @@ struct FundWire {
 struct TerminalWire {
     funding: CommitToken,
 }
-const MAX_RETAINED_OFFERS_PER_CHARTER: usize = 16;
-const MAX_RETAINED_OFFERS_PER_SELLER: usize = 32;
+const MAX_ACTIVE_OFFERS_PER_CHARTER: usize = 16;
+const MAX_ACTIVE_OFFERS_PER_SELLER: usize = 32;
 
-fn check_retained_offer_quota(
-    commits: &[CommitToken],
+struct ActiveOfferQuota<'a> {
+    commits: &'a [CommitToken],
     charter: CharterId,
     seller: ObjId,
+    current_ownership: &'a CharterOwnershipRef,
+    now_utc: i64,
+    used_offers: &'a std::collections::BTreeSet<CommitToken>,
+}
+
+/// Enforce bounded active pending-offer caps per charter and per seller (`P2-MOD-56`).
+///
+/// Only currently live, still-fundable offers count against the caps: expired offers
+/// (`now_utc >= expires_at_utc`), already-consumed offers (funded/settled/refunded in
+/// `used_offers`), and offers superseded by an ownership or title-revision change are
+/// terminal and never lock out future transfers or subsequent owners.
+fn check_active_offer_quota(
+    quota: &ActiveOfferQuota<'_>,
+    mut is_current_title: impl FnMut(&PendingOffer) -> bool,
     mut lookup: impl FnMut(&str) -> Result<Option<PendingOffer>, PublicationError>,
 ) -> Result<(), PublicationError> {
     let mut charter_offers = 0usize;
     let mut seller_offers = 0usize;
-    for commit in commits {
+    for commit in quota.commits {
+        if quota.used_offers.contains(commit) {
+            continue;
+        }
         let Some(existing) = lookup(&commit.to_hex())? else {
             continue;
         };
-        if existing.charter == charter {
+        if quota.now_utc >= existing.expires_at_utc || !is_current_title(&existing) {
+            continue;
+        }
+        if existing.charter == quota.charter && &existing.ownership == quota.current_ownership {
             charter_offers += 1;
         }
-        if existing.seller == seller {
+        if existing.seller == quota.seller
+            && (existing.charter != quota.charter || &existing.ownership == quota.current_ownership)
+        {
             seller_offers += 1;
         }
     }
-    if charter_offers >= MAX_RETAINED_OFFERS_PER_CHARTER
-        || seller_offers >= MAX_RETAINED_OFFERS_PER_SELLER
+    if charter_offers >= MAX_ACTIVE_OFFERS_PER_CHARTER
+        || seller_offers >= MAX_ACTIVE_OFFERS_PER_SELLER
     {
         return Err(PublicationError::Capacity);
     }
@@ -229,19 +251,47 @@ impl Provider {
         let world = ctx.world().map_err(bad)?;
         current::require_clear_in_txn(txn, world, &self.f, charter)?;
         let basis = current::basis(txn, world, &self.f, charter, inv.actor())?;
-        // Bounded retained offer quota per charter and per seller so zero-fee
-        // offer spam cannot permanently exhaust MAX_RECORDS while preserving
-        // exact action-0 typed write sets.
+        // Bounded active pending-offer quota per charter and per seller so zero-fee
+        // offer spam cannot exhaust MAX_RECORDS while terminal (expired, consumed, or
+        // prior-owner) historical offers never lock out future transfers (`P2-MOD-56`).
         let roll = world
             .module_state::<crate::RollStore>()
             .ok_or(PublicationError::Unavailable)?;
-        let commits = roll.charter_pending_offer_commits();
-        check_retained_offer_quota(&commits, charter, inv.actor(), |key| {
-            txn.get(&self.f.charter_pending_offers, &key.to_owned())
-                .map_err(bad)
-                .map(|offer| offer.cloned())
-        })?;
         let now = world.now();
+        let commits = roll.charter_pending_offer_commits();
+        if !commits.is_empty() {
+            let economy = world
+                .module_state::<mush_economy::EconomyStore>()
+                .ok_or(PublicationError::Unavailable)?;
+            let used_offers: std::collections::BTreeSet<CommitToken> = economy
+                .pending_charter_histories()
+                .map_err(bad)?
+                .map(|h| h.consent().terms.offer)
+                .collect();
+            let snapshot = economy.snapshot();
+            let quota = ActiveOfferQuota {
+                commits: &commits,
+                charter,
+                seller: inv.actor(),
+                current_ownership: &basis.ownership,
+                now_utc: now,
+                used_offers: &used_offers,
+            };
+            check_active_offer_quota(
+                &quota,
+                |existing| {
+                    snapshot.asset(existing.charter.object()).is_some_and(|a| {
+                        a.title_owner == mush_org::PrincipalId::Object(existing.seller)
+                            && a.revision == existing.title_revision
+                    })
+                },
+                |key| {
+                    txn.get(&self.f.charter_pending_offers, &key.to_owned())
+                        .map_err(bad)
+                        .map(|offer| offer.cloned())
+                },
+            )?;
+        }
         let deadline = now
             .checked_add(duration)
             .ok_or(PublicationError::Capacity)?;
@@ -881,8 +931,8 @@ mod high19_tests {
 
     fn make_pending_offer(seed: u8, charter: u32, seller: u32) -> TestResult<PendingOffer> {
         let d = DefinitionDigest::from_bytes([seed; 32]);
-        let ownership =
-            json!({"generation":1,"operation":CommitToken::from_bytes([200;16]),"digest":d});
+        let ownership_digest = DefinitionDigest::from_bytes([200; 32]);
+        let ownership = json!({"generation":1,"operation":CommitToken::from_bytes([200;16]),"digest":ownership_digest});
         let window = json!({"format":1,"eligibility_start":100,"issued_at":100,"term_end":500,"grace_end":600});
         let term = json!({"licence":"1","generation":"1","operation":CommitToken::from_bytes([201;16]),"digest":d,"window":window});
         let revision = json!({"format":1,"revision":{"key":{"character":seller,"mind":1,"number":1},"digest":d},"source":d});
@@ -914,45 +964,145 @@ mod high19_tests {
     fn high19_charter_pending_caps_retained_offers_per_charter_and_seller() -> TestResult {
         let mut offers = BTreeMap::new();
         let mut commits = Vec::new();
-        for i in 0..MAX_RETAINED_OFFERS_PER_CHARTER {
+        let used = std::collections::BTreeSet::new();
+        let ownership = make_pending_offer(1, 5, 10)?.ownership;
+        for i in 0..MAX_ACTIVE_OFFERS_PER_CHARTER {
             let seed = u8::try_from(i + 1)?;
             let offer = make_pending_offer(seed, 5, 10)?;
             commits.push(offer.operation);
             offers.insert(offer.key(), offer);
         }
-        // Charter 5 is at MAX_RETAINED_OFFERS_PER_CHARTER -> refused.
+        let check = |charter, seller, ownership: &CharterOwnershipRef, now_utc, used| {
+            let quota = ActiveOfferQuota {
+                commits: &commits,
+                charter,
+                seller,
+                current_ownership: ownership,
+                now_utc,
+                used_offers: used,
+            };
+            check_active_offer_quota(&quota, |_| true, |k| Ok(offers.get(k).cloned()))
+        };
+        // Charter 5 is at MAX_ACTIVE_OFFERS_PER_CHARTER live offers (now=150 < expires=200) -> refused.
         check_eq!(
-            check_retained_offer_quota(&commits, CharterId::new(5)?, ObjId(10), |k| {
-                Ok(offers.get(k).cloned())
-            }),
+            check(CharterId::new(5)?, ObjId(10), &ownership, 150, &used),
             Err(PublicationError::Capacity)
         );
-        // A different charter for the same seller still has room until MAX_RETAINED_OFFERS_PER_SELLER.
-        check!(
-            check_retained_offer_quota(&commits, CharterId::new(6)?, ObjId(10), |k| {
-                Ok(offers.get(k).cloned())
-            })
-            .is_ok()
-        );
-        // Fill charter 6 with 16 more offers so seller 10 hits MAX_RETAINED_OFFERS_PER_SELLER = 32.
-        for i in 0..(MAX_RETAINED_OFFERS_PER_SELLER - MAX_RETAINED_OFFERS_PER_CHARTER) {
+        // A different charter for the same seller still has room until MAX_ACTIVE_OFFERS_PER_SELLER.
+        check!(check(CharterId::new(6)?, ObjId(10), &ownership, 150, &used).is_ok());
+        // Fill charter 6 with 16 more live offers so seller 10 hits MAX_ACTIVE_OFFERS_PER_SELLER = 32.
+        for i in 0..(MAX_ACTIVE_OFFERS_PER_SELLER - MAX_ACTIVE_OFFERS_PER_CHARTER) {
             let seed = u8::try_from(i + 40)?;
             let offer = make_pending_offer(seed, 6, 10)?;
             commits.push(offer.operation);
             offers.insert(offer.key(), offer);
         }
         // Seller 10 is now blocked even on brand-new charter 7, while seller 11 is unaffected.
+        let quota_7_10 = ActiveOfferQuota {
+            commits: &commits,
+            charter: CharterId::new(7)?,
+            seller: ObjId(10),
+            current_ownership: &ownership,
+            now_utc: 150,
+            used_offers: &used,
+        };
         check_eq!(
-            check_retained_offer_quota(&commits, CharterId::new(7)?, ObjId(10), |k| {
-                Ok(offers.get(k).cloned())
-            }),
+            check_active_offer_quota(&quota_7_10, |_| true, |k| Ok(offers.get(k).cloned())),
             Err(PublicationError::Capacity)
         );
+        let quota_7_11 = ActiveOfferQuota {
+            commits: &commits,
+            charter: CharterId::new(7)?,
+            seller: ObjId(11),
+            current_ownership: &ownership,
+            now_utc: 150,
+            used_offers: &used,
+        };
         check!(
-            check_retained_offer_quota(&commits, CharterId::new(7)?, ObjId(11), |k| {
-                Ok(offers.get(k).cloned())
-            })
+            check_active_offer_quota(&quota_7_11, |_| true, |k| Ok(offers.get(k).cloned())).is_ok()
+        );
+        Ok(())
+    }
+
+    /// `P2-MOD-56`: Expired, consumed (funded/settled/refunded), and prior-owner historical
+    /// `charter_pending` offers must not count against active quota caps or permanently lock
+    /// out subsequent charter owners or sellers.
+    #[test]
+    fn p2_mod_56_terminal_and_prior_owner_offers_do_not_lock_out_charter() -> TestResult {
+        let mut offers = BTreeMap::new();
+        let mut commits = Vec::new();
+        for i in 0..MAX_ACTIVE_OFFERS_PER_CHARTER {
+            let seed = u8::try_from(i + 1)?;
+            let offer = make_pending_offer(seed, 5, 10)?;
+            commits.push(offer.operation);
+            offers.insert(offer.key(), offer);
+        }
+        let gen1 = make_pending_offer(1, 5, 10)?.ownership;
+        let gen2 = CharterOwnershipRef {
+            generation: 2,
+            operation: CommitToken::from_bytes([222; 16]),
+            digest: DefinitionDigest::from_bytes([222; 32]),
+        };
+        let empty_used = std::collections::BTreeSet::new();
+
+        // 1. At now=150 (< expires_at_utc=200), gen1 seller 10 is at active cap.
+        let active_q = ActiveOfferQuota {
+            commits: &commits,
+            charter: CharterId::new(5)?,
+            seller: ObjId(10),
+            current_ownership: &gen1,
+            now_utc: 150,
+            used_offers: &empty_used,
+        };
+        check_eq!(
+            check_active_offer_quota(&active_q, |_| true, |k| Ok(offers.get(k).cloned())),
+            Err(PublicationError::Capacity)
+        );
+
+        // 2. Once expired (now=200 >= expires_at_utc=200), quota frees immediately.
+        let expired_q = ActiveOfferQuota {
+            now_utc: 200,
+            ..active_q
+        };
+        check!(
+            check_active_offer_quota(&expired_q, |_| true, |k| Ok(offers.get(k).cloned())).is_ok()
+        );
+
+        // 3. Once even one offer is consumed (in `used_offers`, e.g. funded/settled/refunded),
+        //    active count drops below cap.
+        let mut one_used = std::collections::BTreeSet::new();
+        one_used.insert(commits[0]);
+        let consumed_q = ActiveOfferQuota {
+            used_offers: &one_used,
+            ..active_q
+        };
+        check!(
+            check_active_offer_quota(&consumed_q, |_| true, |k| Ok(offers.get(k).cloned())).is_ok()
+        );
+
+        // 4. After ownership transfers to a new owner (gen2, seller 11), even unexpired
+        //    offers from prior owner 10 NEVER lock out the new owner on charter 5.
+        let new_owner_q = ActiveOfferQuota {
+            commits: &commits,
+            charter: CharterId::new(5)?,
+            seller: ObjId(11),
+            current_ownership: &gen2,
+            now_utc: 150,
+            used_offers: &empty_used,
+        };
+        check!(
+            check_active_offer_quota(
+                &new_owner_q,
+                |offer| offer.seller == ObjId(11),
+                |k| Ok(offers.get(k).cloned()),
+            )
             .is_ok()
+        );
+        // Even if `is_current_title` were not filtering it, ownership generation mismatch
+        // alone prevents prior-owner offers from counting against charter 5's new owner.
+        check!(
+            check_active_offer_quota(&new_owner_q, |_| true, |k| Ok(offers.get(k).cloned()))
+                .is_ok()
         );
         Ok(())
     }

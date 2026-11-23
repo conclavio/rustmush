@@ -697,8 +697,9 @@ fn cmd_claim(
         let Some(to) = crate::provider::parse_principal(&rhs) else {
             return Err(CmdError::msg(NO_SUCH_CLAIM));
         };
-        // HIGH-37: pre-check transferability, claim standing, actor authority,
-        // live unencumbered E4 asset, and provider availability BEFORE posting
+        // HIGH-37 + P2-MOD-48: pre-check transferability, claim standing, actor
+        // authority, live unencumbered E4 asset, provider availability, AND
+        // `ClaimMove` projection reachability/capacity BEFORE posting
         // `TransferTitle` so a refused transfer never splits E4 title ownership
         // from claim tenure.
         if claim.transferability() != crate::record::Transferability::Transferable
@@ -709,55 +710,71 @@ fn cmd_claim(
         {
             return Err(CmdError::msg(NO_SUCH_CLAIM));
         }
-        let asset_ok = ctx
+        // HIGH-37: include `claim.revision()` in the idempotency key so valid
+        // multi-hop transfers (A -> B -> A) do not collide with the first key.
+        let transfer_key = mush_economy::IdempotencyKey::new(
+            "industry.claim.transfer",
+            format!("{id}/{}", claim.revision()),
+        );
+        let already_transferred = mush_economy::idempotency_resolved(ctx, &transfer_key);
+        let Some(asset) = ctx
             .w
             .module_state::<EconomyStore>()
-            .and_then(|store| store.snapshot().asset(claim.object()))
-            .is_some_and(|asset| {
-                !asset.frozen
-                    && matches!(asset.lifecycle, mush_economy::AssetLifecycle::Active)
-                    && asset.encumbrances.is_empty()
-                    && (staff || asset.title_owner == *claim.holder())
-            });
-        if !asset_ok {
+            .and_then(|store| store.snapshot().asset(claim.object()).cloned())
+        else {
+            return Err(CmdError::msg(NO_SUCH_CLAIM));
+        };
+        if asset.frozen
+            || !matches!(asset.lifecycle, mush_economy::AssetLifecycle::Active)
+            || !asset.encumbrances.is_empty()
+        {
+            return Err(CmdError::msg(NO_SUCH_CLAIM));
+        }
+        // Retry-sync path: if an earlier `@claim/transfer` already landed
+        // `TransferTitle` to `to` at this exact `(id, revision)` while
+        // `ClaimMove` did not land, re-submit `ClaimMove` without re-posting.
+        let is_retry_sync = already_transferred && asset.title_owner == to;
+        if !is_retry_sync && !staff && asset.title_owner != *claim.holder() {
             return Err(CmdError::msg(NO_SUCH_CLAIM));
         }
         if action_ref(ctx.reg, IndustryVerb::ClaimMove).is_none() {
             return Err(CmdError::msg("Industry is not available on this server."));
         }
-        // E4's own rule, reused verbatim: `AssetOp::TransferTitle` refuses with
-        // `Encumbered` while ANY encumbrance stands, so a **pledged** claim
-        // cannot be transferred and cut 3 writes no second check for it.
-        // HIGH-37: include `claim.revision()` in the idempotency key so valid
-        // multi-hop transfers (A -> B -> A) do not collide with the first key.
-        let plan = mush_economy::EconomyPlan {
-            asset_ops: vec![mush_economy::AssetOp::TransferTitle {
-                object: claim.object(),
-                to: to.clone(),
-                to_scope: None,
-            }],
-            ..mush_economy::EconomyPlan::new(
-                mush_economy::IdempotencyKey::new(
-                    "industry.claim.transfer",
-                    format!("{id}/{}", claim.revision()),
-                ),
-                actor_principal(ctx.actor),
-                mush_economy::EconomicCause::Internal {
-                    kind: SmolStr::new_static("industry.claim.transfer"),
-                    id: claim.object().0.into(),
-                },
-                Vec::new(),
-            )
-        };
-        if let Err(error) = mush_economy::post(ctx, &plan) {
-            if staff {
-                ctx.out
-                    .info(ctx.actor, format!("[staff] title refused: {error}"));
-            }
+        if !claim_move_can_project(ctx, families, id, staff) {
             return Err(CmdError::msg(NO_SUCH_CLAIM));
         }
+        if !is_retry_sync {
+            // E4's own rule, reused verbatim: `AssetOp::TransferTitle` refuses
+            // with `Encumbered` while ANY encumbrance stands, so a **pledged**
+            // claim cannot be transferred and cut 3 writes no second check for it.
+            let plan = mush_economy::EconomyPlan {
+                asset_ops: vec![mush_economy::AssetOp::TransferTitle {
+                    object: claim.object(),
+                    to: to.clone(),
+                    to_scope: None,
+                }],
+                ..mush_economy::EconomyPlan::new(
+                    transfer_key,
+                    actor_principal(ctx.actor),
+                    mush_economy::EconomicCause::Internal {
+                        kind: SmolStr::new_static("industry.claim.transfer"),
+                        id: claim.object().0.into(),
+                    },
+                    Vec::new(),
+                )
+            };
+            if let Err(error) = mush_economy::post(ctx, &plan) {
+                if staff {
+                    ctx.out
+                        .info(ctx.actor, format!("[staff] title refused: {error}"));
+                }
+                return Err(CmdError::msg(NO_SUCH_CLAIM));
+            }
+        }
+        // P2-MOD-48: always pass the canonical `claim#<16hex>` spelling so
+        // bare-hex or uppercase inputs match `ClaimMove`'s `Choice` schema.
         let parameters = json!({
-            "claim": lhs,
+            "claim": id.to_string(),
             "holder": mush_economy::principal_token(&to).as_str(),
             "revision": claim.revision(),
         });
@@ -780,20 +797,65 @@ fn cmd_claim(
         let Some(claim) = claim_by_id(ctx, families, id) else {
             return Err(CmdError::msg(NO_SUCH_CLAIM));
         };
+        // P2-MOD-47 + P2-MOD-49: authorize the caller and enforce the contest
+        // authority hierarchy BEFORE reading encumbrances (`pledged`/`disputed`),
+        // paging staff, or staging a submission. Unknown and unauthorized
+        // targets return the byte-identical `NO_SUCH_CLAIM`.
+        if !staff {
+            let dep_jur = match claim.subject() {
+                ClaimSubject::Deposit { deposit } => {
+                    deposit_by_id(ctx, families, deposit).and_then(|d| d.jurisdiction().cloned())
+                }
+                ClaimSubject::Place { .. } => None,
+            };
+            let acts_issuer = mush_economy::acts_for(ctx.w, ctx.actor, claim.issuer());
+            let acts_jur = dep_jur
+                .as_ref()
+                .is_some_and(|gov| mush_economy::acts_for(ctx.w, ctx.actor, gov));
+            if !acts_issuer && !acts_jur {
+                return Err(CmdError::msg(NO_SUCH_CLAIM));
+            }
+            let access = crate::provider::non_staff_contest_access(
+                ctx.w,
+                &claim,
+                dep_jur.as_ref(),
+                ctx.actor,
+                acts_jur,
+            );
+            let permitted = match access {
+                crate::provider::NonStaffContestAccess::Denied => false,
+                crate::provider::NonStaffContestAccess::NonReopeningOnly => {
+                    matches!(switch, "suspend" | "seize")
+                }
+                crate::provider::NonStaffContestAccess::Full => true,
+            };
+            if !permitted {
+                return Err(CmdError::msg(NO_SUCH_CLAIM));
+            }
+        }
+        let canonical_claim = id.to_string();
         if switch == "seize" && pledged(ctx, claim.object()) {
             // **Refuse and page level 2 with the command filled in**: seizure
             // would silently destroy a lender's collateral, and that is a
-            // genuine decision, not a chore. Only the subject is stopped.
-            tracing::error!(
-                target: "industry",
-                claim = %id,
-                object = claim.object().0,
-                runbook = %format!(
-                    "a pledged claim cannot be seized while its collateral stands; settle or \
-                     release the contract, then `@claim/seize {id}`"
-                ),
-                "industry: seizure refused on a pledged claim (level 2)"
-            );
+            // genuine decision, not a chore. Deduplicated per claim within
+            // `CLAIM_PAGE_COOLDOWN_SECS` (P2-MOD-49).
+            let now = ctx.w.now();
+            let should_page = ctx
+                .w
+                .module_state_mut::<IndustryStore>()
+                .is_none_or(|store| store.note_claim_page(id, CLAIM_PAGE_PLEDGED_SEIZE, now));
+            if should_page {
+                tracing::error!(
+                    target: "industry",
+                    claim = %id,
+                    object = claim.object().0,
+                    runbook = %format!(
+                        "a pledged claim cannot be seized while its collateral stands; settle or \
+                         release the contract, then `@claim/seize {id}`"
+                    ),
+                    "industry: seizure refused on a pledged claim (level 2)"
+                );
+            }
             ctx.out.info(
                 ctx.actor,
                 "That claim is pledged as collateral; seizing it would destroy a lender's \
@@ -803,23 +865,34 @@ fn cmd_claim(
         }
         if switch == "contest" && disputed(ctx, claim.object()) {
             // A contest whose adjudicator contract is itself `Disputed`
-            // **suspends the claim rather than resolving it**.
-            tracing::error!(
-                target: "industry",
-                claim = %id,
-                runbook = %format!(
-                    "the adjudicating contract for {id} is itself disputed; resolve the dispute, \
-                     then `@claim/contest {id}`"
-                ),
-                "industry: a contest over a disputed adjudicator suspends the claim (level 2)"
-            );
-            let parameters =
-                json!({ "claim": lhs, "state": "suspended", "revision": claim.revision() });
+            // **suspends the claim rather than resolving it**. Deduplicated
+            // per claim within `CLAIM_PAGE_COOLDOWN_SECS` (P2-MOD-49).
+            let now = ctx.w.now();
+            let should_page = ctx
+                .w
+                .module_state_mut::<IndustryStore>()
+                .is_none_or(|store| store.note_claim_page(id, CLAIM_PAGE_DISPUTED_CONTEST, now));
+            if should_page {
+                tracing::error!(
+                    target: "industry",
+                    claim = %id,
+                    runbook = %format!(
+                        "the adjudicating contract for {id} is itself disputed; resolve the dispute, \
+                         then `@claim/contest {id}`"
+                    ),
+                    "industry: a contest over a disputed adjudicator suspends the claim (level 2)"
+                );
+            }
+            let parameters = json!({
+                "claim": canonical_claim,
+                "state": "suspended",
+                "revision": claim.revision(),
+            });
             return submit(ctx, IndustryVerb::ClaimContest, parameters, "claim.suspend");
         }
         let contract = rhs.parse::<u64>().unwrap_or(0);
         let parameters = json!({
-            "claim": lhs,
+            "claim": canonical_claim,
             "state": state,
             "revision": claim.revision(),
             "contract": contract,
@@ -837,15 +910,21 @@ fn cmd_claim(
         // encumbrance model of its own.
         let lhs = ctx.args.lhs().trim().to_owned();
         let rhs = ctx.args.rhs().unwrap_or_default().trim().to_owned();
+        // P2-MOD-49: validate `<contract>` syntax BEFORE looking up `claim_by_id`
+        // so `@claim/pledge <guess>=bad` cannot act as a claim-existence oracle,
+        // and authorize the caller before touching E4.
+        let contract = rhs
+            .parse::<u64>()
+            .map_err(|_| CmdError::msg("Usage: @claim/pledge <claim>=<contract>"))?;
         let Some(id) = ClaimId::parse(&lhs) else {
             return Err(CmdError::msg(NO_SUCH_CLAIM));
         };
         let Some(claim) = claim_by_id(ctx, families, id) else {
             return Err(CmdError::msg(NO_SUCH_CLAIM));
         };
-        let contract = rhs
-            .parse::<u64>()
-            .map_err(|_| CmdError::msg("Usage: @claim/pledge <claim>=<contract>"))?;
+        if !staff && !mush_economy::acts_for(ctx.w, ctx.actor, claim.holder()) {
+            return Err(CmdError::msg(NO_SUCH_CLAIM));
+        }
         let plan = mush_economy::EconomyPlan {
             asset_ops: vec![mush_economy::AssetOp::Encumber {
                 object: claim.object(),
@@ -944,6 +1023,72 @@ const fn contest_state_label(state: &ContestState) -> &'static str {
         ContestState::Suspended { .. } => "suspended",
         ContestState::Seized { .. } => "seized",
     }
+}
+
+/// Level-2 page kind: refused seizure on a pledged claim (P2-MOD-49).
+const CLAIM_PAGE_PLEDGED_SEIZE: u8 = 1;
+/// Level-2 page kind: contest over a disputed adjudicator suspended the claim (P2-MOD-49).
+const CLAIM_PAGE_DISPUTED_CONTEST: u8 = 2;
+
+/// P2-MOD-48: verify `target` is reachable within `MAX_LIST_PAGES` of
+/// `families.claims` and that `ClaimMove`'s pending-sync priority bucket has
+/// room for `target` BEFORE `@claim/transfer` mutates E4 title ownership.
+fn claim_move_can_project(
+    ctx: &Ctx<'_>,
+    families: &IndustryFamilies,
+    target: ClaimId,
+    staff: bool,
+) -> bool {
+    let Some(econ) = ctx.w.module_state::<EconomyStore>() else {
+        return false;
+    };
+    let snap = econ.snapshot();
+    let mut found_target = false;
+    let mut other_pending_sync = 0usize;
+    let mut cursor: Option<String> = None;
+    let mut pages = 0;
+    loop {
+        if pages >= MAX_LIST_PAGES {
+            break;
+        }
+        pages += 1;
+        let Ok(page) = ctx.scan_action_state(&families.claims, cursor.as_deref(), INDUSTRY_PAGE)
+        else {
+            return false;
+        };
+        for entry in page.entries() {
+            let claim = entry.value();
+            if claim.id() == target {
+                found_target = true;
+                continue;
+            }
+            if claim.transferability() != crate::record::Transferability::Transferable
+                || claim.is_lapsed()
+                || !claim.contest_state().authorizes()
+            {
+                continue;
+            }
+            if !staff && !mush_economy::acts_for(ctx.w, ctx.actor, claim.holder()) {
+                continue;
+            }
+            if let Some(asset) = snap.asset(claim.object())
+                && !asset.frozen
+                && matches!(asset.lifecycle, mush_economy::AssetLifecycle::Active)
+                && asset.encumbrances.is_empty()
+                && asset.title_owner != *claim.holder()
+            {
+                other_pending_sync += 1;
+                if other_pending_sync >= crate::provider::MAX_DEPOSIT_CHOICES {
+                    return false;
+                }
+            }
+        }
+        match page.next_after().map(ToString::to_string) {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    found_target && other_pending_sync < crate::provider::MAX_DEPOSIT_CHOICES
 }
 
 /// Whether the claim's titled object carries an `Encumbrance::Collateral`.
@@ -1451,14 +1596,14 @@ fn cmd_wo(
         // C2/D2: re-check facility authorization at submit — the drafter's
         // authority may have lapsed since draft (`acts_for` is re-evaluated),
         // and the direct-offer path never ran the draft command's gate.
-        let facility_rec = ctx
+        let Some(facility_rec) = ctx
             .w
             .module_state::<IndustryStore>()
-            .and_then(|store| store.facility(order.facility()).cloned());
-        let authorized = facility_rec
-            .as_ref()
-            .is_some_and(|facility| crate::store::may_order(ctx.w, ctx.actor, facility));
-        if !authorized {
+            .and_then(|store| store.facility(order.facility()).cloned())
+        else {
+            return Err(CmdError::msg(NO_SUCH_FACILITY));
+        };
+        if !crate::store::may_order(ctx.w, ctx.actor, &facility_rec) {
             return Err(CmdError::msg(NO_SUCH_FACILITY));
         }
         if ctx
@@ -1468,10 +1613,8 @@ fn cmd_wo(
         {
             return Err(CmdError::msg("That facility is unavailable."));
         }
-        let facility_ok = facility_rec.is_some_and(|facility| {
-            facility.capacity_revision() == order.capacity_revision()
-                && facility.policy_revision() == order.policy_revision()
-        });
+        let facility_ok = facility_rec.capacity_revision() == order.capacity_revision()
+            && facility_rec.policy_revision() == order.policy_revision();
         if !facility_ok {
             return Err(CmdError::msg(
                 "that work order is stale — its facility changed; redraft it.",
@@ -1491,6 +1634,22 @@ fn cmd_wo(
             .is_some_and(|store| store.drift_cancelled(order.id()).is_some())
         {
             return Err(CmdError::msg(crate::provider::WO_REFUSED));
+        }
+        // P2-MOD-17: re-check active `InstrumentKind::Currency` and facility
+        // payee compatibility at submit before placing or reusing a hold (a
+        // direct `WoDraft` or a closed/changed payee account must not slip
+        // through `@wo/submit`).
+        if let Err(refusal) = crate::money::check_wo_accounts(
+            ctx,
+            ctx.actor,
+            order.requester(),
+            order.budget_account(),
+            facility_rec.owner(),
+        ) {
+            return Err(CmdError::msg(match refusal {
+                crate::money::AccountRefusal::NoEconomy => crate::money::LEDGER_BUSY,
+                other => other.public(),
+            }));
         }
         let placed: (WorkOrderId, mush_economy::HoldId) =
             match crate::money::live_hold(ctx, order.id()) {

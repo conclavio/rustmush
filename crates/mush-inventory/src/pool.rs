@@ -1177,6 +1177,9 @@ impl InventoryFamilies {
         commodity: &CanonicalId,
         amount: u64,
     ) -> Result<(), InventoryError> {
+        if from == to {
+            return Ok(());
+        }
         let Some((source_id, source)) = self.tranche_for(txn, from, commodity)? else {
             return Ok(());
         };
@@ -1192,7 +1195,8 @@ impl InventoryFamilies {
                     txn.replace(&self.tranches, &id, next)?;
                 }
                 // A full inherited set is not an absorbing state either: roll to
-                // the next generation, which names the full predecessor.
+                // the next generation, which names the full predecessor and carries
+                // forward any unspent `remaining` lineage credit (P2-MOD-53).
                 Err(InventoryRecordError::TrancheInherited { .. }) => {
                     let generation =
                         current
@@ -1203,20 +1207,33 @@ impl InventoryFamilies {
                                     max: MAX_TRANCHE_GENERATIONS,
                                 },
                             ))?;
-                    let id = tranche_key(to, commodity, generation)?;
+                    let next_id = tranche_key(to, commodity, generation)?;
+                    let prior_remaining = current.remaining();
+                    let total =
+                        prior_remaining
+                            .checked_add(carried)
+                            .ok_or(InventoryError::Record(
+                                InventoryRecordError::QuantityOverflow,
+                            ))?;
+                    let drained = (prior_remaining > 0)
+                        .then(|| current.checked_draw(prior_remaining))
+                        .transpose()?;
                     let next = PoolTranche::new(
-                        id,
+                        next_id,
                         to,
                         commodity.clone(),
                         generation,
                         Some(current.id()),
                         vec![source_id],
                         Vec::new(),
-                        carried,
-                        carried,
-                        current.depth(),
+                        total,
+                        total,
+                        current.depth().min(MAX_LINEAGE_DEPTH.saturating_sub(1)),
                     )?;
-                    txn.insert(&self.tranches, &id, next)?;
+                    if let Some(drained) = drained {
+                        txn.replace(&self.tranches, &id, drained)?;
+                    }
+                    txn.insert(&self.tranches, &next_id, next)?;
                 }
                 Err(other) => return Err(other.into()),
             },
@@ -1936,24 +1953,27 @@ impl InventoryFamilies {
         }
         let mut loaded = Vec::with_capacity(ordered.len());
         for id in &ordered {
-            loaded.push(
-                txn.get(&self.lots, id)?
-                    .cloned()
-                    .ok_or(InventoryError::NoLot)?,
-            );
+            let lot = txn
+                .get(&self.lots, id)?
+                .cloned()
+                .ok_or(InventoryError::NoLot)?;
+            // E7c2 fold C1 / P2-MOD-50: the authorised endpoint decides, not the record.
+            // Authorize every parent lot against `endpoint` before inspecting commodity,
+            // grade, or divisibility so a cross-endpoint lot returns `NoLot` byte-identically
+            // to a nonexistent lot.
+            if lot.endpoint() != endpoint {
+                return Err(InventoryError::NoLot);
+            }
+            loaded.push(lot);
         }
         let first = loaded.first().ok_or(InventoryError::NoLot)?;
-        // E7c2 fold C1: the authorised endpoint decides, not the record.
-        if first.endpoint() != endpoint {
-            return Err(InventoryError::NoLot);
-        }
         self.require_divisible(first)?;
         let commodity = first.commodity().clone();
         let grade = first.grade();
         let mut quantity = 0_u64;
         let mut depth = 0_u32;
         for lot in &loaded {
-            if lot.endpoint() != endpoint || lot.commodity() != &commodity || lot.grade() != grade {
+            if lot.commodity() != &commodity || lot.grade() != grade {
                 return Err(InventoryError::MergeMismatch);
             }
             quantity = quantity
@@ -2036,13 +2056,14 @@ impl InventoryFamilies {
             current.absorbed().len() >= MAX_TRANCHE_ABSORBED
                 || current.depth().max(record.depth()) >= MAX_LINEAGE_DEPTH
         });
-        let (id, next, fresh) = match (&existing, roll) {
+        let (id, next, prev_drain, fresh) = match (&existing, roll) {
             (Some((id, current)), false) => (
                 *id,
                 current.checked_absorb(lot, record.quantity(), record.depth())?,
+                None,
                 false,
             ),
-            (Some((_, current)), true) => {
+            (Some((prev_id, current)), true) => {
                 let generation =
                     current
                         .generation()
@@ -2053,6 +2074,17 @@ impl InventoryFamilies {
                             },
                         ))?;
                 let id = tranche_key(endpoint, &commodity, generation)?;
+                // P2-MOD-53: carry forward any unspent `remaining` lineage credit from
+                // the predecessor generation and drain the predecessor to 0 atomically,
+                // conserving total lineage credit without stranding prior dissolves.
+                let prior_remaining = current.remaining();
+                let total = prior_remaining.checked_add(record.quantity()).ok_or(
+                    InventoryError::Record(InventoryRecordError::QuantityOverflow),
+                )?;
+                let drained = (prior_remaining > 0)
+                    .then(|| current.checked_draw(prior_remaining))
+                    .transpose()?
+                    .map(|tranche| (*prev_id, tranche));
                 (
                     id,
                     self.fresh_tranche(
@@ -2063,7 +2095,9 @@ impl InventoryFamilies {
                         Some(current.id()),
                         lot,
                         &record,
+                        total,
                     )?,
+                    drained,
                     true,
                 )
             }
@@ -2071,12 +2105,25 @@ impl InventoryFamilies {
                 let id = tranche_key(endpoint, &commodity, 0)?;
                 (
                     id,
-                    self.fresh_tranche(id, endpoint, &commodity, 0, None, lot, &record)?,
+                    self.fresh_tranche(
+                        id,
+                        endpoint,
+                        &commodity,
+                        0,
+                        None,
+                        lot,
+                        &record,
+                        record.quantity(),
+                    )?,
+                    None,
                     true,
                 )
             }
         };
         let moved = self.credit(txn, endpoint, &commodity, record.quantity())?;
+        if let Some((prev_id, drained)) = prev_drain {
+            txn.replace(&self.tranches, &prev_id, drained)?;
+        }
         if fresh {
             txn.insert(&self.tranches, &id, next)?;
         } else {
@@ -2106,6 +2153,7 @@ impl InventoryFamilies {
         predecessor: Option<TrancheId>,
         lot: LotId,
         record: &Lot,
+        total_quantity: u64,
     ) -> Result<PoolTranche, InventoryError> {
         Ok(PoolTranche::new(
             id,
@@ -2115,8 +2163,8 @@ impl InventoryFamilies {
             predecessor,
             Vec::new(),
             vec![lot],
-            record.quantity(),
-            record.quantity(),
+            total_quantity,
+            total_quantity,
             record.depth().min(MAX_LINEAGE_DEPTH.saturating_sub(1)),
         )?)
     }

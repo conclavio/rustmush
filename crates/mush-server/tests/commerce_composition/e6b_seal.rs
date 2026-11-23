@@ -457,6 +457,11 @@ fn e6b_b8_a_sourceless_or_unregistered_canon_set_is_refused_at_offer() {
         ok(
             &mut tw,
             r.johnson,
+            &format!("@contract/party {id}=#{}", r.runner.0),
+        );
+        ok(
+            &mut tw,
+            r.johnson,
             &format!("@contract/pay {id}={} 10", r.j_acct),
         );
         ok(

@@ -309,8 +309,11 @@ fn crit18_composed_project_legal_actions_never_locks_out_on_oversized_field_clos
     assert_eq!(owner_close["closing"]["ahuna_port"]["ordinal"], 5);
 }
 
-/// **CRIT-19**: Amending and re-offering a `+bay/order` fee contract causes `verified_fee_payee`
-/// to reject it so the facility operator NEVER signs the tampered contract and cancels the order.
+/// **CRIT-19** (+ **P2-MOD-13** defense-in-depth): Amending a `+bay/order` fee contract and
+/// attempting to inject an unviewable operator-owned asset deliverable is rejected upfront by
+/// `require_viewable_deliver_asset` (`P2-MOD-13`), AND amending/re-offering with a viewable
+/// deliverable still causes `verified_fee_payee` (`CRIT-19`) to reject the tampered contract so
+/// the facility operator NEVER signs it and cancels the order.
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn crit19_tampered_bay_order_fee_contract_is_refused_by_operator() {
     let mut rig = stocked();
@@ -333,9 +336,7 @@ async fn crit19_tampered_bay_order_fee_contract_is_refused_by_operator() {
     assert!(taken.contains("taken in the workshop"), "{taken}");
     let order = order_of(&rig, spare);
     let contract_id = order.contract.expect("fee contract");
-    // Locate the workshop operator's leased escort (still titled to the operator org) and attempt
-    // the exact CRIT-19 exploit: amend the offered fee contract, attach a TitleTransfer
-    // deliverable stealing the operator's asset, and re-offer!
+    // Locate the workshop operator's leased escort (still titled to the operator org).
     let leased_escort = rigs_of(&rig.tw, captain)[0];
     let operator_org = match rig
         .tw
@@ -362,12 +363,43 @@ async fn crit19_tampered_bay_order_fee_contract_is_refused_by_operator() {
         captain,
         &format!("@contract/amend #{contract_id}"),
     );
-    let delivered = run(
+
+    // Layer 1 (P2-MOD-13): captain cannot inject an unviewable operator-owned asset deliverable
+    // into the amended fee contract; `require_viewable_deliver_asset` returns uniform
+    // `"No such asset."` and leaves `deliverables` empty.
+    let blocked = run(
         &mut rig.tw,
         captain,
         &format!(
             "@contract/deliver #{contract_id}=title #{} org:{operator_name}->#{}",
             leased_escort.0, captain.0
+        ),
+    );
+    assert_eq!(
+        blocked.trim(),
+        "No such asset.",
+        "P2-MOD-13 must reject unviewable operator asset deliverable: {blocked}"
+    );
+    let draft = rig
+        .tw
+        .world()
+        .module_state::<EconomyStore>()
+        .and_then(|e| e.snapshot().contract(ContractId(contract_id)).cloned())
+        .expect("contract");
+    assert!(
+        draft.consent.terms.deliverables.is_empty(),
+        "rejected deliverable must not mutate contract draft"
+    );
+
+    // Layer 2 (CRIT-19): captain injects a deliverable on an asset they CAN view (`spare`),
+    // re-offers the tampered fee contract, and advances past `due_ic`. `verified_fee_payee`
+    // must STILL reject the tampered contract and cancel the order without signing.
+    let delivered = run(
+        &mut rig.tw,
+        captain,
+        &format!(
+            "@contract/deliver #{contract_id}=title #{} #{}->org:{operator_name}",
+            spare.0, captain.0
         ),
     );
     let _ = run(
@@ -384,7 +416,7 @@ async fn crit19_tampered_bay_order_fee_contract_is_refused_by_operator() {
     assert_eq!(c.state, ContractState::Offered);
     assert!(
         !c.consent.terms.deliverables.is_empty(),
-        "attacker injected deliverable into fee contract: {delivered}"
+        "attacker injected viewable deliverable into fee contract: {delivered}"
     );
 
     // Advance IC clock past `due_ic`: operator MUST refuse to sign and cancel the order!
@@ -410,6 +442,11 @@ async fn crit19_tampered_bay_order_fee_contract_is_refused_by_operator() {
         title_of(&rig, leased_escort),
         Some(PrincipalId::Organization(operator_org)),
         "operator asset title was never stolen"
+    );
+    assert_eq!(
+        title_of(&rig, spare),
+        Some(PrincipalId::Object(captain)),
+        "tampered deliverable on captain's own asset never executed"
     );
     assert_eq!(
         tacsim::field_ops::assess_tacsim_unit(&unit(&rig, spare), None)

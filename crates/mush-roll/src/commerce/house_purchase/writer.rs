@@ -810,11 +810,14 @@ impl RegisteredHouseWriter {
         terms.matches_facts(facts)?;
         check_purchase(purchase, terms, facts)?;
         // Doc 17h cut M8d fix round K8: a revoked buyer is refused before money is held.
-        super::super::registry_inspection::principal::refuse(
+        // P2-MOD-54: a Registry-barred House organization is also refused before money is held.
+        let families = &self.registration()?.families;
+        super::super::registry_inspection::principal::refuse(ctx, txn, families, purchase.buyer)?;
+        super::super::registry_inspection::principal::refuse_principal(
             ctx,
             txn,
-            &self.registration()?.families,
-            purchase.buyer,
+            families,
+            &facts.issuer().principal(),
         )?;
         let commit = ctx.commit_token();
         let marker = output.marker();
@@ -994,7 +997,14 @@ impl RegisteredHouseWriter {
             )?;
             term.matches_current(&licence)?;
             // Doc 17h cut M8d D4: a principal the Registry revoked holds no new licence.
+            // P2-MOD-54: a Registry-barred House organization may not grant new licences.
             super::super::registry_inspection::principal::refuse(ctx, txn, f, licence.holder())?;
+            super::super::registry_inspection::principal::refuse_principal(
+                ctx,
+                txn,
+                f,
+                &before.issuer.principal(),
+            )?;
             txn.insert(&f.paid_licences, &licence_key, licence.clone())
                 .map_err(invalid)?;
             txn.insert(&f.paid_terms, &term_key, term.clone())

@@ -1712,6 +1712,60 @@ fn run_custody_effects(
 /// the shape outright rather than trusting every caller to build only one.
 const MAX_CUSTODY_EFFECTS_AT_MODULE: usize = 1;
 
+/// Evaluate `from`'s approval rule for `plan` BEFORE destination account validation
+/// (P2-MOD-42), minting or serving an `ApprovalRequest` immediately when approval is
+/// required so `@econ/pay` cannot distinguish nonexistent/inactive/mismatched foreign
+/// destinations from active ones behind an approval-ruled source.
+pub(crate) fn precheck_pay_approval(
+    ctx: &mut Ctx<'_>,
+    plan: &EconomyPlan,
+    from: AccountId,
+    neg: Amount,
+) -> Result<Option<PostOutcome>, EconomyError> {
+    let need = {
+        let store = ctx
+            .w
+            .module_state::<EconomyStore>()
+            .ok_or(EconomyError::EconomyFrozen)?;
+        if store.frozen {
+            return Err(EconomyError::EconomyFrozen);
+        }
+        let providers = store.providers();
+        let world_auth = WorldAuth { w: ctx.w };
+        let custody = WorldCustody {
+            w: ctx.w,
+            providers,
+        };
+        let facts = crate::facts::scoped::ContextualWorldFacts {
+            ctx,
+            providers: store.facts(),
+        };
+        let now = ctx.w.now();
+        let gate = store.key_gate();
+        let env = ValidateEnv {
+            auth: &world_auth,
+            custody: &custody,
+            facts: &facts,
+            now,
+            ic_now: ctx.w.game_now_unix(),
+            next_hold_id: store.peek_next_hold(),
+            spent: spent_for_plan(store, plan, now),
+            keys: &gate,
+        };
+        crate::engine::evaluate_source_approval(
+            store.snapshot(),
+            &env,
+            crate::hash::plan_hash(plan),
+            from,
+            neg,
+        )?
+    };
+    match need {
+        Some(need) => mint_or_serve_approval(ctx, &need, &plan.actor).map(Some),
+        None => Ok(None),
+    }
+}
+
 /// Serve, or mint, the [`ApprovalRequest`] a `NeedsApproval` plan needs (§4.6).
 ///
 /// **No money moves here**, so the confirmation rides the ordinary (non-strict)
@@ -2920,6 +2974,19 @@ pub fn reprice_player_obligation(
     if amount.is_zero() || amount.is_negative() {
         return Err(EconomyError::ZeroLine(0));
     }
+    // P2-MOD-76: re-check live `WorldAuth::authorize` against the NEW amount so a
+    // `GrantLimit`-capped officer cannot reprice an obligation past their authority.
+    let new_debit = amount.checked_neg().ok_or(EconomyError::Unauthorized)?;
+    let authorized = ctx
+        .w
+        .module_state::<EconomyStore>()
+        .and_then(|s| s.snapshot().account(o.debit_account))
+        .is_some_and(|account| {
+            (WorldAuth { w: ctx.w }).authorize(&PrincipalId::Object(ctx.actor), account, new_debit)
+        });
+    if !authorized {
+        return Err(EconomyError::Unauthorized);
+    }
     o.amount = amount;
     o.revision = o.revision.saturating_add(1);
     put_obligation(ctx, o);
@@ -3528,17 +3595,42 @@ pub(crate) fn put_contract(
     Ok(())
 }
 
+/// Emit a `ContractChanged` observer event while temporarily suppressing officer notice
+/// fan-out for `suppressed_orgs` (P2-MOD-12: self-cancel/amend on unaccepted external orgs).
+pub(crate) fn emit_contract_changed_with_suppression(
+    ctx: &mut Ctx<'_>,
+    event: &crate::record::EconomicEvent,
+    suppressed_orgs: &[mush_org::OrgId],
+) {
+    let previous = if suppressed_orgs.is_empty() {
+        None
+    } else {
+        ctx.w.module_state_mut::<EconomyStore>().map(|store| {
+            let prev = store.suppressed_notice_orgs.clone();
+            store
+                .suppressed_notice_orgs
+                .extend(suppressed_orgs.iter().copied());
+            prev
+        })
+    };
+    crate::observer::emit(ctx, event);
+    if let (Some(prev), Some(store)) = (previous, ctx.w.module_state_mut::<EconomyStore>()) {
+        store.suppressed_notice_orgs = prev;
+    }
+}
+
 /// Install the already-admitted document and publish its normal legacy event.
 pub(crate) fn install_contract_write(ctx: &mut Ctx<'_>, prepared: LegacyContractWrite) {
     let c = prepared.contract;
-    let (changed, created_by, filed_salvage_claim) = {
+    let (before_rec, changed, created_by, filed_salvage_claim) = {
         let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else {
             return;
         };
         // Only a real **state transition** is an event (E4c). A contract doc is
         // rewritten by every builder verb, every acceptance and every failed settle
         // attempt; publishing all of those would make the canon bridge a firehose.
-        let before = store.snapshot.contract(c.id).map(|p| p.state.kind());
+        let before_rec = store.snapshot.contract(c.id).cloned();
+        let before = before_rec.as_ref().map(|p| p.state.kind());
         let after = c.state.kind();
         // P2-MOD-11: stamp the immutable creator on initial contract creation.
         if before.is_none() {
@@ -3546,6 +3638,7 @@ pub(crate) fn install_contract_write(ctx: &mut Ctx<'_>, prepared: LegacyContract
         }
         store.snapshot.put_contract(c.clone());
         (
+            before_rec,
             before != Some(after),
             store.snapshot.contract_creator(c.id),
             store.snapshot.is_filed_salvage_claim(c.id),
@@ -3562,13 +3655,19 @@ pub(crate) fn install_contract_write(ctx: &mut Ctx<'_>, prepared: LegacyContract
             crate::contract::ContractState::Settled { transaction } => Some(*transaction),
             _ => None,
         };
-        crate::observer::emit(
+        let suppressed = crate::contract_live::suppressed_external_orgs_for_transition(
+            ctx,
+            before_rec.as_ref(),
+            &c,
+        );
+        emit_contract_changed_with_suppression(
             ctx,
             &crate::record::EconomicEvent::ContractChanged {
                 id: c.id,
                 state: c.state.kind(),
                 transaction,
             },
+            &suppressed,
         );
     }
 }

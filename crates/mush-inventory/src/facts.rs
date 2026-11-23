@@ -65,8 +65,11 @@ impl FactProvider for InventoryFactProvider {
             return None;
         }
         let store = w.module_state::<InventoryStore>()?;
-        // A truncated mirror cannot distinguish "no such fact" from "the fact is
-        // past the page budget", so it answers neither.
+        // An incomplete mirror (pre-reconcile, scan failure, page-budget overflow,
+        // or exact core-input audit failure) cannot distinguish "no such fact" from
+        // "the fact was never reached", so it answers neither. When a complete scan
+        // slid past `MAX_APPLIED_MARKERS`, the newest window stays answerable and
+        // evicted older markers fail closed as `None` (`P2-MOD-52`).
         if !store.is_complete() {
             return None;
         }

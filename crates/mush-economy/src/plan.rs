@@ -905,6 +905,8 @@ impl EconomyError {
             EconomyError::Unauthorized
                 | EconomyError::ScopeOwnerMismatch
                 | EconomyError::NotBalanced(_)
+                | EconomyError::InactiveInstrument(_)
+                | EconomyError::NoSuchInstrument(_)
         )
     }
 }

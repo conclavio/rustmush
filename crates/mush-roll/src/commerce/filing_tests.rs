@@ -1153,6 +1153,407 @@ fn source_revalidation_after_custody_refuses_every_filing_image_and_fail_stops()
     assert!(f.engine.action_state().reservation_lost());
 }
 
+/// **P2-MOD-54**: a Registry-barred House organization (`RevokedPrincipal` for
+/// `PrincipalId::Organization(org)`) is refused on House catalogue listings
+/// (`HouseSaleRequest::publication`), fresh House sales and House renewals
+/// (`HouseSaleRequest::listed`, which `house_renewal::reader` calls), and in
+/// transaction-time principal checks (`barred_principal`, called by
+/// `HousePurchaseWriter::{fund, terminal}` via `refuse_principal`), resuming
+/// once World IC time reaches `until_ic`.
+#[test]
+fn p2_mod_54_barred_house_org_is_refused_for_catalogue_sales_and_renewals() {
+    use super::house_catalogue::{HouseIssuer, HouseSaleFacts, HouseSaleReader, HouseSaleRequest};
+    use super::records::Record;
+    use mush_core::read_service::{OwnerReadError, OwnerReadHandle};
+    use mush_org::{OrgId, OrgScopeId};
+
+    type HouseAnswers = Arc<Mutex<Option<Result<HouseSaleFacts, OwnerReadError>>>>;
+    struct HouseQuery {
+        reader: OwnerReadHandle<HouseSaleReader>,
+        answers: HouseAnswers,
+    }
+    impl mush_core::module::QueryHandler for HouseQuery {
+        fn query(
+            &self,
+            _: &World,
+            _: ObjId,
+            _: &Value,
+        ) -> Result<mush_proto::OutputEvent, mush_proto::RichText> {
+            Err(mush_proto::RichText::plain("live context required"))
+        }
+        fn query_with_context(
+            &self,
+            ctx: &mush_core::module::HookReadContext<'_>,
+            _: ObjId,
+            args: &Value,
+        ) -> Result<mush_proto::OutputEvent, mush_proto::RichText> {
+            let licence = super::LicenceId::new(1).unwrap();
+            let request = if args == "publication" {
+                HouseSaleRequest::publication(licence)
+            } else {
+                let issuer = HouseIssuer::new(OrgId(0), OrgScopeId(0)).unwrap();
+                HouseSaleRequest::listed(licence, issuer)
+            };
+            *self.answers.lock().unwrap() = Some(ctx.read_owner(&self.reader, request));
+            Ok(mush_proto::OutputEvent::Sys(mush_proto::RichText::plain(
+                "observed",
+            )))
+        }
+    }
+    struct HouseMarket;
+    impl GameModule for HouseMarket {
+        fn name(&self) -> &'static str {
+            "market"
+        }
+        fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+            let reader =
+                HouseSaleReader::request(reg, &reference("tacsim", manifest_descriptor()))?;
+            let answers: HouseAnswers = Arc::new(Mutex::new(None));
+            reg.state(answers.clone());
+            reg.query_handler("house.sale.test", Arc::new(HouseQuery { reader, answers }))
+        }
+    }
+
+    let house_cfg = config().with_house_filings().unwrap();
+    let build_engine = |sources: Sources| -> (Box<Engine>, Handles) {
+        let issuer = SystemPrincipalId::new("roll.registry").unwrap();
+        let policy = mush_economy::registry_filing::InitialFilingPolicy::new(
+            issuer.clone(),
+            AccountId(1),
+            Amount::from_minor(100),
+            CatalogRef {
+                ruleset: "roll".into(),
+                code: "mind_charter".into(),
+            },
+        )
+        .unwrap();
+        let economy = EconomyModule::new()
+            .with_title_issuers(vec![issuer])
+            .with_initial_filing(policy, house_cfg.initial_filing_action().unwrap())
+            .with_house_initial_filing(house_cfg.house_filing_action().unwrap());
+        let handles = Arc::new(Mutex::new(None));
+        let modules: Vec<Box<dyn GameModule>> = vec![
+            Box::new(ReadManifest(None)),
+            Box::new(HydratedRoll {
+                module: RollModule::with_writers(["tacsim"]).with_commerce(house_cfg.clone()),
+                sources,
+                handles: handles.clone(),
+            }),
+            Box::new(economy),
+            Box::new(mush_org::OrgModule::new()),
+            Box::new(HouseMarket),
+        ];
+        let engine = boxed_test_engine(World::new_minimal(), Registry::new(), modules).unwrap();
+        let handles = handles.lock().unwrap().clone().unwrap();
+        (engine, handles)
+    };
+
+    // Bootstrap disk + rating + House org account.
+    let mut disk = Disk::new();
+    let mut initialize = setup::engine(CommerceMode::Initialize);
+    setup::boot(&mut initialize).unwrap();
+    let (prepared, _) = initialize
+        .prepare_registered_composed_authoritative_action(
+            &setup::setup_action(),
+            &setup::invocation(),
+            token(1),
+        )
+        .unwrap();
+    let (writes, install) = prepared.into_parts();
+    retain(&mut disk, &writes);
+    initialize.install_composed_action(install).unwrap();
+    let (sources, revision) = saved(&mut disk);
+    seed_accounts(&mut disk, true);
+    let house_account = Account {
+        id: AccountId(2),
+        owner: PrincipalId::Organization(OrgId(0)),
+        instrument: InstrumentId::new("cr").unwrap(),
+        scope: Some(OrgScopeId(0)),
+        name: "house treasury".into(),
+        status: AccountStatus::Active,
+        posted_balance: Amount::ZERO,
+        held_amount: Amount::ZERO,
+        credit: CreditPolicy {
+            allow_negative: true,
+            floor: Some(Amount::from_minor(-1000)),
+        },
+        last_journal_seq: 0,
+        revision: 1,
+        approval: None,
+        last_hold_seq: 0,
+    };
+    disk.insert(("economy".into(), "account:2".into()), json!(house_account));
+
+    let (mut staging, (_, ratings)) = build_engine(sources.clone());
+    let identity = RevisionIdentity::capture(&revision).unwrap();
+    let definition = DefinitionDigest::for_canonical_value(
+        "roll.filing.fixture.definition.v1",
+        &revision.envelope().profiles,
+    )
+    .unwrap();
+    let subject = RatingSubject::new(
+        identity,
+        DefinitionDigest::for_canonical_value(
+            "roll.filing.fixture.envelope.v1",
+            &json!(revision.envelope()),
+        )
+        .unwrap(),
+        schema_line_digest(revision.envelope()).unwrap(),
+        definition,
+        definition,
+        RatingClass::I,
+    );
+    let plan = DefinitionDigest::for_canonical_value(
+        "roll.filing.fixture.plan.v1",
+        &json!({"one_structural_case":true}),
+    )
+    .unwrap();
+    let manifest = reference("tacsim", manifest_descriptor());
+    let complete = super::rating::test_support::complete_rating(
+        subject,
+        RatingCompatibility::combat_v1(manifest.digest()),
+        plan,
+        token(2),
+        staging.world.world_ic_now(),
+    )
+    .unwrap();
+    let rating = complete.receipt.reference().unwrap();
+    let mut txn = staging.action_transaction(&ratings.receipts).unwrap();
+    txn.insert(
+        &ratings.receipts,
+        &complete.receipt.publication().job(),
+        complete.receipt.clone(),
+    )
+    .unwrap();
+    for page in &complete.pages {
+        txn.insert(&ratings.pages, &page.key(), page.clone())
+            .unwrap();
+    }
+    txn.insert(&ratings.jobs, &complete.job.job(), complete.job.clone())
+        .unwrap();
+    txn.insert(
+        &ratings.executions,
+        &complete.job.job(),
+        complete.execution.clone(),
+    )
+    .unwrap();
+    txn.insert(
+        &ratings.completions,
+        &complete.completion.job(),
+        complete.completion.clone(),
+    )
+    .unwrap();
+    txn.insert(
+        &ratings.status,
+        &complete.receipt.publication().job(),
+        complete.status.clone(),
+    )
+    .unwrap();
+    let (ops, install) = txn.prepare().unwrap().into_parts();
+    retain_ops(&mut disk, &ops);
+    staging.install_prepared_action(install).unwrap();
+    for anchor in [
+        RootAnchor::Rating {
+            job: complete.receipt.publication().job(),
+            id: complete.receipt.id(),
+        },
+        RootAnchor::RatingJob(complete.job.job()),
+    ] {
+        let row = crate::model::ReferenceRecord {
+            format: crate::FORMAT,
+            key: anchor.key(),
+            revisions: vec![revision.reference()],
+        };
+        row.validate().unwrap();
+        disk.insert((crate::NS.into(), row.key.key()), json!(row));
+    }
+
+    let (mut engine, (families, _)) = build_engine(sources);
+    load(&mut engine, &disk).unwrap();
+
+    let run = |engine: &mut Engine, actor: ObjId, line: &str| {
+        engine.step(
+            mush_core::Inbound::Cmd {
+                conn: 1,
+                actor,
+                line: line.into(),
+            },
+            &mut Outbox::new(),
+            &mut mush_core::engine::Effects::new(),
+        );
+    };
+    run(&mut engine, GOD, "@org/create House");
+    let house_org = engine
+        .world
+        .module_state::<mush_org::OrgStore>()
+        .unwrap()
+        .state()
+        .orgs()
+        .find(|o| o.name.as_str() == "House")
+        .unwrap();
+    let org_id = house_org.id;
+    let scope_id = house_org.root_scope;
+    assert_eq!((org_id, scope_id), (OrgId(0), OrgScopeId(0)));
+    run(
+        &mut engine,
+        GOD,
+        &format!(
+            "@org/grant #{}=House {}",
+            GOD.0,
+            mush_economy::registry_filing::HOUSE_PUBLICATION_CAPABILITY
+        ),
+    );
+    run(
+        &mut engine,
+        GOD,
+        &format!("@org/grant #{}=House asset.title.transfer", GOD.0),
+    );
+    run(
+        &mut engine,
+        GOD,
+        &format!("@org/grant #{}=House economy.account.post", GOD.0),
+    );
+    let buyer = engine
+        .world
+        .create(
+            mush_core::ObjKind::Player,
+            "Buyer",
+            GOD,
+            Some(mush_core::LIMBO),
+        )
+        .unwrap();
+
+    // Reserve shell and file the House mind.
+    let reserve = reference(
+        "roll",
+        descriptor(
+            "action",
+            mush_core::reserved_shell::RESERVE_ACTION,
+            json!({"format":1,"purpose":"roll.initial_filing","object":"inert"}),
+        ),
+    );
+    let (prepared, _) = engine
+        .prepare_registered_composed_authoritative_action(
+            &reserve,
+            &invocation(3, json!({})),
+            token(3),
+        )
+        .unwrap();
+    let (_, install) = prepared.into_parts();
+    engine.install_composed_action(install).unwrap();
+
+    let house_req = invocation(
+        4,
+        json!({
+            "shell_request": RequestUid::from_bytes([3; 16]),
+            "mind": revision.reference().key.mind,
+            "revision": revision.reference().key.number,
+            "revision_digest": revision.reference().digest,
+            "rating_job": rating.job(),
+            "rating_id": rating.id(),
+            "rating_digest": rating.receipt_digest(),
+            "payer": 2,
+            "charter_name": "HouseMind",
+            "organization": org_id.0,
+            "scope": scope_id.0,
+        }),
+    );
+    let (prepared, _) = engine
+        .prepare_registered_composed_authoritative_action(
+            &house_cfg.house_filing_action().unwrap(),
+            &house_req,
+            token(4),
+        )
+        .unwrap();
+    let (_, install) = prepared.into_parts();
+    engine.install_composed_action(install).unwrap();
+
+    let read_house = |engine: &mut Engine, actor: ObjId, mode: &str| {
+        engine.step(
+            mush_core::Inbound::Query {
+                conn: 1,
+                actor,
+                id: 1,
+                name: "house.sale.test".into(),
+                args: json!(mode),
+            },
+            &mut Outbox::new(),
+            &mut mush_core::engine::Effects::new(),
+        );
+        engine
+            .world
+            .module_state::<HouseAnswers>()
+            .unwrap()
+            .lock()
+            .unwrap()
+            .take()
+            .unwrap()
+    };
+
+    // Before barring: catalogue listing (Publication) and fresh sale / renewal (Listed) succeed.
+    assert!(read_house(&mut engine, GOD, "publication").is_ok());
+    assert!(read_house(&mut engine, buyer, "listed").is_ok());
+
+    // Bar the House organization principal over [now, now + 10).
+    let now = engine.world.world_ic_now().at;
+    let until = now + 10;
+    let bar = super::registry_inspection::RevokedPrincipal {
+        format: 1,
+        principal: PrincipalId::Organization(org_id),
+        from_ic: now,
+        until_ic: until,
+        inspection: token(50),
+        hull: ObjId(12),
+        seq: 1,
+        operation: token(51),
+        operator: ObjId(5),
+    };
+    let mut txn = engine
+        .action_transaction(&families.revoked_principals)
+        .unwrap();
+    txn.insert(&families.revoked_principals, &bar.key(), bar)
+        .unwrap();
+    let (_, install) = txn.prepare().unwrap().into_parts();
+    engine.install_prepared_action(install).unwrap();
+
+    // While barred: catalogue listing, fresh sales, and renewal reads all refuse;
+    // transaction-level check (`barred_principal`) also reports barred.
+    assert_eq!(
+        read_house(&mut engine, GOD, "publication"),
+        Err(OwnerReadError::Refused),
+        "barred House org must not publish catalogue listings"
+    );
+    assert_eq!(
+        read_house(&mut engine, buyer, "listed"),
+        Err(OwnerReadError::Refused),
+        "barred House org must not issue fresh sales or renewals"
+    );
+    {
+        let mut txn = engine
+            .action_transaction(&families.revoked_principals)
+            .unwrap();
+        assert!(
+            super::registry_inspection::principal::barred_principal(
+                &mut txn,
+                &families,
+                &PrincipalId::Organization(org_id),
+                now,
+            )
+            .unwrap()
+        );
+    }
+
+    // Advance World IC clock past `until`: catalogue listing and listed sales/renewals resume.
+    let wall = engine.world.now();
+    let mut step = 1;
+    while engine.world.world_ic_now().at < until {
+        engine.world.set_now(wall + step);
+        step *= 2;
+    }
+    assert!(read_house(&mut engine, GOD, "publication").is_ok());
+    assert!(read_house(&mut engine, buyer, "listed").is_ok());
+}
+
 #[path = "sale_reader/tests.rs"]
 mod sale_reads;
 

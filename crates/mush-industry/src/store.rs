@@ -60,6 +60,12 @@ use crate::record::{
 };
 use crate::workorder::WorkOrderMarker;
 
+/// Cooldown between repeated level-2 staff pages for the same `(claim, kind)`
+/// in `@claim/*` (P2-MOD-49; matches `mush_economy::ESCALATION_RENOTIFY_SECS`).
+pub const CLAIM_PAGE_COOLDOWN_SECS: i64 = 3_600;
+/// Cap on tracked level-2 `@claim/*` page cooldown entries in RAM (P2-MOD-49).
+pub const MAX_CLAIM_PAGES: usize = 256;
+
 /// The document key one deposit's disclosure map lives at.
 #[must_use]
 pub fn survey_key(deposit: OreDepositId) -> SmolStr {
@@ -331,6 +337,11 @@ pub struct IndustryStore {
     /// budget or failed. Callers that enforce work-order caps or delivery gates
     /// fail CLOSED when this is true.
     orders_truncated: bool,
+    /// P2-MOD-49: bounded per-claim cooldown table `(claim_id, kind) -> last_paged_wall_secs`
+    /// deduplicating level-2 `@claim/seize` (pledged) and `@claim/contest` (disputed) staff pages.
+    claim_pages: BTreeMap<(crate::record::ClaimId, u8), i64>,
+    /// P2-MOD-49: total deduplicated level-2 `@claim/*` staff pages emitted since boot.
+    claim_pages_emitted: u64,
 }
 
 impl IndustryStore {
@@ -612,6 +623,41 @@ impl IndustryStore {
             self.attempt_seq = 0;
         }
         self.attempt_seq
+    }
+
+    /// Record a level-2 `@claim/*` staff page for `(claim, kind)` at wall second
+    /// `now`, returning `true` iff a fresh page should be emitted (not already
+    /// paged within [`CLAIM_PAGE_COOLDOWN_SECS`]). Bounded at [`MAX_CLAIM_PAGES`]
+    /// (P2-MOD-49).
+    pub fn note_claim_page(&mut self, claim: crate::record::ClaimId, kind: u8, now: i64) -> bool {
+        let key = (claim, kind);
+        if let Some(&last) = self.claim_pages.get(&key)
+            && now.saturating_sub(last) < CLAIM_PAGE_COOLDOWN_SECS
+        {
+            return false;
+        }
+        if !self.claim_pages.contains_key(&key) && self.claim_pages.len() >= MAX_CLAIM_PAGES {
+            self.claim_pages
+                .retain(|_, last| now.saturating_sub(*last) < CLAIM_PAGE_COOLDOWN_SECS);
+            if self.claim_pages.len() >= MAX_CLAIM_PAGES
+                && let Some(oldest) = self
+                    .claim_pages
+                    .iter()
+                    .min_by_key(|(_, last)| **last)
+                    .map(|(k, _)| *k)
+            {
+                self.claim_pages.remove(&oldest);
+            }
+        }
+        self.claim_pages.insert(key, now);
+        self.claim_pages_emitted = self.claim_pages_emitted.saturating_add(1);
+        true
+    }
+
+    /// Total deduplicated level-2 `@claim/*` staff pages emitted since boot (P2-MOD-49).
+    #[must_use]
+    pub const fn claim_pages_emitted(&self) -> u64 {
+        self.claim_pages_emitted
     }
 }
 

@@ -490,8 +490,14 @@ fn quarantine(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     if !store.is_complete() {
         lines.push(
-            "  the applied-marker mirror is truncated; every inventory fact answers \
-             unsatisfied until the family is pruned"
+            "  inventory reconciliation is incomplete; every inventory fact answers \
+             unsatisfied until reconciliation finishes within budget"
+                .to_owned(),
+        );
+    } else if store.markers_truncated() {
+        lines.push(
+            "  the applied-marker mirror slid past its newest-window cap; older markers \
+             outside the newest window answer unsatisfied until aged endpoints prune"
                 .to_owned(),
         );
     }
@@ -804,12 +810,23 @@ fn move_stock(
     let to = parse_endpoint(&rhs).ok_or_else(|| CmdError::msg(NO_SUCH_ENDPOINT))?;
     // Doc 48e (exchange G7; 48d C-03): a player's move is the game's to judge (where they stand,
     // which vaults, what is under sale); staff move as before.
-    if let Some(policy) = move_policy
-        && !mush_core::perm::has_role(ctx.w, ctx.actor, mush_core::Role::Royalty)
-    {
-        policy
-            .admit(ctx.w, ctx.actor, from, to)
-            .map_err(CmdError::msg)?;
+    // P2-MOD-51: enforce caller take-authority and live status on both endpoints before
+    // consulting `MovePolicy`, so unauthorized, inactive, and nonexistent endpoints return
+    // byte-identical `NO_SUCH_ENDPOINT` without disclosing vault type, escrow/scrap/sale/charter
+    // status, or port locality.
+    if !mush_core::perm::has_role(ctx.w, ctx.actor, mush_core::Role::Royalty) {
+        if !crate::provider::may_take(ctx.w, ctx.actor, from)
+            || !crate::provider::may_take(ctx.w, ctx.actor, to)
+            || !endpoint_status(ctx.w, from).is_live()
+            || !endpoint_status(ctx.w, to).is_live()
+        {
+            return Err(CmdError::msg(NO_SUCH_ENDPOINT));
+        }
+        if let Some(policy) = move_policy {
+            policy
+                .admit(ctx.w, ctx.actor, from, to)
+                .map_err(CmdError::msg)?;
+        }
     }
     submit(
         ctx,
@@ -855,7 +872,35 @@ fn merge(ctx: &mut Ctx<'_>, families: &InventoryFamilies) -> Result<(), CmdError
     if ids.len() < 2 {
         return Err(CmdError::msg("Usage: @inv/merge <lot>,<lot>…"));
     }
-    let endpoint = divisible_lot_endpoint_text(ctx, families, ids[0])?;
+    // P2-MOD-50: authorize every named lot against the actor's live endpoints before checking
+    // endpoint agreement or indivisibility, so any nonexistent or unauthorized lot anywhere in
+    // the list returns byte-identical `NO_SUCH_LOT`.
+    let live = crate::provider::live_endpoints(ctx.w, ctx.actor);
+    let mut resolved = Vec::with_capacity(ids.len());
+    for id in &ids {
+        let Ok(Some(record)) = ctx.action_state(&families.lots, id) else {
+            return Err(CmdError::msg(NO_SUCH_LOT));
+        };
+        let endpoint = record.endpoint();
+        if !live.contains(&endpoint.vault()) {
+            return Err(CmdError::msg(NO_SUCH_LOT));
+        }
+        resolved.push((endpoint, record.commodity().clone()));
+    }
+    let first_endpoint = resolved[0].0;
+    for (endpoint, commodity) in &resolved {
+        if *endpoint != first_endpoint {
+            return Err(CmdError::msg(
+                crate::InventoryError::MergeMismatch.to_string(),
+            ));
+        }
+        if families.is_indivisible(commodity) {
+            return Err(CmdError::msg(
+                crate::InventoryError::Indivisible.to_string(),
+            ));
+        }
+    }
+    let endpoint = first_endpoint.vault().0.to_string();
     let list = ids
         .iter()
         .map(ToString::to_string)

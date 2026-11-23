@@ -102,6 +102,11 @@ pub const OUTCOME_ID: &str = "industry_result";
 /// Largest ore-body choice list one offer publishes. Well inside K's
 /// `MAX_PROJECTED_ACTION_CHOICES` (256).
 pub const MAX_DEPOSIT_CHOICES: usize = 64;
+/// Maximum encumbered claim-object IDs carried in one `ClaimContest` offer's
+/// `CLAIM_CONTEST_PLEDGED` or `CLAIM_CONTEST_DISPUTED` list (P2-MOD-78).
+/// Two lists of at most 256 `u32` IDs stay well inside
+/// `MAX_PROJECTED_LEGAL_ACTION_BYTES` (64 KiB).
+pub const MAX_CONTEST_ENCUMBRANCES: usize = 256;
 /// Largest commodity id one parameter may carry.
 pub const MAX_COMMODITY_BYTES: usize = 64;
 /// Largest facility book one `WoDraft` offer publishes.
@@ -422,6 +427,18 @@ pub const CLAIM_CONTEST_PLEDGED: &str = "claim_contest_pledged";
 /// offer (`SubmitSelf`) cannot mark a claim `"contested"` while its adjudicator
 /// is itself disputed.
 pub const CLAIM_CONTEST_DISPUTED: &str = "claim_contest_disputed";
+/// Server-authored fail-closed flag set when the staff `ClaimContest` pledged
+/// encumbrance scan hit [`MAX_CONTEST_ENCUMBRANCES`] or `MAX_LIST_PAGES`
+/// (P2-MOD-78): refuses seizure rather than risking collateral destruction.
+pub const CLAIM_CONTEST_PLEDGED_TRUNCATED: &str = "claim_contest_pledged_truncated";
+/// Server-authored fail-closed flag set when the staff `ClaimContest` disputed
+/// encumbrance scan hit [`MAX_CONTEST_ENCUMBRANCES`] or `MAX_LIST_PAGES`
+/// (P2-MOD-78): refuses marking `"contested"` while an adjudicator may be disputed.
+pub const CLAIM_CONTEST_DISPUTED_TRUNCATED: &str = "claim_contest_disputed_truncated";
+/// Server-authored list of claim IDs in `CLAIM_ADMINISTRABLE` that a non-staff
+/// governing-jurisdiction actor may keep non-authorizing (`suspended`/`seized`)
+/// but may NOT reopen to `uncontested`/`contested` (P2-MOD-47).
+pub const CLAIM_CONTEST_NO_LIFT: &str = "claim_contest_no_lift";
 /// Doc 20 cut SM.10 (§9): the actor a tenure act was offered to, published as a
 /// fixed parameter so `tenure()` can tell its own offer from somebody else's.
 pub const TENURE_ACTOR: &str = "tenure_actor";
@@ -961,18 +978,128 @@ fn filter_claims<T>(
     out
 }
 
+/// How much `ClaimContest` access a non-staff actor holds over one claim,
+/// enforcing the authority hierarchy so issuing orgs cannot override or lift
+/// staff-imposed or governing-jurisdiction suspensions/seizures (P2-MOD-47).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum NonStaffContestAccess {
+    /// Cannot touch this claim's contest state at all.
+    Denied,
+    /// May keep the claim non-authorizing (`suspended`/`seized`) but may NOT
+    /// reopen it (`uncontested`/`contested`).
+    NonReopeningOnly,
+    /// Full non-staff contest transitions (`uncontested`, `contested`,
+    /// `suspended`, `seized` without `holder`/`discovered`).
+    Full,
+}
+
+fn is_staff_or_system(world: &World, who: &PrincipalId) -> bool {
+    match who {
+        PrincipalId::System(_) => true,
+        PrincipalId::Object(obj) => crate::store::is_staff(world, *obj),
+        PrincipalId::Organization(_) => false,
+    }
+}
+
+/// Evaluate whether a non-staff `actor` may move `claim`'s contest state
+/// given `deposit_jurisdiction` (if `claim` is over a `Deposit`) and whether
+/// `actor` holds governing-jurisdiction standing (`has_jurisdiction_standing`)
+/// (P2-MOD-47).
+///
+/// Authority hierarchy on an existing `Suspended { by }` or `Seized { by, .. }`:
+/// 1. Staff or `System` (`is_staff_or_system(by)`): **never** overridable or
+///    liftable by any non-staff actor (including governing jurisdiction).
+/// 2. Distinct governing jurisdiction (`gov != claim.issuer()`): cannot be
+///    overridden or lifted by `claim.issuer()`; only staff or governing
+///    jurisdiction may modify it.
+/// 3. Claim issuer's own non-staff suspension/seizure: `claim.issuer()` may
+///    manage it; a distinct governing jurisdiction without issuer standing may
+///    supersede it with `suspended`/`seized` (`NonReopeningOnly`) but not lift
+///    it back to `uncontested`/`contested`.
+#[must_use]
+pub(crate) fn non_staff_contest_access(
+    world: &World,
+    claim: &ClaimRecord,
+    deposit_jurisdiction: Option<&PrincipalId>,
+    actor: ObjId,
+    has_jurisdiction_standing: bool,
+) -> NonStaffContestAccess {
+    let by = match claim.contest_state() {
+        ContestState::Uncontested | ContestState::Contested { .. } => {
+            return NonStaffContestAccess::Full;
+        }
+        ContestState::Suspended { by } | ContestState::Seized { by, .. } => by,
+    };
+    if is_staff_or_system(world, by) {
+        return NonStaffContestAccess::Denied;
+    }
+    let distinct_gov = deposit_jurisdiction.filter(|gov| *gov != claim.issuer());
+    let imposed_by_distinct_gov = distinct_gov.is_some_and(|gov| {
+        by == gov
+            || matches!(by, PrincipalId::Object(who) if mush_economy::acts_for(world, *who, gov))
+    });
+    let imposed_by_issuer = !imposed_by_distinct_gov
+        && (by == claim.issuer()
+            || matches!(by, PrincipalId::Object(who) if mush_economy::acts_for(world, *who, claim.issuer())));
+    if has_jurisdiction_standing {
+        if imposed_by_issuer && !mush_economy::acts_for(world, actor, claim.issuer()) {
+            NonStaffContestAccess::NonReopeningOnly
+        } else {
+            NonStaffContestAccess::Full
+        }
+    } else if imposed_by_issuer {
+        NonStaffContestAccess::Full
+    } else {
+        NonStaffContestAccess::Denied
+    }
+}
+
+fn claim_deposit_jurisdiction(
+    state: &mush_core::ActionStateStore,
+    families: &IndustryFamilies,
+    claim: &ClaimRecord,
+) -> Option<PrincipalId> {
+    let ClaimSubject::Deposit { deposit } = claim.subject() else {
+        return None;
+    };
+    state
+        .get(&families.deposits, &deposit)
+        .ok()
+        .flatten()
+        .and_then(|body| body.jurisdiction().cloned())
+}
+
 /// The claims a non-staff actor may move the **contest state** of: those whose
-/// `issuer()` its principal `acts_for` (E7c3 verify fold C1). Bounded, sorted,
-/// capped at [`MAX_DEPOSIT_CHOICES`]. Staff are not restricted here — this feeds
-/// the non-staff `Choice`, so a griefer is never offered a foreign claim id.
+/// `issuer()` its principal `acts_for` (E7c3 verify fold C1), excluding any
+/// claim locked by staff/system or a distinct governing jurisdiction (P2-MOD-47).
+/// Bounded, sorted, capped at [`MAX_DEPOSIT_CHOICES`]. Staff are not restricted
+/// here — this feeds the non-staff `Choice`, so a griefer is never offered a
+/// foreign claim id.
 #[must_use]
 pub fn administrable_claims(
     engine: &Engine,
     families: &IndustryFamilies,
     actor: ObjId,
 ) -> Vec<ClaimId> {
+    let state = engine.action_state();
+    let mut jur_cache: BTreeMap<OreDepositId, Option<PrincipalId>> = BTreeMap::new();
     let mut out = filter_claims(engine, families, |claim| {
-        mush_economy::acts_for(&engine.world, actor, claim.issuer()).then_some(claim.id())
+        if !mush_economy::acts_for(&engine.world, actor, claim.issuer()) {
+            return None;
+        }
+        let dep_jur = match claim.subject() {
+            ClaimSubject::Deposit { deposit } => jur_cache
+                .entry(deposit)
+                .or_insert_with(|| claim_deposit_jurisdiction(state, families, claim))
+                .clone(),
+            ClaimSubject::Place { .. } => None,
+        };
+        let has_jur = dep_jur
+            .as_ref()
+            .is_some_and(|gov| mush_economy::acts_for(&engine.world, actor, gov));
+        (non_staff_contest_access(&engine.world, claim, dep_jur.as_ref(), actor, has_jur)
+            != NonStaffContestAccess::Denied)
+            .then_some(claim.id())
     });
     out.sort_unstable();
     out.dedup();
@@ -982,9 +1109,9 @@ pub fn administrable_claims(
 
 /// **The jurisdiction row** (doc 20 §9.6, D-20-12; cut SM.6): every claim over
 /// a `Deposit` whose recorded [`OreDeposit::jurisdiction`] `actor` `acts_for`,
-/// whoever issued it — so an issuer may move the contest state of a foreign
-/// claim at its own sites, and nowhere else. A deposit with no jurisdiction
-/// never matches.
+/// whoever issued it — excluding claims locked by staff or `System` (P2-MOD-47)
+/// — so an issuer may move the contest state of a foreign claim at its own
+/// sites, and nowhere else. A deposit with no jurisdiction never matches.
 #[must_use]
 pub fn jurisdiction_claims(
     engine: &Engine,
@@ -992,25 +1119,28 @@ pub fn jurisdiction_claims(
     actor: ObjId,
 ) -> Vec<ClaimId> {
     let state = engine.action_state();
-    let mut verdicts: BTreeMap<OreDepositId, bool> = BTreeMap::new();
+    let mut jur_cache: BTreeMap<OreDepositId, Option<PrincipalId>> = BTreeMap::new();
     let mut out = filter_claims(engine, families, |claim| {
         let ClaimSubject::Deposit { deposit } = claim.subject() else {
             return None;
         };
-        let reaches = match verdicts.get(&deposit) {
-            Some(verdict) => *verdict,
-            None => {
-                let verdict = state
+        let dep_jur = jur_cache
+            .entry(deposit)
+            .or_insert_with(|| {
+                state
                     .get(&families.deposits, &deposit)
                     .ok()
                     .flatten()
                     .and_then(|body| body.jurisdiction().cloned())
-                    .is_some_and(|who| mush_economy::acts_for(&engine.world, actor, &who));
-                verdicts.insert(deposit, verdict);
-                verdict
-            }
-        };
-        reaches.then_some(claim.id())
+            })
+            .clone();
+        let gov = dep_jur.as_ref()?;
+        if !mush_economy::acts_for(&engine.world, actor, gov) {
+            return None;
+        }
+        (non_staff_contest_access(&engine.world, claim, Some(gov), actor, true)
+            != NonStaffContestAccess::Denied)
+            .then_some(claim.id())
     });
     out.sort_unstable();
     out.dedup();
@@ -1021,47 +1151,65 @@ pub fn jurisdiction_claims(
 /// Server-authored bindings carried on a `ClaimContest` offer.
 struct ClaimContestBinding {
     claims: Vec<String>,
+    no_lift: Vec<String>,
     pledged: Vec<u32>,
     disputed: Vec<u32>,
+    pledged_truncated: bool,
+    disputed_truncated: bool,
 }
 
-/// Collect titled object IDs that carry `Encumbrance::Collateral` (pledged) or
-/// `Encumbrance::Disputed` for the claims reachable by this `ClaimContest` offer.
+/// Collect titled claim object IDs that carry `Encumbrance::Collateral`
+/// (pledged) or `Encumbrance::Disputed` for the claims reachable by this
+/// `ClaimContest` offer (bounded by [`MAX_CONTEST_ENCUMBRANCES`] and
+/// `MAX_LIST_PAGES`, P2-MOD-78).
 ///
-/// For non-staff offers, only the offered `claims` are inspected; for staff
-/// offers, all encumbered assets in [`mush_economy::EconomyStore`] are scanned
-/// directly (avoiding claim-family pagination truncation). Both outputs are
-/// sorted and deduplicated for deterministic offer IDs.
+/// For non-staff offers, only the offered `claims` are inspected. For staff
+/// offers, only actual `ClaimRecord` objects from `families.claims` (never
+/// unrelated economy assets) are inspected, capped at
+/// [`MAX_CONTEST_ENCUMBRANCES`] with explicit fail-closed truncation flags so
+/// the projected offer stays safely inside `MAX_PROJECTED_LEGAL_ACTION_BYTES`.
 fn claim_contest_encumbrances(
     engine: &Engine,
     families: &IndustryFamilies,
     claims: Option<&[ClaimId]>,
-) -> (Vec<u32>, Vec<u32>) {
+) -> (Vec<u32>, Vec<u32>, bool, bool) {
     let Some(econ) = engine.world.module_state::<mush_economy::EconomyStore>() else {
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), Vec::new(), false, false);
     };
     let snap = econ.snapshot();
-    let mut pledged = Vec::new();
-    let mut disputed = Vec::new();
+    let mut pledged: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+    let mut disputed: std::collections::BTreeSet<u32> = std::collections::BTreeSet::new();
+    let mut pledged_truncated = false;
+    let mut disputed_truncated = false;
     let mut record_asset = |asset: &mush_economy::EconomicAsset| {
         if asset
             .encumbrances
             .iter()
             .any(|e| matches!(e, mush_economy::Encumbrance::Collateral { .. }))
+            && !pledged.contains(&asset.object.0)
         {
-            pledged.push(asset.object.0);
+            if pledged.len() >= MAX_CONTEST_ENCUMBRANCES {
+                pledged_truncated = true;
+            } else {
+                pledged.insert(asset.object.0);
+            }
         }
         if asset
             .encumbrances
             .iter()
             .any(|e| matches!(e, mush_economy::Encumbrance::Disputed { .. }))
+            && !disputed.contains(&asset.object.0)
         {
-            disputed.push(asset.object.0);
+            if disputed.len() >= MAX_CONTEST_ENCUMBRANCES {
+                disputed_truncated = true;
+            } else {
+                disputed.insert(asset.object.0);
+            }
         }
     };
+    let state = engine.action_state();
     match claims {
         Some(ids) => {
-            let state = engine.action_state();
             for id in ids {
                 if let Ok(Some(claim)) = state.get(&families.claims, id)
                     && let Some(asset) = snap.asset(claim.object())
@@ -1071,16 +1219,42 @@ fn claim_contest_encumbrances(
             }
         }
         None => {
-            for asset in snap.assets() {
-                record_asset(asset);
+            let mut cursor: Option<String> = None;
+            let mut pages = 0;
+            loop {
+                if pages >= crate::record::MAX_LIST_PAGES {
+                    pledged_truncated = true;
+                    disputed_truncated = true;
+                    break;
+                }
+                pages += 1;
+                let Ok(page) = state.scan_family(
+                    &families.claims,
+                    cursor.as_deref(),
+                    crate::record::INDUSTRY_PAGE,
+                ) else {
+                    pledged_truncated = true;
+                    disputed_truncated = true;
+                    break;
+                };
+                for entry in page.entries() {
+                    if let Some(asset) = snap.asset(entry.value().object()) {
+                        record_asset(asset);
+                    }
+                }
+                match page.next_after().map(ToString::to_string) {
+                    Some(next) => cursor = Some(next),
+                    None => break,
+                }
             }
         }
     }
-    pledged.sort_unstable();
-    pledged.dedup();
-    disputed.sort_unstable();
-    disputed.dedup();
-    (pledged, disputed)
+    (
+        pledged.into_iter().collect(),
+        disputed.into_iter().collect(),
+        pledged_truncated,
+        disputed_truncated,
+    )
 }
 
 /// The contest offer's structural half (doc 20 cut SM.6, §9.6; the issuer
@@ -1554,6 +1728,18 @@ fn eligible_submit_holds(
         if !recipe_ok {
             continue;
         }
+        // P2-MOD-17: re-verify the budget account is an active currency account
+        // belonging to the requester with a live payee at this facility.
+        if crate::money::check_wo_accounts_in(
+            &engine.world,
+            order.requester(),
+            order.budget_account(),
+            facility.owner(),
+        )
+        .is_err()
+        {
+            continue;
+        }
         let expected_amount = crate::money::order_price(&engine.world, &order);
         let Some(hold) = crate::money::live_hold_in(&engine.world, order.id()) else {
             continue;
@@ -1661,40 +1847,86 @@ fn reclaimable_facilities(
     out
 }
 
-/// HIGH-37: claims eligible for `ClaimMove` — `Transferable`, non-lapsed,
-/// authorizing contest state, `staff || acts_for(claim.holder())`, and backed by
-/// a live, unencumbered, non-frozen E4 titled asset — mapped to the live E4
-/// `asset.title_owner` token so `mv()` cannot split claim tenure from title.
+/// HIGH-37 / P2-MOD-48: claims eligible for `ClaimMove` — `Transferable`,
+/// non-lapsed, authorizing contest state, `staff || acts_for(claim.holder())`,
+/// and backed by a live, unencumbered, non-frozen E4 titled asset — mapped to
+/// the live E4 `asset.title_owner` token so `mv()` cannot split claim tenure
+/// from title.
+///
+/// Scans across `MAX_LIST_PAGES` and prioritizes claims whose E4
+/// `asset.title_owner` already differs from `claim.holder()` (pending sync
+/// after `@claim/transfer`) ahead of already-synced claims so >64 transferable
+/// claims never silently truncate the targeted transfer out of the projection.
 fn movable_claims_map(
     engine: &Engine,
     families: &IndustryFamilies,
     actor: ObjId,
     staff: bool,
 ) -> BTreeMap<ClaimId, String> {
-    let econ = engine.world.module_state::<mush_economy::EconomyStore>();
-    let items = filter_claims(engine, families, |claim| {
-        if claim.transferability() != Transferability::Transferable
-            || claim.is_lapsed()
-            || !claim.contest_state().authorizes()
-        {
-            return None;
+    let Some(econ) = engine.world.module_state::<mush_economy::EconomyStore>() else {
+        return BTreeMap::new();
+    };
+    let snap = econ.snapshot();
+    let state = engine.action_state();
+    let mut pending_sync: BTreeMap<ClaimId, String> = BTreeMap::new();
+    let mut in_sync: BTreeMap<ClaimId, String> = BTreeMap::new();
+    let mut cursor: Option<String> = None;
+    let mut pages = 0;
+    loop {
+        if pages >= crate::record::MAX_LIST_PAGES || pending_sync.len() >= MAX_DEPOSIT_CHOICES {
+            break;
         }
-        if !staff && !mush_economy::acts_for(&engine.world, actor, claim.holder()) {
-            return None;
+        pages += 1;
+        let Ok(page) = state.scan_family(
+            &families.claims,
+            cursor.as_deref(),
+            crate::record::INDUSTRY_PAGE,
+        ) else {
+            return BTreeMap::new();
+        };
+        for entry in page.entries() {
+            if pending_sync.len() >= MAX_DEPOSIT_CHOICES {
+                break;
+            }
+            let claim = entry.value();
+            if claim.transferability() != Transferability::Transferable
+                || claim.is_lapsed()
+                || !claim.contest_state().authorizes()
+            {
+                continue;
+            }
+            if !staff && !mush_economy::acts_for(&engine.world, actor, claim.holder()) {
+                continue;
+            }
+            let Some(asset) = snap.asset(claim.object()) else {
+                continue;
+            };
+            if asset.frozen
+                || !matches!(asset.lifecycle, mush_economy::AssetLifecycle::Active)
+                || !asset.encumbrances.is_empty()
+            {
+                continue;
+            }
+            let owner_token = mush_economy::principal_token(&asset.title_owner).to_string();
+            if asset.title_owner != *claim.holder() {
+                pending_sync.insert(claim.id(), owner_token);
+            } else if in_sync.len() < MAX_DEPOSIT_CHOICES {
+                in_sync.insert(claim.id(), owner_token);
+            }
         }
-        let asset = econ.and_then(|store| store.snapshot().asset(claim.object()))?;
-        if asset.frozen
-            || !matches!(asset.lifecycle, mush_economy::AssetLifecycle::Active)
-            || !asset.encumbrances.is_empty()
-        {
-            return None;
+        match page.next_after().map(ToString::to_string) {
+            Some(next) => cursor = Some(next),
+            None => break,
         }
-        Some((
-            claim.id(),
-            mush_economy::principal_token(&asset.title_owner).to_string(),
-        ))
-    });
-    items.into_iter().collect()
+    }
+    let mut out = pending_sync;
+    for (id, owner) in in_sync {
+        if out.len() >= MAX_DEPOSIT_CHOICES {
+            break;
+        }
+        out.entry(id).or_insert(owner);
+    }
+    out
 }
 
 /// The transferable, unencumbered claims a non-staff actor may move the **holder**
@@ -1868,6 +2100,7 @@ pub fn wo_offer_books(
 ) -> WoOfferBooks {
     let mut books = WoOfferBooks::default();
     for facility in facilities {
+        let facility_accounts = facility_drafter_accounts(&engine.world, actor, facility.owner());
         books.facilities.insert(
             facility.object().0.to_string(),
             json!({
@@ -1879,6 +2112,7 @@ pub fn wo_offer_books(
                     .iter()
                     .map(CanonicalId::as_str)
                     .collect::<Vec<_>>(),
+                "accounts": facility_accounts,
             }),
         );
     }
@@ -1887,7 +2121,7 @@ pub fn wo_offer_books(
         .take(MAX_WO_OFFER_ENDPOINTS)
         .map(|vault| vault.0)
         .collect();
-    books.accounts = drafter_accounts(&engine.world, actor);
+    books.accounts = drafter_accounts(&engine.world, actor, facilities);
     let mut bytes = 0_usize;
     for entry in catalog {
         if !facilities
@@ -1917,21 +2151,51 @@ pub fn wo_offer_books(
     books
 }
 
-/// The drafter's **own** active accounts — the set `money::check_wo_accounts`
-/// will accept as a budget, since a work order's hold is a reservation on the
-/// requester's own account, staff included.
+/// The drafter's **own** active `InstrumentKind::Currency` accounts that have a
+/// valid payee at `facility_owner` (`money::check_wo_accounts_in`, P2-MOD-17).
 #[must_use]
-fn drafter_accounts(world: &World, actor: ObjId) -> Vec<u64> {
+fn facility_drafter_accounts(
+    world: &World,
+    actor: ObjId,
+    facility_owner: &PrincipalId,
+) -> Vec<u64> {
     let owner = PrincipalId::Object(actor);
     let Some(store) = world.module_state::<mush_economy::EconomyStore>() else {
         return Vec::new();
     };
     let mut out: Vec<u64> = Vec::new();
-    for account in store.snapshot().accounts() {
+    for account in store.snapshot().accounts_of(&owner) {
         if out.len() >= MAX_WO_OFFER_ACCOUNTS {
             break;
         }
-        if account.owner == owner && matches!(account.status, mush_economy::AccountStatus::Active) {
+        if crate::money::check_wo_accounts_in(world, &owner, account.id, facility_owner).is_ok() {
+            out.push(account.id.0);
+        }
+    }
+    out.sort_unstable();
+    out
+}
+
+/// The drafter's **own** active `InstrumentKind::Currency` accounts accepted by
+/// `money::check_wo_accounts_in` for at least one offered facility (P2-MOD-17).
+#[must_use]
+fn drafter_accounts(
+    world: &World,
+    actor: ObjId,
+    facilities: &[crate::facility::FacilityRecord],
+) -> Vec<u64> {
+    let owner = PrincipalId::Object(actor);
+    let Some(store) = world.module_state::<mush_economy::EconomyStore>() else {
+        return Vec::new();
+    };
+    let mut out: Vec<u64> = Vec::new();
+    for account in store.snapshot().accounts_of(&owner) {
+        if out.len() >= MAX_WO_OFFER_ACCOUNTS {
+            break;
+        }
+        if facilities.iter().any(|facility| {
+            crate::money::check_wo_accounts_in(world, &owner, account.id, facility.owner()).is_ok()
+        }) {
             out.push(account.id.0);
         }
     }
@@ -1952,6 +2216,9 @@ struct DraftAuthority {
     policy_revision: u64,
     /// What the facility can run, for the `requires` subset test.
     capabilities: std::collections::BTreeSet<CanonicalId>,
+    /// The drafter's active currency accounts that match a valid payee at THIS
+    /// facility (P2-MOD-17).
+    accounts: Vec<u64>,
     /// The authority's published pack digest for the named recipe.
     digest: DefinitionDigest,
     /// The 32-hex canonical hash of the authority's pinned lines.
@@ -2037,6 +2304,13 @@ fn wo_draft_authority(
                 .ok_or_else(refused)
         })
         .collect::<Result<std::collections::BTreeSet<CanonicalId>, ActionError>>()?;
+    let accounts = row
+        .get("accounts")
+        .and_then(Value::as_array)
+        .ok_or_else(refused)?
+        .iter()
+        .map(|entry| entry.as_u64().ok_or_else(refused))
+        .collect::<Result<Vec<u64>, ActionError>>()?;
     let recipe = parameters
         .get(WO_RECIPES)
         .and_then(Value::as_object)
@@ -2058,6 +2332,7 @@ fn wo_draft_authority(
         capacity_revision,
         policy_revision,
         capabilities,
+        accounts,
         digest,
         pinned_hash,
     })
@@ -2336,23 +2611,63 @@ impl ActionProvider for IndustryProvider {
                 // `CLAIM_ADMINISTRABLE` list `contest()` re-checks.
                 if staff {
                     parameters.push(text("claim", 32)?);
-                    let (pledged, disputed) =
+                    let (pledged, disputed, pledged_truncated, disputed_truncated) =
                         claim_contest_encumbrances(engine, &self.families, None);
                     contest_binding = Some(Box::new(ClaimContestBinding {
                         claims: Vec::new(),
+                        no_lift: Vec::new(),
                         pledged,
                         disputed,
+                        pledged_truncated,
+                        disputed_truncated,
                     }));
                 } else {
-                    let mut claims = administrable_claims(engine, &self.families, actor);
-                    claims.extend(self.jurisdiction.claims(engine, &self.families, actor));
-                    claims.sort_unstable();
-                    claims.dedup();
-                    claims.truncate(MAX_DEPOSIT_CHOICES);
+                    let issuer_claims = administrable_claims(engine, &self.families, actor);
+                    let jur_claims: std::collections::BTreeSet<ClaimId> = self
+                        .jurisdiction
+                        .claims(engine, &self.families, actor)
+                        .into_iter()
+                        .collect();
+                    let mut candidate_ids = issuer_claims;
+                    candidate_ids.extend(jur_claims.iter().copied());
+                    candidate_ids.sort_unstable();
+                    candidate_ids.dedup();
+                    let state = engine.action_state();
+                    let mut claims = Vec::new();
+                    let mut no_lift = Vec::new();
+                    for id in candidate_ids {
+                        if claims.len() >= MAX_DEPOSIT_CHOICES {
+                            break;
+                        }
+                        let Ok(Some(claim)) = state.get(&self.families.claims, &id) else {
+                            continue;
+                        };
+                        let dep_jur = claim_deposit_jurisdiction(state, &self.families, claim);
+                        let has_jur = jur_claims.contains(&id)
+                            || dep_jur.as_ref().is_some_and(|gov| {
+                                mush_economy::acts_for(&engine.world, actor, gov)
+                            });
+                        match non_staff_contest_access(
+                            &engine.world,
+                            claim,
+                            dep_jur.as_ref(),
+                            actor,
+                            has_jur,
+                        ) {
+                            NonStaffContestAccess::Denied => {}
+                            NonStaffContestAccess::NonReopeningOnly => {
+                                claims.push(id);
+                                no_lift.push(id.to_string());
+                            }
+                            NonStaffContestAccess::Full => {
+                                claims.push(id);
+                            }
+                        }
+                    }
                     if claims.is_empty() {
                         return Ok(None);
                     }
-                    let (pledged, disputed) =
+                    let (pledged, disputed, pledged_truncated, disputed_truncated) =
                         claim_contest_encumbrances(engine, &self.families, Some(&claims));
                     let choices: Vec<String> = claims.iter().map(ToString::to_string).collect();
                     parameters.push(parameter(
@@ -2364,8 +2679,11 @@ impl ActionProvider for IndustryProvider {
                     )?);
                     contest_binding = Some(Box::new(ClaimContestBinding {
                         claims: choices,
+                        no_lift,
                         pledged,
                         disputed,
+                        pledged_truncated,
+                        disputed_truncated,
                     }));
                 }
                 parameters.push(text("state", 16)?);
@@ -2628,8 +2946,17 @@ impl ActionProvider for IndustryProvider {
             map.insert(CLAIM_CONTEST_BY.to_owned(), json!(actor.0));
             map.insert(CLAIM_CONTEST_STAFF.to_owned(), json!(staff));
             map.insert(CLAIM_ADMINISTRABLE.to_owned(), json!(binding.claims));
+            map.insert(CLAIM_CONTEST_NO_LIFT.to_owned(), json!(binding.no_lift));
             map.insert(CLAIM_CONTEST_PLEDGED.to_owned(), json!(binding.pledged));
             map.insert(CLAIM_CONTEST_DISPUTED.to_owned(), json!(binding.disputed));
+            map.insert(
+                CLAIM_CONTEST_PLEDGED_TRUNCATED.to_owned(),
+                json!(binding.pledged_truncated),
+            );
+            map.insert(
+                CLAIM_CONTEST_DISPUTED_TRUNCATED.to_owned(),
+                json!(binding.disputed_truncated),
+            );
         }
         // ---- Doc 20 cut SM.6: the one server-authored system opening (§3.4) ----
         if let Some(opening) = system_opening
@@ -3488,29 +3815,10 @@ impl IndustryProvider {
             .get(CLAIM_FILE_STAFF)
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        // HIGH-34 + P2-MOD-16: fail closed for non-staff on `ClaimSubject::Place`
-        // and on un-jurisdicted deposits (`deposit.jurisdiction().is_none()`), and
-        // require `issuer == jurisdiction` when filing over a deposit so a
-        // player-created org can never file foreign tenure or occupy subject slots.
-        match subject {
-            ClaimSubject::Place { .. } => {
-                if !is_staff_file {
-                    return Err(error(ActionErrorCode::Unauthorized, REFUSED));
-                }
-            }
-            ClaimSubject::Deposit {
-                deposit: deposit_id,
-            } => {
-                let deposit = self
-                    .families
-                    .deposit(txn, deposit_id)
-                    .map_err(|source| refuse(&source))?
-                    .ok_or_else(|| error(ActionErrorCode::ProviderRejected, REFUSED))?;
-                if !is_staff_file && deposit.jurisdiction() != Some(&issuer) {
-                    return Err(error(ActionErrorCode::Unauthorized, REFUSED));
-                }
-            }
-        }
+        // P2-MOD-49: validate every parameter and server-authored unclaimed-object
+        // binding BEFORE reading `families.deposit` so invalid arguments or
+        // unowned objects can never distinguish missing deposits from foreign
+        // jurisdictions.
         let holder = principal_field(parameters, "holder")?;
         let object = obj_field(parameters, "object")?;
         // P2-MOD-16: verify the submitted `object` is a freshly minted,
@@ -3561,6 +3869,29 @@ impl IndustryProvider {
                 )
             })?;
         let term = term_field(parameters, now, is_staff_file)?;
+        // HIGH-34 + P2-MOD-16 + P2-MOD-49: fail closed for non-staff on
+        // `ClaimSubject::Place`, missing deposits, un-jurisdicted deposits, and
+        // foreign-jurisdiction deposits with the identical `Unauthorized` +
+        // `REFUSED` error so `ClaimFile` is never a deposit/jurisdiction oracle.
+        match subject {
+            ClaimSubject::Place { .. } => {
+                if !is_staff_file {
+                    return Err(error(ActionErrorCode::Unauthorized, REFUSED));
+                }
+            }
+            ClaimSubject::Deposit {
+                deposit: deposit_id,
+            } => {
+                let deposit = self
+                    .families
+                    .deposit(txn, deposit_id)
+                    .map_err(|source| refuse(&source))?
+                    .ok_or_else(|| error(ActionErrorCode::Unauthorized, REFUSED))?;
+                if !is_staff_file && deposit.jurisdiction() != Some(&issuer) {
+                    return Err(error(ActionErrorCode::Unauthorized, REFUSED));
+                }
+            }
+        }
         let id = derive_claim_id(invocation.request(), 0).map_err(|source| refuse(&source))?;
 
         match self.exclusive_conflict(txn, subject, &issuer, exclusivity, now)? {
@@ -3744,9 +4075,40 @@ impl IndustryProvider {
                 "a holder goes with a seizure",
             ));
         }
+        // P2-MOD-47: structural guard — non-staff can never override a System
+        // suspension/seizure or reopen a claim marked non-reopening in the offer.
+        if !staff {
+            if matches!(
+                live.contest_state(),
+                ContestState::Suspended {
+                    by: PrincipalId::System(_)
+                } | ContestState::Seized {
+                    by: PrincipalId::System(_),
+                    ..
+                }
+            ) {
+                return Err(error(ActionErrorCode::Unauthorized, REFUSED));
+            }
+            if matches!(state_word.as_str(), "uncontested" | "contested") {
+                let claim_token = id.to_string();
+                let no_lift = parameters
+                    .get(CLAIM_CONTEST_NO_LIFT)
+                    .and_then(Value::as_array)
+                    .is_some_and(|list| {
+                        list.iter()
+                            .filter_map(Value::as_str)
+                            .any(|blocked| blocked == claim_token.as_str())
+                    });
+                if no_lift {
+                    return Err(error(ActionErrorCode::Unauthorized, REFUSED));
+                }
+            }
+        }
         // Server-authored encumbrance guard: require the projection's pledged
         // and disputed lists and refuse seizing a pledged claim or contesting
         // a disputed claim even via direct `SubmitSelf` bypassing `@claim`.
+        // P2-MOD-78: fail closed when the bounded staff encumbrance scan was
+        // truncated so collateral/disputes are never silently overridden.
         let pledged_list = parameters
             .get(CLAIM_CONTEST_PLEDGED)
             .and_then(Value::as_array)
@@ -3755,14 +4117,25 @@ impl IndustryProvider {
             .get(CLAIM_CONTEST_DISPUTED)
             .and_then(Value::as_array)
             .ok_or_else(|| error(ActionErrorCode::Unauthorized, REFUSED))?;
+        let pledged_truncated = parameters
+            .get(CLAIM_CONTEST_PLEDGED_TRUNCATED)
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let disputed_truncated = parameters
+            .get(CLAIM_CONTEST_DISPUTED_TRUNCATED)
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let claim_obj = u64::from(live.object().0);
-        if state_word == "seized" && pledged_list.iter().any(|v| v.as_u64() == Some(claim_obj)) {
+        if state_word == "seized"
+            && (pledged_truncated || pledged_list.iter().any(|v| v.as_u64() == Some(claim_obj)))
+        {
             return Err(error(
                 ActionErrorCode::ProviderRejected,
                 "a pledged claim cannot be seized while its collateral stands",
             ));
         }
-        if state_word == "contested" && disputed_list.iter().any(|v| v.as_u64() == Some(claim_obj))
+        if state_word == "contested"
+            && (disputed_truncated || disputed_list.iter().any(|v| v.as_u64() == Some(claim_obj)))
         {
             return Err(error(
                 ActionErrorCode::ProviderRejected,
@@ -4087,15 +4460,10 @@ impl IndustryProvider {
         {
             return Err(refused());
         }
-        if !parameters
-            .get(WO_ACCOUNTS)
-            .and_then(Value::as_array)
-            .is_some_and(|book| {
-                book.iter()
-                    .filter_map(Value::as_u64)
-                    .any(|id| id == account.0)
-            })
-        {
+        // P2-MOD-17: require the budget account to be an active currency account
+        // matching a valid payee for THIS specific facility (from the facility's
+        // server-authored `accounts` list in `WO_FACILITIES`).
+        if !authority.accounts.contains(&account.0) {
             return Err(refused());
         }
         let beneficiary = principal_field(parameters, "beneficiary")?;
@@ -4830,15 +5198,45 @@ impl IndustryProvider {
         // WorldIc { generation: 2 }"` on the very next delivery — a rate change
         // bricked it one layer below the pause.
         //
-        // The E-side adapter is release-then-reserve inside this same bundle, using
-        // the seams that already exist: `release` takes no clock, and `reserve`
-        // re-derives the SAME `ReservationId` from the order's holder and resource,
-        // so `order.reservations()` needs no edit and the amount stays the recipe's
-        // own. Contention is re-run by `checked_hold` against the freed stock, so a
-        // restamp that can no longer be funded in materials refuses honestly rather
-        // than resuming an order that cannot deliver. The capacity slot needs no
-        // re-anchor: `release_slot` takes no clock at all.
+        // The E-side adapter renews material reservations AND re-anchors the
+        // facility slot reservation + `slot_expiry_schedule` inside this same
+        // bundle (P2-MOD-77), using `renew_slot_for` so `order.reservations()`
+        // keeps the same `ReservationId` while moving both deadlines onto
+        // `now`'s clock generation. Contention is re-run by `checked_replace`,
+        // and refit/integration slots are excluded by `P2-MOD-2`.
         let holder = wo_holder(id).map_err(|source| refuse(&source))?;
+        let schedule_id = production_schedule_id(id)?;
+        let prior = txn
+            .get(&self.families.schedules, &schedule_id)
+            .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?
+            .cloned();
+        let cap_resource = crate::facility::facility_resource(order.facility())
+            .map_err(|source| error(ActionErrorCode::Integrity, source.to_string()))?;
+        let cap_id = ReservationId::derive(&holder, &cap_resource)
+            .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?;
+        let slot_sid = slot_expiry_schedule_id(order.facility(), cap_id)?;
+        let slot_rec = self
+            .families
+            .slot_reservation(txn, order.facility(), cap_id)
+            .map_err(|source| refuse(&source))?;
+        let slot_stale = slot_rec.as_ref().is_some_and(|rec| {
+            rec.state() == mush_core::ReservationState::Held && rec.expires().clock != now.clock
+        });
+        let slot_sched_stale = txn
+            .get(&self.families.slot_expiry_schedules, &slot_sid)
+            .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?
+            .is_some_and(|sched| sched.clock() != &now.clock);
+        // Nothing to reconcile if the production schedule, slot reservation, and
+        // slot-expiry schedule are all already on the current generation and the
+        // order is not interrupted (P2-MOD-77).
+        if let Some(prior) = prior.as_ref()
+            && prior.clock() == &now.clock
+            && *order.state() == WorkOrderState::Running
+            && !slot_stale
+            && !slot_sched_stale
+        {
+            return Err(error(ActionErrorCode::ProviderRejected, WO_REFUSED));
+        }
         if !order.pinned().inputs().is_empty()
             && let Some(source) = order.material_source()
         {
@@ -4873,18 +5271,32 @@ impl IndustryProvider {
                     .map_err(|error| refuse(&IndustryError::Inventory(error)))?;
             }
         }
-        let schedule_id = production_schedule_id(id)?;
-        let prior = txn
-            .get(&self.families.schedules, &schedule_id)
-            .map_err(|_| error(ActionErrorCode::Integrity, WO_REFUSED))?
-            .cloned();
-        // Nothing to reconcile if a live schedule already runs on the current
-        // generation and the order is not interrupted.
-        if let Some(prior) = prior.as_ref()
-            && prior.clock() == &now.clock
-            && *order.state() == WorkOrderState::Running
+        // P2-MOD-77: re-anchor the standard work order's facility slot
+        // reservation and its one-shot `slot_expiry_schedule` to `now`'s clock
+        // generation (`renew_slot_for` enforces the P2-MOD-2 standard-WO check
+        // so refit/integration slots are never touched).
+        if let Some(slot_rec) = slot_rec
+            && slot_rec.state() == mush_core::ReservationState::Held
         {
-            return Err(error(ActionErrorCode::ProviderRejected, WO_REFUSED));
+            let new_expires = self
+                .families
+                .renew_slot_for(
+                    txn,
+                    order.facility(),
+                    cap_id,
+                    slot_rec.revision(),
+                    now,
+                    remaining_secs(&order),
+                )
+                .map_err(|source| refuse(&source))?;
+            self.open_slot_expiry_schedule(
+                txn,
+                order.facility(),
+                cap_id,
+                Some(id),
+                actor,
+                new_expires,
+            )?;
         }
         let next_due = ClockStamp {
             clock: now.clock.clone(),

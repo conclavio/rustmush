@@ -1017,6 +1017,19 @@ pub fn withdraw_own(ctx: &mut Ctx<'_>, id: ListingId) -> Result<Listing, MarketE
     if !mush_economy::acts_for(ctx.w, ctx.actor, &listing.seller) {
         return Err(MarketError::NoStanding(NO_SUCH_LISTING));
     }
+    // P2-MOD-29: a hold-backed ask requires live custody (`may_take`) and room in the
+    // authoritative submission queue before `withdraw_listing` deletes the document.
+    if let Some((endpoint, _, _)) = listing.source.lot() {
+        if !mush_inventory::may_take(ctx.w, ctx.actor, endpoint) {
+            return Err(MarketError::NoStanding(NO_SUCH_LISTING));
+        }
+        if ctx.authoritative_pending(ctx.actor) {
+            return Err(MarketError::bad(POST_BUSY));
+        }
+        if ctx.authoritative_queue_full() {
+            return Err(MarketError::bad(POST_QUEUE_FULL));
+        }
+    }
     crate::api::withdraw_listing(ctx, id)?;
     Ok(listing)
 }

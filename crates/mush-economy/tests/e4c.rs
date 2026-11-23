@@ -692,7 +692,7 @@ fn an_internal_refusal_inside_the_observer_leaves_canons_write_intact() {
     );
     ok(
         &mut tw,
-        r.johnson,
+        r.runner,
         &format!(
             "@contract/deliver {id}=title #{} #{}->#{}",
             widget.0, r.runner.0, r.johnson.0

@@ -449,6 +449,7 @@ struct PurchaseRoll {
     owner_attestations: bool,
     registry_recall: Option<mush_roll::commerce::registry_recall::RegistryRecallPolicy>,
     registry_revocation: Option<mush_roll::commerce::registry_revocation::RegistryRevocationPolicy>,
+    seal_mark_authority: Option<(mush_org::OrgId, mush_org::OrgScopeId)>,
     qualification_short_parent: bool,
     author_withdrawal: bool,
     compatible_updates: bool,
@@ -601,6 +602,11 @@ impl GameModule for PurchaseRoll {
         };
         let config = if let Some(policy) = &self.registry_revocation {
             config.with_registry_revocation(policy.clone())?
+        } else {
+            config
+        };
+        let config = if let Some((org, scope)) = self.seal_mark_authority {
+            config.with_seal_mark_authority(org, scope)?
         } else {
             config
         };
@@ -966,6 +972,7 @@ impl PurchaseFixture {
                     owner_attestations: false,
                     registry_recall: None,
                     registry_revocation: None,
+                    seal_mark_authority: None,
                     qualification_short_parent: false,
                     author_withdrawal: false,
                     compatible_updates,

@@ -160,6 +160,16 @@ impl EconomySnapshot {
     pub fn assets(&self) -> impl Iterator<Item = &EconomicAsset> {
         self.assets.values()
     }
+    /// Every asset strictly after `after`, in object order (O(log N) seek, P2-MOD-44).
+    pub(crate) fn assets_after(
+        &self,
+        after: Option<ObjId>,
+    ) -> impl Iterator<Item = &EconomicAsset> {
+        use std::ops::Bound::{Excluded, Unbounded};
+        self.assets
+            .range((after.map_or(Unbounded, Excluded), Unbounded))
+            .map(|(_, a)| a)
+    }
     /// The assets a principal holds title to, in object order.
     pub fn assets_of(&self, owner: &PrincipalId) -> impl Iterator<Item = &EconomicAsset> {
         self.assets_by_owner

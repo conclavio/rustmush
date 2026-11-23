@@ -3574,6 +3574,19 @@ pub(crate) fn awaits_receipt_read(q: &Quote) -> bool {
         }
 }
 
+/// Whether [`settled_sale`] has any proceeds-policy hook (`private_sale` or `settled`) to
+/// notify for `q` (P2-MOD-71). Shared between live settlement and boot-healed settlement
+/// (`boot::reconcile_contracts`) so the two paths can never drift apart.
+pub(crate) fn needs_proceeds_notification(q: &Quote) -> bool {
+    let Some(lot) = q.lot.as_ref() else {
+        return false;
+    };
+    q.visibility == crate::record::MarketVisibility::Hidden
+        || lot.kind == PaidKind::Deliver
+        || !q.cuts.is_empty()
+        || q.basis.minor() > 0
+}
+
 /// Tell the proceeds policy one sale into a bid settled (doc 18 cut IC10), or a person's lot
 /// ask whose quote froze a share (doc 48e, exchange G5: the Co-op's chartered asks). A no-op
 /// for every other quote, and with no policy wired.

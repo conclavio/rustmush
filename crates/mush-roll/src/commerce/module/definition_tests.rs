@@ -308,4 +308,28 @@ fn house_filing_opt_in_preserves_personal_identity_and_refuses_unconfigured_sche
     Ok(())
 }
 
+#[test]
+fn p2_mod_80_seal_mark_authority_requires_active_mode_and_rejects_duplicates()
+-> Result<(), ModError> {
+    check!(
+        config(CommerceMode::Initialize)?
+            .with_seal_mark_authority(mush_org::OrgId(1), mush_org::OrgScopeId(2))
+            .is_err()
+    );
+    let configured = config(CommerceMode::Active)?
+        .with_seal_mark_authority(mush_org::OrgId(1), mush_org::OrgScopeId(2))?;
+    check!(
+        configured
+            .clone()
+            .with_seal_mark_authority(mush_org::OrgId(1), mush_org::OrgScopeId(2))
+            .is_err()
+    );
+    check!(
+        configured
+            .with_seal_mark_authority(mush_org::OrgId(1), mush_org::OrgScopeId(3))
+            .is_ok()
+    );
+    Ok(())
+}
+
 use mush_testkit::fixtures::boxed_engine as boxed_test_engine;

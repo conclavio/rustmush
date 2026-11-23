@@ -53,18 +53,19 @@
 //! replay hit — the pause is a recorded `Interrupted` state written by [`sweep`],
 //! not an opinion two ingresses each hold privately.
 //!
-//! The attempt term is read from the ledger and never stored, so no document gains a
-//! field. Its one limitation is written down rather than left to be discovered: the
-//! economy garbage-collects a terminal hold past `HOLD_GC_AFTER_SECS`, so an order
-//! left drafted for longer than that retention window can see `n` fall back and meet
-//! its own spent key again. It then refuses **honestly** — naming `@wo/cancel` —
-//! rather than blaming a solvent account.
+//! The attempt term is derived from the ledger without adding any document field:
+//! [`attempt_of`] reads the hold's own placing idempotency key (`Hold::holder`), so
+//! 7-day terminal hold GC (`HOLD_GC_AFTER_SECS`) never shifts a live hold's settle
+//! key onto an already-spent attempt; [`attempt`] and [`place`] also advance past
+//! spent hold/settle keys via `idempotency_resolved` / `resolve_idempotency`,
+//! refusing honestly with [`SPENT_ATTEMPT`] only if the bounded probe window is
+//! exhausted.
 
 use mush_core::{Ctx, ObjId};
 use mush_economy::{
     Account, AccountId, AccountStatus, Amount, EconomicCause, EconomyError, EconomyPlan,
     EconomyStore, EscalationKind, EscalationSubject, Hold, HoldId, HoldOp, HoldPurpose,
-    IdempotencyKey, PostOutcome, RequestedLine,
+    IdempotencyKey, InstrumentId, InstrumentKind, InstrumentStatus, PostOutcome, RequestedLine,
 };
 use mush_org::PrincipalId;
 use smol_str::SmolStr;
@@ -116,44 +117,82 @@ pub fn wo_settle_key(order: WorkOrderId, attempt: u32) -> IdempotencyKey {
     )
 }
 
-/// **The attempt term**: how many holds the ledger already carries under this
-/// order's [`purpose`], live or settled. The next placement is attempt `n`; the hold
-/// it creates then reads back as attempt `n` from [`attempt_of`].
+/// Maximum spent attempt numbers [`attempt`] scans past via the RAM idempotency
+/// index after terminal hold GC (P2-MOD-46).
+const MAX_ATTEMPT_SCAN: u32 = 1_024;
+
+/// Maximum `resolve_idempotency` probes [`place`] performs per call to find a
+/// fresh attempt across both RAM and KV idempotency history (P2-MOD-46).
+const MAX_ATTEMPT_PROBES: u32 = 64;
+
+/// Parse the attempt term `n` out of a hold's placing idempotency key
+/// (`industry.wo.hold` / `{order}/{n}`).
+fn attempt_from_holder(order: WorkOrderId, holder: &IdempotencyKey) -> Option<u32> {
+    if holder.namespace.as_str() != "industry.wo.hold" {
+        return None;
+    }
+    let (raw_order, raw_attempt) = holder.key.as_str().split_once('/')?;
+    if raw_order.parse::<u64>().ok() != Some(order.0) {
+        return None;
+    }
+    raw_attempt.parse::<u32>().ok()
+}
+
+/// **The attempt term**: the next unused attempt index for this work order.
 ///
-/// Derived from the same snapshot walk [`any_hold`] already does, so no record gains
-/// a field and no document changes shape.
+/// Accounts for both surviving holds under this order's [`purpose`] (via their
+/// recorded [`Hold::holder`] attempt numbers as well as their count) and
+/// already-resolved hold/settle keys whose terminal holds were garbage-collected
+/// past `HOLD_GC_AFTER_SECS` (P2-MOD-46).
 #[must_use]
 pub fn attempt(ctx: &Ctx<'_>, order: WorkOrderId) -> u32 {
     let want = purpose(order);
-    ctx.w
-        .module_state::<EconomyStore>()
-        .map_or(0, |store| {
-            store
-                .snapshot()
-                .holds()
-                .filter(|h| h.purpose == want)
-                .count()
-        })
-        .try_into()
-        .unwrap_or(u32::MAX)
+    let mut next: u32 = ctx.w.module_state::<EconomyStore>().map_or(0, |store| {
+        let mut count: u32 = 0;
+        let mut high: u32 = 0;
+        for hold in store.snapshot().holds().filter(|h| h.purpose == want) {
+            count = count.saturating_add(1);
+            if let Some(n) = attempt_from_holder(order, &hold.holder) {
+                high = high.max(n.saturating_add(1));
+            }
+        }
+        count.max(high)
+    });
+    for _ in 0..MAX_ATTEMPT_SCAN {
+        if !mush_economy::idempotency_resolved(ctx, &wo_hold_key(order, next))
+            && !mush_economy::idempotency_resolved(ctx, &wo_settle_key(order, next))
+        {
+            break;
+        }
+        let Some(bumped) = next.checked_add(1) else {
+            break;
+        };
+        next = bumped;
+    }
+    next
 }
 
-/// The attempt term **of one hold**: its position among the holds carrying this
-/// order's purpose, in the snapshot's own id order. The hold placed as attempt `n`
-/// answers `n`, so [`release`] and [`capture`] settle under the same term their
-/// placement used.
+/// The attempt term **of one hold**: read directly from the hold's own placing
+/// idempotency key (`Hold::holder`) so 7-day economy hold GC (`HOLD_GC_AFTER_SECS`)
+/// of earlier terminal holds never shifts a live hold onto a spent settlement key
+/// (P2-MOD-46). Falls back to snapshot position only for synthetic holds lacking
+/// an `industry.wo.hold/{order}/{n}` holder key.
 #[must_use]
 pub fn attempt_of(ctx: &Ctx<'_>, order: WorkOrderId, hold: HoldId) -> u32 {
+    let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+        return 0;
+    };
+    let snapshot = store.snapshot();
+    if let Some(found) = snapshot.hold(hold)
+        && let Some(n) = attempt_from_holder(order, &found.holder)
+    {
+        return n;
+    }
     let want = purpose(order);
-    ctx.w
-        .module_state::<EconomyStore>()
-        .and_then(|store| {
-            store
-                .snapshot()
-                .holds()
-                .filter(|h| h.purpose == want)
-                .position(|h| h.id == hold)
-        })
+    snapshot
+        .holds()
+        .filter(|h| h.purpose == want)
+        .position(|h| h.id == hold)
         .and_then(|n| u32::try_from(n).ok())
         .unwrap_or(0)
 }
@@ -349,11 +388,54 @@ pub fn place(ctx: &mut Ctx<'_>, order: &WorkOrder) -> Result<HoldId, HoldError> 
     if ctx.w.module_state::<EconomyStore>().is_none() {
         return Err(HoldError::NoEconomy);
     }
+    // P2-MOD-17: require an active `InstrumentKind::Currency` budget account
+    // owned by the requester with a valid facility payee before placing a hold.
+    let Some(facility_owner) = ctx
+        .w
+        .module_state::<crate::store::IndustryStore>()
+        .and_then(|store| store.facility(order.facility()))
+        .map(|facility| facility.owner().clone())
+    else {
+        return Err(HoldError::Refused("facility is unavailable".to_owned()));
+    };
+    if let Err(refusal) = check_wo_accounts_in(
+        ctx.w,
+        order.requester(),
+        order.budget_account(),
+        &facility_owner,
+    ) {
+        return Err(match refusal {
+            AccountRefusal::NoEconomy => HoldError::NoEconomy,
+            other => HoldError::Refused(other.public().to_owned()),
+        });
+    }
     let id = order.id();
-    // The attempt term, read from the ledger immediately before the post: a second
-    // placement after a compensating release posts under a *fresh* key rather than
-    // meeting its own spent one.
-    let n = attempt(ctx, id);
+    // P2-MOD-46: pick the first attempt whose placement AND settlement keys are
+    // both confirmed unused across RAM and KV idempotency history, so 7-day
+    // terminal hold GC (`HOLD_GC_AFTER_SECS`) never collides on retry or pairs
+    // a fresh hold with an already-spent settlement key.
+    let mut n = attempt(ctx, id);
+    let mut fresh = false;
+    for _ in 0..MAX_ATTEMPT_PROBES {
+        let hold_spent = mush_economy::resolve_idempotency(ctx, &wo_hold_key(id, n))
+            .map_err(refuse)?
+            .is_some();
+        let settle_spent = if hold_spent {
+            true
+        } else {
+            mush_economy::resolve_idempotency(ctx, &wo_settle_key(id, n))
+                .map_err(refuse)?
+                .is_some()
+        };
+        if !hold_spent && !settle_spent {
+            fresh = true;
+            break;
+        }
+        n = n.checked_add(1).ok_or(HoldError::NoHold)?;
+    }
+    if !fresh {
+        return Err(HoldError::NoHold);
+    }
     let plan = EconomyPlan {
         hold_ops: vec![HoldOp::Place {
             account: order.budget_account(),
@@ -385,7 +467,8 @@ pub fn place(ctx: &mut Ctx<'_>, order: &WorkOrder) -> Result<HoldId, HoldError> 
 /// the placer clause of `WorldAuth::authorize_hold` does not authorize it, which is
 /// exactly what stops the order's owner releasing it themselves.
 pub fn release(ctx: &mut Ctx<'_>, order: WorkOrderId, hold: &Hold) -> Result<(), HoldError> {
-    let n = attempt_of(ctx, order, hold.id);
+    let n =
+        attempt_from_holder(order, &hold.holder).unwrap_or_else(|| attempt_of(ctx, order, hold.id));
     let plan = EconomyPlan {
         hold_ops: vec![HoldOp::Release { hold: hold.id }],
         description: format!("work order {order} budget released"),
@@ -425,7 +508,8 @@ pub fn capture(
 ) -> Result<(), HoldError> {
     let amount = hold.amount;
     let debit = amount.checked_neg().ok_or(HoldError::NoHold)?;
-    let n = attempt_of(ctx, order, hold.id);
+    let n =
+        attempt_from_holder(order, &hold.holder).unwrap_or_else(|| attempt_of(ctx, order, hold.id));
     let memo = if payee == hold.account {
         SmolStr::new_static("industry.wo.self")
     } else {
@@ -520,7 +604,8 @@ pub fn capture_part(
 ) -> Result<(), HoldError> {
     let amount = Amount::from_minor(i64::try_from(minor).map_err(|_| HoldError::NoHold)?);
     let debit = amount.checked_neg().ok_or(HoldError::NoHold)?;
-    let n = attempt_of(ctx, order, hold.id);
+    let n =
+        attempt_from_holder(order, &hold.holder).unwrap_or_else(|| attempt_of(ctx, order, hold.id));
     let memo = SmolStr::new_static("industry.wo.forfeit");
     let plan = EconomyPlan {
         hold_ops: vec![HoldOp::Capture {
@@ -775,6 +860,9 @@ pub enum AccountRefusal {
     BudgetInactive,
     /// The budget account belongs to somebody else (and the actor is not staff).
     NotYours,
+    /// The budget account does not hold an active [`InstrumentKind::Currency`]
+    /// instrument (P2-MOD-17).
+    NotCurrency,
     /// The facility's owner has no `Active` account in the budget's instrument at
     /// all, so a completed order would have nowhere to pay. Since F1(b) an
     /// owner-operator's *own* budget account satisfies this, so the refusal now means
@@ -799,11 +887,22 @@ impl AccountRefusal {
             AccountRefusal::NotYours => {
                 "A work order's budget is a reservation on the requester's own account."
             }
+            AccountRefusal::NotCurrency => {
+                "A work order's budget account must hold an active currency."
+            }
             AccountRefusal::NoPayee => {
                 "That facility's owner holds no operating account in the budget's instrument."
             }
         }
     }
+}
+
+/// Whether `instrument` is an active [`InstrumentKind::Currency`] in `store`
+/// (P2-MOD-17).
+pub(crate) fn is_active_currency(store: &EconomyStore, instrument: &InstrumentId) -> bool {
+    store.snapshot().instrument(instrument).is_some_and(|def| {
+        def.kind == InstrumentKind::Currency && def.status == InstrumentStatus::Active
+    })
 }
 
 /// The facility owner's payout account for a budget on `account`.
@@ -818,6 +917,9 @@ impl AccountRefusal {
 /// keeping it meant a one-account owner could not draft, and a two-account owner
 /// paid themselves. Both are now honest and both are recorded.
 fn payee_of(account: &Account, owner: &PrincipalId, store: &EconomyStore) -> Option<AccountId> {
+    if !is_active_currency(store, &account.instrument) {
+        return None;
+    }
     let eligible = |candidate: &&Account| {
         candidate.instrument == account.instrument
             && matches!(candidate.status, AccountStatus::Active)
@@ -827,11 +929,15 @@ fn payee_of(account: &Account, owner: &PrincipalId, store: &EconomyStore) -> Opt
         .accounts_of(owner)
         .find(|candidate| candidate.id != account.id && eligible(candidate))
         .or_else(|| {
-            // The owner-operator fall-back: only their OWN budget account, and only
-            // when the budget belongs to them. A requester paying somebody else's
-            // facility never lands here.
+            // The owner-operator fall-back: only their OWN active budget account,
+            // and only when the budget belongs to them. A requester paying somebody
+            // else's facility never lands here.
             (account.owner == *owner)
-                .then(|| snapshot.accounts_of(owner).find(|c| c.id == account.id))
+                .then(|| {
+                    snapshot
+                        .accounts_of(owner)
+                        .find(|c| c.id == account.id && eligible(c))
+                })
                 .flatten()
         })
         .map(|candidate| candidate.id)
@@ -854,22 +960,20 @@ pub fn payee_account(
     payee_of(&account, facility_owner, store)
 }
 
-/// **Resolve a work order's money accounts at the edit** — `check_bond_accounts`'
-/// exact shape (E7 cut 9 fold, C8), for the same reason: the placement side is saved
-/// by the engine (invariants 25/26 refuse a hold on someone else's account, or an
-/// unfunded one), but the **capture** side was validated nowhere, so an order could
-/// run to completion and then have nowhere to pay.
+/// **Resolve a work order's money accounts against a bare world** — shared by
+/// [`check_wo_accounts`], [`place`], `WoDraft` projection (`drafter_accounts`),
+/// and `WoSubmit` projection (`eligible_submit_holds`) so every ingress enforces
+/// the exact same active-currency and facility-payee rule (P2-MOD-17).
 ///
 /// # Errors
 /// [`AccountRefusal`], one typed code per reason.
-pub fn check_wo_accounts(
-    ctx: &Ctx<'_>,
-    _actor: ObjId,
+pub fn check_wo_accounts_in(
+    world: &mush_core::World,
     requester: &PrincipalId,
     budget: AccountId,
     facility_owner: &PrincipalId,
 ) -> Result<AccountId, AccountRefusal> {
-    let Some(store) = ctx.w.module_state::<EconomyStore>() else {
+    let Some(store) = world.module_state::<EconomyStore>() else {
         return Err(AccountRefusal::NoEconomy);
     };
     let Some(account) = store.snapshot().account(budget).cloned() else {
@@ -892,7 +996,28 @@ pub fn check_wo_accounts(
     if account.owner != *requester {
         return Err(AccountRefusal::NotYours);
     }
+    if !is_active_currency(store, &account.instrument) {
+        return Err(AccountRefusal::NotCurrency);
+    }
     payee_of(&account, facility_owner, store).ok_or(AccountRefusal::NoPayee)
+}
+
+/// **Resolve a work order's money accounts at the edit** — `check_bond_accounts`'
+/// exact shape (E7 cut 9 fold, C8), for the same reason: the placement side is saved
+/// by the engine (invariants 25/26 refuse a hold on someone else's account, or an
+/// unfunded one), but the **capture** side was validated nowhere, so an order could
+/// run to completion and then have nowhere to pay.
+///
+/// # Errors
+/// [`AccountRefusal`], one typed code per reason.
+pub fn check_wo_accounts(
+    ctx: &Ctx<'_>,
+    _actor: ObjId,
+    requester: &PrincipalId,
+    budget: AccountId,
+    facility_owner: &PrincipalId,
+) -> Result<AccountId, AccountRefusal> {
+    check_wo_accounts_in(ctx.w, requester, budget, facility_owner)
 }
 
 // ---- the sweep arm ---------------------------------------------------------

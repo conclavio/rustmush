@@ -4125,9 +4125,11 @@ async fn ic12_negative_checks_refuse_in_fiction_and_move_nothing() {
     let _ = sweep(&mut rig, 61).await;
     walk_path(&mut rig, vex, &to_gallery).await;
     let _ = run(&mut rig, vex, "+ship/board").await;
-    // 10's docked counterpart: the pilot's own move out of the docked hold is
-    // refused. Doc 48e (exchange G7; 48d C-03): aboard, the pilot stands in no port room,
-    // so the ports' move rule refuses before anything is queued.
+    // 10's docked counterpart: the pilot's own move out of the docked hold into a vendor's
+    // store is refused before anything is queued. P2-MOD-51 enforces caller take-authority and
+    // liveness on both endpoints before `MovePolicy::admit`, returning existence-hiding
+    // `NO_SUCH_ENDPOINT` for unauthorized endpoints like `exchange_store` (legitimate
+    // cross-venue `MOVE_NOT_AT_VENUE` between actor-owned vaults is covered in `move_policy_48e`).
     let exchange_store = port_map(&rig.tw, C).vendors[&cid("freeport_exchange")].vault;
     let before = snap(&mut rig);
     let docked_move = run(
@@ -4137,7 +4139,7 @@ async fn ic12_negative_checks_refuse_in_fiction_and_move_nothing() {
     )
     .await;
     assert!(
-        docked_move.contains(tacsim::port::market::MOVE_NOT_AT_VENUE),
+        docked_move.contains(mush_inventory::commands::NO_SUCH_ENDPOINT),
         "{docked_move}"
     );
     assert!(drain_players(&mut rig).await.is_empty(), "nothing queued");
@@ -4158,16 +4160,10 @@ async fn ic12_negative_checks_refuse_in_fiction_and_move_nothing() {
         )
         .await;
     }
-    // 10. `@inv/move` out of the hold under way — as built, the ENDPOINT-AUTHORITY
-    // refusal: the pilot acts on exactly one endpoint (the hull's own hold), so a
-    // move between it and a storefront has nowhere to land, refused at the
-    // coordinator before any intent (the player hears the world task's generic
-    // refusal) whether the hull is docked (the counterpart before the launch, above)
-    // or under way. No under-way rule of its own exists: a staff move out of a hold
-    // under way lands (D-18-37's deferral to P-H; Q-18-62), so §6's check 10 as
-    // written stays open there.
-    // Doc 48e (exchange G7; 48d C-03): under way the pilot stands in no port, so the ports'
-    // move rule refuses before anything is queued, as it did aboard at the berth (above).
+    // 10. `@inv/move` out of the hold under way — ENDPOINT-AUTHORITY refusal (P2-MOD-51):
+    // the pilot acts on only one endpoint (the hull's own hold), not the exchange store, so
+    // `move_stock` rejects the unauthorized destination with byte-identical `NO_SUCH_ENDPOINT`
+    // before consulting `MovePolicy::admit` or queueing any intent, whether docked or under way.
     let before = snap(&mut rig);
     let _ = &docked_move;
     let out = run(
@@ -4177,7 +4173,7 @@ async fn ic12_negative_checks_refuse_in_fiction_and_move_nothing() {
     )
     .await;
     assert!(
-        out.contains(tacsim::port::market::MOVE_NOT_AT_VENUE),
+        out.contains(mush_inventory::commands::NO_SUCH_ENDPOINT),
         "{out}"
     );
     assert!(drain_players(&mut rig).await.is_empty(), "nothing queued");

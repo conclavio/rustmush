@@ -294,6 +294,18 @@ impl OwnerReadService for HouseSaleReader {
             None,
         )
         .map_err(|_| OwnerReadError::Refused)?;
+        // P2-MOD-54: a Registry-barred House organization may not publish catalogue
+        // listings, issue fresh House sales, or renew House licences (renewals consult
+        // this reader via `house_renewal::reader`).
+        if crate::commerce::registry_inspection::principal::barred_principal_read(
+            ctx,
+            &self.f,
+            &issuer.principal(),
+        )
+        .map_err(|_| OwnerReadError::Unavailable)?
+        {
+            return Err(OwnerReadError::Refused);
+        }
         if charter.id != birth.charter
             || charter.line != line.id
             || line.charter != charter.id
