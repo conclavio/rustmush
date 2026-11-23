@@ -1665,6 +1665,59 @@ fn the_parser_reads_what_the_cockpit_formatters_print() {
 const SENTINEL: &str = "zzq-arena-sentinel";
 const HUH: &str = "Huh?";
 
+/// Whether `raw` is the server's echo of a line in `typed`: the lane's own
+/// journal-filter rule (`Lane::line`), a line equal to one typed.
+fn is_echo(typed: &[String], raw: &str) -> bool {
+    let trimmed = raw.trim();
+    !trimmed.is_empty() && typed.iter().any(|line| line == trimmed)
+}
+
+/// **The echo of a line typed behind `STATUS` ends nothing** (the flake on
+/// PR #768's `test (bot)`, 2026-11-22): the line editor writes the echo when
+/// the line arrives, so the sentinel's echo can come between two rows of the
+/// block, as it did there, after the left track's facets. Read as a line of
+/// its own, it ended the block and the last two sections were lost; dropped
+/// as the lane drops it, the block reads whole.
+#[test]
+fn the_echo_of_a_line_typed_behind_status_ends_no_block() {
+    let rows = [
+        "STATUS",
+        "Callsign RA.",
+        "Red Tank 1: power online, 0 kph, heading 90°",
+        "  at 65 m east, 975 m north; scope clear",
+        "  rounds cannon 24/24, machine_gun 600/600",
+        "  engine  intact  internals 120/120",
+        "  hull  intact  internals 200/200",
+        "    front 400/400  left 250/250  rear 150/150  right 250/250  top 100/100",
+        "  left_track  intact  internals 100/100",
+        "    left 120/120",
+        SENTINEL,
+        "  right_track  intact  internals 100/100",
+        "    right 120/120",
+        "  turret  intact  internals 150/150",
+        "    front 350/350  left 220/220  rear 140/140  right 220/220",
+        "Huh?  (Type \"help\" for help.)",
+    ];
+    let stream: String = rows.iter().map(|row| format!("{row}\r\n")).collect();
+    let sections = |typed: &[String]| {
+        let mut assembler = Assembler::default();
+        let mut picture = Picture::default();
+        for raw in assembler.feed(0, &stream) {
+            if !is_echo(typed, &raw) {
+                picture.apply(0, &classify(&raw));
+            }
+        }
+        picture.own.sections.keys().cloned().collect::<Vec<_>>()
+    };
+    assert_eq!(
+        sections(&["STATUS".to_owned(), SENTINEL.to_owned()]),
+        ["engine", "hull", "left_track", "right_track", "turret"]
+    );
+    // The reader before the fix: the echo is a line of its own, and the block
+    // ends at it.
+    assert_eq!(sections(&[]), ["engine", "hull", "left_track"]);
+}
+
 /// The client, the bot's reader on its stream, and what it has read.
 struct Live {
     client: arena_rig::Client,
@@ -1673,6 +1726,9 @@ struct Live {
     started: Instant,
     lines: Vec<Line>,
     phases: Vec<Phase>,
+    /// Every line typed: the server's line editor echoes each one, and the
+    /// echo is not the game's words (see [`Live::read`]).
+    typed: Vec<String>,
 }
 
 impl Live {
@@ -1682,11 +1738,27 @@ impl Live {
 
     /// Everything the client has decoded since the last read, through the
     /// bot's own assembler, classifier and picture.
+    ///
+    /// **The echo of a typed line is not read**, as the lane's own journal
+    /// filter drops it (`Lane::line`, `RECENT_SENT`). The echo is written when
+    /// the line arrives, not in turn with the game's answers, so the echo of
+    /// [`SENTINEL`], typed straight after `STATUS`, can land between two rows
+    /// of the `STATUS` block. Read as a line of its own it ended the block
+    /// there, and the sections after it (the readout is alphabetical, so
+    /// `right_track` and `turret`) never reached the picture.
     fn read(&mut self) {
         let text = self.client.drain();
         let now = self.now();
         for raw in self.assembler.feed(now, &text) {
-            self.apply(now, &raw);
+            if !is_echo(&self.typed, &raw) {
+                self.apply(now, &raw);
+            }
+        }
+    }
+
+    fn typed(&mut self, line: &str) {
+        if !self.typed.iter().any(|typed| typed == line) {
+            self.typed.push(line.to_owned());
         }
     }
 
@@ -1700,6 +1772,7 @@ impl Live {
     }
 
     async fn say(&mut self, line: &str, needle: &str) -> String {
+        self.typed(line);
         let seen = self.client.say(line, needle).await;
         self.read();
         seen
@@ -1708,6 +1781,8 @@ impl Live {
     /// `line` and then [`SENTINEL`]: the answer runs to the sentinel's `Huh?`,
     /// so all of it is in and none of it is in flight.
     async fn ask_whole(&mut self, line: &str) -> String {
+        self.typed(line);
+        self.typed(SENTINEL);
         for _ in 0..arena_rig::RETRY_BUDGET {
             let from = self.client.seen.len();
             self.client.send(line).await;
@@ -1746,6 +1821,7 @@ async fn live_centre() {
         started: Instant::now(),
         lines: Vec::new(),
         phases: vec![Phase::Unknown],
+        typed: Vec::new(),
     };
     live.read();
     assert_eq!(
@@ -1931,10 +2007,13 @@ async fn live_centre() {
     assert_eq!(own.max_ahead_kph, Some(54));
     assert_eq!(own.max_astern_kph, Some(27));
     for section in ["hull", "turret", "left_track", "right_track"] {
-        let read = own
-            .sections
-            .get(section)
-            .unwrap_or_else(|| panic!("the {section} in {:?}", own.sections));
+        let read = own.sections.get(section).unwrap_or_else(|| {
+            panic!(
+                "the {section} in {:?}; the transcript:
+{transcript}",
+                own.sections
+            )
+        });
         assert!(!read.facets.is_empty(), "the {section}'s facets");
     }
     let weapons: Vec<(&str, Option<&str>)> = picture
@@ -2085,6 +2164,7 @@ async fn native_rule_lines() {
         started: Instant::now(),
         lines: Vec::new(),
         phases: vec![Phase::Unknown],
+        typed: Vec::new(),
     };
     live.read();
     live.say("ooc", "Welcome Hall").await;
