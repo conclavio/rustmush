@@ -6,7 +6,7 @@
 //! point of the IC day the test happened to start, and a story that is wrong
 //! in one stretch of that day fails only in the runs that start there. Two
 //! rows of `docs/flaky-tests.md` were this and nothing else: an IC day turned
-//! inside one step of a commerce story, in about one run in thirty.
+//! inside one stretch of a commerce story, in a few runs in a hundred.
 //!
 //! So a rig does not read the wall clock. It boots at [`STORY_EPOCH`], and a
 //! story about anything scheduled on the game clock runs once at each
@@ -31,10 +31,17 @@
 //! That is three tests, `a_listing_is_posted_again_each_day::at_the_epoch`,
 //! `::before_a_days_turn` and `::mid_month`.
 //!
+//! **The named phases sample the calendar; they do not aim.** A fault that
+//! needs a turn inside one stretch of one story is not found by booting at the
+//! epoch, just before a day's turn and in mid-month.
+//!
 //! **The soak draws its own.** `STORY_PHASE=random` gives every boot a phase
 //! drawn from a whole schedule year, and each boot prints the phase it took, so
 //! a failure names the phase to pin: `STORY_PHASE=+<seconds>` runs every story
-//! there, and a story keeps the phase for good by naming it in its `phases!`.
+//! there, and a story keeps the phase for good by naming it in its `phases!`,
+//! as one more test. A story with a pinned phase checks, at that phase, that
+//! the turn still falls where the phase was pinned for
+//! ([`Phase::overridden`]).
 
 use std::hash::{BuildHasher, Hasher};
 

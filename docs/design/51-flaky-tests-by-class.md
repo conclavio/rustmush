@@ -498,11 +498,15 @@ reads are counted a file, and the count may only fall (§3.9).
   boot), `+<seconds>`, or a named phase's word. Every boot prints the phase it took, so a
   failure under the soak names the phase to pin. Any other value fails the boot.
 
-**The three named phases sample the calendar; they do not aim.** Row 17 failed when a day
-turned in one six-minute stretch of a story, 15 to 21 minutes after boot, and none of the
-three puts a turn there. The soak's draw does, in about one boot in ten. A phase found that
-way is pinned in the story's `phases!` call, and the story checks at run time that the pinned
-phase still puts the turn where it was pinned for.
+**The three named phases sample the calendar; they do not aim.** Row 17's stories failed when
+a day turned in a stretch of a few minutes, 12 to 21 minutes after the boot, and none of the
+three puts a turn there: the epoch's first turn falls 36 minutes after the boot and the
+day-turn phase's 3 seconds after it. With the fault put back, both stories pass at all three.
+The soak's draw reaches the stretch in about one boot in fifteen. A phase found that way is
+pinned in the story's `phases!` call as one more test, and the story checks at run time that
+the pinned phase still turns the day where it was pinned for. Each of row 17's two stories has
+one. A pinned phase can be aimed only because the story's steps fall on the same seconds every
+run, which took a fixed geology key as well as a fixed boot (rule D, §3.2).
 
 ### 3.7 Event waits: one limit, and budgets that nest
 
