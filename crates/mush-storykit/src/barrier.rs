@@ -209,8 +209,9 @@ pub async fn arena_frames(staff: &mut impl Session, id: u64) -> u64 {
 }
 
 /// **Wait until match `id` has pulsed at least once more**: its frame count
-/// on `@arena/status` has moved past what it reads now. A line sent before
-/// this returns has been taken by a wake the story has seen.
+/// on `@arena/status` has moved past what it reads now. An order that had
+/// reached the arena before the call has been taken by then, and what that
+/// pulse told a cockpit is on its way.
 pub async fn arena_wake(staff: &mut impl Session, id: u64) {
     let from = arena_frames(staff, id).await;
     wait_until(STEP_TIMEOUT, "the arena's next wake", async || {

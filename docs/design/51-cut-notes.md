@@ -574,8 +574,8 @@ answer, and the two sleeps of Not built.
   part intact. Two survivable turret hits each jammed one of the turret's two guns (doc 36 cut
   GC.2, one chance in twenty a hit), a side with no gun left is out (16b cut AP.2), and the sim
   center's check-in returns parts unjammed. `damage.rs`' own tests prove each step. It is a
-  reading of the record and the code, not a reproduction: the chance is about one match in
-  three thousand.
+  reading of the record and the code, not a reproduction: the story failed this way once in the
+  1,000 CI runs the record was collected from.
 - **Row 19 is new**: `the_switch_names_a_contact…`, one soak pass of main, a stream fault, fixed.
 
 **Tests.** All on conclav.dev, in clones of `b0c0e6832` with this unit's patch.
