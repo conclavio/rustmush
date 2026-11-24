@@ -643,8 +643,8 @@ owner.
 **FL.3 was cut on 2026-11-23 and is built.** The owner's word to start it was the cut. What it
 built, what it measured and where it differs from this section are in
 [51-cut-notes.md](51-cut-notes.md), under FL.3. In short: the suite's soak rate went from 3 failed
-passes in 96 to the figure the note gives; rows 3, 4, 9, 13 and 16 are closed; `Figures`, `Odds`
-and the barriers are in `mush-storykit`; and `ArenaConfig::seed` is the one product change.
+passes in 96 to none in 96; rows 3, 4, 9, 13 and 16 are closed; `Figures`, `Odds` and the barriers
+are in `mush-storykit`; and `ArenaConfig::seed` is the one product change.
 
 One pull request each. S is under a day's session, M one to two, L more. "Runs" is §2.4's count
 for the suite. FL.0 is this document and its script, merged as #771.

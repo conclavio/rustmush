@@ -457,8 +457,8 @@ rounds each, `sim_lenses` alone (97 tests), no retry:
 
 | | Passes | Failed passes | Tests that failed | A pass, wall | A pass, summed test time |
 |---|---:|---:|---|---:|---:|
-| Before, main `b0c0e6832` | 96 | 3 | `nothing_of_the_shooting…` twice, `the_switch_names_a_contact…` once | 286 s | 1,077 s |
-| After, this unit | @@PASSES@@ | @@FAILED@@ | @@WHICH@@ | @@WALL@@ s | @@SUMMED@@ s |
+| Before, main `b0c0e6832` | 96 | 3 | `nothing_of_the_shooting…` twice, `the_switch_names_a_contact…` once | 286 s | 1,075 s |
+| After, this unit | 96 | 0 | none | 263 s | 965 s |
 
 Both soaks ran beside other sessions' builds on the box (load 20 to 35 of 32 cores). The "after"
 row is the third soak of the converted suite. The first two were stopped on failures in one
@@ -585,12 +585,14 @@ answer, and the two sleeps of Not built.
 
 **Tests.** All on conclav.dev, in clones of `b0c0e6832` with this unit's patch.
 
-- `mush-storykit`: @@KIT_TESTS@@ unit tests and @@KIT_DOCS@@ doc tests.
+- `mush-storykit`: 37 unit tests and 4 doc tests.
 - tacsim: `fl3_a_pinned_seed_opens_every_match_and_none_keeps_the_os_draw`,
   `fl3_the_pinned_seed_is_no_key_of_the_encoded_arena_block`, and
   `af1_the_snapshot_shape_is_pinned` with its neighbors, unmoved. mush-server:
   `fl3_no_config_key_pins_a_match_seed`.
 - `sim_lenses` whole, one cell's shape (four cores, four threads, no retry): 97 of 97, 279 s.
+- mushd, every binary (`cargo nextest run -p mushd`, eight threads, no retry): 261 run, 261
+  passed, 1 skipped, as at FL.1.
 - **A stress run found a hole in the first conversion.** Thirty-two duel stories at once on
   eight cores: the cockpit answers `Firing cannon.` off its last frame, which under that load was
   seconds old, so it accepted 24 `FIRE`s in a row; the loop counted the magazine spent after one
@@ -620,7 +622,7 @@ answer, and the two sleeps of Not built.
     each time, types at the flood bucket's refill rate. The kit reads `@arena/status` to its own
     last line, one line a poll, as the rig did.
   - Between the soaks, the two row-13 stories and their neighbors ran 24 invocations side by
-    side: 144 of 144 after the first soak's fixes, @@STRESS@@ after the second's.
+    side: 144 of 144 after the first soak's fixes, 216 of 216 after the second's.
 - **The duel's length depends on the seed.** Sixteen clean seeds, both duel stories each: 74 to
   178 s for `sim_rematch`, 101 to 176 s for `arena_story`. `A_CLEAN_DUEL` is the shortest pair
   (74 and 106 s; main's random seeds average 127 and 136 s).
