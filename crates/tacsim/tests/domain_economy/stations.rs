@@ -1596,7 +1596,10 @@ fn ic1_every_public_room_is_walkable_by_its_authored_aliases() {
                 said(&tw, &events, who)
             );
             let Some(back) = back else {
-                assert_eq!(entry, "exit.limbo_arrivals", "only the Limbo door is one way");
+                assert_eq!(
+                    entry, "exit.limbo_arrivals",
+                    "only the Limbo door is one way"
+                );
                 continue;
             };
             let events = tw.run(who, back);

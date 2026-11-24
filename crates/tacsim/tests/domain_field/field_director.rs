@@ -89,6 +89,23 @@ fn ore(rig: &mut Rig, tv: ObjId) {
 /// it, and an armed hull a hired NPC sits in further east — three flights out — and, with
 /// `loaded`, rig 1's hopper holding three tonnes of ore. Answers the pilot, the rigs and the guard.
 fn tempting_site(rig: &mut Rig, loaded: bool) -> (ObjId, Vec<ObjId>, ObjId) {
+    tempting_site_crewed(rig, loaded, |rig, guard| {
+        let npc = staff_hand(rig, |ctx| {
+            ctx.w
+                .create(ObjKind::Npc, "Hired guard", GOD, None)
+                .expect("the NPC")
+        });
+        seat_npc(rig, guard, npc);
+    })
+}
+
+/// [`tempting_site`], the guard's seat crewed by `crew` (lane 3 puts a gunner there, who names
+/// the barge as their target).
+fn tempting_site_crewed(
+    rig: &mut Rig,
+    loaded: bool,
+    crew: impl FnOnce(&mut Rig, ObjId),
+) -> (ObjId, Vec<ObjId>, ObjId) {
     let (a, _, tvs) = on_pad(rig, 2);
     launched(rig, a, tvs[0]);
     to_cell(rig, tvs[0], (190, 126));
@@ -99,12 +116,7 @@ fn tempting_site(rig: &mut Rig, loaded: bool) -> (ObjId, Vec<ObjId>, ObjId) {
         ore(rig, tvs[0]);
     }
     let guard = armed(rig, "Ward Dog", (183, 126), 270_000);
-    let npc = staff_hand(rig, |ctx| {
-        ctx.w
-            .create(ObjKind::Npc, "Hired guard", GOD, None)
-            .expect("the NPC")
-    });
-    seat_npc(rig, guard, npc);
+    crew(rig, guard);
     rationed(rig, guard, ROUNDS);
     warm(rig);
     (a, tvs, guard)
@@ -606,11 +618,45 @@ async fn co10_a_raid_that_joins_a_running_field_mirrors_its_crews_helm() {
     );
 }
 
+/// Lane 3's raid time in the field, seconds.
+const RAID_FIELD_S: i64 = 60;
+
+/// **The gunner's pass** (lane 3): lock the contact on the barge's own cell, and fire.
+fn gunner_on_barge(rig: &mut Rig, gunner: ObjId, barge: ObjId, gun: &str) {
+    let Some(at) = mush_sim::pose_of(rig.tw.world(), barge)
+        .map(|(_, pose)| tacsim::surface::excursion::site_cell(pose.x_cm, pose.y_cm))
+    else {
+        return;
+    };
+    let Some(frame) = crate::field_host_rig::frame(rig, gunner) else {
+        return;
+    };
+    let on_it = frame.contacts.iter().find(|contact| {
+        contact
+            .cell
+            .is_some_and(|(x, y)| i64::from(x) == at.0 && i64::from(y) == at.1)
+    });
+    if let Some(contact) = on_it
+        && frame.lock != Some(contact.id)
+    {
+        let _ =
+            crate::driving_rig::run(&mut rig.tw, gunner, &format!("LOCK {}", contact.designator));
+    }
+    let _ = crate::driving_rig::run(&mut rig.tw, gunner, &format!("FIRE {gun}"));
+}
+
 /// **Doc 36a lane 3, P1-11** (doc 36 cut GC.3's rule, for the director's own barge): a barge
 /// whose drive is down stays on the ground. The director lands its raid as the GC.11 gate has
-/// it; staff then destroy the barge's drive where a round would have. The raid loses half, turns
-/// for home and its standing hull boards — and the barge, which cannot lift, stays in the field
-/// until it settles, a casualty on the index. The director reads it stuck: the raid is over, the
+/// it; staff then destroy the barge's drive where a round would have. The guard's gunner puts
+/// its rationed rounds on the barge until the raid's time in the field is up, and then holds; the
+/// raid turns for home on its time and its hulls board — and the barge, which cannot lift, stays in the field until it settles, a
+/// casualty on the index.
+///
+/// The gunner names the barge (by the cell the barge itself stands on), so what the guard fires
+/// at never rests on object numbers. The hired NPC's mind took the nearest contact, and the
+/// raiders' formation follows dbrefs: when the 2026-11-24 Ceres v4 edit renumbered the world it
+/// took a raider hull instead, and the field closed under the other hull while it withdrew (a
+/// branch of its own, outside this story). The director reads it stuck: the raid is over, the
 /// raider spent, and no visit afterwards takes the barge off the ground or its row off the record
 /// (before the fix `recall` lifted it anyway and left the row behind).
 #[tokio::test(flavor = "current_thread", start_paused = true)]
@@ -620,9 +666,13 @@ async fn lane3_a_barge_whose_drive_is_down_stays_on_the_ground() {
     // rounds do: the gate is the barge's lift, not the fight.
     let mut rig = stocked_tuned(|cfg| {
         tune(cfg);
-        cfg.field.raid_field_s = 60;
+        cfg.field.raid_field_s = RAID_FIELD_S.try_into().expect("seconds");
     });
-    let (a, _, _) = tempting_site(&mut rig, true);
+    let gunner = crate::driving_rig::pilot(&mut rig, "Ward Gunner", 7_731);
+    let (a, _, guard) = tempting_site_crewed(&mut rig, true, |rig, guard| {
+        crate::field_host_rig::seat(rig, guard, gunner);
+    });
+    let gun = crate::field_host_rig::weapon_of(&rig, guard);
     let mut rx = egress(&mut rig);
     let mut lines: Vec<LedgerEvent> = Vec::new();
     let landed = until(&mut rig, &mut rx, &mut lines, 20, |rig, _| {
@@ -640,7 +690,6 @@ async fn lane3_a_barge_whose_drive_is_down_stays_on_the_ground() {
     set_section(&mut rig, barge, "drive", Some("destroyed"), Some(0));
     let damage = tacsim::carrier_damage::damage_of(rig.tw.world(), barge).expect("a reading");
     assert!(damage.has(CarrierLoss::RefusesLift) && !damage.has(CarrierLoss::Wrecked));
-    fragile(&mut rig, raiders[0]);
 
     let opened = until(&mut rig, &mut rx, &mut lines, 20, |rig, _| {
         task(rig).is_some()
@@ -651,7 +700,18 @@ async fn lane3_a_barge_whose_drive_is_down_stays_on_the_ground() {
 
     // It turns for home — on its losses or its time — and its standing hulls board; the barge
     // cannot follow.
+    let mut ceased = false;
+    let opened_at = rig.tw.world().now();
     let boarded = until(&mut rig, &mut rx, &mut lines, 300, |rig, _| {
+        // Until just before the raid's time in the field is up (its turn for home), and then
+        // the gun is stood down: a held FIRE keeps the cannon on its lock, and a sixth round
+        // would wreck the barge the story is about.
+        if rig.tw.world().now() - opened_at < RAID_FIELD_S - 5 {
+            gunner_on_barge(rig, gunner, barge, &gun);
+        } else if !ceased {
+            ceased = true;
+            let _ = crate::driving_rig::run(&mut rig.tw, gunner, &format!("FIRE {gun} OFF"));
+        }
         raiders.iter().all(|hull| {
             mush_sim::pose_of(rig.tw.world(), *hull).is_none()
                 || site_record(rig)

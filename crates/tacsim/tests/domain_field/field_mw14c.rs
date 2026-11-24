@@ -1520,8 +1520,13 @@ async fn mw14c_an_absent_players_unit_is_sent_no_concentrate_and_does_not_fire_f
 
     // The intruder fires on the roster's carrier, never on the captain's rig. The commander
     // holds and concentrates her own hull on it.
-    let pad = carrier_cell_apart(&field.rig, okonkwo, &[captain, okonkwo], &[own_rig, her_rig])
-        .expect("her frame holds her carrier, apart from the roster's two rigs");
+    let pad = carrier_cell_apart(
+        &field.rig,
+        okonkwo,
+        &[captain, okonkwo],
+        &[own_rig, her_rig],
+    )
+    .expect("her frame holds her carrier, apart from the roster's two rigs");
     let seen = stopped(
         &mut field,
         120,
