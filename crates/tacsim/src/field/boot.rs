@@ -260,6 +260,7 @@ fn resume(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) -> Result<(), Stri
         .map(FieldBook::next_task)
         .ok_or_else(|| "the field host is unavailable".to_owned())?;
     live.at_ms = head.at_ms;
+    let field_seed = arena.seed;
     if let Some(book) = ctx.w.module_state_mut::<FieldBook>() {
         book.live.insert(
             site.clone(),
@@ -268,6 +269,7 @@ fn resume(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) -> Result<(), Stri
                 live: live.clone(),
             },
         );
+        book.set_seed(site.clone(), field_seed);
         book.snapshots.insert(site.clone(), document);
         // Doc 32 §15 (the review's CF-6): a fire-promoted field resumes with its opening shot
         // still owed when the snapshot it rewinds to was taken before the shot left.
@@ -287,6 +289,7 @@ fn resume(ctx: &mut Ctx<'_>, site: &CanonicalId, held: &Held) -> Result<(), Stri
     if let Err(error) = crate::arena_bridge::resume_field_task(ctx, task, arena, terms) {
         if let Some(book) = ctx.w.module_state_mut::<FieldBook>() {
             book.live.remove(site);
+            book.seeds.remove(site);
             book.tally.remove(site);
         }
         return Err(format!("its task did not reopen ({error})"));

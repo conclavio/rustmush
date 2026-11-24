@@ -221,6 +221,11 @@ pub const LABEL_KINDS: [&str; 7] = DrawLabel::LABEL_KINDS;
 /// FNV-1a + splitmix64 combat draw state.
 const CONTACT_DRAW_DOMAIN: &[u8] = b"tacsim.arena.rng.contact.v1\0";
 
+/// Domain separator for epoch-salted contact re-acquisitions (`epoch > 0`),
+/// isolating post-loss re-acquired contact identifiers from earlier tracks of
+/// the same `(viewer, target)` pair (P2-TSC-29).
+const CONTACT_DRAW_EPOCH_DOMAIN: &[u8] = b"tacsim.arena.rng.contact.v2\0";
+
 /// Derive the non-invertible 64-bit contact draw via domain-separated SHA-256.
 fn draw_contact_prf(seed: u64, viewer: ObjId, target: ObjId) -> u64 {
     use sha2::{Digest as _, Sha256};
@@ -230,6 +235,21 @@ fn draw_contact_prf(seed: u64, viewer: ObjId, target: ObjId) -> u64 {
     hasher.update(seed.to_le_bytes());
     hasher.update(viewer.0.to_le_bytes());
     hasher.update(target.0.to_le_bytes());
+    let [b0, b1, b2, b3, b4, b5, b6, b7, ..]: [u8; 32] = hasher.finalize().into();
+    u64::from_le_bytes([b0, b1, b2, b3, b4, b5, b6, b7])
+}
+
+/// Derive the non-invertible 64-bit contact draw for a non-zero re-acquisition
+/// epoch via domain-separated SHA-256 (P2-TSC-29).
+fn draw_contact_prf_epoch(seed: u64, viewer: ObjId, target: ObjId, epoch: u32) -> u64 {
+    use sha2::{Digest as _, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(CONTACT_DRAW_EPOCH_DOMAIN);
+    hasher.update(seed.to_le_bytes());
+    hasher.update(viewer.0.to_le_bytes());
+    hasher.update(target.0.to_le_bytes());
+    hasher.update(epoch.to_le_bytes());
     let [b0, b1, b2, b3, b4, b5, b6, b7, ..]: [u8; 32] = hasher.finalize().into();
     u64::from_le_bytes([b0, b1, b2, b3, b4, b5, b6, b7])
 }
@@ -270,7 +290,20 @@ pub fn draw_permille(seed: u64, label: &DrawLabel) -> u16 {
 /// about) by `1`.
 #[must_use]
 pub fn draw_contact_id(seed: u64, viewer: ObjId, target: ObjId) -> ContactId {
-    let mut value = draw(seed, &DrawLabel::Contact { viewer, target });
+    draw_contact_id_epoch(seed, viewer, target, 0)
+}
+
+/// **Epoch-salted opaque contact id** (P2-TSC-29): matches [`draw_contact_id`]
+/// bit-for-bit at `epoch == 0` (preserving first-acquisition determinism), and
+/// derives an independent non-zero identifier for each post-loss re-acquisition
+/// (`epoch > 0`) so stealth resets never recycle prior contact IDs.
+#[must_use]
+pub fn draw_contact_id_epoch(seed: u64, viewer: ObjId, target: ObjId, epoch: u32) -> ContactId {
+    let mut value = if epoch == 0 {
+        draw(seed, &DrawLabel::Contact { viewer, target })
+    } else {
+        draw_contact_prf_epoch(seed, viewer, target, epoch)
+    };
     if value == 0 {
         value = splitmix64(value);
     }

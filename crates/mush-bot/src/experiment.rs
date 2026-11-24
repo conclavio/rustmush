@@ -42,7 +42,7 @@ pub fn save_json(path: &Path, value: &impl Serialize) -> Result<()> {
     {
         return Err("artifact extension must be .json".into());
     }
-    let file = File::options().write(true).create_new(true).open(path)?;
+    let file = crate::create_new_private_file(path)?;
     serde_json::to_writer_pretty(file, value)?;
     Ok(())
 }

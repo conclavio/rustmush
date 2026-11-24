@@ -140,6 +140,27 @@ pub fn extra_body_ok(value: &serde_json::Value) -> bool {
         && nesting(value) <= EXTRA_BODY_MAX_DEPTH
 }
 
+/// Whether `url`'s host is strictly loopback (`127.0.0.1`, `::1`, or `localhost`).
+/// Cleartext `http://` is permitted only for loopback endpoints so bearer tokens
+/// and private transcripts are never sent unencrypted over a network (P2-TSC-26).
+fn is_loopback_host(url: &reqwest::Url) -> bool {
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    let ip_str = host
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(host);
+    match ip_str.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(v4)) => v4 == std::net::Ipv4Addr::LOCALHOST,
+        Ok(std::net::IpAddr::V6(v6)) => v6 == std::net::Ipv6Addr::LOCALHOST,
+        Err(_) => false,
+    }
+}
+
 impl Model {
     /// Insert the pass-through `reasoning` and `provider` objects into a
     /// request payload, when set. Every request the bot builds calls it after
@@ -164,6 +185,7 @@ impl Model {
         }
         let url = reqwest::Url::parse(&self.endpoint)?;
         if !matches!(url.scheme(), "http" | "https")
+            || url.host_str().is_none()
             || self.name.trim().is_empty()
             || self.name.len() > 200
             || self.name.chars().any(char::is_control)
@@ -183,6 +205,13 @@ impl Model {
                 .is_some_and(|c| c.len() != 3 || !c.bytes().all(|b| b.is_ascii_uppercase()))
         {
             return Err("invalid model endpoint/settings; use api_key_env for credentials".into());
+        }
+        if url.scheme() == "http" && !is_loopback_host(&url) {
+            return Err(
+                "non-loopback model endpoints must use https:// (cleartext http:// is allowed \
+                 only for localhost, 127.0.0.1, or ::1)"
+                    .into(),
+            );
         }
         Ok(())
     }
@@ -395,5 +424,49 @@ mod tests {
         }
         assert!(!extra_body_ok(&json!(["not", "an", "object"])));
         assert!(extra_body_ok(&json!({})));
+    }
+
+    #[test]
+    fn non_loopback_cleartext_http_endpoints_are_rejected() {
+        for allowed in [
+            "http://127.0.0.1/v1/chat/completions",
+            "http://127.0.0.1:8080/v1/chat/completions",
+            "http://[::1]:8080/v1/chat/completions",
+            "http://localhost:11434/v1/chat/completions",
+            "https://openrouter.ai/api/v1/chat/completions",
+            "https://192.168.1.50:8443/v1/chat/completions",
+        ] {
+            let model: Model = serde_json::from_value(json!({
+                "endpoint": allowed,
+                "name": "m",
+                "api_key_env": "TEST_API_KEY"
+            }))
+            .expect("model");
+            model
+                .validate()
+                .unwrap_or_else(|e| panic!("{allowed}: {e}"));
+        }
+        for rejected in [
+            "http://openrouter.ai/api/v1/chat/completions",
+            "http://192.168.1.50:8000/v1/chat/completions",
+            "http://10.0.0.5/v1/chat/completions",
+            "http://127.0.0.2/v1/chat/completions",
+            "http://0.0.0.0:8080/v1/chat/completions",
+            "http://[::ffff:127.0.0.1]:8080/v1/chat/completions",
+            "http://localhost.evil.example/v1/chat/completions",
+        ] {
+            for api_key_env in [Some("TEST_API_KEY"), None] {
+                let model: Model = serde_json::from_value(json!({
+                    "endpoint": rejected,
+                    "name": "m",
+                    "api_key_env": api_key_env
+                }))
+                .expect("model");
+                assert!(
+                    model.validate().is_err(),
+                    "must reject cleartext non-loopback endpoint {rejected} (key={api_key_env:?})"
+                );
+            }
+        }
     }
 }

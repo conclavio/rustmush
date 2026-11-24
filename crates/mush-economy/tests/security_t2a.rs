@@ -3176,3 +3176,78 @@ fn p2_mod_76_reprice_player_obligation_checks_new_amount_and_job_bond_exact_i128
     assert!(staff_reprice.is_ok());
     assert_eq!(snap(&tw).obligation(ob_id).unwrap().amount.minor(), 500);
 }
+
+#[test]
+fn p2_tsc_17_open_account_refuses_when_economy_is_frozen() {
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(mush_org::OrgModule::new()),
+        Box::new(mush_economy::EconomyModule::with_custody(vec![])),
+        Box::new(ProbeModule),
+    ]);
+    ok(&mut tw, GOD, "@instrument/register cr=2");
+    let alice = player(&mut tw, "Alice");
+    let _ = tw.take_module_ops();
+
+    // Freeze the economy latch.
+    let frozen = with_probe(&mut tw, GOD, |ctx| {
+        mush_economy::set_economy_frozen(ctx, true)
+    });
+    assert!(frozen);
+    assert!(
+        tw.world()
+            .module_state::<EconomyStore>()
+            .expect("economy store")
+            .is_frozen()
+    );
+    let _ = tw.take_module_ops();
+
+    let accounts_before = snap(&tw).accounts().count();
+    let candidate = mush_economy::Account {
+        id: AccountId(999),
+        owner: PrincipalId::Object(alice),
+        instrument: mush_economy::InstrumentId::new("cr").expect("cr"),
+        scope: None,
+        name: SmolStr::new_static("Alice"),
+        status: mush_economy::AccountStatus::Active,
+        posted_balance: Amount::ZERO,
+        held_amount: Amount::ZERO,
+        last_hold_seq: 0,
+        credit: mush_economy::CreditPolicy::forbid(),
+        last_journal_seq: 0,
+        revision: 1,
+        approval: None,
+    };
+    let candidate_frozen = candidate.clone();
+    let opened_frozen = with_probe(&mut tw, GOD, move |ctx| {
+        mush_economy::open_account(ctx, candidate_frozen)
+    });
+    assert!(
+        !opened_frozen,
+        "open_account must refuse when EconomyStore::frozen is true"
+    );
+    assert_eq!(
+        snap(&tw).accounts().count(),
+        accounts_before,
+        "frozen open_account must not insert into snapshot"
+    );
+    assert!(
+        snap(&tw).account(AccountId(999)).is_none(),
+        "frozen account must not exist"
+    );
+    assert!(
+        tw.take_module_ops().is_empty(),
+        "frozen open_account must not emit persistent account or meta writes"
+    );
+
+    // Thaw and verify open_account succeeds normally.
+    assert!(with_probe(&mut tw, GOD, |ctx| {
+        mush_economy::set_economy_frozen(ctx, false)
+    }));
+    let _ = tw.take_module_ops();
+    let opened = with_probe(&mut tw, GOD, move |ctx| {
+        mush_economy::open_account(ctx, candidate)
+    });
+    assert!(opened, "open_account should succeed once unfrozen");
+    assert!(snap(&tw).account(AccountId(999)).is_some());
+    assert!(!tw.take_module_ops().is_empty());
+}

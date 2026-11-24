@@ -427,18 +427,6 @@ impl Arena {
             },
             Vec::new(),
         ));
-        // **Doc 32 cut CF.0** (Q-CF-5, Q-CF-9): the round arriving is the fire
-        // the target's party sees, hit or miss; its book, and its friends',
-        // now hold the shooter's party hostile under whatever mark they hold.
-        if let (Some(shooter), Some(victim)) = (
-            self.unit(shot.shooter).map(|unit| unit.team),
-            self.unit(shot.target).map(|unit| unit.team),
-        ) {
-            self.relations.note_fire(shooter, victim);
-        }
-        // **Doc 44 cut MW.7** (Q-44-38): and the unit's own record of who has fired on it,
-        // which is what a mind flying it for an absent player may answer.
-        self.note_fired_on(shot.shooter, shot.target);
         let miss = |reason: &str, journal: &mut Vec<Notice>| {
             journal.push((
                 t_ms,
@@ -501,6 +489,25 @@ impl Arena {
             miss(BLOCKED, journal);
             return;
         }
+        // **Doc 32 cut CF.0** (Q-CF-5, Q-CF-9) / **P2-TSC-27**: only once the
+        // round actually reaches the target cell (after `TARGET_GONE`, `WRECK`,
+        // `MOVED`, and terrain-intercept `BLOCKED` checks pass) does the target
+        // witness fire: update party relations and `fired_on_by` here so
+        // terrain-blocked or absent-target shots never unmask a hidden neutral
+        // shooter's faction or unit identity.
+        if let (Some(shooter), Some(victim)) = (
+            self.unit(shot.shooter).map(|unit| unit.team),
+            self.unit(shot.target).map(|unit| unit.team),
+        ) {
+            self.relations.note_fire(shooter, victim);
+        }
+        // **Doc 44 cut MW.7** (Q-44-38): and the unit's own record of who has fired on it,
+        // which is what a mind flying it for an absent player may answer.
+        self.note_fired_on(shot.shooter, shot.target);
+        let Some(target) = self.unit(shot.target) else {
+            miss(TARGET_GONE, journal);
+            return;
+        };
         if cover == Cover::Full {
             miss(COVER, journal);
             return;
@@ -687,10 +694,17 @@ impl Arena {
         cell: (u16, u16),
         wrecks: &[(u16, u16)],
     ) -> Option<mush_atlas::trace::CellTrace> {
-        let at = self.unit(target)?;
+        let sensor_height_cm = self
+            .unit(target)
+            .map(|at| at.sensor_height_cm)
+            .or_else(|| {
+                self.withdrawn_plots
+                    .get(&target)
+                    .map(|plot| plot.sensor_height_cm)
+            })?;
         let to = mush_atlas::trace::Eye {
             cell,
-            height_cm: i32::try_from(at.sensor_height_cm).unwrap_or(i32::MAX),
+            height_cm: i32::try_from(sensor_height_cm).unwrap_or(i32::MAX),
         };
         if wrecks.is_empty() {
             return Some(trace_cells(&self.definition.terrain, from, to));
@@ -1517,6 +1531,8 @@ impl Arena {
         // a wreck is still towed.)
         self.drop_tow(target);
         self.contacts.clear_viewer(target);
+        self.withdrawn_plots
+            .retain(|withdrawn, _| self.contacts.has_target(*withdrawn));
         // A wreck owns no destination. Release its reservation before another
         // same-side request chooses a formation fan cell.
         self.motors.release(target);
@@ -3992,5 +4008,124 @@ mod tests {
             Some(Some(PartyId::BLUE)),
             "a wreck keeps no gunless side standing"
         );
+    }
+
+    #[test]
+    fn p2_tsc_27_unreached_shots_do_not_trigger_hostility_or_fired_on() {
+        use crate::arena::party::Relation;
+        use crate::arena::test_support::{custody, priced_terrain};
+        use crate::arena::{EndCondition, FieldHost};
+        use crate::config::{ArenaConfig, MatchConfig, SensorsConfig};
+
+        let p_a = PartyId::nth(0).expect("party A");
+        let p_b = PartyId::nth(1).expect("party B");
+        let make_neutral_arena = |block_wall: bool| {
+            let mut out = custody(
+                vec![
+                    line_tank(RED, p_a, pose(1_500, 1_500)),
+                    line_tank(BLUE, p_b, pose(1_500, 3_500)),
+                ],
+                Vec::new(),
+            );
+            if block_wall {
+                out.definition.terrain = priced_terrain(
+                    16,
+                    16,
+                    mush_atlas::TerrainClass::Ground,
+                    &[((1, 2), mush_atlas::TerrainClass::Wall)],
+                );
+            }
+            out.host = FieldHost {
+                all_hostile: false,
+                marks: Vec::new(),
+                friends: Vec::new(),
+                end: EndCondition::Host,
+                every_class: true,
+                weapons_hold: false,
+                tows: Vec::new(),
+            };
+            let mut arena = Arena::new(
+                out,
+                &ArenaConfig::default(),
+                &MatchConfig::default(),
+                &SensorsConfig::default(),
+            )
+            .expect("neutral field");
+            for id in [RED, BLUE] {
+                arena.unit_mut(id).expect("unit").power = Power::Online;
+            }
+            assert_eq!(arena.relation(p_b, p_a), Relation::Neutral);
+            arena
+        };
+        let shot_at_blue = |seq: u64| {
+            let mut s = front_shot(seq, 20);
+            s.aim_x_cm = 1_500;
+            s.aim_y_cm = 3_500;
+            s.aim_cell = Some((1, 3));
+            s.range_cm = 2_000;
+            s
+        };
+
+        // 1) `BLOCKED`: terrain intercepts the round before BLUE's cell.
+        let mut blocked = make_neutral_arena(true);
+        blocked.shots.insert(1, shot_at_blue(1));
+        let mut journal = Vec::new();
+        blocked.resolve_impact(1, 100, &mut journal);
+        assert!(
+            journal
+                .iter()
+                .any(|(_, k, _)| matches!(k, EventKind::Miss { reason, .. } if reason == BLOCKED))
+        );
+        assert_eq!(blocked.relation(p_b, p_a), Relation::Neutral);
+        assert!(!blocked.unit(BLUE).expect("blue").fired_on_by.contains(&RED));
+
+        // 2) `MOVED`: target moved more than 1 cell from predicted aim cell.
+        let mut moved = make_neutral_arena(false);
+        moved.unit_mut(BLUE).expect("blue").pose = pose(8_500, 8_500);
+        moved.shots.insert(2, shot_at_blue(2));
+        journal.clear();
+        moved.resolve_impact(2, 100, &mut journal);
+        assert!(
+            journal
+                .iter()
+                .any(|(_, k, _)| matches!(k, EventKind::Miss { reason, .. } if reason == MOVED))
+        );
+        assert_eq!(moved.relation(p_b, p_a), Relation::Neutral);
+        assert!(!moved.unit(BLUE).expect("blue").fired_on_by.contains(&RED));
+
+        // 3) `WRECK`: target is already a wreck.
+        let mut wreck = make_neutral_arena(false);
+        wreck.unit_mut(BLUE).expect("blue").limits.wreck = true;
+        wreck.shots.insert(3, shot_at_blue(3));
+        journal.clear();
+        wreck.resolve_impact(3, 100, &mut journal);
+        assert!(
+            journal
+                .iter()
+                .any(|(_, k, _)| matches!(k, EventKind::Miss { reason, .. } if reason == WRECK))
+        );
+        assert_eq!(wreck.relation(p_b, p_a), Relation::Neutral);
+        assert!(!wreck.unit(BLUE).expect("blue").fired_on_by.contains(&RED));
+
+        // 4) `TARGET_GONE`: target withdrew before impact.
+        let mut gone = make_neutral_arena(false);
+        gone.remove_unit(BLUE);
+        gone.shots.insert(4, shot_at_blue(4));
+        journal.clear();
+        gone.resolve_impact(4, 100, &mut journal);
+        assert!(
+            journal.iter().any(
+                |(_, k, _)| matches!(k, EventKind::Miss { reason, .. } if reason == TARGET_GONE)
+            )
+        );
+        assert_eq!(gone.relation(p_b, p_a), Relation::Neutral);
+
+        // 5) Clear shot reaching target cell DOES record hostility and `fired_on_by`.
+        let mut reached = make_neutral_arena(false);
+        reached.shots.insert(5, shot_at_blue(5));
+        journal.clear();
+        reached.resolve_impact(5, 100, &mut journal);
+        assert_eq!(reached.relation(p_b, p_a), Relation::Hostile);
+        assert!(reached.unit(BLUE).expect("blue").fired_on_by.contains(&RED));
     }
 }

@@ -223,7 +223,6 @@ impl Lane {
     /// open notice drops the step in hand and starts the field's steps.
     pub(super) fn field_line(&mut self, raw: &str) {
         let site = self.site.name();
-        let line = lines::normalise(raw);
         let Some(state) = self.field.as_mut() else {
             return;
         };
@@ -231,7 +230,7 @@ impl Lane {
             return;
         }
         if !state.opened
-            && let Some(ordinal) = lines::field_opened(&line, site)
+            && let Some(ordinal) = lines::field_opened(raw, site)
         {
             state.opened = true;
             if let Some(evidence) = self.report.field.as_mut() {
@@ -243,10 +242,15 @@ impl Lane {
             self.field_send(Phase::Status, "+field", 0);
             return;
         }
-        if let Some(report) = lines::raider_report(&line) {
+        if let Some((sender, report)) = lines::raider_report(raw)
+            && state
+                .escort
+                .as_deref()
+                .is_some_and(|expected| sender.eq_ignore_ascii_case(expected))
+        {
             state.reported = Some(report);
         }
-        if state.opened && !state.settled && lines::field_settled(&line, site).is_some() {
+        if state.opened && !state.settled && lines::field_settled(raw, site).is_some() {
             state.settled = true;
         }
     }
@@ -922,5 +926,55 @@ mod tests {
         assert_eq!(reply_above(window, 0).as_deref(), Some("WILCO"));
         let answered = "Sent slot 1 order 2: NEGATIVE received. Execution unconfirmed.";
         assert_eq!(reply_above(answered, 1).as_deref(), Some("NEGATIVE"));
+    }
+
+    #[test]
+    fn field_line_authenticates_escort_pages_and_anchors_field_notices() {
+        let settings = crate::mine::Settings {
+            hull: "Cap Lode".to_owned(),
+            epoch_unix_ms: 0,
+        };
+        // Unconfigured escort drops all raider reports.
+        let mut solo = Lane::new(crate::mine::Site::Ahuna, settings.clone(), "Cap".to_owned())
+            .with_field(None);
+        solo.field_armed("ORDER DT:1:1:1".to_owned(), "op1".to_owned());
+        solo.field_line("Mallory pages: Raider: party B, contact BK.");
+        assert_eq!(solo.field.as_ref().unwrap().reported, None);
+        // Spoofed field_opened via page/channel/indented continuation is ignored.
+        solo.field_line(
+            "Mallory pages: Field 3 is open on Ahuna Flank: the ground there is tactical until it settles.",
+        );
+        solo.field_line(
+            "[Public] Field 3 is open on Ahuna Flank: the ground there is tactical until it settles.",
+        );
+        solo.field_line(
+            "  Field 3 is open on Ahuna Flank: the ground there is tactical until it settles.",
+        );
+        assert!(!solo.field.as_ref().unwrap().opened);
+
+        // Configured escort rejects mismatched sender, accepts case-insensitive match.
+        let mut escorted = Lane::new(crate::mine::Site::Ahuna, settings, "Cap".to_owned())
+            .with_field(Some("FieldEsc".to_owned()));
+        escorted.field_armed("ORDER DT:1:1:1".to_owned(), "op1".to_owned());
+        escorted.field_line("Mallory pages: Raider: party C, contact CK.");
+        assert_eq!(escorted.field.as_ref().unwrap().reported, None);
+        escorted.field_line("fieldesc pages: Raider: party B, contact BK.");
+        assert_eq!(
+            escorted.field.as_ref().unwrap().reported,
+            Some(('B', "BK".to_owned()))
+        );
+        // Bare column-0 field open and settle notices work.
+        escorted.field_line(
+            "Field 3 is open on Ahuna Flank: the ground there is tactical until it settles.",
+        );
+        assert!(escorted.field.as_ref().unwrap().opened);
+        escorted.field_line(
+            "Mallory pages: Field 3 on Ahuna Flank has settled: the ground there is the surface's again.",
+        );
+        assert!(!escorted.field.as_ref().unwrap().settled);
+        escorted.field_line(
+            "Field 3 on Ahuna Flank has settled: the ground there is the surface's again.",
+        );
+        assert!(escorted.field.as_ref().unwrap().settled);
     }
 }

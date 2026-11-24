@@ -476,7 +476,9 @@ impl Player {
             .arg(dir.join("report.json"))
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::from(File::create(dir.join("stderr.txt"))?))
+            .stderr(Stdio::from(crate::create_private_file(
+                &dir.join("stderr.txt"),
+            )?))
             .current_dir(dir)
             .env("MUSH_CAMPAIGN_FIXTURE_PASSWORD", "local-fixture-only")
             .kill_on_drop(true);
@@ -583,7 +585,7 @@ pub struct Summary {
 
 pub async fn run(manifest: &Manifest, output: &Path, bot_program: &Path) -> Result<Summary> {
     manifest.validate()?;
-    std::fs::create_dir(output)?;
+    crate::create_private_dir(output)?;
     let output = std::fs::canonicalize(output)?;
     save_json(&output.join("manifest.json"), manifest)?;
     let initial = manifest
@@ -595,11 +597,7 @@ pub async fn run(manifest: &Manifest, output: &Path, bot_program: &Path) -> Resu
         .as_ref()
         .map_or_else(|| output.join("accounting.jsonl"), |c| c.ledger.clone());
     if initial.is_none() {
-        File::options()
-            .write(true)
-            .create_new(true)
-            .open(&ledger)?
-            .sync_all()?;
+        crate::create_new_private_file(&ledger)?.sync_all()?;
     } else if !ledger.is_file() {
         return Err("original campaign accounting ledger is missing; restoration cannot recreate or reset it".into());
     }
@@ -677,7 +675,7 @@ async fn run_branch(
     parent_ref: Option<Reference>,
 ) -> Result<BranchResult> {
     let dir = output.join(&branch.name);
-    std::fs::create_dir(&dir)?;
+    crate::create_private_dir(&dir)?;
     let mut branch = branch.clone();
     for (index, step) in branch
         .interventions
@@ -741,8 +739,12 @@ async fn run_branch(
         .args(&manifest.fixture_args)
         .env("MUSH_CAMPAIGN_START", dir.join("fixture-start.json"))
         .stdin(Stdio::null())
-        .stdout(Stdio::from(File::create(dir.join("fixture-stdout.txt"))?))
-        .stderr(Stdio::from(File::create(dir.join("fixture-stderr.txt"))?))
+        .stdout(Stdio::from(crate::create_private_file(
+            &dir.join("fixture-stdout.txt"),
+        )?))
+        .stderr(Stdio::from(crate::create_private_file(
+            &dir.join("fixture-stderr.txt"),
+        )?))
         .current_dir(&dir)
         .kill_on_drop(true)
         .spawn()?;
@@ -765,7 +767,7 @@ async fn run_branch(
     let mut players = BTreeMap::new();
     for actor in &manifest.actors {
         let actor_dir = dir.join(&actor.name);
-        std::fs::create_dir(&actor_dir)?;
+        crate::create_private_dir(&actor_dir)?;
         let mut config = configs.remove(&actor.name).unwrap();
         config.ssh = crate::config::Ssh {
             port: endpoint.port,
@@ -832,10 +834,7 @@ async fn run_branch(
             save_json(&restore_path, snapshot)?;
         }
         let config_path = actor_dir.join("bot.toml");
-        let mut file = File::options()
-            .write(true)
-            .create_new(true)
-            .open(&config_path)?;
+        let mut file = crate::create_new_private_file(&config_path)?;
         file.write_all(toml::to_string(&config)?.as_bytes())?;
         let player = Player::spawn(
             program,
@@ -929,7 +928,7 @@ async fn run_branch(
 
 pub(crate) fn freeze_config(config: &mut crate::config::Config, directory: &Path) -> Result<()> {
     let sources = directory.join("sources");
-    std::fs::create_dir(&sources)?;
+    crate::create_private_dir(&sources)?;
     for (i, path) in config
         .character
         .iter_mut()
@@ -958,7 +957,7 @@ pub(crate) fn freeze_config(config: &mut crate::config::Config, directory: &Path
             .and_then(|s| s.to_str())
             .ok_or("campaign input needs an extension")?;
         let copy = sources.join(format!("{i}-{}.{}", revision(&bytes), extension));
-        let mut file = File::options().write(true).create_new(true).open(&copy)?;
+        let mut file = crate::create_new_private_file(&copy)?;
         file.write_all(&bytes)?;
         file.sync_all()?;
         *path = copy;

@@ -640,6 +640,11 @@ fn perform(ctx: &mut Ctx<'_>, text: &str) -> Result<(), BulkError> {
                             if command == "diff" && reference.eq_ignore_ascii_case("off") {
                                 (super::experiment::Edit::DiffOff, None, true)
                             } else {
+                                if command == "diff"
+                                    && row.picture.as_ref().is_none_or(|p| p.memory.is_none())
+                                {
+                                    return Err(BulkError::Missing);
+                                }
                                 let roll = ctx
                                     .w
                                     .module_state::<mush_roll::RollStore>()

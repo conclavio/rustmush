@@ -141,11 +141,13 @@ pub(crate) fn register_house(
 
 pub(super) struct HoldingAccess<'a> {
     context: HookReadContext<'a>,
+    actor: Option<ObjId>,
 }
 impl<'a> HoldingAccess<'a> {
     pub(super) fn from_ctx(ctx: &'a Ctx<'_>) -> Self {
         Self {
             context: ctx.hook_read_context(crate::NS),
+            actor: Some(ctx.actor),
         }
     }
     /// Existing World-only diagnostic helpers retain their M6 behavior. A
@@ -153,6 +155,7 @@ impl<'a> HoldingAccess<'a> {
     pub(super) fn legacy(world: &'a World) -> Self {
         Self {
             context: HookReadContext::without_typed_state(world, crate::NS),
+            actor: None,
         }
     }
     pub(super) fn world(&self) -> &'a World {
@@ -229,7 +232,8 @@ impl<'a> HoldingAccess<'a> {
     }
     /// Called only after lobby derives `pilot` from the caller's claimed slot
     /// or the side they lead. Own reads still use core's captured actor; an alt
-    /// sharing that account cannot select another character's original licence.
+    /// sharing that account cannot select another character's original licence
+    /// or saved draft library (`draft_holdings` per-character isolation).
     pub(super) fn choose(
         &self,
         pilot: ObjId,
@@ -245,6 +249,16 @@ impl<'a> HoldingAccess<'a> {
                 .read_holding(None, licence)
                 .map_err(|_| RollError::Missing)?;
             return self.executable(result, pilot).ok_or(RollError::Missing);
+        }
+        if let Some(actor) = self.actor
+            && actor != pilot
+        {
+            let doctrine = HeldMind::doctrine();
+            return if revision.is_none() && holdings::names(&doctrine, word) {
+                Ok(doctrine)
+            } else {
+                Err(RollError::Missing)
+            };
         }
         holdings::choose(self.world(), pilot, word, revision)
     }

@@ -197,11 +197,37 @@ impl Arena {
         Ok(back)
     }
 
+    /// Garbage-collect `self.cards` (`CardCatalog`), retaining only digests
+    /// referenced by live profiles, unit seals, or pending/in-flight thinks
+    /// and recomputing `encoded_bytes` (P2-TSC-14).
+    pub(crate) fn gc_cards(&mut self) {
+        let mut live = std::collections::BTreeSet::new();
+        for runtime in self.profiles.values() {
+            live.extend(runtime.profiles.digests());
+            live.insert(runtime.card.key().definition);
+            live.insert(runtime.rom.key().definition);
+        }
+        for state in &self.units {
+            live.extend(state.seal.profiles.digests());
+            live.insert(state.seal.rom.definition);
+        }
+        for mind in self.minds.values() {
+            if let Some(pending) = &mind.pending {
+                live.insert(pending.profile_token.key.definition);
+            }
+        }
+        for think in self.collected.iter().chain(self.unsettled.iter()) {
+            live.insert(think.profile_token.key.definition);
+        }
+        self.cards.retain_referenced(&live);
+    }
+
     /// **Drop `unit` from the arena** with no check: its row and everything the arena keeps for
     /// it alone (this module's head). A boot resuming a field from a snapshot taken before a
     /// unit's exit uses it too, since that unit has already been checked in.
     pub fn remove_unit(&mut self, unit: ObjId) {
-        use crate::arena::state::DueKind;
+        use crate::arena::state::{ChassisWords, DueKind, WithdrawnPlot};
+        use std::collections::BTreeSet;
 
         let removed_pilots: Vec<ObjId> = self
             .pilots
@@ -209,13 +235,44 @@ impl Arena {
             .filter(|pilot| pilot.unit == unit)
             .map(|pilot| pilot.pilot)
             .collect();
+        // Clear the departing unit's own viewer contacts first so its own tracks
+        // never keep tombstones alive.
+        self.contacts.clear_viewer(unit);
+        // P2-TSC-15: if any surviving viewer still holds a stale plot on `unit`,
+        // snapshot static display & fire-control metadata into `withdrawn_plots`
+        // so stale plots render, compute odds/range/cover/deliberation coords,
+        // and expire naturally at `contact_ttl_ms` without leaking withdrawal.
+        if self.contacts.has_target(unit)
+            && let Some(at) = self.unit_at(unit)
+            && let Some(state) = self.units.get(at)
+        {
+            let words = self
+                .chassis
+                .get(at)
+                .cloned()
+                .unwrap_or_else(|| ChassisWords::of(&state.unit, &state.profile));
+            self.withdrawn_plots.insert(
+                unit,
+                WithdrawnPlot {
+                    callsign: state.callsign,
+                    armed: state.armed_at_checkout() || state.shots_fired > 0,
+                    sensor_height_cm: state.sensor_height_cm,
+                    fatal_mask: words.fatal_mask,
+                    fatal_words: words.fatal_words,
+                    section_names: words.section_names,
+                    unit_type: words.unit_type,
+                    profile: state.profile.clone(),
+                },
+            );
+        }
         self.units.retain(|state| state.id != unit);
         self.pilots.retain(|pilot| pilot.unit != unit);
         self.epochs.remove_unit(unit);
-        self.contacts.clear_viewer(unit);
         self.lost_designators
             .retain(|(viewer, _), _| *viewer != unit);
         self.held_losses.retain(|(viewer, _), _| *viewer != unit);
+        self.held_loss_targets
+            .retain(|(viewer, _), _| *viewer != unit);
         self.spent_said
             .retain(|(told, target, _), _| *told != unit && *target != unit);
         self.motors.release(unit);
@@ -223,7 +280,8 @@ impl Arena {
         self.runners.remove(&unit);
         self.profiles.remove(&unit);
         self.conditions.clear(unit);
-        self.held_said.retain(|(on, _, _), _| *on != unit);
+        self.held_said
+            .retain(|(on, _, cid), _| *on != unit && self.contacts.get(*on, *cid).is_some());
         self.detachment_commands.remove(&unit);
         self.purge_order_watches_for_unit(unit);
         self.pending.remove(&unit);
@@ -238,6 +296,31 @@ impl Arena {
             self.pending_catchup.remove(&pilot);
             self.last_frames.remove(&pilot);
         }
+        // P2-TSC-14: retain only live unit IDs in surviving units' `fired_on_by`.
+        let live_ids: BTreeSet<ObjId> = self.units.iter().map(|state| state.id).collect();
+        for surviving in &mut self.units {
+            surviving.fired_on_by.retain(|id| live_ids.contains(id));
+        }
+        // P2-TSC-15: prune any tombstones no longer referenced by any viewer.
+        self.withdrawn_plots
+            .retain(|target, _| self.contacts.has_target(*target));
+        // P2-TSC-14: prune withdrawn viewer entries (and unreferenced withdrawn
+        // target entries) from `DesignatorBook`.
+        let mut keep_targets = BTreeSet::new();
+        for (viewer, _, held) in self.contacts.all() {
+            if held.target == unit {
+                keep_targets.insert((viewer, unit));
+            }
+        }
+        for (&(viewer, _), &target) in &self.held_loss_targets {
+            if target == unit {
+                keep_targets.insert((viewer, unit));
+            }
+        }
+        self.designators.prune_unit(unit, &keep_targets);
+        // P2-TSC-14: mark-and-sweep `CardCatalog` for definitions unreferenced by
+        // any surviving unit/profile/pending think.
+        self.gc_cards();
         self.due.retain(|kind| match kind {
             DueKind::RuleLeaseExpired { unit: on, .. }
             | DueKind::StartupComplete { unit: on }
@@ -487,5 +570,294 @@ mod tests {
             Snapshot::encode(&corrupt),
             Err(SnapshotError::Malformed(_))
         ));
+    }
+
+    #[test]
+    fn p2_tsc_14_remove_unit_gcs_cards_prunes_designators_and_stale_refs() {
+        use crate::arena::card::line as line_card;
+        use crate::arena::party::PartyId;
+        use crate::arena::profile_seal::SealedCards;
+        use crate::arena::runtime_card::{MAX_CARD_DEFINITIONS, stock_definition};
+        use crate::arena::state::ContactId;
+        use crate::arena::test_support::custody;
+        use crate::arena::{DesignatorBook, EndCondition, FieldHost, Tempo};
+        use crate::config::{ArenaConfig, MatchConfig, ReflexConfig, SensorsConfig};
+        use smol_str::SmolStr;
+
+        let p_a = PartyId::nth(0).expect("party A");
+        let p_b = PartyId::nth(1).expect("party B");
+        let host = FieldHost {
+            all_hostile: false,
+            marks: Vec::new(),
+            friends: Vec::new(),
+            end: EndCondition::Host,
+            every_class: true,
+            weapons_hold: false,
+            tows: Vec::new(),
+        };
+        let mut out = custody(
+            vec![
+                line_tank(NEAR, p_a, pose(1_500, 1_500)),
+                line_tank(FAR, p_b, pose(6_500, 6_500)),
+            ],
+            Vec::new(),
+        );
+        out.host = host.clone();
+        let mut arena = Arena::new(
+            out,
+            &ArenaConfig::default(),
+            &MatchConfig::default(),
+            &SensorsConfig::default(),
+        )
+        .expect("ic field");
+        let base_cards = arena.cards.len();
+        let base_bytes = arena.cards.encoded_bytes();
+        let reflex_cfg = ReflexConfig::default();
+
+        // Cycle > MAX_CARD_DEFINITIONS (512) distinct card definitions through
+        // join + withdraw; card GC keeps `self.cards` bounded to live hulls.
+        let cycles = MAX_CARD_DEFINITIONS + 12;
+        for i in 0..cycles {
+            let joiner = ObjId(1_000 + u32::try_from(i).expect("idx"));
+            let mut unit_custody = line_tank(joiner, p_a, pose(4_500, 4_500));
+            let mut stock = line_card(&reflex_cfg);
+            stock.close_m = 50 + u32::try_from(i).expect("idx");
+            let card_def = stock_definition(
+                &[(SmolStr::new_static("line"), stock)],
+                unit_custody.seal.class,
+            )
+            .expect("stock def");
+            let sealed = SealedCards::prepare(
+                card_def,
+                &[SmolStr::new_static("line")],
+                &arena.classes.row(unit_custody.seal.class),
+                &unit_custody.seal.weapons,
+                &unit_custody.seal.channels,
+                unit_custody.seal.odds_floor_permille,
+            )
+            .expect("sealed cards");
+            unit_custody.seal.card = sealed.opening_card.clone();
+            unit_custody.seal.card_digest = sealed.opening_digest;
+            unit_custody.seal.cards = sealed;
+
+            arena
+                .join(unit_custody, None, &host, 4)
+                .unwrap_or_else(|e| panic!("join cycle {i} failed: {e:?}"));
+            assert!(
+                arena.cards.len() <= base_cards + 1,
+                "catalog grew unbounded at cycle {i}: {}",
+                arena.cards.len()
+            );
+            arena.withdraw(joiner, None).expect("withdraw joiner");
+            assert_eq!(arena.cards.len(), base_cards);
+            assert_eq!(arena.cards.encoded_bytes(), base_bytes);
+        }
+
+        // Populate stale references for `NEAR` across `designators`,
+        // `fired_on_by`, `held_said`, `held_losses`, `held_loss_targets`, and
+        // `lost_designators`, then remove `NEAR` and verify every leak is pruned.
+        let ghost_id = ContactId(42);
+        let _ = arena.designators.assign(NEAR, FAR);
+        let _ = arena.designators.assign(FAR, NEAR);
+        arena.designators.retire_track(NEAR, FAR);
+        arena.unit_mut(FAR).expect("far").fired_on_by.insert(NEAR);
+        arena.held_said.insert((FAR, 1, ghost_id), 100);
+        arena.held_losses.insert(
+            (NEAR, ghost_id),
+            (0, crate::arena::state::Designator::Provisional(1)),
+        );
+        arena.held_loss_targets.insert((NEAR, ghost_id), FAR);
+        arena.lost_designators.insert(
+            (NEAR, ghost_id),
+            crate::arena::state::Designator::Provisional(1),
+        );
+        // Simulate a stale `held_said` and a pending loss hysteresis entry on `FAR` targeting `NEAR`.
+        let orphan_id = ContactId(77);
+        arena.held_said.insert((FAR, 2, orphan_id), 200);
+        arena.held_losses.insert(
+            (FAR, orphan_id),
+            (500, crate::arena::state::Designator::Provisional(9)),
+        );
+        arena.held_loss_targets.insert((FAR, orphan_id), NEAR);
+        arena.lost_designators.insert(
+            (FAR, orphan_id),
+            crate::arena::state::Designator::Provisional(9),
+        );
+
+        arena.remove_unit(NEAR);
+
+        assert!(
+            !arena.unit(FAR).expect("far").fired_on_by.contains(&NEAR),
+            "withdrawn shooter must be pruned from surviving unit's fired_on_by"
+        );
+        assert_eq!(arena.designators.provisional(NEAR, FAR), None);
+        assert_eq!(arena.designators.epoch(NEAR, FAR), 0);
+        assert!(arena.held_losses.keys().all(|(v, _)| *v != NEAR));
+        assert!(arena.held_loss_targets.keys().all(|(v, _)| *v != NEAR));
+        assert!(arena.lost_designators.keys().all(|(v, _)| *v != NEAR));
+        assert!(!arena.held_said.contains_key(&(FAR, 2, orphan_id)));
+        assert!(!arena.held_said.contains_key(&(FAR, 1, ghost_id)));
+        // Once `FAR`'s pending loss on `NEAR` settles, `(FAR, NEAR)` is forgotten completely.
+        arena.settle_held_loss(FAR, orphan_id, 500);
+        assert_eq!(arena.designators.provisional(FAR, NEAR), None);
+        assert_eq!(arena.designators.epoch(FAR, NEAR), 0);
+        assert!(!arena.held_losses.contains_key(&(FAR, orphan_id)));
+        assert!(!arena.held_loss_targets.contains_key(&(FAR, orphan_id)));
+        // Sanity check that `FAR`'s frame still renders cleanly with no panics.
+        let _ = arena.frame_for(FAR, Tempo::Engaged);
+
+        // `DesignatorBook::assign` wraps past `u16::MAX` skipping in-use numbers.
+        let mut book = DesignatorBook::default();
+        let v = ObjId(1);
+        let t1 = ObjId(10);
+        let t2 = ObjId(20);
+        let t3 = ObjId(30);
+        assert_eq!(book.assign(v, t1), 1);
+        let mut val = serde_json::to_value(&book).expect("to_value");
+        val["next"]["1"] = serde_json::json!(u16::MAX);
+        let mut wrapped: DesignatorBook = serde_json::from_value(val).expect("from_value");
+        assert_eq!(wrapped.assign(v, t2), u16::MAX);
+        // Wrapping past `u16::MAX` skips `1` (still in use by `t1`) and assigns `2`.
+        assert_eq!(wrapped.assign(v, t3), 2);
+    }
+
+    #[test]
+    fn p2_tsc_15_withdrawn_target_keeps_stale_plot_until_ttl_without_presence_oracle() {
+        use crate::arena::Tempo;
+        use crate::arena::ledger::EventKind;
+        use crate::arena::perception::{Notice, PerceptionCounters};
+        use crate::arena::snapshot::Snapshot;
+        use crate::arena::state::{Classification, SeenPose, ShadowContact};
+        use crate::arena::weapons::FiredBy;
+
+        let mut near_custody = line_tank(NEAR, PartyId::RED, pose(1_500, 1_500));
+        near_custody.controller = crate::arena::state::Controller::Mind;
+        let mut arena = arena_of(vec![
+            near_custody,
+            line_tank(FAR, PartyId::BLUE, pose(5_500, 5_500)),
+        ]);
+        for id in [NEAR, FAR] {
+            if let Some(state) = arena.unit_mut(id) {
+                state.power = Power::Online;
+            }
+        }
+        let far_callsign = arena.unit(FAR).expect("far").callsign;
+        let far_plot = SeenPose::of(arena.unit(FAR).expect("far"));
+        let contact = crate::arena::rng::draw_contact_id(arena.seed, NEAR, FAR);
+        arena.contacts.insert(
+            NEAR,
+            contact,
+            ShadowContact::sighted(
+                FAR,
+                Classification::Classified {
+                    party: PartyId::BLUE,
+                },
+                0,
+                far_plot,
+            ),
+        );
+        assert_eq!(arena.resolve_lock(NEAR, contact, 0), Ok(()));
+        // Record a pre-withdraw frame baseline to compare against post-withdraw rendering.
+        let before = arena.frame_for(NEAR, Tempo::Engaged).expect("before frame");
+        assert_eq!(before.lock, Some(contact));
+        assert!(before.contacts.iter().any(|row| row.id == contact));
+        assert!(!before.odds.is_empty());
+
+        // Withdraw `FAR` mid-fight while `NEAR` holds a classified, locked contact on it.
+        arena.withdraw(FAR, None).expect("FAR withdraws");
+        assert!(arena.unit(FAR).is_none());
+        assert!(
+            arena.withdrawn_plots.contains_key(&FAR),
+            "withdrawn target must leave a tombstone while a viewer still holds a plot"
+        );
+
+        // Immediately after withdrawal, `NEAR`'s frame still renders the stale
+        // plot identically: `Frame::lock ∈ Frame::contacts`, callsign/chassis/odds intact.
+        let after = arena.frame_for(NEAR, Tempo::Engaged).expect("after frame");
+        assert_eq!(
+            after.lock,
+            Some(contact),
+            "lock must not drop immediately on target withdrawal (presence oracle)"
+        );
+        let row = after
+            .contacts
+            .iter()
+            .find(|c| c.id == contact)
+            .expect("stale plot must remain in Frame::contacts until contact_ttl_ms");
+        assert_eq!(row.designator, far_callsign);
+        assert!(
+            !after.odds.is_empty(),
+            "Frame::odds must still resolve from tombstone metadata"
+        );
+
+        // Aiming, weapon-range/alert checks, and deliberation signals work without `self.unit(FAR)`.
+        let aim = arena
+            .aim_at(NEAR, contact)
+            .expect("aim_at must resolve stale plot");
+        let seen = arena.resolve_seen(NEAR, &aim, "cannon");
+        assert!(seen.presented_width_cm > 0);
+        assert!(
+            arena.hostile_in_weapons_range(),
+            "stale armed hostile plot stays in weapons range until TTL"
+        );
+        assert!(
+            arena.contact_within_alert_range(),
+            "stale hostile plot stays in alert range until TTL"
+        );
+        let signals = arena.take_deliberation_signals();
+        assert!(
+            !signals.is_empty(),
+            "squad signal should be emitted for NEAR"
+        );
+        for sig in &signals {
+            for c in &sig.contacts {
+                assert!(
+                    c.range_cm < u64::MAX,
+                    "deliberation signal must use stale plot range, not u64::MAX sentinel: {c:?}"
+                );
+            }
+        }
+
+        // Firing at the locked stale contact is accepted at trigger time (no
+        // withdrawal oracle before flight) and resolves `TARGET_GONE` at impact.
+        let shot_seq = arena
+            .resolve_fire_by(NEAR, "cannon", 100, FiredBy::Seat)
+            .expect("fire at stale plot must be accepted at trigger time");
+        let mut journal: Vec<Notice> = Vec::new();
+        arena.resolve_impact(shot_seq, 500, &mut journal);
+        assert!(
+            journal.iter().any(|(_, kind, _)| matches!(
+                kind,
+                EventKind::Miss { reason, .. } if reason == crate::arena::damage::TARGET_GONE
+            )),
+            "shot fired at withdrawn target's stale plot must resolve TARGET_GONE at impact: {journal:?}"
+        );
+
+        // Snapshot encode + decode preserves the tombstone and stale plot cleanly.
+        let snap = Snapshot::encode(&arena).expect("encode with tombstone");
+        let mut decoded =
+            Snapshot::decode(&snap.document, (*arena.definition).clone()).expect("decode");
+        assert!(decoded.withdrawn_plots.contains_key(&FAR));
+        let decoded_frame = decoded
+            .frame_for(NEAR, Tempo::Engaged)
+            .expect("decoded frame");
+        assert!(decoded_frame.contacts.iter().any(|c| c.id == contact));
+
+        // Once contact TTL expires (`pass_ms * lost_after_passes`), the stale
+        // plot ages out naturally and `withdrawn_plots` prunes the tombstone.
+        let ttl = i64::from(decoded.sensors_cfg.pass_ms)
+            * i64::from(decoded.sensors_cfg.lost_after_passes);
+        let expire_at = ttl + 2_000;
+        let mut counters = PerceptionCounters::default();
+        let mut pass_journal: Vec<Notice> = Vec::new();
+        let _ = decoded.sensor_pass(NEAR, 99, expire_at, &mut counters, &mut pass_journal);
+        assert!(
+            decoded.contacts.get(NEAR, contact).is_none(),
+            "stale plot must expire naturally past contact TTL"
+        );
+        assert!(
+            !decoded.withdrawn_plots.contains_key(&FAR),
+            "unreferenced tombstone must be pruned once no viewer holds the plot"
+        );
     }
 }

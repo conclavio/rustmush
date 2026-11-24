@@ -751,7 +751,14 @@ impl Arena {
         if !aim.classified {
             return Resolution::blind("front", MIN_ERROR_URAD, Cover::None);
         }
-        let (Some(from), Some(at)) = (self.unit(shooter), self.unit(aim.target)) else {
+        let Some(from) = self.unit(shooter) else {
+            return Resolution::blind("front", MIN_ERROR_URAD, aim.cover);
+        };
+        let Some(profile) = self
+            .unit(aim.target)
+            .map(|at| &at.profile)
+            .or_else(|| self.withdrawn_plots.get(&aim.target).map(|p| &p.profile))
+        else {
             return Resolution::blind("front", MIN_ERROR_URAD, aim.cover);
         };
         let band = facet_band_seen(&aim.seen_at, from);
@@ -759,7 +766,7 @@ impl Arena {
         if past_last_band(from, weapon, aim.range_cm) {
             return Resolution::beyond_reach(band, error_urad, aim.cover);
         }
-        self.presented(at, band, error_urad, aim.range_cm, aim.cover)
+        self.presented_profile(profile, band, error_urad, aim.range_cm, aim.cover)
     }
 
     /// **Doc 16 §3.5 steps 1 and 3**, once, for the three callers that differ only
@@ -773,7 +780,18 @@ impl Arena {
         range_cm: u64,
         cover: Cover,
     ) -> Resolution {
-        let Some(silhouette) = at.profile.band(band) else {
+        self.presented_profile(&at.profile, band, error_urad, range_cm, cover)
+    }
+
+    fn presented_profile(
+        &self,
+        profile: &UnitProfile,
+        band: &str,
+        error_urad: u32,
+        range_cm: u64,
+        cover: Cover,
+    ) -> Resolution {
+        let Some(silhouette) = profile.band(band) else {
             // A unit whose content authored no silhouette for this band presents
             // nothing to it. Every cut-A and cut-S fixture is such a unit.
             return Resolution::blind(band, error_urad, cover);
@@ -1084,9 +1102,11 @@ impl Arena {
         let state = self.unit(platform)?;
         let held = *self.contacts.resolve(platform, contact)?;
         let target = held.target;
-        // Only that it is still in the match: the range and the cover below come
-        // off the plot.
-        let _ = self.unit(target)?;
+        // P2-TSC-15: accept either a live target or a withdrawn-plot tombstone
+        // so stale plots compute aim/odds/cover naturally until TTL expiry.
+        if !self.target_known_to_plot(target) {
+            return None;
+        }
         let classified = matches!(
             held.class,
             crate::arena::state::Classification::Classified { .. }

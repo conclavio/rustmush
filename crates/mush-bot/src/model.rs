@@ -93,6 +93,11 @@ fn default_wait_ms() -> u64 {
     1000
 }
 
+fn has_disallowed_control(text: &str, allow_multiline: bool) -> bool {
+    text.chars()
+        .any(|c| c.is_control() && !(allow_multiline && matches!(c, '\n' | '\t')))
+}
+
 impl Decision {
     pub fn parse(text: &str) -> Result<Self> {
         let trimmed = text.trim();
@@ -105,12 +110,16 @@ impl Decision {
         let mut result: Self = serde_json::from_str(text)?;
         if result.summary.trim().is_empty()
             || result.summary.len() > 4000
+            || has_disallowed_control(&result.summary, false)
             || result
                 .memory
                 .as_ref()
-                .is_some_and(|memory| memory.len() > 12_000)
+                .is_some_and(|memory| memory.len() > 12_000 || has_disallowed_control(memory, true))
         {
-            return Err("model summary/memory is empty or exceeds its limit".into());
+            return Err(
+                "model summary/memory is empty, contains control characters, or exceeds its limit"
+                    .into(),
+            );
         }
         if result.action == Action::Command {
             validate_command(
@@ -129,12 +138,13 @@ impl Decision {
             result.wait_ms = 0;
         }
         if result.action == Action::Recall {
-            if result
-                .query
-                .as_ref()
-                .is_none_or(|q| q.trim().is_empty() || q.len() > 2000)
-            {
-                return Err("recall action requires a query of 1..2000 bytes".into());
+            if result.query.as_ref().is_none_or(|q| {
+                q.trim().is_empty() || q.len() > 2000 || has_disallowed_control(q, false)
+            }) {
+                return Err(
+                    "recall action requires a query of 1..2000 bytes with no control characters"
+                        .into(),
+                );
             }
         } else if result.query.is_some() {
             return Err("only a recall action may include query".into());
@@ -401,6 +411,7 @@ impl Brain {
         if let Some(tape) = &self.tape {
             return tape.reply().await;
         }
+        self.config.validate()?;
         let mut request = self
             .client
             .post(&self.config.endpoint)
@@ -721,5 +732,26 @@ mod tests {
         assert!(swapped.payload.get("reasoning").is_none());
         assert_eq!(swapped.payload["provider"], json!({"order":["Fireworks"]}));
         assert_eq!(swapped.request_revision, prepared(&other).request_revision);
+    }
+
+    #[test]
+    fn decision_parse_rejects_c0_and_c1_control_characters_in_text_fields() {
+        for bad in [
+            r#"{"action":"wait","summary":"bad\u001b[31mtext"}"#,
+            r#"{"action":"wait","summary":"bad\u009b31mtext"}"#,
+            r#"{"action":"wait","summary":"bad\u0007bell"}"#,
+            r#"{"action":"wait","summary":"ok","memory":"note\u001b]52;c;YQ==\u0007"}"#,
+            r#"{"action":"wait","summary":"ok","memory":"note\u009d52;c;YQ==\u009c"}"#,
+            r#"{"action":"recall","summary":"ok","query":"find\u001b[2Jroom"}"#,
+            r#"{"action":"recall","summary":"ok","query":"find\u009broom"}"#,
+        ] {
+            assert!(Decision::parse(bad).is_err(), "must reject {bad}");
+        }
+        // Multiline working notes using plain newline/tab remain valid.
+        let multiline = Decision::parse(
+            r#"{"action":"wait","summary":"Waiting cleanly.","memory":"line 1\n\tline 2"}"#,
+        )
+        .expect("newline/tab in memory");
+        assert_eq!(multiline.memory.as_deref(), Some("line 1\n\tline 2"));
     }
 }

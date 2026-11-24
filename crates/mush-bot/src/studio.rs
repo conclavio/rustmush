@@ -384,14 +384,11 @@ impl Session {
             .into_iter()
             .map(|(path, value)| Ok((path, serde_json::to_vec_pretty(&value)?)))
             .collect::<Result<Vec<_>>>()?;
-        fs::create_dir(directory)?;
-        fs::create_dir(directory.join("characters"))?;
-        fs::create_dir(directory.join("affiliations"))?;
+        crate::create_private_dir(directory)?;
+        crate::create_private_dir(&directory.join("characters"))?;
+        crate::create_private_dir(&directory.join("affiliations"))?;
         for (relative, bytes) in artifacts {
-            let mut file = fs::File::options()
-                .write(true)
-                .create_new(true)
-                .open(directory.join(relative))?;
+            let mut file = crate::create_new_private_file(&directory.join(relative))?;
             file.write_all(&bytes)?;
             file.write_all(b"\n")?;
         }

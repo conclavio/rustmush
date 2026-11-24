@@ -257,7 +257,6 @@ impl Lane {
     /// **One complete line**, read for the site's field notices.
     pub(super) fn escort_line(&mut self, raw: &str) {
         let site = self.site.name();
-        let line = lines::normalise(raw);
         let waiting = matches!(
             &self.step,
             Some(step) if matches!(&step.kind, Kind::Escort(task) if task.phase == Phase::Wait)
@@ -266,7 +265,7 @@ impl Lane {
             return;
         };
         if !state.opened
-            && let Some(ordinal) = lines::field_opened(&line, site)
+            && let Some(ordinal) = lines::field_opened(raw, site)
         {
             state.opened = true;
             if let Some(evidence) = self.report.escort.as_mut() {
@@ -280,10 +279,15 @@ impl Lane {
             }
             return;
         }
-        if let Some(party) = lines::captain_report(&line) {
+        if let Some((sender, party)) = lines::captain_report(raw)
+            && state
+                .captain
+                .as_deref()
+                .is_some_and(|expected| sender.eq_ignore_ascii_case(expected))
+        {
             state.captain_party = Some(party);
         }
-        if state.opened && lines::field_settled(&line, site).is_some() {
+        if state.opened && lines::field_settled(raw, site).is_some() {
             state.settled = true;
         }
     }
@@ -942,5 +946,46 @@ mod tests {
             "machine_gun (mg)  ready  380 of 500 round(s)".to_owned(),
         ];
         assert_eq!(main_gun(&rows).as_deref(), Some("cannon"), "{rows:?}");
+    }
+
+    #[test]
+    fn escort_line_authenticates_captain_pages_and_anchors_field_notices() {
+        let settings = crate::mine::Settings {
+            hull: "Escort Lode".to_owned(),
+            epoch_unix_ms: 0,
+        };
+        // Unconfigured captain drops all captain reports.
+        let mut solo = Lane::new(
+            crate::mine::Site::Ahuna,
+            settings.clone(),
+            "Escort".to_owned(),
+        )
+        .with_escort(None);
+        solo.escort_line("Mallory pages: Captain: party B.");
+        assert_eq!(solo.escort.as_ref().unwrap().captain_party, None);
+        solo.escort_line(
+            "Mallory pages: Field 2 is open on Ahuna Flank: the ground there is tactical until it settles.",
+        );
+        assert!(!solo.escort.as_ref().unwrap().opened);
+
+        // Configured captain rejects mismatched sender, accepts case-insensitive match.
+        let mut winged = Lane::new(crate::mine::Site::Ahuna, settings, "Escort".to_owned())
+            .with_escort(Some("FieldCap".to_owned()));
+        winged.escort_line("Mallory pages: Captain: party D.");
+        assert_eq!(winged.escort.as_ref().unwrap().captain_party, None);
+        winged.escort_line("fieldcap pages: Captain: party A.");
+        assert_eq!(winged.escort.as_ref().unwrap().captain_party, Some('A'));
+        winged.escort_line(
+            "Field 2 is open on Ahuna Flank: the ground there is tactical until it settles.",
+        );
+        assert!(winged.escort.as_ref().unwrap().opened);
+        winged.escort_line(
+            "[Public] Field 2 on Ahuna Flank has settled: the ground there is the surface's again.",
+        );
+        assert!(!winged.escort.as_ref().unwrap().settled);
+        winged.escort_line(
+            "Field 2 on Ahuna Flank has settled: the ground there is the surface's again.",
+        );
+        assert!(winged.escort.as_ref().unwrap().settled);
     }
 }

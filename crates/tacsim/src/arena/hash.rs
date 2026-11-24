@@ -1502,6 +1502,12 @@ pub fn state_hash(arena: &Arena) -> u64 {
         fold.bytes(b"detachment-authority-v1\0");
         fold_value(fold, &arena.detachment_commands);
     }
+    // Empty withdrawn-plot tombstones add no bytes to legacy combat hashes.
+    // Non-empty tombstones are folded so snapshot resume verifies them too (P2-TSC-15).
+    if !arena.withdrawn_plots.is_empty() {
+        fold.bytes(b"withdrawn-plots-v1\0");
+        fold_value(fold, &arena.withdrawn_plots);
+    }
     // **Doc 32 cut CF.0** (item 13): every party's relation books and the
     // host's end condition.
     fold_value(fold, &arena.relations);

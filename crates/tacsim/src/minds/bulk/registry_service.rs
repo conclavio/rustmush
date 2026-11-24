@@ -595,6 +595,16 @@ pub(in crate::minds) fn start_revision(
         return Err(BulkError::Busy);
     }
     runtime.ensure_admission(store, account)?;
+    let now = world::now_ms();
+    runtime.prepare_limiter.check(account, now)?;
+    store.preflight_admit(
+        account,
+        ctx.actor,
+        super::model::WorkKind::Registry,
+        config.factory.min_initial_charge_ms(),
+        0,
+        now,
+    )?;
     let revision = ctx
         .w
         .module_state::<mush_roll::RollStore>()
@@ -647,6 +657,7 @@ pub(in crate::minds) fn start_revision(
             factory: config.factory,
         })
         .map_err(|(error, _)| error)?;
+    runtime.prepare_limiter.record_submit(account, now);
     runtime.next = next;
     runtime.preparing.insert(
         ticket,
@@ -808,6 +819,9 @@ pub(super) fn prepared(
             tracing::debug!(%error,"Registry re-conformance preparation retained for later scan");
             return;
         }
+        runtime
+            .prepare_limiter
+            .record_failure(preparing.account, world::now_ms());
         ctx.out.info(
             preparing.actor,
             format!("Registry preparation refused: {error}"),

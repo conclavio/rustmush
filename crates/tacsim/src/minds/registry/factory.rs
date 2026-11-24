@@ -41,6 +41,12 @@ impl Factory {
         }
         Ok(Self { policy, registered })
     }
+    /// Sound lower bound on a Registry rating's initial quota charge (case 0 is
+    /// always a 2-unit Duel trial at `>= MIN_SUBSTEP_MS`), checked synchronously
+    /// before queueing preparation on `mind-bulk-prepare`.
+    pub(in crate::minds) fn min_initial_charge_ms(&self) -> u64 {
+        2_u64.saturating_mul(u64::from(crate::arena::clock::MIN_SUBSTEP_MS))
+    }
     pub(in crate::minds) fn prepare(
         &self,
         account: AccountId,

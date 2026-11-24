@@ -401,18 +401,14 @@ impl Arena {
                 .contacts
                 .of(squad.commander)
                 .map(|(id, held)| {
-                    // **16b cut F.3**: the commander's brief is written from the
-                    // commander's **plot** — where its platform last saw the
-                    // target — for the same reason the pilot's contact row is.
-                    // A deliberating mind that was handed a target's live pose
-                    // would be told something no platform on the field knows.
-                    let (range_cm, bearing_mdeg) =
-                        self.unit(held.target).map_or((u64::MAX, 0), |_| {
-                            (
-                                held.seen_at.range_from(&commander.pose),
-                                held.seen_at.bearing_from(&commander.pose),
-                            )
-                        });
+                    // **16b cut F.3 / P2-TSC-15**: the commander's brief is
+                    // written strictly from the commander's **plot** — never
+                    // querying live target presence — so a withdrawn target's
+                    // stale contact keeps valid plot coordinates until TTL expiry.
+                    let (range_cm, bearing_mdeg) = (
+                        held.seen_at.range_from(&commander.pose),
+                        held.seen_at.bearing_from(&commander.pose),
+                    );
                     SignalContact {
                         id: *id,
                         class: held.class,

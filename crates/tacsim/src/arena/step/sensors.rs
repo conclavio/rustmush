@@ -24,7 +24,7 @@ impl Arena {
     /// A held loss whose platform has left the match is dropped rather than said:
     /// there is nobody it is a fact about any more (the rule the pulse-end sweep
     /// this replaced had).
-    pub(super) fn settle_held_loss(&mut self, viewer: ObjId, contact: ContactId, at_ms: i64) {
+    pub(crate) fn settle_held_loss(&mut self, viewer: ObjId, contact: ContactId, at_ms: i64) {
         let Some((at, designator)) = self.held_losses.get(&(viewer, contact)).copied() else {
             return;
         };
@@ -32,6 +32,25 @@ impl Arena {
             return;
         }
         self.held_losses.remove(&(viewer, contact));
+        let lost_target = self.held_loss_targets.remove(&(viewer, contact));
+        // P2-TSC-29 / P2-TSC-14: once the loss hysteresis window settles with
+        // no live re-acquisition, retire the `(viewer, target)` track epoch and
+        // forget its provisional `X<n>` so a later stealth re-acquisition mints
+        // both a fresh `ContactId` and a fresh `X<n>`. For a target that has
+        // already withdrawn, forget the pair completely so `DesignatorBook`
+        // retains no entries for departed hulls.
+        if let Some(target) = lost_target
+            && self.contacts.id_of(viewer, target).is_none()
+        {
+            if self.unit(target).is_some() {
+                self.designators.retire_track(viewer, target);
+            } else {
+                self.designators.forget_pair(viewer, target);
+                if !self.contacts.has_target(target) {
+                    self.withdrawn_plots.remove(&target);
+                }
+            }
+        }
         if self.unit(viewer).is_none() {
             return;
         }
@@ -87,6 +106,7 @@ impl Arena {
                 viewer, contact, ..
             } => {
                 if let Some((_, was)) = self.held_losses.remove(&(viewer, contact)) {
+                    self.held_loss_targets.remove(&(viewer, contact));
                     // **16b cut D.4** (`B-20`; 16c §5 Q16). A loss cancelled
                     // inside the hysteresis window is still silent when the row
                     // comes back under the **same** name — an `X2` that flickered
@@ -533,6 +553,7 @@ impl Arena {
                 let deadline = t_ms.saturating_add(window_ms);
                 self.held_losses
                     .insert((viewer, contact), (deadline, named.designator));
+                self.held_loss_targets.insert((viewer, contact), target);
                 if deadline <= self.now_ms {
                     return Some((deadline, viewer, contact));
                 }
@@ -725,38 +746,46 @@ impl Arena {
         let mut tables: Vec<Vec<SmolStr>> = Vec::new();
         let mut rows: Vec<FrameContact> = Vec::new();
         for (id, held) in self.contacts.of(platform) {
-            // A contact whose target has left the match is dropped: only the
-            // unit's presence is read here, never its pose.
-            let Some(at) = self.unit_at(held.target) else {
-                continue;
-            };
-            let Some(target) = self.units.get(at) else {
-                continue;
-            };
-            // **16c T-105**: the target chassis's static words — its body
-            // mask, those sections' names and its section vocabulary — read
-            // off the arena's table instead of recomputed for every row of
-            // every frame. The table is the same two functions over the same
-            // two inputs, laid down once per unit, so the frame's bytes are
-            // unchanged; a row the table lacks (it never does: the table is
-            // built over the unit table, which never moves) is computed here
-            // as every row was before.
+            // P2-TSC-15: read static chassis metadata from the live unit when
+            // present, or from its retained `WithdrawnPlot` tombstone while
+            // stale plots age out naturally until `contact_ttl_ms` expiry.
             let computed;
-            let words = match self.chassis.get(at) {
-                Some(words) => words,
-                None => {
-                    computed = crate::arena::state::ChassisWords::of(&target.unit, &target.profile);
-                    &computed
-                }
+            let (fatal_mask, fatal_words, section_names, unit_type) = if let Some(at) =
+                self.unit_at(held.target)
+                && let Some(target) = self.units.get(at)
+            {
+                let words = match self.chassis.get(at) {
+                    Some(words) => words,
+                    None => {
+                        computed =
+                            crate::arena::state::ChassisWords::of(&target.unit, &target.profile);
+                        &computed
+                    }
+                };
+                (
+                    words.fatal_mask,
+                    &words.fatal_words,
+                    &words.section_names,
+                    &words.unit_type,
+                )
+            } else if let Some(plot) = self.withdrawn_plots.get(&held.target) {
+                (
+                    plot.fatal_mask,
+                    &plot.fatal_words,
+                    &plot.section_names,
+                    &plot.unit_type,
+                )
+            } else {
+                continue;
             };
             // **16b cut Q.2**: the reading, and the chassis vocabulary it is in —
             // resolved only for a row that has one, so a row with no reading
             // cannot put a section id on the frame at all.
             let condition = held.seen_condition.map(|reading| {
-                let table = match tables.iter().position(|held| *held == words.section_names) {
+                let table = match tables.iter().position(|held| held == section_names) {
                     Some(at) => at,
                     None => {
-                        tables.push(words.section_names.clone());
+                        tables.push(section_names.clone());
                         tables.len().saturating_sub(1)
                     }
                 };
@@ -769,7 +798,6 @@ impl Arena {
             // **17b cut M1a.3** (departure (j)): the target chassis's fatal
             // sections, off its definition and profile — the content its
             // `fatal_sections` is built from, never `limits.wreck`.
-            let fatal_mask = words.fatal_mask;
             let reads_dead = armed.then(|| {
                 held.known_dead
                     || held
@@ -778,7 +806,7 @@ impl Arena {
             });
             // Beside a held reading only: the row already carries the chassis's
             // vocabulary there, so the words name nothing new.
-            let fatal = held.seen_condition.map(|_| words.fatal_words.clone());
+            let fatal = held.seen_condition.map(|_| fatal_words.clone());
             rows.push(FrameContact {
                 id: *id,
                 // **16b cut Q.1**: read off the live contact, so a row that
@@ -804,7 +832,7 @@ impl Arena {
                 reads_dead,
                 fatal,
                 // Doc 22 D-22-5: the type with the team, never before it.
-                unit_type: held.class.party().map(|_| words.unit_type.clone()),
+                unit_type: held.class.party().map(|_| unit_type.clone()),
             });
         }
         (rows, tables)

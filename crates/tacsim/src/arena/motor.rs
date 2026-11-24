@@ -472,9 +472,13 @@ pub struct MotorTable {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     unit_cells: BTreeMap<ObjId, u32>,
     /// Per-party path cells expanded in `window`, bounded by
-    /// [`PATH_CELLS_PER_TEAM_WINDOW`] on multi-party fields.
+    /// `PATH_CELLS_PER_WINDOW / teams_active` on multi-party fields.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     team_cells: BTreeMap<PartyId, u32>,
+    /// Per-party path queries admitted in `window`, bounded by
+    /// `max(1, max_path_queries / teams_active)` on multi-party fields (P2-TSC-16).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    team_queries: BTreeMap<PartyId, u32>,
     #[serde(skip)]
     scratch: PathScratch,
 }
@@ -492,6 +496,7 @@ impl MotorTable {
             cells: 0,
             unit_cells: BTreeMap::new(),
             team_cells: BTreeMap::new(),
+            team_queries: BTreeMap::new(),
             scratch: PathScratch::default(),
         }
     }
@@ -558,6 +563,7 @@ impl MotorTable {
             self.cells = 0;
             self.unit_cells.clear();
             self.team_cells.clear();
+            self.team_queries.clear();
         }
     }
 
@@ -575,9 +581,9 @@ impl MotorTable {
     }
 
     /// Admit one A* search for `unit` on `team`, enforcing global
-    /// ([`PATH_CELLS_PER_WINDOW`]), per-unit ([`PATH_CELLS_PER_UNIT_WINDOW`]),
-    /// and multi-party per-team ([`PATH_CELLS_PER_TEAM_WINDOW`]) cell budgets
-    /// in the current `decide_ms` window.
+    /// (`max_path_queries`, [`PATH_CELLS_PER_WINDOW`]), per-unit
+    /// ([`PATH_CELLS_PER_UNIT_WINDOW`]), and multi-party per-team query and
+    /// cell budgets in the current `decide_ms` window (P2-TSC-16).
     pub(crate) fn may_search_for(
         &mut self,
         t_ms: i64,
@@ -589,6 +595,14 @@ impl MotorTable {
         self.reset_window_if_needed(t_ms, cfg);
         if self.spent >= cfg.max_path_queries {
             return false;
+        }
+        if teams_active >= 2 {
+            let teams = u32::try_from(teams_active).unwrap_or(u32::MAX).max(2);
+            let team_query_cap = (cfg.max_path_queries / teams).max(1);
+            let team_spent_queries = self.team_queries.get(&team).copied().unwrap_or(0);
+            if team_spent_queries >= team_query_cap {
+                return false;
+            }
         }
         let unit_spent = self.unit_cells.get(&unit).copied().unwrap_or(0);
         let team_spent = if teams_active >= 2 {
@@ -603,6 +617,8 @@ impl MotorTable {
             return false;
         }
         self.spent = self.spent.saturating_add(1);
+        let team_slot = self.team_queries.entry(team).or_insert(0);
+        *team_slot = team_slot.saturating_add(1);
         true
     }
 
@@ -628,8 +644,10 @@ impl MotorTable {
         let unit_spent = self.unit_cells.get(&unit).copied().unwrap_or(0);
         let unit_rem = PATH_CELLS_PER_UNIT_WINDOW.saturating_sub(unit_spent);
         let team_rem = if teams_active >= 2 {
+            let teams = u32::try_from(teams_active).unwrap_or(u32::MAX).max(2);
+            let team_cap = (PATH_CELLS_PER_WINDOW / teams).max(1);
             let team_spent = self.team_cells.get(&team).copied().unwrap_or(0);
-            PATH_CELLS_PER_TEAM_WINDOW.saturating_sub(team_spent)
+            team_cap.saturating_sub(team_spent)
         } else {
             PATH_CELLS_PER_WINDOW
         };
@@ -1396,11 +1414,19 @@ impl Arena {
                 // or past its time — is dropped where it is read.
                 row.refused = None;
             }
-            let multi_team = self
-                .units
-                .iter()
-                .any(|other| !other.limits.wreck && other.team != unit.team);
-            let teams_active = if multi_team { 2 } else { 1 };
+            // P2-TSC-16: count distinct live non-wreck parties (`1..=26`) so
+            // 3+-party IC fields partition both query and cell budgets fairly
+            // across every active party rather than capping at 2.
+            let mut team_mask: u32 = 0;
+            for other in &self.units {
+                if !other.limits.wreck
+                    && let Some(idx) = other.team.code().checked_sub(b'A')
+                    && idx < 26
+                {
+                    team_mask |= 1_u32 << idx;
+                }
+            }
+            let teams_active = (team_mask.count_ones() as usize).max(1);
             if fresh_enough {
                 counters.path_deferred = counters.path_deferred.saturating_add(1);
             } else if motors.may_search_for(t_ms, cfg, id, unit.team, teams_active) {
@@ -5754,5 +5780,158 @@ mod tests {
                 .expect("decode");
         assert_eq!(decoded.motors.unit_cells, arena.motors.unit_cells);
         assert_eq!(decoded.motors.team_cells, arena.motors.team_cells);
+    }
+
+    #[test]
+    fn p2_tsc_16_team_query_cap_and_three_team_partitioning() {
+        use crate::arena::MotorGoal;
+        use crate::arena::intents::{
+            Intent, IntentKind, IntentOutcome, IntentSource, apply_intent,
+        };
+        use crate::arena::state::Channel;
+        use crate::arena::test_support::{custody, line_tank};
+        use crate::config::{ArenaConfig, MatchConfig, ReflexConfig, SensorsConfig};
+
+        let p_a = PartyId::nth(0).expect("party A");
+        let p_b = PartyId::nth(1).expect("party B");
+        let p_c = PartyId::nth(2).expect("party C");
+        let cfg = ReflexConfig {
+            max_path_queries: 6,
+            ..ReflexConfig::default()
+        };
+
+        // 1) Two-team query cap: cheap (1-cell) queries from party A cannot
+        // exhaust party B's half of `max_path_queries`.
+        let mut motors = MotorTable::default();
+        for i in 0..3_u32 {
+            let u = ObjId(100 + i);
+            assert!(
+                motors.may_search_for(0, &cfg, u, p_a, 2),
+                "A query {i} should pass"
+            );
+            motors.spend_cells_for(u, p_a, 1);
+        }
+        assert!(
+            !motors.may_search_for(0, &cfg, ObjId(199), p_a, 2),
+            "party A must stop at max_path_queries / 2 even with negligible cell spend"
+        );
+        for i in 0..3_u32 {
+            let u = ObjId(200 + i);
+            assert!(
+                motors.may_search_for(0, &cfg, u, p_b, 2),
+                "party B query {i} must remain available"
+            );
+            motors.spend_cells_for(u, p_b, 1);
+        }
+
+        // 2) Three-team partitioning: A and B saturating BOTH their query caps
+        // and cell caps cannot starve party C.
+        let mut three = MotorTable::default();
+        let third_cells = PATH_CELLS_PER_WINDOW / 3;
+        for (team, base) in [(p_a, 10_u32), (p_b, 20_u32)] {
+            for i in 0..2_u32 {
+                let u = ObjId(base + i);
+                assert!(three.may_search_for(0, &cfg, u, team, 3));
+                three.spend_cells_for(u, team, third_cells / 2);
+            }
+            assert!(
+                !three.may_search_for(0, &cfg, ObjId(base + 9), team, 3),
+                "team {team:?} must cap at max_path_queries / 3"
+            );
+        }
+        assert!(
+            three.may_search_for(0, &cfg, ObjId(30), p_c, 3),
+            "party C must not be starved after A and B exhaust their thirds"
+        );
+        let (c_allow, _) = three.search_budget_for(cfg.path_max_cells, ObjId(30), p_c, 3);
+        assert!(
+            c_allow >= POCKET_PROBE_CELLS,
+            "party C must retain cell allowance ({c_allow})"
+        );
+        // Window reset clears `team_queries` alongside `spent` and `team_cells`.
+        assert!(three.may_search_for(i64::from(cfg.decide_ms) + 1, &cfg, ObjId(10), p_a, 3));
+        assert_eq!(three.team_queries.get(&p_a), Some(&1));
+        assert_eq!(three.team_queries.get(&p_b), None);
+
+        // 3) Live 3-party `Arena::motor_step` computes actual `teams_active == 3`
+        // (never hardcoding 2) and persists `team_queries` across snapshot.
+        // Paint a vertical wall at x=4 (gap at y=0) so every unit must invoke A*.
+        let mut out = custody(
+            vec![
+                line_tank(ObjId(1), p_a, pose(1_500, 1_500)),
+                line_tank(ObjId(2), p_a, pose(2_500, 1_500)),
+                line_tank(ObjId(3), p_b, pose(1_500, 4_500)),
+                line_tank(ObjId(4), p_b, pose(2_500, 4_500)),
+                line_tank(ObjId(5), p_c, pose(1_500, 6_500)),
+            ],
+            Vec::new(),
+        );
+        out.definition.terrain = crate::arena::test_support::priced_terrain(
+            8,
+            8,
+            mush_atlas::TerrainClass::Ground,
+            &[
+                ((4, 1), mush_atlas::TerrainClass::Wall),
+                ((4, 2), mush_atlas::TerrainClass::Wall),
+                ((4, 3), mush_atlas::TerrainClass::Wall),
+                ((4, 4), mush_atlas::TerrainClass::Wall),
+                ((4, 5), mush_atlas::TerrainClass::Wall),
+                ((4, 6), mush_atlas::TerrainClass::Wall),
+                ((4, 7), mush_atlas::TerrainClass::Wall),
+            ],
+        );
+        let mut arena = Arena::new(
+            out,
+            &ArenaConfig {
+                reflex: ReflexConfig {
+                    max_path_queries: 3,
+                    ..ReflexConfig::default()
+                },
+                ..ArenaConfig::default()
+            },
+            &MatchConfig::default(),
+            &SensorsConfig::default(),
+        )
+        .expect("three-party arena");
+        for id in [ObjId(1), ObjId(2), ObjId(3), ObjId(4), ObjId(5)] {
+            arena.unit_mut(id).expect("unit").power = Power::Online;
+            arena.epochs.raise(id, Channel::Helm, 1);
+            let drive = Intent {
+                unit: id,
+                channel: Channel::Helm,
+                epoch: 1,
+                kind: IntentKind::Goal(MotorGoal::Cell { x: 7, y: 4 }),
+                seq: 1,
+            };
+            assert_eq!(
+                apply_intent(&mut arena, &drive, IntentSource::Seat),
+                IntentOutcome::AppliedContinuous
+            );
+        }
+        // Party A's first unit gets its 1/3 query; A's second unit is capped at 1 query.
+        let mut c1 = MotorCounters::default();
+        let _ = arena.motor_step(ObjId(1), 0, &mut c1);
+        assert_eq!(c1.path_queries, 1);
+        let mut c2 = MotorCounters::default();
+        let _ = arena.motor_step(ObjId(2), 0, &mut c2);
+        assert_eq!(c2.path_queries, 0, "second A unit must respect 1/3 cap");
+        assert_eq!(c2.path_deferred, 1);
+        // Party B gets its 1/3 query; B's second unit is capped at 1 query.
+        let mut c3 = MotorCounters::default();
+        let _ = arena.motor_step(ObjId(3), 0, &mut c3);
+        assert_eq!(c3.path_queries, 1);
+        let mut c4 = MotorCounters::default();
+        let _ = arena.motor_step(ObjId(4), 0, &mut c4);
+        assert_eq!(c4.path_queries, 0, "second B unit must respect 1/3 cap");
+        // Party C STILL gets its 1/3 query in the same window!
+        let mut c5 = MotorCounters::default();
+        let _ = arena.motor_step(ObjId(5), 0, &mut c5);
+        assert_eq!(c5.path_queries, 1, "party C must not be starved by A and B");
+
+        let snap = crate::arena::snapshot::Snapshot::encode(&arena).expect("encode");
+        let decoded =
+            crate::arena::snapshot::Snapshot::decode(&snap.document, (*arena.definition).clone())
+                .expect("decode");
+        assert_eq!(decoded.motors.team_queries, arena.motors.team_queries);
     }
 }

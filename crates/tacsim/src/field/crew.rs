@@ -1560,6 +1560,8 @@ pub(crate) fn npc_exits(ctx: &mut Ctx<'_>) {
         };
         let contracted = contract
             .is_some_and(|c| c.employer == exit.organizer && c.hired_at.at <= exit.recovered_ic);
+        let contract_port = contract.map(|c| c.terms.port.as_str().to_owned());
+        let has_any_contract = contract.is_some();
         let reserved = match &reservations {
             Some(handle) => match ctx.action_state(handle, &exit.npc) {
                 Ok(found) => found.is_some_and(|r| r.organizer == exit.organizer),
@@ -1568,6 +1570,13 @@ pub(crate) fn npc_exits(ctx: &mut Ctx<'_>) {
             None => false,
         };
         if !contracted && !reserved {
+            // P2-TSC-13: on exit completion, return any stray uncontracted NPC back to their
+            // hiring pool room (never moving an NPC already rehired under a newer contract).
+            if !has_any_contract {
+                let port = crate::ic_return::last_port(ctx.w, exit.npc)
+                    .map_or(FALLBACK_PORT, |known| known.id);
+                return_stray_npc_to_pool(ctx, exit.npc, port);
+            }
             push_op(
                 ctx.out,
                 mush_core::ModuleWrite::Del {
@@ -1584,6 +1593,10 @@ pub(crate) fn npc_exits(ctx: &mut Ctx<'_>) {
             );
             continue;
         }
+        if contracted {
+            let port = contract_port.as_deref().unwrap_or(FALLBACK_PORT);
+            return_stray_npc_to_pool(ctx, exit.npc, port);
+        }
         let tries = ctx
             .w
             .module_state::<NpcExits>()
@@ -1595,6 +1608,76 @@ pub(crate) fn npc_exits(ctx: &mut Ctx<'_>) {
             book.tries.insert(exit.npc, tries.saturating_add(1));
         }
     }
+}
+
+/// Return a stray NPC whose exit is pending or just completed back to their [`pool_room`]
+/// (`P2-TSC-13`), vacating any seat they still occupy and clearing any spatial placement.
+fn return_stray_npc_to_pool(ctx: &mut Ctx<'_>, npc: ObjId, port: &str) {
+    let live_npc = ctx.w.get(npc).is_some_and(|object| {
+        object.kind == ObjKind::Npc && !object.flags.contains(mush_core::Flags::GOING)
+    });
+    if !live_npc
+        || crew_of(ctx.w, npc).is_some_and(|record| record.in_custody() || record.awaiting_pickup())
+        || super::field_of_unit(ctx.w, npc).is_some()
+    {
+        return;
+    }
+    let Some(room) = pool_room(ctx.w, npc, port) else {
+        return;
+    };
+    let from = ctx.w.get(npc).and_then(|object| object.location);
+    if from == Some(room) {
+        return;
+    }
+    let seats: Vec<(ObjId, SmolStr)> = ctx
+        .w
+        .module_state::<mush_sim::SpatialState>()
+        .map(|state| {
+            state
+                .assignments
+                .iter()
+                .flat_map(|(host, assignments)| {
+                    assignments
+                        .seats
+                        .iter()
+                        .filter(|(_, seat)| seat.actor == npc)
+                        .map(|(station, _)| (*host, SmolStr::new(station.as_str())))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    for (host, station) in seats {
+        if let Some(station) = mush_sim::StationId::new(station.as_str())
+            && let Err(error) = mush_sim::vacate_station(ctx, host, &station, npc)
+        {
+            tracing::warn!(
+                npc = npc.0,
+                host = host.0,
+                ?error,
+                "tacsim: a returning NPC's seat did not vacate"
+            );
+        }
+    }
+    if ctx.w.move_to(npc, room).is_err() {
+        tracing::warn!(
+            npc = npc.0,
+            room = room.0,
+            "tacsim: a stray exiting NPC could not go back to the pool"
+        );
+        return;
+    }
+    let placed = ctx
+        .w
+        .module_state::<mush_sim::SpatialState>()
+        .is_some_and(|state| state.is_placed(npc));
+    if placed && let Err(error) = mush_sim::unplace(ctx, npc, "crew exit") {
+        tracing::warn!(npc = npc.0, %error, "tacsim: a returning NPC's placement did not clear");
+    }
+    ctx.emit_world_event(&WorldEvent::Moved {
+        who: npc,
+        from,
+        to: room,
+    });
 }
 
 /// **A field's frames** (the host's branch, before the fire door): a pilot inside a hull whose

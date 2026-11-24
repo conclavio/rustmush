@@ -37,6 +37,98 @@ pub(super) struct PendingCompletion {
     pub(super) done: Completion,
     pub(super) blob: Option<PreparedBlob>,
 }
+/// Bounded per-account submission rate limit and failure cooldown for the shared
+/// global `mind-bulk-prepare` OS thread.
+const PREPARE_WINDOW_MS: i64 = 60_000;
+const MAX_PREPARES_PER_WINDOW: usize = 8;
+const PREPARE_FAILURE_COOLDOWN_MS: i64 = 5_000;
+const MAX_TRACKED_PREPARE_ACCOUNTS: usize = 1_024;
+
+#[derive(Default)]
+struct PrepareWindow {
+    submitted_ms: VecDeque<i64>,
+    cooldown_until_ms: i64,
+}
+
+impl PrepareWindow {
+    fn prune(&mut self, now: i64) {
+        while self
+            .submitted_ms
+            .front()
+            .is_some_and(|&ts| now.saturating_sub(ts) >= PREPARE_WINDOW_MS)
+        {
+            self.submitted_ms.pop_front();
+        }
+    }
+    fn is_idle(&self, now: i64) -> bool {
+        self.submitted_ms.is_empty() && now >= self.cooldown_until_ms
+    }
+}
+
+#[derive(Default)]
+pub(super) struct PrepareLimiter {
+    accounts: BTreeMap<AccountId, PrepareWindow>,
+}
+
+impl PrepareLimiter {
+    pub(super) fn check(&mut self, account: AccountId, now: i64) -> Result<(), BulkError> {
+        let Some(entry) = self.accounts.get_mut(&account) else {
+            return Ok(());
+        };
+        entry.prune(now);
+        if now < entry.cooldown_until_ms || entry.submitted_ms.len() >= MAX_PREPARES_PER_WINDOW {
+            return Err(BulkError::Busy);
+        }
+        if entry.is_idle(now) {
+            self.accounts.remove(&account);
+        }
+        Ok(())
+    }
+
+    fn ensure_capacity(&mut self, account: AccountId, now: i64) {
+        if self.accounts.contains_key(&account)
+            || self.accounts.len() < MAX_TRACKED_PREPARE_ACCOUNTS
+        {
+            return;
+        }
+        self.accounts.retain(|_, entry| {
+            entry.prune(now);
+            !entry.is_idle(now)
+        });
+        if self.accounts.len() >= MAX_TRACKED_PREPARE_ACCOUNTS
+            && let Some(oldest) = self
+                .accounts
+                .iter()
+                .min_by_key(|(_, entry)| {
+                    entry
+                        .submitted_ms
+                        .back()
+                        .copied()
+                        .unwrap_or(entry.cooldown_until_ms)
+                })
+                .map(|(id, _)| *id)
+        {
+            self.accounts.remove(&oldest);
+        }
+    }
+
+    pub(super) fn record_submit(&mut self, account: AccountId, now: i64) {
+        self.ensure_capacity(account, now);
+        let entry = self.accounts.entry(account).or_default();
+        entry.prune(now);
+        entry.submitted_ms.push_back(now);
+    }
+
+    pub(super) fn record_failure(&mut self, account: AccountId, now: i64) {
+        self.ensure_capacity(account, now);
+        let entry = self.accounts.entry(account).or_default();
+        entry.prune(now);
+        entry.cooldown_until_ms = entry
+            .cooldown_until_ms
+            .max(now.saturating_add(PREPARE_FAILURE_COOLDOWN_MS));
+    }
+}
+
 pub(super) struct Runtime {
     pub(super) recovery: super::registry_recovery::Recovery,
     pub(super) registry: super::registry_service::Lane,
@@ -52,6 +144,7 @@ pub(super) struct Runtime {
     pub(super) retry: VecDeque<PendingCompletion>,
     completed_benches: VecDeque<BenchComplete>,
     pub(super) external_preparing: BTreeSet<AccountId>,
+    pub(super) prepare_limiter: PrepareLimiter,
 }
 impl Runtime {
     /// One admitted account owns one bounded continuation until its actual
@@ -114,6 +207,7 @@ impl BulkService {
             retry: VecDeque::new(),
             completed_benches: VecDeque::new(),
             external_preparing: BTreeSet::new(),
+            prepare_limiter: PrepareLimiter::default(),
         }))))
     }
 }
@@ -332,10 +426,22 @@ pub(crate) fn command(ctx: &mut Ctx<'_>, switch: &str, text: &str) -> Result<(),
             .module_state::<BulkStore>()
             .ok_or(BulkError::Missing)?;
         runtime.ensure_admission(store, account)?;
+        runtime.prepare_limiter.check(account, now)?;
         let factory = runtime
             .factory
             .clone()
             .ok_or_else(|| invalid("proving is unavailable on this server"))?;
+        let min_initial_charge = u64::from(words.size)
+            .saturating_mul(2)
+            .saturating_mul(u64::from(crate::arena::clock::MIN_SUBSTEP_MS));
+        store.preflight_admit(
+            account,
+            ctx.actor,
+            WorkKind::Proving,
+            min_initial_charge,
+            1_u64.saturating_add(super::model::MAX_ARTIFACT_BYTES),
+            now,
+        )?;
         let roll = ctx
             .w
             .module_state::<mush_roll::RollStore>()
@@ -356,6 +462,17 @@ pub(crate) fn command(ctx: &mut Ctx<'_>, switch: &str, text: &str) -> Result<(),
             words.seed,
         )
         .map_err(|_| BulkError::Missing)?;
+        let exact_min_charge = factory.preflight(&recipe)?;
+        if exact_min_charge > min_initial_charge {
+            store.preflight_admit(
+                account,
+                ctx.actor,
+                WorkKind::Proving,
+                exact_min_charge,
+                1_u64.saturating_add(super::model::MAX_ARTIFACT_BYTES),
+                now,
+            )?;
+        }
         let nonce = store.next_nonce(account)?;
         let ticket = runtime.next;
         let next = ticket
@@ -369,6 +486,7 @@ pub(crate) fn command(ctx: &mut Ctx<'_>, switch: &str, text: &str) -> Result<(),
                 factory,
             })
             .map_err(|(e, _)| e)?;
+        runtime.prepare_limiter.record_submit(account, now);
         runtime.next = next;
         runtime.preparing.insert(
             ticket,
@@ -570,6 +688,7 @@ pub(crate) fn drain(ctx: &mut Ctx<'_>) {
             Ok(())
         })();
         if let Err(error) = result {
+            runtime.prepare_limiter.record_failure(p.account, now);
             ctx.out
                 .info(p.actor, format!("Proving preparation refused: {error}"));
         }
@@ -887,5 +1006,47 @@ mod tests {
         assert!(parse("x VS mirror 30 DUEL 7v7").is_err());
         assert!(parse("x VS other/line garbage").is_err());
         assert_eq!(parse("x VS mirror").unwrap().games, 30);
+    }
+
+    #[test]
+    fn p2_tsc_20_prepare_limiter_bounds_bursts_applies_failure_cooldown_and_caps_memory() {
+        let mut limiter = PrepareLimiter::default();
+        let a = AccountId::mint("p2-tsc-20", 1).expect("account a");
+        let b = AccountId::mint("p2-tsc-20", 2).expect("account b");
+
+        // Consecutive legitimate burst up to MAX_PREPARES_PER_WINDOW succeeds.
+        for i in 0..MAX_PREPARES_PER_WINDOW {
+            let t = 1_000 + i as i64 * 10;
+            assert_eq!(limiter.check(a, t), Ok(()));
+            limiter.record_submit(a, t);
+        }
+        // The next immediate submit in the same window is rejected, while account b is unaffected.
+        assert_eq!(limiter.check(a, 1_100), Err(BulkError::Busy));
+        assert_eq!(limiter.check(b, 1_100), Ok(()));
+
+        // After the sliding window expires, account a may submit again.
+        let after_window = 1_000 + PREPARE_WINDOW_MS;
+        assert_eq!(limiter.check(a, after_window), Ok(()));
+
+        // A failed preparation enforces the per-account failure cooldown.
+        limiter.record_failure(b, 5_000);
+        assert_eq!(limiter.check(b, 5_000), Err(BulkError::Busy));
+        assert_eq!(
+            limiter.check(b, 5_000 + PREPARE_FAILURE_COOLDOWN_MS - 1),
+            Err(BulkError::Busy)
+        );
+        assert_eq!(
+            limiter.check(b, 5_000 + PREPARE_FAILURE_COOLDOWN_MS),
+            Ok(())
+        );
+
+        // Tracking map stays strictly bounded under many accounts.
+        for i in 10..(10 + MAX_TRACKED_PREPARE_ACCOUNTS + 64) {
+            limiter.record_submit(
+                AccountId::mint("p2-tsc-20", i as i64).expect("account"),
+                100_000,
+            );
+            assert!(limiter.accounts.len() <= MAX_TRACKED_PREPARE_ACCOUNTS);
+        }
     }
 }
