@@ -2210,10 +2210,11 @@ defaults** (`TACSIM_SEED` 2350, `TACSIM_LANCE_UNITS` 24,
 `at_defaults`) does it also assert the figures the defaults' fight gives, each
 held to that fight by fact pins (its end, and each first squad's standing
 machines at its minute-one mark and at the release): the span **equal** to the
-squads a side (since `5993ba20`, re-pinned by record: blue's commander holds
-`blue-1` on a wreck that took the minute-one order and died before the
-release, beside its second and third squads; over the standing hulls alone each
-commander holds its second and third, the squads a side less one), the busiest commander
+squads a side less one (since `4fe9a513f`, the security audit's Tier 1D arena
+hardening, re-pinned by record on 2026-11-24: each commander holds its second
+and third squads on standing machines and no squad rests on a wreck alone; from
+`5993ba20` to that commit it read the squads a side, a first squad held by a
+wreck that took the minute-one order and died before the release), the busiest commander
 minute **equal** to the squads a side, each side's release on the tape once
 for every machine its first squad stood, and the opening round plus one full
 minute a side on the tape. Off them a lance can be wiped out, reach its
