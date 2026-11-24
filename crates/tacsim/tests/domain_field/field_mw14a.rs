@@ -170,9 +170,23 @@ fn cell_of(rig: &Rig, unit: ObjId) -> Option<(u16, u16)> {
 /// contact of its own party that is none of the roster's `rigs`. Several hulls settle on one pad
 /// and the field stands each on a cell of its own, so the carrier is named by its exact cell.
 pub(crate) fn carrier_cell(rig: &Rig, who: ObjId, rigs: &[ObjId]) -> Option<(u16, u16)> {
+    carrier_cell_apart(rig, who, rigs, &[])
+}
+
+/// [`carrier_cell`], with the roster's rig `units` also kept apart by the cell each stands on.
+/// An operator who has quit has no frame to name their rig's cell; without the unit's own cell
+/// the pick fell to the frame's contact order, which follows object numbers (the 2026-11-24
+/// Ceres v4 edit renumbered the world and the intruder was aimed at the absent player's rig).
+pub(crate) fn carrier_cell_apart(
+    rig: &Rig,
+    who: ObjId,
+    rigs: &[ObjId],
+    units: &[ObjId],
+) -> Option<(u16, u16)> {
     let own: Vec<(u16, u16)> = rigs
         .iter()
         .filter_map(|operator| frame(rig, *operator).and_then(|frame| frame.cell))
+        .chain(units.iter().filter_map(|unit| cell_of(rig, *unit)))
         .collect();
     frame(rig, who)?
         .contacts
