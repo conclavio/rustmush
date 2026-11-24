@@ -347,10 +347,12 @@ impl Route {
                 own("registry", lines::ROOM_REGISTRY),
                 own(COUNTER_DOOR, COUNTER_ROOM),
             ],
+            // Out of character by `+ooc` (no exit of a port leads to Limbo since the
+            // 2026-11-24 playtest).
             Route::Simulator => vec![
                 own("out", lines::ROOM_REGISTRY),
                 own("out", lines::ROOM_ARRIVALS),
-                own("limbo", ROOM_LIMBO),
+                own("+ooc", ROOM_LIMBO),
                 (LobbyLine::Ooc.line(), ROOM_HALL),
                 (LobbyLine::Simulator.line(), ROOM_SIMULATOR),
             ],
@@ -538,6 +540,7 @@ pub fn in_vocabulary(line: &str) -> bool {
                 | "mc"
                 | "out"
                 | "limbo"
+                | "+ooc"
                 | "hall"
                 | "lobby"
                 | "c"
@@ -1419,6 +1422,7 @@ mod tests {
             "mc",
             "out",
             "limbo",
+            "+ooc",
             "hall",
             "lobby",
             "c",
@@ -1840,6 +1844,11 @@ mod tests {
             "out" if nth == 0 => room(lines::ROOM_REGISTRY),
             "out" => room(lines::ROOM_ARRIVALS),
             "limbo" => now(&["Limbo #0", "You see nothing special."]),
+            "+ooc" => now(&[
+                "You step out of character, leaving the corridor at Ceres Freeport. +ic brings you back.",
+                "Limbo #0",
+                "You see nothing special.",
+            ]),
             "ooc" | "hall" => now(&["Welcome Hall #2"]),
             "simulator" => now(&["Simulator Lobby #7"]),
             "lobby" if nth == 0 => now(&["Simulator Lobby #7"]),
@@ -1920,7 +1929,7 @@ mod tests {
                 "+minds/holdings",
                 "out",
                 "out",
-                "limbo",
+                "+ooc",
                 "ooc",
                 "simulator",
                 "SIM TEAM red",

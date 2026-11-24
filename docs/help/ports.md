@@ -16,12 +16,19 @@ reached only by ship.
 
 ## Getting in and back
 
-From Limbo the door `c` takes you to Port Watch Arrivals at Ceres Freeport. The
-game remembers the port you last stood in when you step out to Limbo or the OOC
-area. A port with no door from Limbo is one you can only reach by ship: the door
-will not take you while that port is remembered, and `+ic` puts you back where
-you left the corridor — Stickney's berth gallery, Aitken's Orbital Access
-Arrivals, Voltaire's berth gallery, or Ligeia's Company Arrivals.
+From Limbo the door `c` takes you to Port Watch Arrivals at Ceres Freeport. No
+exit of a port leads out of character: `+ooc` steps you out to Limbo from any
+room of a port and remembers the room you left, and `+ic` puts you back in that
+room. If the room is gone or closed to you now, `+ic` takes you to the arrivals
+of the port instead. `+ooc` is refused in a simulator pod, out in a field,
+aboard a ship, or in custody.
+
+The game also remembers the port you last stood in. A port with no door from
+Limbo is one you can only reach by ship: the door will not take you while that
+port is remembered, and `+ic` puts you back where you left the corridor —
+Stickney's berth gallery, Aitken's Orbital Access Arrivals, Voltaire's berth
+gallery, or Ligeia's Company Arrivals, when the room you left is not there to
+return to.
 
 ## The lanes
 

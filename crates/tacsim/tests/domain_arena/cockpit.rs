@@ -746,6 +746,10 @@ async fn board_puts_the_body_in_the_pod_the_station_on_the_tank_and_the_seat_in_
 
     // The body is in the pod (doc 16 §3.7: the pod is where the body sits).
     assert_eq!(rig.location(0), Some(pod), "the pilot is inside the pod");
+    // `+ooc` (the 2026-11-24 playtest) does not take a pilot out of a pod: `EXIT` does.
+    let said = rig.say(0, "+ooc");
+    assert!(said.contains(tacsim::ic_return::IN_A_POD), "{said}");
+    assert_eq!(rig.location(0), Some(pod), "the pilot is still in the pod");
 
     // The station is on the TANK, and its console is the pod (doc 16 §3.3).
     let state = rig

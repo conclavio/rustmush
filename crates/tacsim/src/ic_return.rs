@@ -29,6 +29,17 @@
 //!   kernel's non-exit move shape (`go_home`'s: the veto chain, the move, the
 //!   narration, the room, then `Moved`). It writes no document.
 //!
+//! - **`+ooc`** ([`crate::ic_return::ooc_command`], the 2026-11-24 playtest): the one way out of
+//!   character. From a port room it steps the character out to Limbo through the same move
+//!   shape, and remembers the exact room they left as a second unregistered marker
+//!   (`tacsim.ooc_room.<room entry>`, the room's atlas entry id, never its object number), so
+//!   `+ic` can put them back in that room. It is refused in a simulator pod, in a running
+//!   field, and wherever the `MoveAttempt` chain refuses an exit-less move (aboard a hull, a
+//!   carrier under way, custody, a journey).
+//! - **no IC exit into Limbo**: Limbo's global exits are not offered from a port room
+//!   ([`crate::ic_return::IcDoorHook`] refuses them with [`crate::ic_return::LIMBO_WAY`]), so
+//!   `o`, `s` and `c` typed in a station room no longer leave the corridor; `+ooc` does.
+//!
 //! The port table is local to this module ([`crate::ic_return::PORTS`]). Cut IC3 kept it beside the
 //! lane's `port` pack entries rather than reading them (lead ruling L10), and pins
 //! its agreement with them — venue, name, area and arrival room — by
@@ -43,7 +54,7 @@ use std::sync::Arc;
 use mush_core::module::{ModError, Registrar};
 use mush_core::{
     ArgShape, CanonicalId, CmdError, CommandSpec, Ctx, EventHook, HookPoint, HookReadContext,
-    ObjId, ObjKind, World, WorldError, WorldEvent, WorldObserver, name_span,
+    LIMBO, ObjId, ObjKind, World, WorldError, WorldEvent, WorldObserver, name_span,
 };
 use mush_proto::{NarrativeKind, OutputEvent, RichText};
 
@@ -131,20 +142,43 @@ pub const DOOR_ENTRY: &str = "exit.limbo_arrivals";
 /// `tacsim.last_port.ceres`, `tacsim.last_port.stickney`, … — at most one present.
 pub const LAST_PORT_MARKER: &str = "tacsim.last_port.";
 
+/// The exact-room marker's prefix (`+ooc`): an unregistered object marker naming the
+/// atlas entry of the room the character stepped out of, `tacsim.ooc_room.room.c05_concourse`
+/// — at most one present. Like the port stamp, `@set` cannot forge it.
+pub const OOC_ROOM_MARKER: &str = "tacsim.ooc_room.";
+
 /// The verb.
 pub const IC_VERB: &str = "+ic";
+/// The way out.
+pub const OOC_VERB: &str = "+ooc";
 
 /// `+ic`'s help (T-45 checks every backticked verb in `docs/help` resolves).
-pub const IC_HELP: &str = "+ic  --  Go back into the corridor where you left it. The game \
-     remembers the port you last stood in when you stepped out to Limbo or the OOC area, and \
-     +ic puts you back there: Ceres Freeport's arrivals hall, Stickney Yards' berth gallery, \
-     Aitken Highport's arrivals, Voltaire Anchorage's berth gallery, Ligeia Terminal's \
-     arrivals or the Isidis Concession's landing field gallery. With no port remembered it takes you to Ceres Freeport, where the Limbo door \
-     goes. A port you can only reach by ship has no door from Limbo, so +ic is the way back \
-     to it.";
+pub const IC_HELP: &str = "+ic  --  Go back into character, to the room you left with +ooc. If \
+     that room is gone or closed to you now, or you left some other way, +ic takes you to the \
+     arrivals of the port you last stood in: Ceres Freeport's arrivals hall, Stickney Yards' \
+     berth gallery, Aitken Highport's arrivals, Voltaire Anchorage's berth gallery, Ligeia \
+     Terminal's arrivals or the Isidis Concession's landing field gallery. With no port \
+     remembered it takes you to Ceres Freeport, where the Limbo door goes. A port you can only \
+     reach by ship has no door from Limbo, so +ic is the way back to it.";
+
+/// `+ooc`'s help.
+pub const OOC_HELP: &str = "+ooc  --  Step out of character. From any room of a port, +ooc \
+     takes you to Limbo, out of the story, and remembers the room you left; +ic puts you back \
+     there. No exit of a port leads out of character: +ooc is the way. It is refused while you \
+     are in a simulator pod, out in a field, aboard a ship or another vehicle, or held in \
+     custody.";
 
 /// `+ic` from inside a port.
 pub const ALREADY_IN: &str = "You are already in the corridor.";
+/// `+ooc` from outside every port.
+pub const ALREADY_OUT: &str = "You are already out of character.";
+/// `+ooc` from a simulator pod.
+pub const IN_A_POD: &str = "You are in a simulator pod; EXIT leaves it.";
+/// `+ooc` while a running field holds the character.
+pub const IN_THE_FIELD: &str = "You are out in the field; +ooc waits until you are back in port.";
+/// Limbo's global exits, typed in a port room.
+pub const LIMBO_WAY: &str =
+    "That way leads out of character; +ooc steps out, and +ic brings you back.";
 /// `+ic` from something that is not a character.
 pub const NOT_A_CHARACTER: &str = "Only a character can do that.";
 /// `+ic` on a world whose station packs are not applied.
@@ -160,25 +194,121 @@ pub fn left_at_line(port: &IcPort) -> String {
     )
 }
 
-/// The door's refusal for someone typing Limbo's global door word while standing
-/// in a port with no foot route.
-#[must_use]
-pub fn no_door_line(standing: &IcPort, door_port: &IcPort) -> String {
-    format!(
-        "There is no door from {} to {}; the way there is by ship.",
-        standing.name, door_port.name
-    )
-}
-
 /// `+ic`'s answer on arrival.
 #[must_use]
 pub fn return_line(port: &IcPort) -> String {
     format!("You return to the corridor at {}.", port.name)
 }
 
+/// `+ic`'s first line when the room `+ooc` remembered cannot take the character back.
+#[must_use]
+pub fn fell_back_line(port: &IcPort) -> String {
+    format!(
+        "The room you left is closed to you now; you return to the corridor at {}'s arrivals.",
+        port.name
+    )
+}
+
+/// `+ooc`'s answer.
+#[must_use]
+pub fn ooc_line(port: &IcPort) -> String {
+    format!(
+        "You step out of character, leaving the corridor at {}. +ic brings you back.",
+        port.name
+    )
+}
+
 /// The marker naming `port`.
 fn marker_of(port: &IcPort) -> String {
     format!("{LAST_PORT_MARKER}{}", port.id)
+}
+
+/// The exact-room markers `who` carries (at most one is ever written).
+fn room_markers(w: &World, who: ObjId) -> Vec<smol_str::SmolStr> {
+    w.get(who)
+        .map(|object| {
+            object
+                .markers
+                .iter()
+                .filter(|marker| marker.starts_with(OOC_ROOM_MARKER))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Clear every exact-room marker on `who`.
+fn clear_room(w: &mut World, who: ObjId) -> Result<(), WorldError> {
+    for marker in room_markers(w, who) {
+        w.set_marker(who, &marker, false)?;
+    }
+    Ok(())
+}
+
+/// The atlas entry id of `room`, when the atlas made it (`room.c05_concourse`).
+fn room_entry(w: &World, room: ObjId) -> Option<CanonicalId> {
+    let atlas = w.module_state::<mush_atlas::AtlasState>()?;
+    Some(atlas.records.roomgeo.get(&room)?.key.entry.clone())
+}
+
+/// Remember `room` as the room `who` stepped out of: one exact-room marker, the others
+/// cleared. A room the atlas did not make is not remembered (and `+ic` falls back).
+///
+/// # Errors
+///
+/// [`WorldError`] when `who` is not an object.
+pub fn remember_room(w: &mut World, who: ObjId, room: ObjId) -> Result<(), WorldError> {
+    clear_room(w, who)?;
+    if let Some(entry) = room_entry(w, room) {
+        w.set_marker(who, &format!("{OOC_ROOM_MARKER}{}", entry.as_str()), true)?;
+    }
+    Ok(())
+}
+
+/// The room `+ooc` remembered for `who`, as an object, when it lies in `port`: `None`
+/// when nothing is remembered, or the remembered entry no longer resolves to one of
+/// `port`'s rooms.
+#[must_use]
+pub fn remembered_room(w: &World, who: ObjId, port: &IcPort) -> Option<ObjId> {
+    room_markers(w, who).iter().find_map(|marker| {
+        let entry = marker.strip_prefix(OOC_ROOM_MARKER)?;
+        latched(w, port.area, entry).filter(|room| {
+            w.get(*room).is_some_and(|object| {
+                object.kind == ObjKind::Room && !object.flags.contains(mush_core::Flags::GOING)
+            }) && port_of_room(w, *room).is_some_and(|here| here.id == port.id)
+        })
+    })
+}
+
+/// Whether `who` may stand in `room` again (`+ic`'s exact return): a public room, a room
+/// `who` controls, or a restricted one some exit into it from the same neighborhood lets
+/// `who` through by its lock. A staff-locked office the character has since lost the key
+/// to is not.
+#[must_use]
+pub fn may_stand(w: &World, who: ObjId, room: ObjId) -> bool {
+    let Some(atlas) = w.module_state::<mush_atlas::AtlasState>() else {
+        return false;
+    };
+    let Some(geo) = atlas.records.roomgeo.get(&room) else {
+        return false;
+    };
+    if geo.access == mush_atlas::Access::Public || mush_core::perm::controls(w, who, room) {
+        return true;
+    }
+    atlas
+        .records
+        .rooms_in(&geo.neighborhood)
+        .filter_map(|other| w.get(other.room))
+        .flat_map(|other| other.exits.iter())
+        .filter_map(|exit| w.get(*exit))
+        .filter(|exit| exit.destination == Some(room))
+        .any(|exit| {
+            exit.locks
+                .get(&mush_core::LockType::Basic)
+                .is_none_or(|lock| {
+                    mush_core::eval_lock(w, lock, who, mush_core::lock::MAX_LOCK_DEPTH)
+                })
+        })
 }
 
 /// The port whose neighborhood `room` belongs to, by its `RoomGeo` (the atlas's
@@ -251,11 +381,6 @@ pub fn arrival_room(w: &World, port: &IcPort) -> Option<ObjId> {
     })
 }
 
-/// The port the door leads to (the table's port whose area is the door's pack).
-fn door_port() -> Option<&'static IcPort> {
-    PORTS.iter().find(|port| port.area == DOOR_PACK)
-}
-
 /// **The stamp** (doc 18 §4.5): on `Moved { who, from, to }` for a Player, when
 /// `from` is a port room and `to` lies in no port, record the port `who` left.
 /// Logs nothing per move; a failed marker write logs once at `warn` and changes
@@ -281,17 +406,19 @@ impl WorldObserver for IcReturnStamp {
         if port_of_room(ctx.w, *to).is_some() {
             return;
         }
-        if let Err(error) = stamp(ctx.w, *who, port) {
+        // Any way out forgets the exact room; `+ooc` writes it again after this move.
+        if let Err(error) = stamp(ctx.w, *who, port).and_then(|()| clear_room(ctx.w, *who)) {
             tracing::warn!(who = who.0, port = port.id, %error, "ic_return: the last-port stamp did not write");
         }
     }
 }
 
-/// **The door** (doc 18 §4.5, D-18-3): a `MoveAttempt` veto that looks only at the
-/// IC door. Standing in a port with no foot route, the door is refused with the
-/// standing line (Limbo's global `c` typed at Stickney); otherwise a pilot stamped
-/// at such a port is refused with doc 18 §4.5's line. No stamp, or a Ceres stamp,
-/// passes.
+/// **The door** (doc 18 §4.5, D-18-3): a `MoveAttempt` veto on Limbo's exits. Typed in
+/// a port room, every Limbo exit — the global `o`, `s` and `c` — is refused with
+/// [`LIMBO_WAY`]: no IC exit leads out of character, `+ooc` does (the 2026-11-24
+/// playtest). From anywhere else only the IC door is looked at: a pilot stamped at a
+/// port with no foot route is refused with doc 18 §4.5's line. No stamp, or a Ceres
+/// stamp, passes.
 pub struct IcDoorHook;
 
 impl EventHook for IcDoorHook {
@@ -300,26 +427,23 @@ impl EventHook for IcDoorHook {
         ctx: &HookReadContext<'_>,
         actor: ObjId,
         exit: Option<ObjId>,
-        _dest: ObjId,
+        dest: ObjId,
     ) -> Result<(), RichText> {
         let Some(exit) = exit else {
             return Ok(());
         };
         let w = ctx.world();
+        let here = w.get(actor).and_then(|object| object.location);
+        if here != Some(LIMBO)
+            && here.and_then(|room| port_of_room(w, room)).is_some()
+            && (dest == LIMBO
+                || w.get(LIMBO)
+                    .is_some_and(|limbo| limbo.exits.contains(&exit)))
+        {
+            return Err(RichText::tag("error", LIMBO_WAY));
+        }
         if door(w) != Some(exit) {
             return Ok(());
-        }
-        let Some(door_port) = door_port() else {
-            return Ok(());
-        };
-        let standing = w
-            .get(actor)
-            .and_then(|object| object.location)
-            .and_then(|here| port_of_room(w, here));
-        if let Some(standing) = standing
-            && !standing.foot_route
-        {
-            return Err(RichText::tag("error", no_door_line(standing, door_port)));
         }
         if let Some(left) = last_port(w, actor)
             && !left.foot_route
@@ -330,27 +454,20 @@ impl EventHook for IcDoorHook {
     }
 }
 
-/// **`+ic`** (doc 18 §4.5): back into the corridor at the stamped port's arrival
-/// room (Ceres when there is no stamp). In order: the layer, a character, not
-/// already in a port, the arrival room, then `go_home`'s shape through `Ctx` — the
-/// `MoveAttempt` chain (which is what makes the sim's `PlacementGate` refuse a hull
-/// occupant from cut IC4 on), the move, the lines, the room, and `Moved`.
+/// **`+ic`** (doc 18 §4.5; the 2026-11-24 playtest): back into the corridor at the room
+/// `+ooc` remembered, when it still stands in the stamped port and the character
+/// [`may_stand`] there; otherwise at the stamped port's arrival room (Ceres when there is
+/// no stamp). In order: the layer, a character, not already in a port, the room, then
+/// `go_home`'s shape through `Ctx` — the `MoveAttempt` chain (which is what makes the
+/// sim's `PlacementGate` refuse a hull occupant from cut IC4 on), the move, the lines,
+/// the room, and `Moved`. A return clears the remembered room. It writes no document.
 ///
 /// # Errors
 ///
 /// Every refusal is a [`CmdError`] line said to the actor; nothing is written.
 pub fn ic_command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
-    if !ctx
-        .w
-        .module_state::<TacsimStore>()
-        .is_some_and(TacsimStore::enabled)
-    {
-        return Err(CmdError::msg(NOT_ENABLED));
-    }
+    enabled(ctx)?;
     let actor = ctx.actor;
-    if ctx.w.get(actor).map(|object| object.kind) != Some(ObjKind::Player) {
-        return Err(CmdError::msg(NOT_A_CHARACTER));
-    }
     let from = ctx.w.get(actor).and_then(|object| object.location);
     if from.and_then(|here| port_of_room(ctx.w, here)).is_some() {
         return Err(CmdError::msg(ALREADY_IN));
@@ -358,9 +475,12 @@ pub fn ic_command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let Some(port) = last_port(ctx.w, actor).or_else(|| PORTS.first()) else {
         return Err(CmdError::msg(NO_CORRIDOR));
     };
-    let Some(dest) = arrival_room(ctx.w, port) else {
+    let Some(arrival) = arrival_room(ctx.w, port) else {
         return Err(CmdError::msg(NO_CORRIDOR));
     };
+    let remembered = !room_markers(ctx.w, actor).is_empty();
+    let exact = remembered_room(ctx.w, actor, port).filter(|room| may_stand(ctx.w, actor, *room));
+    let dest = exact.unwrap_or(arrival);
     if let Err(reason) = ctx.check_move_attempt(actor, None, dest) {
         ctx.out.to_actor(actor, OutputEvent::Sys(reason));
         return Ok(());
@@ -368,7 +488,77 @@ pub fn ic_command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if ctx.w.move_to(actor, dest).is_err() {
         return Err(CmdError::msg(NO_CORRIDOR));
     }
-    ctx.out.info(actor, return_line(port));
+    if let Err(error) = clear_room(ctx.w, actor) {
+        tracing::warn!(who = actor.0, %error, "ic_return: the remembered room did not clear");
+    }
+    if remembered && exact.is_none() {
+        ctx.out.info(actor, fell_back_line(port));
+    } else {
+        ctx.out.info(actor, return_line(port));
+    }
+    narrate(ctx, actor, from, dest);
+    Ok(())
+}
+
+/// **`+ooc`** (the 2026-11-24 playtest): out of character, to Limbo, from a port room,
+/// remembering the exact room for `+ic`. In order: the layer, a character, not in a
+/// simulator pod, not held by a running field, then the `MoveAttempt` chain with no
+/// exit (aboard a hull, a carrier under way, custody and a journey all refuse there,
+/// with their own lines), then "already out" for anyone standing outside every port.
+/// The move fires `Moved`, whose stamp records the port; the room is remembered after.
+///
+/// # Errors
+///
+/// Every refusal is a [`CmdError`] line said to the actor (a gate's reason is said as
+/// `Sys`, as `+ic` says it); nothing is written.
+pub fn ooc_command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
+    enabled(ctx)?;
+    let actor = ctx.actor;
+    if crate::match_::cockpit::in_a_pod(ctx.w, actor) {
+        return Err(CmdError::msg(IN_A_POD));
+    }
+    if crate::field::crew::in_a_running_field(ctx.w, actor) {
+        return Err(CmdError::msg(IN_THE_FIELD));
+    }
+    let from = ctx.w.get(actor).and_then(|object| object.location);
+    if let Err(reason) = ctx.check_move_attempt(actor, None, LIMBO) {
+        ctx.out.to_actor(actor, OutputEvent::Sys(reason));
+        return Ok(());
+    }
+    let Some((here, port)) = from
+        .filter(|here| *here != LIMBO)
+        .and_then(|here| port_of_room(ctx.w, here).map(|port| (here, port)))
+    else {
+        return Err(CmdError::msg(ALREADY_OUT));
+    };
+    if ctx.w.move_to(actor, LIMBO).is_err() {
+        return Err(CmdError::msg(NO_CORRIDOR));
+    }
+    ctx.out.info(actor, ooc_line(port));
+    narrate(ctx, actor, Some(here), LIMBO);
+    if let Err(error) = remember_room(ctx.w, actor, here) {
+        tracing::warn!(who = actor.0, %error, "ic_return: the room left did not write");
+    }
+    Ok(())
+}
+
+/// The layer and the character, both verbs' first two refusals.
+fn enabled(ctx: &Ctx<'_>) -> Result<(), CmdError> {
+    if !ctx
+        .w
+        .module_state::<TacsimStore>()
+        .is_some_and(TacsimStore::enabled)
+    {
+        return Err(CmdError::msg(NOT_ENABLED));
+    }
+    if ctx.w.get(ctx.actor).map(|object| object.kind) != Some(ObjKind::Player) {
+        return Err(CmdError::msg(NOT_A_CHARACTER));
+    }
+    Ok(())
+}
+
+/// After the move: the leave and arrive lines, the room, and `Moved`.
+fn narrate(ctx: &mut Ctx<'_>, actor: ObjId, from: Option<ObjId>, dest: ObjId) {
     if let Some(left) = from {
         let text = RichText::new()
             .span(name_span(ctx.w, actor))
@@ -387,7 +577,6 @@ pub fn ic_command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         from,
         to: dest,
     });
-    Ok(())
 }
 
 /// An unattributed narrative line, as the kernel's movement lines are.
@@ -399,7 +588,7 @@ fn narrative(text: RichText) -> OutputEvent {
     }
 }
 
-/// Register `+ic`, the door hook and the stamp on the **tacsim** module, under the
+/// Register `+ic`, `+ooc`, the door hook and the stamp on the **tacsim** module, under the
 /// module's `LegacyPostImage` classification (the verb writes no document).
 ///
 /// # Errors
@@ -414,6 +603,15 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             ..CommandSpec::default()
         },
         Arc::new(ic_command),
+    )?;
+    reg.command(
+        CommandSpec {
+            name: OOC_VERB.into(),
+            shape: ArgShape::None,
+            help: OOC_HELP.into(),
+            ..CommandSpec::default()
+        },
+        Arc::new(ooc_command),
     )?;
     reg.hook(HookPoint::MoveAttempt, Arc::new(IcDoorHook));
     // Doc 36 cut GC.8a (Q-36-32): a hull berthed or under a repair order stays put.
@@ -432,7 +630,7 @@ pub fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mush_core::{GOD, LIMBO};
+    use mush_core::GOD;
 
     fn pilot(w: &mut World) -> ObjId {
         w.create(ObjKind::Player, "Pilot", GOD, Some(LIMBO))
@@ -494,18 +692,42 @@ mod tests {
     #[test]
     fn ic1_the_help_names_ic() {
         assert!(IC_HELP.starts_with("+ic  --  "));
-        assert!(IC_HELP.contains("+ic puts you back there"));
+        assert!(IC_HELP.contains("to the room you left with +ooc"));
+        assert!(OOC_HELP.starts_with("+ooc  --  "));
+        assert!(OOC_HELP.contains("+ic puts you back there"));
         assert_eq!(
             left_at_line(&PORTS[1]),
             "You left the corridor at Stickney Yards; +ic returns you there."
         );
         assert_eq!(
-            no_door_line(&PORTS[1], &PORTS[0]),
-            "There is no door from Stickney Yards to Ceres Freeport; the way there is by ship."
-        );
-        assert_eq!(
             return_line(&PORTS[1]),
             "You return to the corridor at Stickney Yards."
         );
+        assert_eq!(
+            ooc_line(&PORTS[0]),
+            "You step out of character, leaving the corridor at Ceres Freeport. +ic brings you back."
+        );
+        assert_eq!(
+            fell_back_line(&PORTS[0]),
+            "The room you left is closed to you now; you return to the corridor at Ceres Freeport's arrivals."
+        );
+    }
+
+    /// The exact-room marker is one entry id, cleared on the next write, and resolves only
+    /// through the latch (a bare world has no atlas, so nothing resolves).
+    #[test]
+    fn ooc_the_room_marker_is_one_and_resolves_only_through_the_atlas() {
+        let (mut w, _reg) = mush_testkit::boot_world();
+        let who = pilot(&mut w);
+        w.set_marker(who, "tacsim.ooc_room.room.a", true)
+            .expect("marker");
+        w.set_marker(who, "tacsim.ooc_room.room.b", true)
+            .expect("marker");
+        assert_eq!(room_markers(&w, who).len(), 2);
+        assert_eq!(remembered_room(&w, who, &PORTS[0]), None);
+        // A room the atlas did not make clears and writes nothing.
+        remember_room(&mut w, who, LIMBO).expect("written");
+        assert!(room_markers(&w, who).is_empty());
+        assert!(!may_stand(&w, who, LIMBO));
     }
 }
