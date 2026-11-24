@@ -161,6 +161,16 @@ fn job(w: &PlayerWorld, head: &Value) -> TestResult<RatingJob> {
             .ok_or("actual Registry job")?,
     )?)
 }
+/// The first step of the service's grant backoff (`GRANT_BACKOFF_MS` in
+/// `registry_service`), on the service's own clock.
+const LOST_GRANT_BACKOFF_MS: i64 = 2_000;
+/// Whether the Registry lane holds the shared queue's fair turn. A read, like
+/// `fixture_entry`: no ticket, timer or pending state is touched.
+fn turn_lent(w: &PlayerWorld) -> TestResult<bool> {
+    let service = crate::minds::bulk::world::service(&w.engine.world)?;
+    let runtime = service.0.lock().map_err(|_| "bulk service lock")?;
+    Ok(runtime.registry.has_pending_turn())
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Ending {
     Cancelled,
@@ -178,6 +188,7 @@ async fn run(
     let mut serial = 0_u128;
     let mut admission = None;
     let mut retained_unknown = false;
+    let mut lost_grant = false;
     let mut retained_retry = false;
     let mut recall_seen = false;
     // The head may still name the attempt this run supersedes (a cancelled
@@ -207,8 +218,8 @@ async fn run(
                 }
                 assert!(disk(w) == before, "Unknown cannot admit or recall");
                 // Admission NoIntent intentionally discards an unadmitted machine.
-                // A real ACK ends this Unknown attempt; only admitted transitions
-                // below exercise the existing same-ticket retry contract.
+                // A real ACK ends this Unknown attempt; the admitted transitions
+                // below exercise what a proved absence does after admission.
                 let params = land(w, &request, n + serial)?;
                 serial += 1;
                 admission = Some(params);
@@ -216,10 +227,79 @@ async fn run(
                     w.say(GOD, "@registry/cancel")?;
                 }
                 retained_unknown = true;
-            } else if id.starts_with("reconformance_")
-                && id != "reconformance_admit"
-                && !retained_retry
+            } else if id == "reconformance_grant" && !lost_grant {
+                // A grant borrows the shared queue's one fair turn. Until the
+                // security audit's P2-TSC-5 (P2-Tier 1D, PR #767) a lost grant
+                // kept that turn and retried its ticket, so one stuck grant held
+                // every account behind it. Now the ticket is discarded, the turn
+                // goes back, and the job asks again after a backoff with a new
+                // ticket. Nothing was paid or measured yet, so nothing is lost.
+                let old_key = request.key.clone();
+                let before = disk(w);
+                assert!(
+                    turn_lent(w)?,
+                    "a submitted grant holds the lane's fair turn"
+                );
+                let lost_ms = crate::minds::bulk::world::now_ms();
+                absence.store(true, Ordering::Release);
+                let mut yielded = false;
+                for _ in 0..20 {
+                    pulse(w)?;
+                    assert!(
+                        w.engine.take_observed_authoritative_submit().is_none(),
+                        "a lost grant does not retry its discarded ticket"
+                    );
+                    if !turn_lent(w)? {
+                        yielded = true;
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                }
+                assert!(yielded, "a lost grant gives the fair turn back");
+                assert!(disk(w) == before, "a lost grant publishes nothing");
+                // The backoff is real time on the service's clock, so this wait
+                // is too. World timers fire meanwhile; the job's own execution
+                // row is what must not move.
+                let backoff = Instant::now() + Duration::from_secs(120);
+                let fresh = loop {
+                    pulse(w)?;
+                    if let Some(next) = w.engine.take_observed_authoritative_submit() {
+                        break next.into_parts().0;
+                    }
+                    if Instant::now() >= backoff {
+                        return Err("a yielded grant never asked again".into());
+                    }
+                    tokio::time::sleep(Duration::from_millis(2)).await;
+                };
+                let waited_ms = crate::minds::bulk::world::now_ms().saturating_sub(lost_ms);
+                assert_eq!(
+                    fresh.action, request.action,
+                    "the job's next step is still its grant"
+                );
+                assert_ne!(
+                    fresh.key, old_key,
+                    "the new grant is a new ticket, not the lost one's retry"
+                );
+                assert!(
+                    waited_ms >= LOST_GRANT_BACKOFF_MS,
+                    "the new grant waited out the backoff: {waited_ms} ms"
+                );
+                assert!(
+                    rows(&disk(w), "roll", "rating_executions")
+                        == rows(&before, "roll", "rating_executions"),
+                    "the backoff publishes nothing for the job"
+                );
+                eprintln!("M7_STORY_RECONFORMANCE lost_grant waited_ms={waited_ms}");
+                land(w, &fresh, n + serial)?;
+                serial += 1;
+                lost_grant = true;
+            } else if matches!(
+                id,
+                "reconformance_settle" | "reconformance_cancel" | "reconformance_recover"
+            ) && !retained_retry
             {
+                // Paid or measured work stands behind these three, so P2-TSC-5
+                // left them the exact-ticket retry: the same key, nothing rebuilt.
                 let old_key = request.key.clone();
                 let before = disk(w);
                 absence.store(true, Ordering::Release);
@@ -236,14 +316,12 @@ async fn run(
                         land(w, &retry, n + serial)?;
                         serial += 1;
                         retained_retry = true;
+                        eprintln!("M7_STORY_RECONFORMANCE retained_retry action={id}");
                         break;
                     }
                     tokio::time::sleep(Duration::from_millis(2)).await;
                 }
-                assert!(
-                    retained_retry,
-                    "admitted NoIntent retries the retained selector"
-                );
+                assert!(retained_retry, "a lost {id} retries its retained ticket");
             } else {
                 if id == "recall_nonconforming_mind" {
                     assert!(
@@ -325,6 +403,9 @@ async fn run(
         tokio::time::sleep(Duration::from_millis(2)).await;
     }
     assert!(admission.is_some());
+    // A cancel asked for before the first grant takes the turn as a cancel, so
+    // that run publishes no grant to lose; its retained retry is the cancel's.
+    assert!(lost_grant || ending == Ending::Cancelled);
     assert!(retained_retry);
     Ok(())
 }
