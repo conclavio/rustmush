@@ -73,7 +73,8 @@ Nav mode (the box is closed):
                that row's command ready (`@mail 3`, `+act brace`, `pub `).
   " : ; \      Open the box with that speech trigger already typed.
   + /          Open the box with `+` or `/` already typed, ready for a
-               `+command` or a slash command. (Ctrl-K is the palette.)
+               plus command (`+roll`) or a slash command (`/clear`).
+               (Ctrl-K is the palette.)
   Tab / Shift-Tab   Move focus between panes.
   Up / Down    Scroll the focused pane, or move its highlight.
   PgUp / PgDn  Scroll a page.
