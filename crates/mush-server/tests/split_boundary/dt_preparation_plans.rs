@@ -5451,10 +5451,12 @@ async fn dt_launch_refuses_what_the_field_cap_could_not_hold() -> TestResult {
 }
 
 /// Where doc 40 cut FR.3's story stands its first escort and the bystander it fires on, by
-/// ground: Ahuna Flank's cells (CF.6's), and Urvara Reach's the same offsets from its pad.
+/// ground: Ahuna Flank's cells (CF.6's), and Urvara Reach's matching east firing line west of
+/// the pad (`(228, 254)` sits in a `-117 cm` pit behind the `+120 cm` ridge at `(232, 254)`,
+/// which P2-TSC-11's surface terrain LOS check blocks, so the shooter stands on `(232, 254)`).
 fn fr3_cells(site: &str) -> ((i64, i64), (i64, i64)) {
     if site == "urvara_port" {
-        ((228, 254), (246, 254))
+        ((232, 254), (246, 254))
     } else {
         ((100, 126), (118, 126))
     }

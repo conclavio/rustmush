@@ -4693,7 +4693,7 @@ pub struct Arena {
     /// as has to be carried from the expiry that took it.
     pub held_losses: BTreeMap<(ObjId, ContactId), (i64, Designator)>,
     /// Target `ObjId` backing each pending [`Arena::held_losses`] entry so
-    /// [`Arena::settle_held_loss`] can retire the `(viewer, target)` track
+    /// `Arena::settle_held_loss` can retire the `(viewer, target)` track
     /// epoch and forget its provisional designator when the hysteresis window
     /// expires (P2-TSC-29).
     pub held_loss_targets: BTreeMap<(ObjId, ContactId), ObjId>,
