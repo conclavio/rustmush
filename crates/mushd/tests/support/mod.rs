@@ -1156,8 +1156,8 @@ fn opens_brief_sentence(line: &str) -> bool {
 
 /// Whether a trimmed terminal line is the reader's own traffic rather than
 /// anything the world said: the blank line, the typed echo (`VIEW BRIEF`), a
-/// sentinel line (every file's sentinel is a `zzq-…` word) and the parser's
-/// `Huh?` answering it.
+/// sentinel line (every file's sentinel is a `zzq-…` word, and so is the story
+/// kit's) and the parser's `Huh?` answering it.
 fn is_brief_traffic(line: &str) -> bool {
     line.is_empty()
         || line.eq_ignore_ascii_case("VIEW BRIEF")

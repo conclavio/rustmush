@@ -3134,6 +3134,10 @@ fn collect_lines(value: &Value, out: &mut Vec<String>) {
     }
 }
 
+/// What the centre says before it reads a report out
+/// (`tacsim::match_::report`): the first line of the answer to `SIM REPORT`.
+const REPORT_OPENS: &str = "Reading your report of match";
+
 /// **What a whole report ends on**: its tail's end line, which is the last thing
 /// the completion says.
 const REPORT_ENDS: [&str; 3] = [
@@ -3163,7 +3167,18 @@ async fn sim_report(term: &mut Term, line: &str) -> String {
         }
         term.send_line(SENTINEL).await;
         term.expect_after(mark, HUH).await;
-        report = strip_ansi(&term.seen[mark..]);
+        // The report, and nothing that was still in flight when it was asked
+        // for: the window opens at the mark, and a line the arena had told
+        // the pilot just before (`Locked on BW, 78% to hit.`) can land after
+        // it. Read as part of the report, that line made a report "name" a
+        // contact it does not name (one soak pass in fifty-four, doc 51 unit
+        // FL.3). The centre opens every report it reads out with one line of
+        // its own, so the report is the window from that line on.
+        let window = strip_ansi(&term.seen[mark..]);
+        report = match window.rfind(REPORT_OPENS) {
+            Some(at) => window[at..].to_owned(),
+            None => window,
+        };
         true
     })
     .await;

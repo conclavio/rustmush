@@ -25,8 +25,11 @@ use std::future::Future;
 
 use crate::wait::{STEP_TIMEOUT, wait_for, wait_until};
 
-/// A line the parser refuses, typed to mark the end of a reply.
-pub const SENTINEL: &str = "zzz-sentinel";
+/// A line the parser refuses, typed to mark the end of a reply. The `zzq-`
+/// opening is the mushd rig's convention: its readers that walk a reply line by
+/// line drop a line that opens so as the reader's own traffic, wherever the
+/// terminal's echo of it lands.
+pub const SENTINEL: &str = "zzq-sentinel";
 
 /// The parser's refusal: the sentinel's answer.
 pub const SENTINEL_REFUSAL: &str = "Huh?";
@@ -39,6 +42,9 @@ pub const BUSY: [&str; 2] = ["please retry in a moment", "control state unknown"
 
 /// The last line of `@arena/status`: the readout is whole once it has come.
 const STATUS_END: &str = "ledger writes awaiting";
+
+/// `@arena/status` with nothing on the board, which has no last line.
+const STATUS_EMPTY: &str = "No match is running.";
 
 /// **One line-mode session of a story**: what a barrier types on and reads
 /// from. A rig's terminal implements it over its own channel.
@@ -155,8 +161,28 @@ pub fn status_clock_seconds(status: &str, id: u64) -> Option<u64> {
     Some(minutes.parse::<u64>().ok()? * 60 + leading_number(seconds)?)
 }
 
+/// **`@arena/status`, read whole**: the readout ends on a line of its own
+/// (`ledger writes awaiting …`), so the read runs to that line and needs no
+/// sentinel behind it. One line a read, which matters to a wait that asks
+/// five times a second: the session's flood bucket refills at ten.
+///
+/// `Err` is what came instead: an empty board, or a busy answer.
+async fn arena_status(staff: &mut impl Session) -> Result<String, String> {
+    let mut needles = vec![STATUS_END, STATUS_EMPTY];
+    needles.extend(BUSY);
+    let mark = staff.mark();
+    staff.send_line("@arena/status").await;
+    let answered = staff.expect_one_of_after(mark, &needles).await;
+    let status = staff.seen_after(mark);
+    if answered == 0 {
+        Ok(status)
+    } else {
+        Err(status)
+    }
+}
+
 /// One number off match `id`'s row of `@arena/status`, read whole and asked
-/// again until the readout is complete and carries the row.
+/// again until the readout carries the row.
 async fn status_number(
     staff: &mut impl Session,
     id: u64,
@@ -167,10 +193,7 @@ async fn status_number(
         STEP_TIMEOUT,
         &format!("`@arena/status` to give match {id}'s {what}"),
         async || {
-            let status = ask_whole(staff, "@arena/status").await;
-            if !status.contains(STATUS_END) {
-                return Err(status);
-            }
+            let status = arena_status(staff).await?;
             read(&status, id).ok_or(status)
         },
     )
@@ -189,10 +212,7 @@ pub async fn the_match(staff: &mut impl Session) -> u64 {
         STEP_TIMEOUT,
         "`@arena/status` to have a match's row",
         async || {
-            let status = ask_whole(staff, "@arena/status").await;
-            if !status.contains(STATUS_END) {
-                return Err(status);
-            }
+            let status = arena_status(staff).await?;
             status_matches(&status).first().copied().ok_or(status)
         },
     )
@@ -317,11 +337,13 @@ mod tests {
     use super::*;
     use std::collections::VecDeque;
 
-    /// A scripted session: each typed line is answered from a queue.
+    /// A scripted session: each typed line is answered from a queue, and the
+    /// last answer again once the queue is empty.
     struct Script {
         seen: String,
         typed: Vec<String>,
         answers: VecDeque<String>,
+        last: String,
     }
 
     impl Script {
@@ -330,6 +352,7 @@ mod tests {
                 seen: String::new(),
                 typed: Vec::new(),
                 answers: answers.iter().map(|text| (*text).to_owned()).collect(),
+                last: String::new(),
             }
         }
     }
@@ -354,7 +377,10 @@ mod tests {
             } else if line == SENTINEL {
                 format!("{SENTINEL_REFUSAL}  (Type \"help\" for help.)")
             } else {
-                self.answers.pop_front().unwrap_or_default()
+                if let Some(next) = self.answers.pop_front() {
+                    self.last = next;
+                }
+                self.last.clone()
             };
             self.seen.push_str(line);
             self.seen.push('\n');
@@ -465,21 +491,19 @@ mod tests {
             term.typed,
             [
                 "@arena/status",
-                SENTINEL,
                 "@arena/tempo 4=5000",
                 "@arena/status",
-                SENTINEL,
                 "@arena/status",
-                SENTINEL,
                 "@arena/place #9=1,1",
-            ]
+            ],
+            "one line a readout, and the story's line after the wake"
         );
     }
 
     #[tokio::test(start_paused = true)]
     #[should_panic(expected = "to give match 3's frame count did not happen within 60s")]
     async fn a_match_with_no_row_fails_with_the_readout() {
-        let mut term = Script::new(&[]);
+        let mut term = Script::new(&[STATUS_EMPTY]);
         let _ = arena_frames(&mut term, 3).await;
     }
 }
