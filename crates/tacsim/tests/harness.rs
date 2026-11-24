@@ -9281,6 +9281,36 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
         // read four, `red-1` standing two at the release, and GC.2's
         // `c2653243` moved it back) — except `blue-1`'s standing at its
         // minute-one mark, three where M4.5's fight stood two.
+        //
+        // **Re-pinned by record (doc 43 rule #8), 2026-11-24 — the span reads
+        // `squads_per_side - 1`, 2, since `4fe9a513f`.** That commit (the
+        // security audit's Tier 1D arena hardening, PR #731, merged
+        // 2026-11-20) gates a lock's odds on a classified contact (HIGH-62),
+        // counts a jammed or destroyed part that is not an armament as offline
+        // (HIGH-63) and gives each unit and each side its own path-search
+        // budget (HIGH-65), and it never ran this lane, so the pins below went
+        // red on the next nightly. A first-parent bisect on conclav.dev from
+        // `fcd22557f` to `1004eff6e` names the merge, and the commit against
+        // its parent `a552bf28a` names itself: the parent reads 3, it reads 2.
+        // **Why, and why it is the fight and not a defect**: the three rules
+        // move who is hit when. The fight at the defaults fires 132 shots where
+        // it fired 153 and wrecks six hulls where it wrecked five, and it has
+        // still no end inside the window (131,500 ms). `red-1`'s commander's
+        // hull #100000 now stands at the 90,000 ms release, where doc 40 cut
+        // FR.5's fight had it a wreck holding its 71,500 ms order: `red-1`
+        // stands four at both its marks and all four are released, so no row
+        // of `red-1` holds an order at the read and no squad rests on a wreck
+        // alone. `blue-1` stands three at both its marks, as it did, by other
+        // hulls (#100005 where #100003 stood); `blue-2` stands three at its
+        // 91,500 ms mark, where four. So each commander holds its second and
+        // third squads, on standing machines: the span reads 2 with the wrecks
+        // counted and 2 with them skipped. Seven releases (red's four, blue's
+        // three), eight orders and the busiest minute, 3, as the script gives
+        // them. The span's definition and the release's are unchanged; only
+        // the fight at the defaults moved. Read at main `b0c0e6832`; the audit's
+        // Tier 2B (`884b1f4c5`) before it and Tier 2E (`02f74709b`, read at
+        // `c93d13cbf`) after it moved the arena lanes' baseline and none of
+        // these pins.
         if at_defaults {
             // **The fact pin of 16b cut AP.2, re-pinned by 17b cut M4.5**
             // (at 4bbcbdc, the reflex's fight: `(Some(Elimination { winner:
@@ -9295,39 +9325,40 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
                 "17b cut M4.5: at the defaults the ROM's fight has no end inside the window \
                  (neither side out) and the match runs to 131,500 ms"
             );
-            // `squads_per_side` since `5993ba20` (17b cut M4.5's
-            // `squads_per_side - 1`, re-pinned by record; see above).
+            // `squads_per_side - 1` since `4fe9a513f` (17b cut M4.5's figure
+            // again; `squads_per_side` from `5993ba20` to it; re-pinned by
+            // record, see above).
             assert_eq!(
-                command.span_max, squads_per_side,
-                "W8: the span read {} where a commander holds live orders on all three \
-                 squads at the read (one on a wreck alone: `blue-1` from `5993ba20`, `red-1` since \
-                 doc 40 cut FR.5; re-pinned by record, see above)",
+                command.span_max,
+                squads_per_side - 1,
+                "W8: the span read {} where each commander holds live orders on its second and \
+                 third squads at the read and no squad rests on a wreck alone (`blue-1` did from \
+                 `5993ba20`, `red-1` from doc 40 cut FR.5; neither since `4fe9a513f`; re-pinned by \
+                 record, see above)",
                 command.span_max
             );
-            // **The one squad that rests on a wreck** (17b cut M4.5's review,
-            // re-stated by record from `5993ba20`): the same join over the live
-            // orders standing hulls hold, the wrecks skipped, reads each
-            // commander's second and third squads, and the join with wrecks
-            // counted adds `blue-1` under blue's commander and nothing else.
+            // **No squad rests on a wreck** (17b cut M4.5's review, re-stated by
+            // record): the same join over the live orders standing hulls hold,
+            // the wrecks skipped, reads each commander's second and third
+            // squads, and the join with wrecks counted reads the same.
             // Held per commander, squad by squad, not only at the maximum.
             let standing = live_orders_by_issuer(&arena, &counts.ordered, Wrecks::Skipped);
             //
             // **Re-pinned by record (doc 43 rule #8) by doc 40 cut FR.5**, the round's one kernel
             // rebless (doc 40 §4a): `line_to` traces the wrecks the fire trace walks and a
             // jammed or damaged part takes its effect, so the lance fight at the defaults moves
-            // once more. The squad held by a wreck alone is now red's `red-1` under red's
-            // commander, where it was blue's `blue-1`; the span (3), the end (none, 131,500 ms)
-            // and the busiest minute stand. Read on conclav.dev, harness kind run 41848864284.
-            let mut wreck_held = standing.clone();
-            wreck_held
-                .entry(commanders.first().copied())
-                .or_default()
-                .insert("red-1".to_string());
+            // once more. The squad held by a wreck alone was then red's `red-1` under red's
+            // commander, where it had been blue's `blue-1`. Read on conclav.dev, harness kind
+            // run 41848864284.
+            //
+            // **Re-pinned by record, 2026-11-24, since `4fe9a513f`** (see above): `red-1`'s
+            // commander's hull stands at the release and is released with its squad, so the
+            // join with the wrecks counted adds nothing to the standing one.
             assert_eq!(
                 live_orders_by_issuer(&arena, &counts.ordered, Wrecks::Counted),
-                wreck_held,
-                "W8: at the defaults the span's squads rest on standing machines but `red-1`, \
-                 held by its wreck alone (re-pinned by record by doc 40 cut FR.5); standing: \
+                standing,
+                "W8: at the defaults every squad the span counts rests on a standing machine, \
+                 none on a wreck alone (re-pinned by record since `4fe9a513f`); standing: \
                  {standing:?}"
             );
             let standing_span = standing
@@ -9363,6 +9394,8 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
             // **Doc 40 cut FR.5 re-pins them by record** (the round's one kernel rebless, doc 40
             // §4a: `line_to` over wrecks and the component effects): `blue-1` stands three at
             // both marks, `red-1` four at 71,500 ms and three at the release.
+            // **Re-pinned by record, 2026-11-24, since `4fe9a513f`** (see above): `red-1`
+            // stands four at the release too, its commander's hull among them.
             assert_eq!(
                 (
                     stood(71_500, "blue-1", true),
@@ -9370,9 +9403,9 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
                     stood(71_500, "red-1", true),
                     stood(LANCE_RELEASE_MS, "red-1", false)
                 ),
-                (Some(3), Some(3), Some(4), Some(3)),
+                (Some(3), Some(3), Some(4), Some(4)),
                 "at the defaults blue-1 stands three at 71,500 ms and three at {LANCE_RELEASE_MS} \
-                 ms, red-1 four and three (re-pinned by record by doc 40 cut FR.5): {marks:?}"
+                 ms, red-1 four and four (re-pinned by record since `4fe9a513f`): {marks:?}"
             );
             // The sides whose first squad had a standing machine at the release.
             let stood_at_release: Vec<(ObjId, &str)> = commanders
@@ -9415,7 +9448,8 @@ fn measure_lance(knobs: &Knobs, lance: &LanceKnobs) -> LanceReport {
             // M4.5; the reflex's fight's three lines, red's, were held by the
             // `>= 1` and the per-side checks above): one `order_released` line
             // for every machine each first squad stood at the release — five
-            // at the defaults, red's three and blue's two, held by the fact
+            // at the defaults then, red's three and blue's two; seven since
+            // `4fe9a513f`, red's four and blue's three — held by the fact
             // pins above.
             let standing_at_release: usize = ["red-1", "blue-1"]
                 .into_iter()
