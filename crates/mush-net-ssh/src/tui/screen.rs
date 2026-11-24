@@ -59,8 +59,8 @@ pub const RESERVED_EXIT_KEYS: [char; 7] = ['n', 'e', 's', 'w', 'u', 'd', 'o'];
 /// The keys every screen inherits and may not rebind (§7 of the plan):
 /// the digits, the mode triggers, the palette, help, and the pane-jump
 /// letters.
-pub const GLOBAL_KEYS: [char; 16] = [
-    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '"', ':', ';', '\\', '/', '?',
+pub const GLOBAL_KEYS: [char; 17] = [
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '"', ':', ';', '\\', '/', '?', '+',
 ];
 /// `g` / `G` jump a pane to its top and bottom in nav mode.
 pub const JUMP_KEYS: [char; 2] = ['g', 'G'];

@@ -72,7 +72,8 @@ Nav mode (the box is closed):
                — a mail message, an action, a channel — the box opens with
                that row's command ready (`@mail 3`, `+act brace`, `pub `).
   " : ; \      Open the box with that speech trigger already typed.
-  /            Open the box with the command palette (below).
+  + /          Open the box with `+` or `/` already typed, ready for a
+               `+command` or a slash command. (Ctrl-K is the palette.)
   Tab / Shift-Tab   Move focus between panes.
   Up / Down    Scroll the focused pane, or move its highlight.
   PgUp / PgDn  Scroll a page.
@@ -91,7 +92,6 @@ Input mode (the box is open):
   Esc          Back to nav mode, keeping the line as a draft for next time.
   Left/Right, Home/End, Ctrl-A/E, Backspace, Delete, Ctrl-W (kill word),
   Ctrl-U (kill to start), Up/Down (history), Tab (complete a command name).
-  /            On an empty box, opens the command palette.
   Alt+key      The key's nav action (Alt+0 … Alt+9, Alt+? help, Alt+letter).
 
 From either mode:
@@ -132,7 +132,7 @@ as you left it (`help cockpit`, "The picture").
 
 ## The palette
 
-`/` (or Ctrl-K) opens the command palette above the input box: every
+Ctrl-K opens the command palette above the input box: every
 command you may use, your channel aliases and the room's exits, filtered as
 you type after the slash. Enter (or Tab) puts the highlighted entry in the
 box — a game command's usage line, ready to edit — and Esc closes the
