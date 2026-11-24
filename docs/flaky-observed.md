@@ -4,7 +4,7 @@
 
 # Flaky tests observed
 
-*Generated 2026-11-24 01:14 UTC. What was seen, by the rule of [flaky-tests.md](flaky-tests.md), which stays the hand-written record of causes. A test here whose Record is `none` is the work queue. The columns: Class and Known list are the list's (crates/mush-contract-tests/flaky-known.toml); Record is the row of flaky-tests.md that names the test; 14 d and 30 d count the runs or passes in which the test failed or passed on retry; Soak is failed passes over passes; a Why of branches alone is a lead to read, not a finding.*
+*Generated 2026-11-24 04:38 UTC. What was seen, by the rule of [flaky-tests.md](flaky-tests.md), which stays the hand-written record of causes. A test here whose Record is `none` is the work queue. The columns: Class and Known list are the list's (crates/mush-contract-tests/flaky-known.toml); Record is the row of flaky-tests.md that names the test; 14 d and 30 d count the runs or passes in which the test failed or passed on retry; Soak is failed passes over passes; a Why of branches alone is a lead to read, not a finding.*
 
 
 Sources: ci.yml, the last 14 day(s); 765 run(s) listed, 108 with reports read (the shards with a failed job).
@@ -58,11 +58,11 @@ Sources: ci.yml, the last 14 day(s); 765 run(s) listed, 108 with reports read (t
 | `restart_survival::server_self_exit_auto_restarts_without_dropping_players` | `mush-gateway::split_halves` |  | **NOT LISTED** | none | 2026-11-23 | 2026-11-23 | 1 | 1 |  | same head x1 | [45277135577 a1 rest-gateway](https://github.com/conclavio/rustmush/actions/runs/45277135577/attempts/1) |
 | `boot_parity::stop_ledger_archive_joins_the_pass_rather_than_detaching_it` | `mush-server::split_boundary` | clock | row 10, to 2026-12-07 | row 10 | 2026-11-20 | 2026-11-20 | 1 | 1 |  | same head x1 | [44713758290 a1 rest-server-boundary](https://github.com/conclavio/rustmush/actions/runs/44713758290/attempts/1) |
 | `ipc_teardown::wedged_gateway_is_torn_down_by_write_timeout` | `mush-server::split_boundary` |  | **NOT LISTED** | row 11 | 2026-11-16 | 2026-11-16 | 1 | 1 |  | same head x1 | [43794967993 a1 rest-server-boundary](https://github.com/conclavio/rustmush/actions/runs/43794967993/attempts/1) |
-| `sim_rematch::two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_spec` | `mushd::sim_lenses` | unknown | row 16, to 2026-12-07 | row 16 | 2026-11-13 | 2026-11-13 | 1 | 1 |  | same head x1 | [43515376467 a1 rest-mushd](https://github.com/conclavio/rustmush/actions/runs/43515376467/attempts/1) |
+| `sim_rematch::two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_spec` | `mushd::sim_lenses` |  | **NOT LISTED** | row 16 | 2026-11-13 | 2026-11-13 | 1 | 1 |  | same head x1 | [43515376467 a1 rest-mushd](https://github.com/conclavio/rustmush/actions/runs/43515376467/attempts/1) |
 
 69 more test(s) failed on one branch or one head only and are that branch's own by the rule; `--run <id>` names them for a run.
 
-**The known list:** 34 row(s), 5 seen in these sources, 0 past expiry.
+**The known list:** 31 row(s), 4 seen in these sources, 0 past expiry.
 
 Listed and not seen (no evidence here to renew on):
 
@@ -70,8 +70,6 @@ Listed and not seen (no evidence here to renew on):
 - `mush-gateway::split_halves` `restart_survival::client_disconnect_during_gap_leaves_survivor_intact`, process, expires 2026-12-07
 - `mush-gateway::split_halves` `gateway_generations::a_drains_while_b_serves_and_every_session_is_warned_then_moved`, process, expires 2026-12-07
 - `mush-gateway::split_halves` `server_unit::a_gateway_started_before_its_server_serves_the_gap_then_heals`, process, expires 2026-12-07
-- `mushd::sim_lenses` `observer_rule::nothing_of_the_shooting_crosses_to_the_world_or_to_the_target`, clock, expires 2026-12-07
-- `mushd::sim_lenses` `observer_rule::nothing_about_an_undetected_unit_crosses_on_any_surface`, clock, expires 2026-12-07
 - `mushd::world_journeys` `web_e2e::spa_if_built_and_healthz_are_served`, process, expires 2026-12-07
 - `mush-gateway::split_halves` `arena_custody_split::the_arena_surface_survives_the_split_and_a_server_restart`, process, expires 2026-12-07
 - `mush-gateway::split_halves` `arena_custody_split::a_pilot_in_a_pod_across_a_boarding_crash_reads_the_hatch_line`, process, expires 2026-12-07

@@ -36,7 +36,7 @@
 
 use crate::support;
 
-use support::{wait_arena_seconds, wait_until};
+use support::{STEP_TIMEOUT, wait_arena_seconds, wait_until};
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -146,6 +146,10 @@ fn tacsim_config() -> tacsim::TacsimConfig {
     // here, and nothing in this file reads whether it did. What the controller
     // does with a released seat and an AI-filled lobby is `sim_reflex.rs`'s.
     cfg.arena.reflex.decide_ms = u32::MAX;
+    // Doc 51 unit FL.3: no assertion here leans on a draw, so the seed is a
+    // fresh one, printed. A failure that turns out to depend on the dice (the
+    // stagger above is seeded) names the seed that replays it.
+    cfg.arena.seed = Some(support::story_seed(None));
     cfg
 }
 
@@ -575,7 +579,7 @@ async fn a_match_takes_custody_of_two_units_and_gives_them_back() {
         "is running on",
     )
     .await;
-    wait_until(Duration::from_secs(10), "the markers to land", async || {
+    wait_until(STEP_TIMEOUT, "the markers to land", async || {
         record(&server.store, RED)
             .await
             .is_some_and(|document| document.get("deployed").is_some())
@@ -650,18 +654,14 @@ async fn a_match_takes_custody_of_two_units_and_gives_them_back() {
 
     // --- check-in --------------------------------------------------------
     say(&mut term, "@arena/abort", "is stopping").await;
-    wait_until(
-        Duration::from_secs(20),
-        "the check-in to land",
-        async || {
-            record(&server.store, RED)
+    wait_until(STEP_TIMEOUT, "the check-in to land", async || {
+        record(&server.store, RED)
+            .await
+            .is_some_and(|document| document.get("deployed").is_none())
+            && record(&server.store, BLUE)
                 .await
                 .is_some_and(|document| document.get("deployed").is_none())
-                && record(&server.store, BLUE)
-                    .await
-                    .is_some_and(|document| document.get("deployed").is_none())
-        },
-    )
+    })
     .await;
 
     // (1) The unit nothing happened to is byte-identical, record and placement
@@ -701,16 +701,12 @@ async fn a_match_takes_custody_of_two_units_and_gives_them_back() {
     // two `position_summary` rows for the red tank agree (it had stopped), and the
     // placement IS the last one: a stopped tank's final pose is its last summary,
     // and the check-in writes the pose the arena returned at `Ended`.
-    wait_until(
-        Duration::from_secs(20),
-        "the flushed black box",
-        async || {
-            ledger_events(&server.store, 1)
-                .await
-                .iter()
-                .any(|event| event.get("kind").and_then(Value::as_str) == Some("aborted"))
-        },
-    )
+    wait_until(STEP_TIMEOUT, "the flushed black box", async || {
+        ledger_events(&server.store, 1)
+            .await
+            .iter()
+            .any(|event| event.get("kind").and_then(Value::as_str) == Some("aborted"))
+    })
     .await;
     let summaries = summaries_of(&ledger_events(&server.store, 1).await, RED);
     let Some(last) = summaries.last() else {
@@ -763,7 +759,7 @@ async fn an_injected_panic_voids_the_match_and_the_world_keeps_serving() {
         "is running on",
     )
     .await;
-    wait_until(Duration::from_secs(10), "the markers to land", async || {
+    wait_until(STEP_TIMEOUT, "the markers to land", async || {
         record(&server.store, RED)
             .await
             .is_some_and(|document| document.get("deployed").is_some())
@@ -774,7 +770,7 @@ async fn an_injected_panic_voids_the_match_and_the_world_keeps_serving() {
 
     // The match is voided and its units are checked back in — restored from
     // their check-out snapshots, with no arena-derived cell committed.
-    wait_until(Duration::from_secs(20), "the void check-in", async || {
+    wait_until(STEP_TIMEOUT, "the void check-in", async || {
         record(&server.store, RED)
             .await
             .is_some_and(|document| document.get("deployed").is_none())
@@ -943,7 +939,7 @@ async fn start_and_wait_for_the_snapshot(term: &mut Term, store: &Arc<dyn Object
     )
     .await;
     wait_until(
-        Duration::from_secs(10),
+        STEP_TIMEOUT,
         "the markers and the two documents",
         async || {
             record(store, RED)
@@ -1020,7 +1016,7 @@ async fn a_restart_mid_match_resumes_the_match_and_the_units_stay_deployed() {
 
     // (3) An abort ends it the ordinary way.
     say(&mut term2, "@arena/abort 1", "is stopping").await;
-    wait_until(Duration::from_secs(20), "the result", async || {
+    wait_until(STEP_TIMEOUT, "the result", async || {
         running_document(&store, "tacsim:match:1").await.is_some()
     })
     .await;
@@ -1039,7 +1035,7 @@ async fn a_restart_mid_match_resumes_the_match_and_the_units_stay_deployed() {
             .is_some_and(|chunks| chunks >= 1),
         "{result}"
     );
-    wait_until(Duration::from_secs(10), "the markers to go", async || {
+    wait_until(STEP_TIMEOUT, "the markers to go", async || {
         record(&store, RED)
             .await
             .is_some_and(|document| document.get("deployed").is_none())
@@ -1302,7 +1298,7 @@ async fn af2_the_two_documents_exist_while_a_match_runs_and_go_with_its_result()
     )
     .await;
     wait_until(
-        Duration::from_secs(10),
+        STEP_TIMEOUT,
         "the snapshot and the live record",
         async || {
             running_document(&server.store, "tacsim:snapshot:1")
@@ -1333,7 +1329,7 @@ async fn af2_the_two_documents_exist_while_a_match_runs_and_go_with_its_result()
 
     say(&mut term, "@arena/abort 1", "is stopping").await;
     wait_until(
-        Duration::from_secs(20),
+        STEP_TIMEOUT,
         "the result, and the two documents gone",
         async || {
             running_document(&server.store, "tacsim:match:1")

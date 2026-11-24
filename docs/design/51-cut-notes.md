@@ -445,6 +445,265 @@ below).
 - **A hard limit a cell** (above), and **a random phase and seed** (FL.3, FL.4).
 - **The `redis` group in the soak.** One shared instance cannot serve six cells (doc 51 §4.1).
 
+## FL.3
+
+`sim_lenses`: figures, seed, barriers. Built 2026-11-23 on `b0c0e6832` (main with #774, #775 and
+#777 to #783 merged), beside FL.4. It adds three modules to `mush-storykit`, one field and one
+function to tacsim (the one product change, ruling Q-51-2), and converts mushd's `sim_lenses`
+stories. Three tests leave `flaky-known.toml`.
+
+**The suite's soak rate.** `scripts/soak.sh` on conclav.dev, six cells of four cores, sixteen
+rounds each, `sim_lenses` alone (97 tests), no retry:
+
+| | Passes | Failed passes | Tests that failed | A pass, wall | A pass, summed test time |
+|---|---:|---:|---|---:|---:|
+| Before, main `b0c0e6832` | 96 | 3 | `nothing_of_the_shooting…` twice, `the_switch_names_a_contact…` once | 286 s | 1,075 s |
+| After, this unit | 96 | 0 | none | 263 s | 965 s |
+
+Both soaks ran beside other sessions' builds on the box (load 20 to 35 of 32 cores). The "after"
+row is the third soak of the converted suite. The first two were stopped on failures in one
+story, `nothing_about_an_undetected_unit…`, and what they found is under Tests.
+
+**Merged with main before the pull request.** Both rows above are at `b0c0e6832`. Main then
+took FL.4 (#784), the P2-Tier 2E security pass over the arena (#785), #786 and #787. The unit was
+merged with main `9de381e74` and soaked again there, eight rounds a cell: 48 passes, none
+failed, 263 s a pass and 967 s of summed test time. The guards under Tests ran again on the
+merged tree.
+
+**Survey.** What the code said before anything was built, where it bears on the design:
+
+- **Every story file is its own rig.** Each of the fifteen files boots its own server from its
+  own `tacsim_config()` and carries private copies of `say`, `ask` and `ask_whole`; they share
+  one `Term` in `tests/support/mod.rs`. The kit has no `Term` until FL.7 and FL.8, so a barrier
+  needs a seam to type and read through (Built, `Session`).
+- **`shipped.rs` was already `Figures` in small.** Doc 49 cut CC.0 gave the lenses a reader of a
+  mount's load and burst off `tacsim::builtin_definitions()`. It carried no cycle, "because no
+  lens asserts one"; rows 3 and 9 were two lenses waiting on one.
+- **The hit roll's label is the shot's number and nothing else** (`hit:<shot_seq>`,
+  `arena/rng.rs`; the number is the arena's own counter, taken when a shot is accepted). So a
+  pinned seed gives each shot one roll whatever pulse it fell in, as doc 51 §3.2 argues.
+- **No shot is certain by the rules.** The resolution table caps a chance at 950 per mille and
+  floors it at 10. Doc 51 §3.2's second tool, `fig.sure_range`, "a range at which the rules'
+  chance is the whole die", does not exist to build. Its third tool does the work instead: a
+  roll under the floor lands at any odds, and a seed can be chosen for it.
+- **`ArenaConfig` is carried whole in the arena snapshot**, and `snapshot.rs` says a key added
+  to it is a change of the snapshot's shape, which moves the format number and the structural
+  pin (`af1_the_snapshot_shape_is_pinned`). The brief said the pins must not move.
+- **61 raw waits in the fifteen story files.** Thirty-eight are in the private readers (`say`,
+  `ask_whole`, the web-socket drains), which are FL.8's. Twenty-three were in stories.
+- **Row 16 had a record nobody had read.** The one failed run's log prints the loser's whole
+  unit record (Rows, below).
+
+**Built.**
+
+- **The seed** (tacsim, the product change). `ArenaConfig::seed: Option<u64>`, `None` by default,
+  and `match_::opening_seed(pinned, match_id, world_now)`, which `match_::start` calls where it
+  called `seed_for`: the pinned seed when there is one, `seed_for` otherwise. Sixteen lines in
+  `config.rs` and twenty-four in `match_/mod.rs`, comments included.
+  - **Live play is untouched.** With none pinned the seed is still 64 bits from `OsRng`
+    (EXT-P2-11). `seed_for`, `MatchRecord::seed` and `FieldConfig::seed` are not edited.
+  - **No file, command or player sets it.** `[tacsim.arena]` refuses an unknown key and
+    `mush_server::config_ext` writes `None`; `fl3_no_config_key_pins_a_match_seed` holds both.
+    Only code that builds a `TacsimConfig` by hand, which is a test rig, can pin one.
+  - **It is not a key of the encoded block.** The field is `serde(skip)`, so a snapshot carries
+    no `seed` key, its shape and format number stand, and a document that names one is refused
+    (`fl3_the_pinned_seed_is_no_key_of_the_encoded_arena_block`). A resumed arena reads its seed
+    from its own state, as before.
+- **`mush_storykit::Figures`** (`figures.rs`), built from the story's own `TacsimConfig`:
+  - `mount(unit, component)`: the load, burst, cycle, muzzle speed and reach, with `full()` and
+    `left(n)` as the cockpit prints a row. It reads the catalog that config builds, the shipped
+    one or the fielded catalog over the config's own packs (`observer_rule` adds two).
+  - `pulse()`, `pulse_under(floor)`; `after_one_round(mount)`, `crossing(unit, meters)` and
+    `after_reclaim()`, each a limit under the kit's load factor; `sensor_pass_seconds()`.
+  - The dice of a seed: `hit_roll`, `sure_hit` (the roll is under the table's floor),
+    `sure_miss`, `harms_a_part` (doc 36 cut GC.2's draw against the unit's chances), and
+    `seed_where(from, predicate)`, the first seed that gives the dice a story asks for.
+  - `story_seed(pinned)`: the pinned seed, or a fresh one printed with the line that replays it;
+    `STORY_SEED=<n>` in the environment overrides both.
+- **`mush_storykit::Odds`** (`odds.rs`): `false_failure()`, the binomial's lower tail, and
+  `assert_false_failure_below(bar)`, which fails with the arithmetic and the number of tries
+  that would meet the bar. `PULL_REQUEST_BAR` is ruling Q-51-3's one in 1,000,000.
+- **The barriers** (`barrier.rs`), over `trait Session` (a mark, a line, a wait for one of
+  several needles, the text after a mark), which mushd's `Term` implements:
+  - `settled`, `ask_whole`;
+  - `arena_wake`, `arena_seconds`, `arena_frames`, `the_match`, over one parser of
+    `@arena/status`'s row that undoes the terminal's wrapping. The readout is read to its own
+    last line, one line a poll;
+  - `at_one_wake(staff, id, floor_ms, send)`, with `set_floor` and `lift_floor`.
+- **`wait_for`** (`wait.rs`): `wait_until` for a wait that reads something. Its failure prints
+  what it last read.
+- **mushd's rig** (`tests/support/mod.rs`): the kit's re-exports; the three chosen seeds as
+  numbers (`FIRST_SHOT_LANDS`, `FIRST_TWO_SHOTS_LAND`, `A_CLEAN_DUEL`) and the two assertions
+  that hold a story's seed to its promise; `Term::room_for(lines)`, a wait for the session's
+  flood bucket on the server's own bucket type and figures. `wait_arena_seconds` and
+  `arena_clock_seconds` are now two lines over the kit, and `shipped.rs` is one.
+
+**The stories.** Every rig that starts a match pins a seed: a chosen one where an assertion
+leans on a roll, a fresh printed one elsewhere.
+
+| File | What changed |
+|---|---|
+| `sim_range` | Row 9. One round on `FIRST_SHOT_LANDS` in place of "fire until one lands, twenty at most"; the 21-s literal is `after_one_round`. |
+| `observer_rule` | Rows 3, 4 and 13. `o3`: as `sim_range`. `ae2`: one missile in phase 1; `ae2_frames` and the hand-built wake sequence are `at_one_wake`. `i3`: its two back-to-back lines go through `at_one_wake` too, its four 1-s sleeps are `arena_seconds` at the sensors' own cadence, and its 1.5-s sleep is the round's flight on the arena's clock and `settled`. The shooting story: each round is typed until the cockpit takes it, inside the cannon's cycle, and `SCAN` is read whole. The four flood-bucket sleeps are `room_for`. `o1_drain` is `settled`. The catch-up's 90-s literal is `crossing`. |
+| `sim_rematch` | Row 16. The duel on `A_CLEAN_DUEL`; `fight_to_the_end` fires the magazine at most (it was a literal thirty) with no sleep; `easting_m` and `board_again` wait through the kit. |
+| `arena_story` | The same duel and seed. The sixteen reads 300 ms apart that decided whether a round "went nowhere" are a wait for the arena's own answer. |
+| `sim_units` | Both locks are waited for, both guns fire, and the hit is waited for inside one cycle, on `FIRST_TWO_SHOTS_LAND`. It was forty passes with an 800-ms sleep, "for an outcome that is a draw". |
+| `sim_solo` | Two "thirty passes, 400 ms apart" loops wait for their event under the step limit. |
+| `sim_weapons` | Pinned. "One of the burst lands" states its odds with `Odds`, at the chance the cockpit gives. |
+| `sim_cockpit`, `sim_lobby` | One poll loop and one fixed sleep before an `expect` that already waited. |
+| `arena_custody` | Ten event waits bounded by literal 10 and 20 s take the rig's `STEP_TIMEOUT` (Divergences, 6). |
+| `sim_net`, `sim_reflex` | A fresh printed seed; nothing else. |
+
+**The counts.**
+
+| | Before | After |
+|---|---:|---:|
+| Raw waits in `sim_lenses` story files (`wait_budget`) | 61 | 42 |
+| mushd, all story files (`wait_budget/mushd.txt`) | 124 | 105 |
+| Wait sites under `crates/*/tests/` (`scripts/wait_audit.py`) | 615 in 104 files | 597 in 103 |
+| `Duration::from_secs` and `from_millis` literals in `sim_lenses` | 99 | 67 |
+
+`wait_budget` was re-blessed down by record: seven rows fell and `sim_lobby`'s is gone. What is
+left of the 42: thirty-eight in the private readers, two `@arena/place` retries on a busy
+answer, and the two sleeps of Not built.
+
+**Rows.**
+
+- **Rows 3 and 9** were fixed by hand in #764 and #765 (a literal 21 s). They are fixed by class
+  here: no literal, and no second round to wait a cycle for.
+- **Row 4.** (a) is closed by the seed, not by the 60 m of #765: the first missile lands at any
+  range. (b) is `at_one_wake`.
+- **Row 13 is re-described: not clock.** `nothing_of_the_shooting…` had a dice cause (two rounds
+  fired, one hit needed: its `timeout waiting for "Hit on the "`) and a stream cause (`SCAN`
+  parsed after a needle read that the second round's own outcome line could satisfy). The soak
+  of main caught each once. `nothing_about_an_undetected_unit…` was never caught on main, in
+  CI's record or in the soak. It was stream too: two reads that an arena notice in flight could
+  spoil (the report's window, the classification wait), behind four hand-written sleeps. Taking
+  the sleeps out is what showed them (Tests).
+- **Row 16 is re-described: dice.** The failed run's record shows the loser eliminated at 43 s
+  with its hull and turret standing, the turret at 10 of 150 inside after three hits, and every
+  part intact. Two survivable turret hits each jammed one of the turret's two guns (doc 36 cut
+  GC.2, one chance in twenty a hit), a side with no gun left is out (16b cut AP.2), and the sim
+  center's check-in returns parts unjammed. `damage.rs`' own tests prove each step. It is a
+  reading of the record and the code, not a reproduction: the story failed this way once in the
+  1,000 CI runs the record was collected from.
+- **Row 19 is new**: `the_switch_names_a_contact…`, one soak pass of main, a stream fault, fixed.
+
+**Tests.** All on conclav.dev, in clones of `b0c0e6832` with this unit's patch.
+
+- `mush-storykit`: 37 unit tests and 4 doc tests.
+- tacsim: `fl3_a_pinned_seed_opens_every_match_and_none_keeps_the_os_draw`,
+  `fl3_the_pinned_seed_is_no_key_of_the_encoded_arena_block`, and
+  `af1_the_snapshot_shape_is_pinned` with its neighbors, unmoved. mush-server:
+  `fl3_no_config_key_pins_a_match_seed`.
+- `sim_lenses` whole, one cell's shape (four cores, four threads, no retry): 97 of 97, 279 s.
+- mushd, every binary (`cargo nextest run -p mushd`, eight threads, no retry): 261 run, 261
+  passed, 1 skipped, as at FL.1.
+- **A stress run found a hole in the first conversion.** Thirty-two duel stories at once on
+  eight cores: the cockpit answers `Firing cannon.` off its last frame, which under that load was
+  seconds old, so it accepted 24 `FIRE`s in a row; the loop counted the magazine spent after one
+  real shot and the story timed out. Main's loop had the same hole behind a 400-ms sleep. The
+  three shooting loops now count a round when the arena has taken it (the magazine's row moves)
+  and type it again when the arena says `FIRE cannon refused`. Sixteen of sixteen passed under
+  the same load afterwards.
+- **The first two soaks of the converted suite failed 3 passes in 66**, every one in
+  `nothing_about_an_undetected_unit…`, which had not failed in main's 96. Each was stopped and
+  fixed; the soak in the table above is the run after. That story's four sleeps "for the flood
+  bucket" had been giving its reads time to settle, and without them three reads showed what
+  they were:
+  - The rig's line readers drop a sentinel's echo only when the word opens `zzq-`, which is why
+    six files' sentinels are `zzq-…` words. The kit's was not, and `observer_rule` now types the
+    kit's, so an echo that landed inside a brief read as a stray line. The kit's sentinel is
+    `zzq-sentinel`.
+  - `SIM REPORT`'s read window opens at its mark. With the story's hand-written sleeps gone, a
+    lock notice still in flight (`Locked on BW, 78% to hit.`) landed inside it and was read as
+    the report naming a contact. `sim_report` now returns the window from the center's own
+    opening line on. Main has the same window; its sleeps hid it.
+  - The wait for the sensor to classify its contact read the word `blue` anywhere in the
+    `CONTACTS` window, and the arena's `identified` notice carries it: landing behind a row that
+    still read `X1`, it ended the wait a frame early (one pass in twelve of the second soak).
+    The story's own comment warns of exactly this read. The wait now reads the row, and the
+    notice is waited for where it was looked for. Main has this one unchanged.
+  - Found on the way: a status wait that asks five times a second, typing a line and a sentinel
+    each time, types at the flood bucket's refill rate. The kit reads `@arena/status` to its own
+    last line, one line a poll, as the rig did.
+  - Between the soaks, the two row-13 stories and their neighbors ran 24 invocations side by
+    side: 144 of 144 after the first soak's fixes, 216 of 216 after the second's.
+- **The duel's length depends on the seed.** Sixteen clean seeds, both duel stories each: 74 to
+  178 s for `sim_rematch`, 101 to 176 s for `arena_story`. `A_CLEAN_DUEL` is the shortest pair
+  (74 and 106 s; main's random seeds average 127 and 136 s).
+- `cargo fmt --all --check`; clippy with `-D warnings` over tacsim, mush-server, mush-storykit,
+  mushd and mush-contract-tests, every target; rustdoc over the workspace with
+  `--document-private-items`, and over the kit without; `mush-contract-tests` whole.
+
+**Divergences.**
+
+1. **`Figures` is keyed by unit and mount, and a round's limit takes no range.** Doc 51 §3.1
+   sketches `fig.cycle("cannon")` and `fig.after_one_round("cannon", range_m)`. A mount belongs
+   to a unit, as `shipped::mount` already had it. `after_one_round(mount)` uses the mount's whole
+   reach for the flight, so a story restates no distance either; it is a limit, and the wait
+   returns when the cockpit says ready. For the stock cannon it comes to 36.4 s where the literal
+   was 21 s: doc 51 §3.1's formula (cycle, flight, two pulses) under the load factor of two, not
+   a number picked to pass.
+2. **The seeds are numbers in the rig, checked, not searched for at boot.** `seed_where` finds
+   them, but finding one binds a second catalog, about 3 s a test in a debug build, in every test
+   of a file that pins. The rig holds the three numbers; a story that leans on one asserts it
+   against the content before it spends a round, and that failure names the seed to pin instead.
+3. **A pinned seed opens every match of the world**, as `FieldConfig::seed` does every field. Two
+   matches in one story (`sim_rematch`) draw the same dice. A pinned `0` opens on `1`.
+4. **`at_one_wake` takes the floor and a closure, and is not exact.** The two lines of row 4b
+   come from two sessions, so the helper cannot take a list of lines. It reads the frame count,
+   sets the floor (which pulls a wake in), waits for the count to pass the reading, and runs the
+   closure. That leans on the arena task taking the floor before the next round trip of a
+   session returns, which a floor of five seconds makes safe in practice and nothing proves. An
+   exact version waits for a floored wake it has seen and costs up to one floor a use.
+5. **No blanket pacing of a terminal.** The first build charged every line to a copy of the
+   flood bucket and waited when it ran dry. That cost about 3 s a test. `Term` now only keeps
+   count, and the four places that typed a battery wait for the bucket's room.
+6. **Ten bounds grew, and one shrank.** `arena_custody`'s ten event waits were bounded by 10 and
+   20 s, numbers chosen at the call. Doc 51 §3.7 says a bound on an event is the rig's one
+   limit, so they are `STEP_TIMEOUT` (60 s). None was failing and none was changed to make a
+   test pass. The catch-up's 90 s became the greater of `crossing` (57 s) and `STEP_TIMEOUT`.
+7. **A story that leans on no roll gets a fresh seed from the rig**, printed, where doc 51 §4.1
+   has the soak supply one. `scripts/soak.sh` is unchanged: every run prints its seed, a soak
+   pass included.
+8. **Three stream fixes that are FL.8's kind.** `SCAN` read whole, row 19's wait for the lock's
+   own line, and `sim_report` returning the report alone. The soaks named all three in this
+   suite, so they are fixed here. The other files' copies of `sim_report` have the same window.
+9. **`observer_rule`'s sentinel word is the kit's, and the kit's opens `zzq-`.** Its lenses strip
+   the sentinel's echo from a transcript, `settled` types the kit's word, and the rig's line
+   readers know a sentinel by that opening.
+10. **`Odds` is used once**, in `sim_weapons`. Everywhere else a seed made the outcome certain,
+    which doc 51 §3.2 prefers. FL.5 is its next user.
+11. **The kit's `clippy::panic` count is 16, from 2** (`restriction_lints`' record): the
+    failures of `Figures` and `Odds` are a story's premise not holding.
+
+**Not built.**
+
+- **`after_tick`**, which doc 51 gives to FL.8. Two sleeps of 2.5 s wait for "two more boarding
+  ticks" after a restart (`af3_…`, `a_restart_mid_match_through_the_lobby…`) and are left.
+- **The private readers**: 38 raw waits, FL.8's. The kit's `ask_whole` types a line again on a
+  busy answer as the twelve copies do, and shares their one hazard: the first try's sentinel is
+  still answered, and that `Huh?` can end the second try's read early. FL.8's `Term` should count
+  answers.
+- **The web-socket drains** of the mind feed (`m5_drain`, quiet and most spans), FL.9's kind.
+- **Two assertions that a transcript took under 150 s** (`sim_solo`, `sim_weapons`). They are
+  about run time, doc 43's, and are not waits.
+- **The carried rows** for `arena_story::two_pilots_walk_in…` and `sim_reflex::*`. The duel story
+  got row 16's fix; its row has no failure on record and is left for the soak's week.
+- **The literal-span counter** is still a stub (FL.9).
+- **A reproduction of row 16.** The seed tool makes one possible (a seed whose survivable turret
+  hits both jam); it needs the facet draws read too, and was not done.
+
+**For the owner.**
+
+- **Q-FL3-1.** `arena_custody`'s ten event bounds went from 10 and 20 s to the rig's 60 s
+  (Divergences, 6). Default: keep, as doc 51 §3.7 reads.
+- **Q-FL3-2.** A sim-center duel can end with the loser disarmed by two jams, and its record then
+  reads every part intact (row 16). 16c's T-101 already notes that a disarmed loser's record
+  contradicts its end. Whether the check-in should say what disarmed it is a product call.
+  Default: no change here; the story no longer meets it.
+
 ## FL.4
 
 `commerce_composition`: the boot instant. Built 2026-11-23 on `b0c0e6832` (main with #783 merged). It adds two modules

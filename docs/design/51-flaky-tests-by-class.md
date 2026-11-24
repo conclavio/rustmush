@@ -680,6 +680,12 @@ pull request.
 cut both"). FL.3 to FL.10 stay a sketch: none is cut, and each waits for a further word from the
 owner.
 
+**FL.3 was cut on 2026-11-23 and is built.** The owner's word to start it was the cut. What it
+built, what it measured and where it differs from this section are in
+[51-cut-notes.md](51-cut-notes.md), under FL.3. In short: the suite's soak rate went from 3 failed
+passes in 96 to none in 96; rows 3, 4, 9, 13 and 16 are closed; `Figures`, `Odds` and the barriers
+are in `mush-storykit`; and `ArenaConfig::seed` is the one product change.
+
 **FL.4 is cut and built** (2026-11-23): the owner started its session. Its row below is as it
 was sketched; [the cut note](51-cut-notes.md) says where the build differs.
 
@@ -690,7 +696,7 @@ for the suite. FL.0 is this document and its script, merged as #771.
 |---|---|---|---|---:|
 | **FL.1 the ratchet** | `wait_budget` at today's counts (raw waits and wall-clock reads; the literal-span counter is stubbed); the `mush-storykit` crate with `wait_until`, `STEP_TIMEOUT`, `LOAD_FACTOR` and `StoryBudget` moved in from mushd's rig | mush-contract-tests, new mush-storykit, mushd tests | M | |
 | **FL.2 the detection loop** | `soak.yml`, the `soak` profile, `scripts/flake_report.py`, `flaky-known.toml` and its contract test, the retry filter generated from it; the first week's soak recorded in the cut note | .github, .config, scripts, mush-contract-tests | M | |
-| **FL.3 `sim_lenses`: figures, seed, barriers** | `Figures` and `Odds`; `ArenaConfig::seed` (the one product change, about thirty lines beside `seed_for`); `arena_wake`, `arena_seconds`, `at_one_wake`, `settled` in the kit; every literal span and "fire until" loop in mushd `sim_lenses` converted; rows 3, 4, 9, 13 and 16 closed or re-described | tacsim (the knob), mush-storykit, mushd tests | L | 21 |
+| **FL.3 `sim_lenses`: figures, seed, barriers** (cut 2026-11-23, built) | `Figures` and `Odds`; `ArenaConfig::seed` (the one product change, about thirty lines beside `seed_for`); `arena_wake`, `arena_seconds`, `at_one_wake`, `settled` in the kit; every literal span and "fire until" loop in mushd `sim_lenses` converted; rows 3, 4, 9, 13 and 16 closed or re-described | tacsim (the knob), mush-storykit, mushd tests | L | 21 |
 | **FL.4 `commerce_composition`: the boot instant** (cut and built 2026-11-23) | `STORY_EPOCH` and `phases!`; the four rigs that boot at `unix_now_s()` boot at the epoch; ic12's three stories and the two of row 17 run at the three phases; row 17 settled as phase or stream | mush-storykit, mush-server tests, mush-contract-tests (the wall-clock budget falls) | M | 21 |
 | **FL.5 the bot's stories** | `Client::ask_whole` and `Reply`; one busy-sentence table for the rig; `StoryBudget` in every `mining_cohort` story; the seed and `Figures` in `arena_e2e`, with row 2's range derived and its odds stated; row 18's reader if the hygiene fix left a needle read | mush-bot tests, mush-storykit | M | 16 |
 | **FL.6 mush-server's lib and boundary** | row 10 and its neighbors onto the paused clock with `TimeSource::Tokio`; the in-`src` `world_task` tests' drain windows (row 8's kind) onto `settled`-style barriers; the `--src` scope added to `wait_budget` for mush-server | mush-server | M | 15 |

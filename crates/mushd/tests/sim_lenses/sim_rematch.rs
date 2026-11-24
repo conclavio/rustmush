@@ -42,7 +42,7 @@
 use crate::shipped::mount;
 use crate::support;
 
-use support::{STEP_TIMEOUT, wait_until};
+use support::{Figures, STEP_TIMEOUT, wait_until};
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -73,9 +73,6 @@ const COMMIT_PENDING: &str = "please retry in a moment";
 const CONTROL_UNKNOWN: &str = "control state unknown";
 /// How many times a line is re-sent on a transient before the test gives up.
 const RETRY_BUDGET: usize = 40;
-/// How many shots the fight is allowed before the test calls it (the reasoning is
-/// `arena_story.rs`'s: about a dozen rounds end it, this is the tail).
-const MAX_SHOTS: usize = 30;
 
 /// The two pilots, created before the world task spawns so their ids are stable.
 const ADA: ObjId = ObjId(2);
@@ -105,6 +102,13 @@ fn load() -> i64 {
 
 /// The line every witness in the centre reads when a match is settled.
 const OVER: &str = "is over";
+/// The arena's own answer to a round the cockpit forwarded and the arena did
+/// not take: `FIRE cannon refused. Still cycling: …`, or `… Too many orders at
+/// once; …`. The cockpit says `Firing cannon.` off its last frame, and on a
+/// loaded box that frame can be seconds old, so the cockpit's word is not the
+/// shot: the round is counted when the magazine's row moves, and put back
+/// when the arena says this instead.
+const ARENA_REFUSED: &str = "FIRE cannon refused";
 /// The one line the eleven cockpit selectors refuse with once the hatches open.
 const OUTSIDE_COCKPIT: &str = "You are not at the station of a deployed unit.";
 /// A line the parser refuses, used to bracket a multi-line answer.
@@ -147,6 +151,13 @@ fn tacsim_config() -> tacsim::TacsimConfig {
     cfg.arena.ledger.summary_ms = 200;
     cfg.match_.startup_ms = 300;
     cfg.match_.board_timeout_ms = 120_000;
+    // Doc 51 rule D: the first lens fights a duel to its end and reads the
+    // loser's record, which it words as "a wreck or disarmed". The dice are
+    // pinned to a seed on which the first round lands and no round of the
+    // magazine can jam or damage a part, so the duel ends at the hull or at
+    // the turret and nowhere else (`support::A_CLEAN_DUEL` says what the third
+    // end is).
+    cfg.arena.seed = Some(support::story_seed(Some(support::A_CLEAN_DUEL)));
     cfg
 }
 
@@ -489,13 +500,11 @@ fn cell_current(listing: &str, path: &str) -> i64 {
 /// nothing yet.` and carries no position at all.
 async fn easting_m(term: &mut Term) -> i64 {
     let mut seen = String::new();
-    for _ in 0..RETRY_BUDGET {
+    wait_until(STEP_TIMEOUT, "the panel's first frame", async || {
         seen = ask_whole(term, "STATUS").await;
-        if !seen.contains("The panel has told you nothing yet.") {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
+        !seen.contains("The panel has told you nothing yet.")
+    })
+    .await;
     seen.lines()
         .find_map(|line| {
             let rest = line.split_once(" at ")?.1;
@@ -636,47 +645,82 @@ async fn wait_for_contact(term: &mut Term) -> String {
 /// The lock is waited for first: the cockpit's `FIRE` pre-check reads the **last
 /// frame** (16b cut K.2's mirror), so a `FIRE` sent in the same breath as the
 /// `LOCK` is refused "No lock" against a frame one pulse behind.
+///
+/// Doc 51 unit FL.3: the fight's bounds are the cannon's own, read off the
+/// content. It may fire the whole magazine and no more; each round is typed
+/// until the cockpit takes it, inside one cycle of the cannon; and it is
+/// counted when the arena has taken it, which the magazine's own row says. The
+/// dice are the rig's pinned seed, so the same rounds land on every run.
 async fn fight_to_the_end(ada: &mut Term) -> usize {
     poll_whole(ada, "WEAPONSTATUS", "Locked on").await;
+    let fig = Figures::of(&tacsim_config());
+    let cannon = fig.mount("line_tank", "cannon");
+    support::assert_a_clean_duel(&fig, &tacsim_config(), cannon, "line_tank");
     let mark = ada.mark();
-    let mut shots = 0_usize;
-    for _ in 0..MAX_SHOTS {
-        let mut fired = false;
-        for _ in 0..RETRY_BUDGET {
-            let at = ada.mark();
-            ada.send_line("FIRE").await;
-            match ada
-                .expect_one_of_after(
-                    at,
-                    &[
-                        "Firing cannon",
-                        "Still cycling",
-                        COMMIT_PENDING,
-                        CONTROL_UNKNOWN,
-                        OUTSIDE_COCKPIT,
-                        OVER,
-                    ],
-                )
-                .await
-            {
-                0 => {
-                    fired = true;
-                    break;
+    let mut shots = 0_u32;
+    while shots < cannon.pulls() {
+        // The order, typed until the cockpit forwards it.
+        let mut order = None;
+        wait_until(
+            fig.after_one_round(cannon),
+            "the cockpit to take the round, or the match to be over",
+            async || {
+                let at = ada.mark();
+                ada.send_line("FIRE").await;
+                match ada
+                    .expect_one_of_after(
+                        at,
+                        &[
+                            "Firing cannon",
+                            "Still cycling",
+                            COMMIT_PENDING,
+                            CONTROL_UNKNOWN,
+                            OUTSIDE_COCKPIT,
+                            OVER,
+                        ],
+                    )
+                    .await
+                {
+                    0 => {
+                        order = Some(at);
+                        true
+                    }
+                    // The cycle, and the world's two transients: a wait.
+                    1..=3 => false,
+                    // The hatches are open: the fight is over.
+                    _ => true,
                 }
-                1..=3 => tokio::time::sleep(Duration::from_millis(500)).await,
-                _ => break,
-            }
+            },
+        )
+        .await;
+        let Some(order) = order else {
+            break;
+        };
+        // The shot: the arena's answer to that order. One order is out at a
+        // time, so the next thing the arena says about a `FIRE` is about this
+        // one.
+        let taken = cannon.left(shots + 1);
+        let (mut landed, mut over) = (false, false);
+        wait_until(
+            STEP_TIMEOUT,
+            "the arena to take the round, or to refuse it",
+            async || {
+                let rows = ask_whole(ada, "WEAPONSTATUS").await;
+                landed = rows.contains(&taken);
+                over =
+                    rows.contains(OUTSIDE_COCKPIT) || strip_ansi(&ada.seen[mark..]).contains(OVER);
+                landed || over || strip_ansi(&ada.seen[order..]).contains(ARENA_REFUSED)
+            },
+        )
+        .await;
+        if landed {
+            shots += 1;
         }
-        if !fired {
+        if over {
             break;
         }
-        shots += 1;
-        if strip_ansi(&ada.seen[mark..]).contains(OVER) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(400)).await;
     }
-    shots
+    usize::try_from(shots).expect("a magazine fits")
 }
 
 // ---------------------------------------------------------------------------
@@ -716,6 +760,15 @@ async fn two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_s
     // **16b cut AP.2**: a frontal duel ends at the hull or at the turret (a side
     // that came in armed and has no gun left is out; `arena_story.rs`'s module
     // head), so the loser comes back a wreck or disarmed — never neither.
+    //
+    // "Never neither" holds on this rig's seed and not on every seed. Doc 36
+    // cut GC.2 lets a round that reaches the turret's internals and leaves it
+    // standing jam a part there; two such jams take both of the turret's guns
+    // off the weapon table, the side is out, and the sim center's check-in
+    // returns the parts unjammed, so the record reads neither a wreck nor a
+    // turret shot off. That was this assertion's one failure in CI
+    // (`docs/flaky-tests.md`, row 16). The seed is chosen so that no round of
+    // the magazine can jam or damage a part (`tacsim_config`).
     let wreck = ask_whole(&mut god, &format!("@unit/show #{blue}")).await;
     let wrecked = wreck.contains("section hull: wreck");
     let disarmed = wreck.contains("section turret: destroyed");
@@ -929,26 +982,28 @@ fn count_since(term: &Term, mark: usize, needle: &str) -> usize {
 /// `BOARD` in the resumed match, retried while the tank is still being handed
 /// over (`reclaim_min_ms` after the boot's stamp) and on the two transients.
 async fn board_again(term: &mut Term) {
-    for _ in 0..RETRY_BUDGET {
+    // The handover is `reclaim_min_ms` long, so the wait's limit is that
+    // figure off the rig's own config (doc 51 rule F), or the rig's step limit
+    // when that is the longer.
+    let handed_over = Figures::of(&tacsim_config())
+        .after_reclaim()
+        .max(STEP_TIMEOUT);
+    wait_until(handed_over, "BOARD to take the tank back", async || {
         let mark = term.mark();
         term.send_line("BOARD").await;
-        match term
-            .expect_one_of_after(
-                mark,
-                &[
-                    "yours again where it stands",
-                    "still being handed over",
-                    COMMIT_PENDING,
-                    CONTROL_UNKNOWN,
-                ],
-            )
-            .await
-        {
-            0 => return,
-            _ => tokio::time::sleep(Duration::from_millis(500)).await,
-        }
-    }
-    panic!("BOARD never took the tank back");
+        term.expect_one_of_after(
+            mark,
+            &[
+                "yours again where it stands",
+                "still being handed over",
+                COMMIT_PENDING,
+                CONTROL_UNKNOWN,
+            ],
+        )
+        .await
+            == 0
+    })
+    .await;
 }
 
 /// **A restart mid-match, through the lobby: the match resumes and the pilots

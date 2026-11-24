@@ -1466,8 +1466,9 @@ pub fn start(
     }
 
     // Draw the live match's CSPRNG seed once so the preflight check and live
-    // match record share the same opening seed.
-    let seed = seed_for(match_id, ctx.w.now());
+    // match record share the same opening seed. A test rig's pinned seed
+    // (`ArenaConfig::seed`, doc 51 unit FL.3) stands in for the draw.
+    let seed = opening_seed(arena_cfg.seed, match_id, ctx.w.now());
 
     // Same immutable opening and recovery reserve before any checkout marker,
     // record, revision-root publication or task spawn.
@@ -1926,6 +1927,27 @@ pub fn seed_for(match_id: MatchId, world_now: i64) -> u64 {
     seed_with_draw(match_id, world_now, || {
         rand::rngs::OsRng.try_next_u64().map_err(|_| ())
     })
+}
+
+/// **The seed a sim-center match opens on** (doc 51 unit FL.3, Q-51-2): the
+/// pinned one when a test rig set [`crate::config::ArenaConfig::seed`], and a
+/// fresh [`seed_for`] otherwise, which is every match a deploy starts.
+///
+/// A pinned seed is the twin of `FieldConfig::seed` (`field/admit.rs`): every
+/// match the world starts opens on it, whatever the match's number or the
+/// world's clock, so a scripted story draws the same dice on every run. It is
+/// read here and nowhere else. Nothing a player or an operator can reach sets
+/// it (the field's own doc says how), so a live match's seed stays what
+/// EXT-P2-11 made it: 64 bits no observer can guess.
+///
+/// Never zero, for [`seed_for`]'s reason: a pinned `0` opens on `1`.
+#[must_use]
+pub fn opening_seed(pinned: Option<u64>, match_id: MatchId, world_now: i64) -> u64 {
+    match pinned {
+        Some(0) => 1,
+        Some(seed) => seed,
+        None => seed_for(match_id, world_now),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2641,6 +2663,61 @@ mod tests {
             );
             assert!(seen.insert(s), "duplicate CSPRNG seed {s:#x}");
         }
+    }
+
+    /// **Doc 51 unit FL.3** (Q-51-2): a pinned seed opens every match, whatever
+    /// its number or the world's clock; with none pinned the seed is the OS's,
+    /// as EXT-P2-11 left it.
+    #[test]
+    fn fl3_a_pinned_seed_opens_every_match_and_none_keeps_the_os_draw() {
+        let pinned = Some(0x51F3_0000_0000_0003);
+        assert_eq!(
+            opening_seed(pinned, MatchId(1), 0),
+            0x51F3_0000_0000_0003,
+            "the pinned seed is the match's"
+        );
+        assert_eq!(
+            opening_seed(pinned, MatchId(1), 0),
+            opening_seed(pinned, MatchId(9), 86_400),
+            "the match's number and the world's clock do not move a pinned seed"
+        );
+        assert_eq!(
+            opening_seed(Some(0), MatchId(1), 0),
+            1,
+            "never zero: a seed of 0 would disarm the fault hooks"
+        );
+        // With none pinned, two matches of one id in one second still differ.
+        let live = opening_seed(None, MatchId(1), 100);
+        assert_ne!(live, 0);
+        assert_ne!(live, opening_seed(None, MatchId(1), 100));
+    }
+
+    /// **Doc 51 unit FL.3**: the pinned seed is no key of the arena block's
+    /// encoded form. An arena snapshot carries that block, so a key here would
+    /// be a change of the snapshot's shape; and a document that names one is
+    /// refused, as any unknown key is.
+    #[test]
+    fn fl3_the_pinned_seed_is_no_key_of_the_encoded_arena_block() {
+        let pinned = crate::config::ArenaConfig {
+            seed: Some(7),
+            ..crate::config::ArenaConfig::default()
+        };
+        let encoded = serde_json::to_value(&pinned).expect("the block encodes");
+        assert_eq!(
+            encoded,
+            serde_json::to_value(crate::config::ArenaConfig::default()).expect("the block encodes"),
+            "a pinned seed changes no byte of the encoded block"
+        );
+        assert!(encoded.get("seed").is_none(), "{encoded}");
+        let decoded: crate::config::ArenaConfig =
+            serde_json::from_value(encoded.clone()).expect("the block decodes");
+        assert_eq!(decoded.seed, None, "a decoded block pins nothing");
+        let mut named = encoded;
+        named["seed"] = serde_json::json!(7);
+        assert!(
+            serde_json::from_value::<crate::config::ArenaConfig>(named).is_err(),
+            "a document that names a seed is refused"
+        );
     }
 
     /// **16b cut X.6**: a z-only difference is not a move. The arena sets a

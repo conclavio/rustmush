@@ -151,6 +151,10 @@ fn tacsim_config() -> tacsim::TacsimConfig {
     cfg.arena.ledger.summary_ms = 200;
     cfg.match_.startup_ms = 300;
     cfg.match_.board_timeout_ms = 120_000;
+    // Doc 51 unit FL.3: no assertion here leans on a draw, so the match's dice
+    // seed is a fresh one, printed. A failure that turns out to depend on the
+    // dice after all names the seed that replays it.
+    cfg.arena.seed = Some(support::story_seed(None));
     cfg
 }
 
@@ -1721,16 +1725,13 @@ async fn m1a4_a_pilot_drives_to_a_spot_and_a_cell_and_takes_the_helm_back() {
     assert!(!seen.contains("heading 180°"), "the premise: {seen}");
     say(&mut ada, "HEADING 180", "Steering to 180").await;
     // `STATUS` prints the heading unpadded (`heading 180°`); the tank turns in
-    // place, and `STATUS` reads the last frame, so wait for a few pulses.
+    // place, and `STATUS` reads the last frame, so the wait is on the readout.
     let mut seen = String::new();
-    for _ in 0..RETRY_BUDGET {
+    wait_until(STEP_TIMEOUT, "the tank to come round to 180", async || {
         seen = ask_whole(&mut ada, "STATUS").await;
-        if seen.contains("heading 180°") {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-    assert!(seen.contains("heading 180°"), "{seen}");
+        seen.contains("heading 180°")
+    })
+    .await;
     let told = strip_ansi(&ada.seen[mark..]);
     assert_eq!(
         told.matches("DRIVE: arrived.").count(),

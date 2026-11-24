@@ -21,13 +21,118 @@ use russh::ChannelMsg;
 // kit's. This rig re-exports them, so a story's `use support::{STEP_TIMEOUT,
 // wait_until}` reads the shared copy and there is no second definition here.
 pub use mush_storykit::{STEP_TIMEOUT, wait_until};
+// Doc 51 unit FL.3: and so are the figures, the dice of a pinned seed and the
+// barriers. A story waits for arena time with `arena_seconds`, for a pulse
+// with `arena_wake`, and for its own session to have caught up with `settled`.
+// (This rig is compiled into three test binaries, and only `sim_lenses` runs
+// an arena, so the other two use none of these.)
+#[allow(unused_imports)]
+pub use mush_storykit::{
+    Figures, Mount, Odds, PULL_REQUEST_BAR, arena_seconds, at_one_wake, lift_floor, set_floor,
+    settled, story_seed,
+};
 
-/// The running arena's own `clock m:ss`, as printed by `@arena/status`.
-/// Use this for tests whose premise needs elapsed simulation time.
+/// The running arena's own `clock m:ss` off an `@arena/status` readout, for a
+/// story with one match on the board: its first row's, by the kit's parser.
 pub fn arena_clock_seconds(status: &str) -> Option<u64> {
-    let clock = status.split_once(", clock ")?.1.split(',').next()?;
-    let (minutes, seconds) = clock.split_once(':')?;
-    Some(minutes.parse::<u64>().ok()? * 60 + seconds.parse::<u64>().ok()?)
+    let id = *mush_storykit::status_matches(status).first()?;
+    mush_storykit::status_clock_seconds(status, id)
+}
+
+/// Wait for simulation time rather than assuming that a wall-clock sleep
+/// schedules enough arena pulses on a loaded test worker: the kit's
+/// [`arena_seconds`], on the one match on the board.
+pub async fn wait_arena_seconds(term: &mut Term, seconds: u64) {
+    let id = mush_storykit::the_match(term).await;
+    arena_seconds(term, id, seconds).await;
+}
+
+/// **A seed on which the match's first accepted shot lands, whatever its
+/// odds** (doc 51 §3.2, a chosen seed): its `hit:1` roll is under the
+/// resolution table's floor, so no range in reach and no aspect in the open
+/// can make that round miss. What a story pins when it needs one round to land
+/// and would otherwise fire until one does.
+///
+/// It is the first seed `Figures::seed_where` finds for that, written down as
+/// a number so that a rig does not bind a second catalog on every boot only to
+/// find it again. A story that leans on the roll holds the seed to its promise
+/// with [`assert_first_shots_land`], and that failure names the seed to pin
+/// instead.
+pub const FIRST_SHOT_LANDS: u64 = 91;
+
+/// [`FIRST_SHOT_LANDS`] for the match's first two accepted shots: for a story
+/// in which two machines fire at once and either round may be the first the
+/// arena takes.
+pub const FIRST_TWO_SHOTS_LAND: u64 = 7_786;
+
+/// **A seed on which the first shot lands and no round of the line tank's
+/// cannon magazine can jam or damage a part of a line tank** (doc 36 cut
+/// GC.2's draw). A jammed gun leaves the weapon table and a side with no gun
+/// left is out, so without this a duel can end with neither a wreck nor a
+/// turret shot off, about one match in a thousand (`docs/flaky-tests.md`,
+/// row 16). A story whose words are "the duel ends at the hull or at the
+/// turret" pins this and checks it with [`assert_a_clean_duel`].
+///
+/// Any clean seed passes those stories; they differ only in how many rounds
+/// the duel takes, which at a cannon cycle a round is the stories' length. Of
+/// the first sixteen clean seeds this one fights the shortest duels on
+/// today's content (measured 2026-11-23: 74 s and 106 s for the two stories,
+/// against 178 s and 164 s on the first clean seed, and a mean of about 130 s
+/// each on main's random seeds). A retune can move that; it cannot make a
+/// story fail.
+pub const A_CLEAN_DUEL: u64 = 19_625;
+
+/// The seed a story's server really opens its matches on: the config's.
+fn seed_of(config: &tacsim::TacsimConfig) -> u64 {
+    config
+        .arena
+        .seed
+        .expect("a rig whose story leans on the dice pins a seed")
+}
+
+/// **Hold the story's seed to "the match's first `shots` rolls land whatever
+/// the odds"**, before the story spends a round on it. The check is the
+/// arena's own draw against the resolution table's floor, both read off the
+/// content, so a retune of the floor fails here, with the seed that would
+/// serve, and not as a round that misses.
+pub fn assert_first_shots_land(fig: &Figures, config: &tacsim::TacsimConfig, shots: u64) {
+    let seed = seed_of(config);
+    let lands = |seed: u64| (1..=shots).all(|shot| fig.sure_hit(seed, shot));
+    assert!(
+        lands(seed),
+        "the story's seed {seed} no longer lands its first {shots} roll(s) under the rules' floor \
+         (their rolls are {:?} per mille, the floor is {:.0}). The first seed that does is {}: \
+         pin that in `tests/support/mod.rs`.",
+        (1..=shots)
+            .map(|shot| fig.hit_roll(seed, shot))
+            .collect::<Vec<_>>(),
+        fig.chance_bounds().0 * 1_000.0,
+        fig.seed_where(1, lands)
+    );
+}
+
+/// **Hold the story's seed to "the first shot lands and no round of `mount`'s
+/// magazine can jam or damage a part of a `target`"** ([`A_CLEAN_DUEL`]).
+pub fn assert_a_clean_duel(
+    fig: &Figures,
+    config: &tacsim::TacsimConfig,
+    mount: Mount,
+    target: &str,
+) {
+    let seed = seed_of(config);
+    let clean = |seed: u64| {
+        fig.sure_hit(seed, 1)
+            && (1..=u64::from(mount.pulls())).all(|shot| !fig.harms_a_part(target, seed, shot))
+    };
+    assert!(
+        clean(seed),
+        "the story's seed {seed} is no longer a clean duel: its first roll must land under the \
+         rules' floor and none of the magazine's {} rounds may jam or damage a part of a \
+         {target}. The first seed from it that is clean is {}: pin that in \
+         `tests/support/mod.rs` (any clean seed passes; they differ in the duel's length).",
+        mount.pulls(),
+        fig.seed_where(seed, clean)
+    );
 }
 
 /// The durable cockpit billet written by boarding and removed by EXIT/check-in.
@@ -217,35 +322,6 @@ pub fn undrawn_callsign(drawn: &std::collections::BTreeMap<u32, String>, party: 
         .expect("a party of fewer than 23 units leaves a letter undrawn")
 }
 
-/// Wait for simulation time rather than assuming that a wall-clock sleep
-/// schedules enough arena pulses on a loaded test worker.
-pub async fn wait_arena_seconds(term: &mut Term, seconds: u64) {
-    let mut initial = None;
-    wait_until(STEP_TIMEOUT, "arena time to advance", async || {
-        let mark = term.mark();
-        term.send_line("@arena/status").await;
-        if term
-            .expect_one_of_after(
-                mark,
-                &[
-                    "ledger writes awaiting",
-                    "please retry in a moment",
-                    "control state unknown",
-                ],
-            )
-            .await
-            != 0
-        {
-            return false;
-        }
-        let now = arena_clock_seconds(&strip_ansi(&term.seen[mark..]))
-            .expect("@arena/status reports the arena clock");
-        let start = *initial.get_or_insert(now);
-        now >= start + seconds
-    })
-    .await;
-}
-
 /// A unique scratch directory per call (removed best-effort by the caller).
 pub fn scratch_dir(tag: &str) -> PathBuf {
     static N: AtomicU32 = AtomicU32::new(0);
@@ -299,13 +375,34 @@ impl russh::client::Handler for AcceptAll {
 pub struct Term {
     channel: russh::Channel<russh::client::Msg>,
     pub seen: String,
+    /// **The terminal's own copy of the session's flood bucket** (doc 51 unit
+    /// FL.3). The server throttles a connection that types faster than
+    /// `SessionConfig::flood_rate` over a burst of `flood_burst`, and a
+    /// throttled line is dropped with `You're doing that too fast.`, which no
+    /// reader here types again. Stories used to sleep "a breath for the flood
+    /// bucket" before a battery of lines, for a span written by hand. This
+    /// bucket is the server's own type at the server's own figures, charged
+    /// with every line this terminal types, so a story can ask how much room
+    /// the session has ([`Term::room_for`]) instead of guessing a span.
+    pace: mush_session::FloodBucket,
 }
+
+/// Lines of room [`Term::room_for`] keeps beyond what it was asked for: lines
+/// that left here spaced can reach a busy server bunched, and five lines is
+/// half a second of that at the server's rate.
+const PACE_MARGIN: u32 = 5;
 
 impl Term {
     pub fn new(channel: russh::Channel<russh::client::Msg>) -> Self {
+        let server = mush_session::SessionConfig::default();
         Self {
             channel,
             seen: String::new(),
+            pace: mush_session::FloodBucket::new(
+                server.flood_rate,
+                server.flood_burst,
+                std::time::Instant::now(),
+            ),
         }
     }
 
@@ -413,8 +510,37 @@ impl Term {
     }
 
     pub async fn send_line(&mut self, line: &str) {
+        // Charged to this terminal's copy of the flood bucket, never waited on:
+        // the copy only keeps count, for `room_for`.
+        let _ = self.pace.check(std::time::Instant::now());
         let bytes = format!("{line}\r").into_bytes();
         self.channel.data(&bytes[..]).await.expect("send line");
+    }
+
+    /// **Wait until the session's flood bucket has room for a battery of
+    /// `lines`** (doc 51 unit FL.3, rule F): the wait a story takes before it
+    /// types several lines fast, in place of a sleep of a span it guessed.
+    ///
+    /// The room is read off this terminal's copy of the bucket: the server's
+    /// own type ([`mush_session::FloodBucket`]) at the server's own rate and
+    /// burst ([`mush_session::SessionConfig`]'s defaults, which every rig here
+    /// boots with), charged with every line typed. It returns at once when
+    /// there is room, which is the usual case.
+    pub async fn room_for(&mut self, lines: u32) {
+        let server = mush_session::SessionConfig::default();
+        // The bucket never holds more than its burst, so that is the most a
+        // story can wait for.
+        let want = (lines + PACE_MARGIN).min(server.flood_burst as u32);
+        let token = Duration::from_secs_f64(1.0 / server.flood_rate.max(1.0));
+        loop {
+            // A copy of the copy, drawn down: how many lines would pass now.
+            let mut probe = self.pace.clone();
+            let now = std::time::Instant::now();
+            if (0..want).all(|_| probe.check(now) == mush_session::FloodVerdict::Ok) {
+                return;
+            }
+            tokio::time::sleep(token).await;
+        }
     }
 
     /// Resize the PTY to `cols` by `rows` — the SSH window-change a terminal
@@ -445,6 +571,26 @@ impl Term {
                 Some(_) => {}
             }
         }
+    }
+}
+
+/// Doc 51 unit FL.3: the story kit's barriers type on and read from this
+/// terminal. The kit's one `Term` arrives with units FL.7 and FL.8.
+impl mush_storykit::Session for Term {
+    fn mark(&self) -> usize {
+        Term::mark(self)
+    }
+
+    async fn send_line(&mut self, line: &str) {
+        Term::send_line(self, line).await;
+    }
+
+    async fn expect_one_of_after(&mut self, mark: usize, needles: &[&str]) -> usize {
+        Term::expect_one_of_after(self, mark, needles).await
+    }
+
+    fn seen_after(&self, mark: usize) -> String {
+        strip_ansi(&self.seen[mark..])
     }
 }
 
@@ -1010,8 +1156,8 @@ fn opens_brief_sentence(line: &str) -> bool {
 
 /// Whether a trimmed terminal line is the reader's own traffic rather than
 /// anything the world said: the blank line, the typed echo (`VIEW BRIEF`), a
-/// sentinel line (every file's sentinel is a `zzq-…` word) and the parser's
-/// `Huh?` answering it.
+/// sentinel line (every file's sentinel is a `zzq-…` word, and so is the story
+/// kit's) and the parser's `Huh?` answering it.
 fn is_brief_traffic(line: &str) -> bool {
     line.is_empty()
         || line.eq_ignore_ascii_case("VIEW BRIEF")

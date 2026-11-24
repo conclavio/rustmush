@@ -104,22 +104,6 @@ listed = "2026-11-23"
 expires = "2026-12-07"
 
 [[flaky]]
-binary = "mushd::sim_lenses"
-test = "observer_rule::nothing_of_the_shooting_crosses_to_the_world_or_to_the_target"
-class = "clock"
-row = 13
-listed = "2026-11-23"
-expires = "2026-12-07"
-
-[[flaky]]
-binary = "mushd::sim_lenses"
-test = "observer_rule::nothing_about_an_undetected_unit_crosses_on_any_surface"
-class = "clock"
-row = 13
-listed = "2026-11-23"
-expires = "2026-12-07"
-
-[[flaky]]
 binary = "mushd::world_journeys"
 test = "web_e2e::spa_if_built_and_healthz_are_served"
 class = "process"
@@ -145,15 +129,6 @@ row = 15
 listed = "2026-11-23"
 expires = "2026-12-07"
 note = "on watch; the class is doc 51's likely reading, the cause is not known"
-
-[[flaky]]
-binary = "mushd::sim_lenses"
-test = "sim_rematch::two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_spec"
-class = "unknown"
-row = 16
-listed = "2026-11-23"
-expires = "2026-12-07"
-note = "on watch; seen once"
 
 # --- Carried over from the `load-sensitive` retry: no failure on record -----
 #

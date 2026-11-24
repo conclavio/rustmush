@@ -171,10 +171,13 @@ const MEASURED: [(&str, [u32; 6]); 52] = [
     ("mush-sshdoorway", [0, 0, 0, 0, 0, 0]),
     ("mush-sshdoorway-proto", [0, 0, 0, 0, 0, 0]),
     ("mush-store", [18, 283, 15, 1, 1, 2]),
-    // Doc 51 cut FL.1: the story suites' shared rig. Its two panics are the
-    // failures of `wait_until` and `StoryBudget::hold`: a wait that runs out
-    // panics, which is how a test fails.
-    ("mush-storykit", [0, 0, 0, 2, 0, 0]),
+    // Doc 51 cut FL.1: the story suites' shared rig. Its panics are how a test
+    // fails: a wait that runs out (`wait_until`, `wait_for`,
+    // `StoryBudget::hold`) and, since unit FL.3, a story's premise that does
+    // not hold (`Figures`: a unit or a mount the content does not field, a
+    // seed the rules cannot give, packs that do not bind; `Odds`: a story left
+    // to chance). Two at FL.1, sixteen at FL.3.
+    ("mush-storykit", [0, 0, 0, 16, 0, 0]),
     ("mush-tactics", [3, 49, 1, 0, 2, 0]),
     ("mush-testkit", [0, 5, 0, 1, 0, 0]),
     ("mush-weather", [0, 11, 11, 0, 0, 0]),

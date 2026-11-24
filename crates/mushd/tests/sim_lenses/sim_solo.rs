@@ -139,6 +139,10 @@ fn tacsim_config() -> tacsim::TacsimConfig {
     // left is closed in ten real seconds rather than in the shipped five
     // minutes. It changes nothing for a pilot who stays aboard.
     cfg.match_.unattended_ms = 10_000;
+    // Doc 51 unit FL.3: the machine moves on its own controller, so a pinned
+    // seed would fix the dice and not the fight. No assertion here leans on a
+    // round landing; the seed is a fresh one, printed, so a failure names it.
+    cfg.arena.seed = Some(support::story_seed(None));
     cfg
 }
 
@@ -638,22 +642,30 @@ async fn one_pilot_alone_starts_a_match_and_fights_the_machine() {
     // session only advances while somebody is awaiting the channel, so a loop
     // that sent thirty lines without reading one would stall the window and hang
     // the test rather than failing it.
+    //
+    // The fight lasts until she has a round away or the match is over, whichever
+    // comes first, under the rig's step limit (doc 51 unit FL.3). It was thirty
+    // passes with a 400 ms sleep between them: a span of wall time, which on a
+    // loaded box is less arena time than it looks.
     say(&mut ada, "SPEED 10", "Making").await;
     let start = ada.mark();
     let mut ended = false;
     let lock = format!("LOCK {blue}");
-    for _ in 0..30 {
-        for line in [lock.as_str(), "FIRE"] {
-            let mark = ada.mark();
-            ada.send_line(line).await;
-            ada.expect_after(mark, line).await;
-        }
-        tokio::time::sleep(Duration::from_millis(400)).await;
-        if strip_ansi(&ada.seen[start..]).contains("is over") {
-            ended = true;
-            break;
-        }
-    }
+    wait_until(
+        STEP_TIMEOUT,
+        "Ada to get a round away at the machine, or the match to be over",
+        async || {
+            for line in [lock.as_str(), "FIRE"] {
+                let mark = ada.mark();
+                ada.send_line(line).await;
+                ada.expect_after(mark, line).await;
+            }
+            let fight = strip_ansi(&ada.seen[start..]);
+            ended = fight.contains("is over");
+            ended || fight.contains("Firing cannon")
+        },
+    )
+    .await;
     let fight = strip_ansi(&ada.seen[start..]);
     assert!(
         fight.contains(&format!("identified: {blue}"))
@@ -1290,18 +1302,20 @@ async fn ah1_a_first_account_reads_six_hints_once_an_alt_none_and_a_restart_keep
     let locked = format!("Locked on {blue_callsign}");
     say(&mut ada, "SPEED 54", "Making").await;
     let start = ada.mark();
-    for _ in 0..60 {
-        for line in [lock.as_str(), "FIRE"] {
-            let mark = ada.mark();
-            ada.send_line(line).await;
-            ada.expect_after(mark, line).await;
-        }
-        let fight = strip_ansi(&ada.seen[start..]);
-        if fight.contains(&identified) || fight.contains(&locked) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(400)).await;
-    }
+    wait_until(
+        STEP_TIMEOUT,
+        "the platform to tell the machine apart",
+        async || {
+            for line in [lock.as_str(), "FIRE"] {
+                let mark = ada.mark();
+                ada.send_line(line).await;
+                ada.expect_after(mark, line).await;
+            }
+            let fight = strip_ansi(&ada.seen[start..]);
+            fight.contains(&identified) || fight.contains(&locked)
+        },
+    )
+    .await;
     let fight = strip_ansi(&ada.seen[start..]);
     assert!(
         fight.contains(&identified) || fight.contains(&locked),
