@@ -2260,7 +2260,10 @@ impl PulseArmProvider {
         // `next_due`, the reset cursor minted the byte-identical ingress
         // identity the previous tick had already finalized: `Finalized` →
         // `drive_one` `Err` → `apply_integrity_freeze`. A promoted domain
-        // resolved exactly one tick and then wedged the server.
+        // resolved exactly one tick and then wedged the server. (A cursor
+        // armed afresh, on a new pulse generation or after a disarm, is the
+        // other half of that hazard; [`pulse_cursor`] answers it by carrying
+        // the pulse's generation.)
         if let Some(existing) = &prior
             && existing.clock() == &clock
         {
@@ -3763,6 +3766,19 @@ pub(crate) fn register(
 /// has been asleep resolves **now** rather than replaying an hour of empty ticks,
 /// and the forgiven gap is reported by the kernel rather than silently dropped.
 ///
+/// **The cursor's generation is the pulse's.** The cursor's id is the domain's
+/// alone, and `DurableSchedule::advance_key` hashes `{schedule, owner,
+/// generation, next_ordinal, revision}` and not the clock or `next_due`. A
+/// fresh cursor is always ordinal 0 at revision 1, so with a constant
+/// generation the first tick of a domain's SECOND promotion minted the ingress
+/// identity the first promotion's first tick had already finalized: `Finalized`
+/// → `drive_one` `Err` → `apply_integrity_freeze`, the world read-only on a
+/// promote → tick → demote → promote. A pulse generation is the domain record's
+/// revision at promotion ([`apply_pulse`]), strictly increasing and never
+/// reused, so carrying it here scopes every arming's identities to itself, as
+/// `handoff.rs` and the kernel's decision deadline already do with their
+/// records' revisions.
+///
 /// # Errors
 ///
 /// When the identity or the stamp will not carry a cursor.
@@ -3774,6 +3790,10 @@ pub fn pulse_cursor(
 ) -> Result<DurableSchedule, String> {
     let id = tick_schedule_id(owner, domain)
         .ok_or_else(|| "that domain's pulse cursor identity is unconstructible".to_owned())?;
+    let ClockRef::DomainTick { generation, .. } = clock else {
+        return Err("a pulse cursor runs on its domain's tick clock".to_owned());
+    };
+    let generation = *generation;
     DurableSchedule::new(DurableScheduleDraft {
         id,
         owner: owner.clone(),
@@ -3783,7 +3803,7 @@ pub fn pulse_cursor(
             at: from_tick.saturating_add(1),
         },
         cadence: Some(1),
-        generation: 1,
+        generation,
         next_ordinal: 0,
         restart: ScheduleRestartPolicy::Resume,
         catch_up_order: ScheduleCatchUpOrder::LatestFirst,
