@@ -724,6 +724,71 @@ impl BulkStore {
             }
         }
     }
+    /// Read-only admission preflight mirroring [`Self::prepare_admit_inner`] before
+    /// submitting work to the shared `mind-bulk-prepare` thread. Rejects quarantined
+    /// accounts, full queues, character caps, exhausted daily compute quota, and
+    /// pinned proving retention saturation synchronously on the command path.
+    pub(super) fn preflight_admit(
+        &self,
+        id: AccountId,
+        character: ObjId,
+        kind: WorkKind,
+        initial_charge_ms: u64,
+        min_proving_bytes: u64,
+        now: i64,
+    ) -> Result<(), BulkError> {
+        let mut account = self.clone_account(id, now)?;
+        if account.active.is_some() {
+            return Err(BulkError::Busy);
+        }
+        if self
+            .accounts
+            .values()
+            .filter(|a| a.active.is_some())
+            .count()
+            >= self.cfg.queued + self.cfg.proving_workers
+        {
+            return Err(BulkError::QueueFull);
+        }
+        if self
+            .accounts
+            .values()
+            .flat_map(|a| a.runs.values())
+            .filter(|r| r.status == Status::Queued)
+            .count()
+            >= self.cfg.queued
+        {
+            return Err(BulkError::QueueFull);
+        }
+        if account
+            .runs
+            .values()
+            .map(|r| r.character)
+            .collect::<BTreeSet<_>>()
+            .len()
+            >= MAX_CHARACTERS
+            && !account.runs.values().any(|r| r.character == character)
+        {
+            return Err(BulkError::Retention);
+        }
+        let available = self.cfg.daily_ms().saturating_sub(account.spent_unit_ms);
+        if available < initial_charge_ms {
+            return Err(BulkError::Quota);
+        }
+        if kind == WorkKind::Proving {
+            let old_benches = account
+                .runs
+                .values()
+                .filter(|r| r.plan.kind == WorkKind::Bench && r.status.terminal())
+                .map(|r| r.id)
+                .collect::<Vec<_>>();
+            for old in old_benches {
+                account.runs.remove(&old);
+            }
+            let _ = self.trim(&mut account, character, min_proving_bytes, 1)?;
+        }
+        Ok(())
+    }
     pub fn prepare_admit(
         &self,
         id: AccountId,
@@ -1818,6 +1883,108 @@ mod tests {
             s.run(a, actor, third).expect("failed run").retained_bytes(),
             big.start.bytes,
             "failed run with no result must not retain 8 MiB reservation"
+        );
+    }
+
+    #[test]
+    fn p2_tsc_20_preflight_admit_rejects_exhausted_quota_and_pinned_retention_before_prepare() {
+        let cfg = BulkConfig {
+            daily_unit_minutes: 1, // 60_000 unit-ms
+            completed_per_character: 1,
+            bytes_per_character: MAX_ARTIFACT_BYTES + 1024,
+            ..Default::default()
+        };
+        let mut s = BulkStore::new(cfg).expect("store");
+        let a = id("p2-tsc-20-preflight");
+        let actor = ObjId(7);
+
+        // Fresh account passes preflight for both Proving and Registry.
+        assert_eq!(
+            s.preflight_admit(
+                a,
+                actor,
+                WorkKind::Proving,
+                600,
+                1 + MAX_ARTIFACT_BYTES,
+                1_000
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            s.preflight_admit(a, actor, WorkKind::Registry, 100, 0, 1_000),
+            Ok(())
+        );
+
+        // Admit, finish spending the entire daily quota (12 grants of 2_500 sim_ms * 2 units = 60_000),
+        // and pin the single proving run.
+        let (run, p) = s
+            .prepare_admit(a, actor, 1, plan(), 1_000)
+            .expect("first admit");
+        publish(&mut s, p);
+        let max_sim_ms = 250 * LEASE_STEPS;
+        let charge_per_grant = max_sim_ms * 2;
+        let grants = 60_000 / charge_per_grant;
+        assert_eq!(grants * charge_per_grant, 60_000);
+        for step in 0..grants {
+            let t = 1_001 + step as i64 * 10;
+            let p = s.prepare_grant(a, run, t, max_sim_ms).expect("grant");
+            let lease = publish(&mut s, p).expect("lease");
+            let final_step = step + 1 == grants;
+            let p = s
+                .prepare_finish(
+                    Receipt {
+                        registry: None,
+                        conduct: None,
+                        lease,
+                        actual_unit_ms: charge_per_grant,
+                        result: final_step.then_some(Artifact {
+                            sha256: [9; 32],
+                            bytes: 100,
+                        }),
+                        terminal: final_step.then_some(Status::Complete),
+                    },
+                    t + 1,
+                )
+                .expect("finish");
+            publish(&mut s, p);
+        }
+        let p = s.prepare_pin(a, actor, run, true).expect("pin");
+        publish(&mut s, p);
+
+        // Same UTC day: 0 quota left -> both Proving and Registry fail Quota synchronously.
+        assert_eq!(
+            s.preflight_admit(
+                a,
+                actor,
+                WorkKind::Proving,
+                100,
+                1 + MAX_ARTIFACT_BYTES,
+                2_000
+            ),
+            Err(BulkError::Quota)
+        );
+        assert_eq!(
+            s.preflight_admit(a, actor, WorkKind::Registry, 100, 0, 2_000),
+            Err(BulkError::Quota)
+        );
+
+        // Next UTC day: quota resets, but the 1 pinned Proving run blocks Proving with Retention
+        // while Registry (separate archival retention) passes preflight.
+        let next_day = 86_400_000 + 2_000;
+        assert_eq!(
+            s.preflight_admit(
+                a,
+                actor,
+                WorkKind::Proving,
+                100,
+                1 + MAX_ARTIFACT_BYTES,
+                next_day
+            ),
+            Err(BulkError::Retention)
+        );
+        assert_eq!(
+            s.preflight_admit(a, actor, WorkKind::Registry, 100, 0, next_day),
+            Ok(())
         );
     }
 }

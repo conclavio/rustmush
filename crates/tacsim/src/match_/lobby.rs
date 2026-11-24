@@ -2752,8 +2752,12 @@ fn mind_read_lines(
     slot: Option<&Slot>,
 ) -> Vec<String> {
     let w = access.world();
-    let character = slot.map_or(actor, |slot| slot.pilot);
-    let held = holdings::held_by(w, character);
+    let same_pilot = slot.is_none_or(|slot| slot.pilot == actor);
+    let held = if same_pilot {
+        holdings::held_by(w, actor)
+    } else {
+        vec![HeldMind::doctrine()]
+    };
     let closed = matches!(
         state,
         MatchState::Boarding | MatchState::Running | MatchState::Stopping
@@ -2766,14 +2770,20 @@ fn mind_read_lines(
             format!("You hold {what}; claim a slot and SIM MIND lists what fits its core.")
         }];
     };
+    let visible_choice =
+        |choice: &MindChoice| same_pilot || (choice.saved.is_none() && choice.filed.is_none());
     if state != MatchState::Selection {
         return vec![match &slot.mind {
-            Some(choice) => format!("Yours: {}; selection is closed.", choice.words()),
+            Some(choice) if visible_choice(choice) => {
+                format!("Yours: {}; selection is closed.", choice.words())
+            }
+            Some(_) => "Yours: another character's selection; selection is closed.".to_owned(),
             None => "Yours: none; selection is closed.".to_owned(),
         }];
     }
     let mut lines = vec![match &slot.mind {
-        Some(choice) => format!("Yours: {}.", choice.words()),
+        Some(choice) if visible_choice(choice) => format!("Yours: {}.", choice.words()),
+        Some(_) => "Yours: another character's selection.".to_owned(),
         None => MIND_UNCHOSEN.to_owned(),
     }];
     if let Some(chassis) = effective_type(w, slot) {

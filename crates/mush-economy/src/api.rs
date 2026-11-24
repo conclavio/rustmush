@@ -1106,16 +1106,23 @@ pub fn resume_obligation(
 
 /// Open an account (zero balance). Not money — a normal write. The `id` must come
 /// from [`EconomyStore::alloc_account`].
-pub fn open_account(ctx: &mut Ctx<'_>, account: Account) {
+///
+/// Returns `false` without mutating or persisting anything when the economy store
+/// is absent or frozen (`EconomyStore::frozen`).
+pub fn open_account(ctx: &mut Ctx<'_>, account: Account) -> bool {
     let meta = {
         let Some(store) = ctx.w.module_state_mut::<EconomyStore>() else {
-            return;
+            return false;
         };
+        if store.frozen {
+            return false;
+        }
         store.snapshot.put_account(account.clone());
         store.meta_doc()
     };
     persist_account(ctx.out, &account);
     persist_meta(ctx.out, meta);
+    true
 }
 
 /// Create a vault (empty). Not money and not title — a normal record write, like

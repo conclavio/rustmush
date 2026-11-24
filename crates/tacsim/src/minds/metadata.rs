@@ -29,16 +29,28 @@ const MAX_METADATA_ERR_BYTES: usize = 256;
 /// # Errors
 /// Malformed, oversized, executable or conflicting metadata.
 pub(crate) fn validate(source: &str, envelope: &Envelope) -> Result<(), RollError> {
-    validate_for_api(source, envelope, super::API_VERSION)
+    validate_for_api(source, envelope, super::API_VERSION, false)
 }
 
 /// Only the closed retained-subject path may validate an earlier declaration.
 /// The literal API still belongs to its exact immutable envelope. This does not
 /// grant source authority or run an old engine: authoring compiles the source in
 /// the current sandbox after this bounded metadata check.
+#[cfg(test)]
 pub(crate) fn validate_retained_registry(
     source: &str,
     envelope: &Envelope,
+) -> Result<(), RollError> {
+    validate_retained_registry_checked(source, envelope, false)
+}
+
+/// Single-pass retained metadata validation, optionally also requiring the original
+/// two-argument `fn think(view, card)` entry point on the already-parsed AST so
+/// archival source reads avoid constructing a second engine or recompiling `source`.
+pub(crate) fn validate_retained_registry_checked(
+    source: &str,
+    envelope: &Envelope,
+    require_think: bool,
 ) -> Result<(), RollError> {
     // Doc 45 unit AP.3: every ABI since the Registry opened, one table
     // (`super::RETAINED_ABIS`). Until that cut the list stopped at API 5, so a
@@ -52,48 +64,59 @@ pub(crate) fn validate_retained_registry(
             .map(|(_, api)| *api)
             .ok_or_else(|| invalid("mind_abi", "unsupported retained Registry ABI"))?
     };
-    validate_for_api(source, envelope, api)
+    validate_for_api(source, envelope, api, require_think)
 }
 
-/// Retained archival validity keeps the original two-argument entry point,
-/// without installing the current station API or granting executability.
-pub(super) fn require_retained_think(source: &str) -> Result<(), RollError> {
+fn validate_for_api(
+    source: &str,
+    envelope: &Envelope,
+    api: u32,
+    require_think: bool,
+) -> Result<(), RollError> {
     if source.len() > mush_roll::MAX_SOURCE_BYTES || source.contains('\0') {
         return Err(invalid("source", "maximum 32 KiB; NUL is forbidden"));
     }
-    let (engine, _) = metadata_engine();
-    let ast = engine
-        .compile(source)
-        .map_err(|error| invalid("source", error.to_string()))?;
-    if !ast
-        .iter_functions()
-        .any(|function| function.name == "think" && function.params.len() == 2)
-    {
-        return Err(invalid("source", "expected fn think(view, card)"));
-    }
-    Ok(())
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        validate_for_api_inner(source, envelope, api, require_think)
+    }))
+    .unwrap_or_else(|_| Err(invalid("metadata", "metadata validation failed")))
 }
 
-fn validate_for_api(source: &str, envelope: &Envelope, api: u32) -> Result<(), RollError> {
-    if source.len() > mush_roll::MAX_SOURCE_BYTES || source.contains('\0') {
-        return Err(invalid("source", "maximum 32 KiB; NUL is forbidden"));
-    }
+fn validate_for_api_inner(
+    source: &str,
+    envelope: &Envelope,
+    api: u32,
+    require_think: bool,
+) -> Result<(), RollError> {
     let (engine, limit_tripped) = metadata_engine();
     let mut ast = engine
         .compile(source)
         .map_err(|error| invalid("source", error.to_string()))?;
+    if require_think
+        && !ast
+            .iter_functions()
+            .any(|function| function.name == "think" && function.params.len() == 2)
+    {
+        return Err(invalid("source", "expected fn think(view, card)"));
+    }
     // Ask the pinned parser whether MIND is a declared global, without running
     // it. An undefined MIND is optional absence. A declared nonliteral or mutable
     // MIND is refused, rather than silently treated as absent. This uses Rhai's
     // own identifier/scoping grammar, including comments, raw strings and Unicode.
     // A top-level expression sees mutable globals too. Its AST is discarded.
-    let probe = format!("{source}\n; MIND;");
-    let declared = match engine.compile(&probe) {
-        Ok(_) => true,
-        Err(error) if matches!(error.err_type(), ParseErrorType::VariableUndefined(name) if name == "MIND") => {
-            false
+    // Fast path: if the literal bytes "MIND" never appear in `source`, no `MIND`
+    // identifier can be declared and we avoid a second full Rhai compile.
+    let declared = if source.contains("MIND") {
+        let probe = format!("{source}\n; MIND;");
+        match engine.compile(&probe) {
+            Ok(_) => true,
+            Err(error) if matches!(error.err_type(), ParseErrorType::VariableUndefined(name) if name == "MIND") => {
+                false
+            }
+            Err(error) => return Err(invalid("MIND", error.to_string())),
         }
-        Err(error) => return Err(invalid("MIND", error.to_string())),
+    } else {
+        false
     };
     if declared {
         let mut declarations = ast

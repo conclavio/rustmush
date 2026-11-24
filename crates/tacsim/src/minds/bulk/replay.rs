@@ -280,7 +280,11 @@ impl ReplayMachine {
                 None
             },
             memory,
-            diff: self.diff.as_ref().map(|diff| diff.picture()).transpose()?,
+            diff: if memory_allowed {
+                self.diff.as_ref().map(|diff| diff.picture()).transpose()?
+            } else {
+                None
+            },
             private_run: self.lease.private,
             timeline: self
                 .branch
@@ -555,6 +559,9 @@ impl Machine for ReplayMachine {
         }
         let next = match edit {
             super::experiment::Edit::Diff(candidate) => {
+                if !self.memory_allowed {
+                    return Err(BulkError::Missing);
+                }
                 if self.lease.tape.unit_count() >= 300 {
                     return Err(invalid(
                         "candidate comparison exceeds the charged roster bound",
@@ -1204,5 +1211,150 @@ mod settle_boundary_tests {
                 .seal,
             old
         );
+    }
+
+    #[test]
+    fn p2_tsc_21_sealed_filed_mind_refuses_bench_diff_oracle() {
+        let actor = ObjId(99);
+        let mut red = tank(ObjId(4), PartyId::RED, pose(1500, 4500));
+        red.controller = Controller::Mind;
+        let def = crate::arena::runtime_card::CardDefinition {
+            schema: crate::arena::schema::CardSchema { sections: vec![] },
+            declared_class: crate::arena::core::CoreClass::I,
+            profiles: vec![crate::arena::runtime_card::ProfileDefinition {
+                name: "Default".into(),
+                values: std::collections::BTreeMap::new(),
+                rules: vec![],
+            }],
+        };
+        let def_digest = def.validate().unwrap();
+        let source = "fn think(view, card) {}";
+        let source_sha256: [u8; 32] = {
+            use sha2::Digest as _;
+            sha2::Sha256::digest(source.as_bytes()).into()
+        };
+        let mut terms = crate::match_::SealTerms::fixture();
+        terms.authored = Some(Arc::new(def));
+        terms.selected_profiles = vec!["Default".into()];
+        terms.engine_for_minds = crate::arena::mind::SealEngine::Scripted;
+        terms.identity.mind = "SealedLine".into();
+        terms.identity.source_sha256 = source_sha256;
+        terms.identity.origin = MindOrigin::Filed {
+            charter: "SealedCharter".into(),
+            line: "SealedLine".into(),
+            revision: 1,
+            licence: "1".into(),
+            certificate: Box::new(crate::arena::profile_seal::FiledCertificate {
+                revision_character: ObjId(77),
+                revision_mind: 1,
+                revision_number: 1,
+                revision_digest: mush_core::DefinitionDigest::from_bytes([1; 32]),
+                source_digest: mush_core::DefinitionDigest::from_bytes(source_sha256),
+                rating_job: mush_core::CommitToken::from_bytes([2; 16]),
+                rating_id: mush_core::DefinitionDigest::from_bytes([3; 32]),
+                rating_schema: 1,
+                rating_digest: mush_core::DefinitionDigest::from_bytes([5; 32]),
+                compatibility: mush_core::DefinitionDigest::from_bytes([6; 32]),
+                definition: def_digest,
+                declared: crate::arena::core::CoreClass::I,
+                minimum: crate::arena::core::CoreClass::I,
+            }),
+        };
+        red.reseal(&terms).unwrap();
+        red.seal.principal =
+            Some(crate::deliberation::order::CharacterRef::Character { id: actor });
+        let mut sources = std::collections::BTreeMap::new();
+        sources.insert(red.seal.digest(), source.to_owned());
+        let units = vec![red, tank(ObjId(9), PartyId::BLUE, pose(6500, 4500))];
+        let seals = units.iter().map(|u| u.seal.clone()).collect();
+        let mut arena = arena_of(units);
+        let header = Arc::new(
+            TapeHeader::capture(
+                &arena,
+                2,
+                seals,
+                &sources,
+                EngineStamp::current(),
+                MIN_MAX_BYTES,
+            )
+            .unwrap(),
+        );
+        let mut recorder = TapeRecorder::open(&header).unwrap();
+        arena.tape_witnesses.enable();
+        let mut writes = Vec::new();
+        for wall in (0..=1000).step_by(250) {
+            writes.extend(
+                recorded_step_settled(&mut arena, &mut recorder, wall, &[], &[], vec![])
+                    .unwrap()
+                    .1,
+            );
+        }
+        writes.extend(
+            recorder
+                .push(TapeEvent::Stop {
+                    reason: crate::arena::StopReason::Abort,
+                })
+                .unwrap(),
+        );
+        arena.stop(crate::arena::StopReason::Abort);
+        writes.extend(
+            recorded_step_settled(&mut arena, &mut recorder, 1250, &[], &[], vec![])
+                .unwrap()
+                .1,
+        );
+        arena.settle_inline();
+        writes.extend(
+            recorder
+                .push(TapeEvent::Settle {
+                    thinks: arena.tape_witnesses.take().unwrap(),
+                    at: arena.now_ms,
+                    hash: state_hash(&arena),
+                })
+                .unwrap(),
+        );
+        let through = arena.ledger.last_closed_seq();
+        writes.extend(recorder.push(TapeEvent::LedgerAck { through }).unwrap());
+        arena.ledger.mark_flushed(through);
+        writes.extend(
+            recorder
+                .finish(arena.now_ms, state_hash(&arena), arena.ended.unwrap())
+                .unwrap(),
+        );
+        let chunks = writes
+            .iter()
+            .filter_map(|w| match w {
+                TapeWrite::Chunk(c) => Some(c.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let mark = writes
+            .iter()
+            .rev()
+            .find_map(|w| match w {
+                TapeWrite::Mark(m) => Some(m.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let lease = ReferenceLease {
+            tape: Arc::new(VerifiedTape::verify(header, &chunks, mark).unwrap()),
+            historical: None,
+            actor,
+            private: false,
+        };
+
+        let mut machine = ReplayMachine::new(lease, actor, ObjId(4)).unwrap();
+        assert!(
+            !machine.memory_allowed,
+            "MindOrigin::Filed must disable memory_allowed"
+        );
+        assert!(machine.picture.memory.is_none());
+        assert!(machine.picture.card.is_none());
+        assert_eq!(
+            machine.bench_edit(super::super::experiment::Edit::Diff(candidate())),
+            Err(BulkError::Missing),
+            "BENCH DIFF must be refused on sealed MindOrigin::Filed minds"
+        );
+        assert!(machine.diff.is_none());
+        assert!(machine.picture.diff.is_none());
     }
 }
