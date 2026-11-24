@@ -89,7 +89,7 @@ const PINNED: [(&str, &str); 12] = [
     ),
     (
         CERES_PACK,
-        "495f770ed75ec697dd190ea3702ff400450d51e22f3d670fc0c5748445441521",
+        "4c82f80a84452b7259b5fa0201f91a707ff92c8bf73f6048e036d8dce4b75f62",
     ),
     (
         STICKNEY_REGION_PACK,
@@ -1551,7 +1551,8 @@ fn ic1_every_public_room_is_walkable_by_its_authored_aliases() {
             let from = obj(&tw, pack, &exit.from);
             let to = obj(&tw, pack, &exit.to);
             let there = first_alias(&exit.names[0]);
-            let back = first_alias(&exit.names[1]);
+            // The Limbo door is one way since the 2026-11-24 playtest: `+ooc` is the way out.
+            let back = exit.names.get(1).map(|name| first_alias(name));
             if exit.lock.is_some() {
                 locked.push(entry.clone());
                 tw.world_mut().move_to(walker, from).expect("placed");
@@ -1570,7 +1571,7 @@ fn ic1_every_public_room_is_walkable_by_its_authored_aliases() {
                     "{entry}: {}",
                     said(&tw, &events, GOD)
                 );
-                let events = tw.run(GOD, back);
+                let events = tw.run(GOD, back.expect("a locked exit is a pair"));
                 assert_eq!(
                     location(&tw, GOD),
                     Some(from),
@@ -1594,6 +1595,10 @@ fn ic1_every_public_room_is_walkable_by_its_authored_aliases() {
                 exit.from,
                 said(&tw, &events, who)
             );
+            let Some(back) = back else {
+                assert_eq!(entry, "exit.limbo_arrivals", "only the Limbo door is one way");
+                continue;
+            };
             let events = tw.run(who, back);
             assert_eq!(
                 location(&tw, who),

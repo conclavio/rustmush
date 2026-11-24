@@ -2343,7 +2343,8 @@ mod tests {
             );
         }
         assert!(CERES_JSON.contains("\"Ceres Freeport <C>;c;ceres\""));
-        assert!(CERES_JSON.contains("\"Limbo <X>;x;limbo;ooc\""));
+        // No IC exit leads into Limbo (the 2026-11-24 playtest): the walk leaves by `+ooc`.
+        assert!(!CERES_JSON.contains("Limbo <X>"));
     }
 
     /// The rows the walk reads, as the game prints them.
