@@ -265,6 +265,12 @@ impl PropagationContext {
 /// mutually detected. Neither room is somewhere a thing can be seen from or
 /// addressed at; the accepted consequence is that an envelope to a ship under
 /// way **waits** (store-and-forward) rather than being delivered.
+///
+/// **Nor is Limbo.** Both rooms were Limbo on every world until the simulation
+/// began making rooms of its own (`SimulationModule::with_holding_rooms`), so
+/// Limbo has never been a place here, and it is named so that it stays one:
+/// moving the hulls out must not turn the engine's fallback room, where the
+/// homeless and the out-of-character stand, into somewhere a signal reaches.
 #[must_use]
 pub fn place_of(state: &SpatialState, world: &World, obj: ObjId) -> Option<ObjId> {
     let place = if world
@@ -278,7 +284,8 @@ pub fn place_of(state: &SpatialState, world: &World, obj: ObjId) -> Option<ObjId
             None => world.get(obj).and_then(|object| object.location)?,
         }
     };
-    (place != state.recovery_room && place != state.in_transit_room).then_some(place)
+    (place != state.recovery_room && place != state.in_transit_room && place != mush_core::LIMBO)
+        .then_some(place)
 }
 
 /// Which live domain a **place** belongs to, or `None` when it belongs to none.

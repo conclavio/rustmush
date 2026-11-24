@@ -79,13 +79,14 @@ pub use commands::{
 pub use custody::InteriorCustodyProvider;
 pub use data::{
     CapacitySpec, DEFAULT_RECOVERY_ROOM, Derived, DomainClock, DomainId, DomainRecord,
-    DomainStatus, EgressSpec, GeometryFn, HeldPlacement, HostAssignments, HostMounts, HostStations,
+    DomainStatus, EgressSpec, GeometryFn, HOLDING_ROOMS_KEY, HeldPlacement, HoldingRooms,
+    HoldingRoomsPolicy, HostAssignments, HostMounts, HostStations, IN_TRANSIT_ROOM_NAME,
     InteriorSpaceRecord, MAX_GRANTED_CHANNELS, MAX_SEATS_PER_UNIT, MAX_SPACE_ROOMS,
     MAX_SPATIAL_DEPTH, MetricGeometry, MountId, MountSpec, NS, PASSIVE_DRIVER, PlacementRecord,
-    Pose, Presence, ResolveFn, RoomResolver, RulesValue, SlotId, SpaceAnchor, SpatialCounterError,
-    SpatialParent, SpatialState, StationAssignment, StationId, StationSpec, UnplacedInfo,
-    WindowBox, WindowGeometry, WindowOpener, WindowPin, WindowRec, WindowSurface, cgen_key,
-    passive_definition_ref, passive_rules_value,
+    Pose, Presence, RECOVERY_ROOM_NAME, ResolveFn, RoomResolver, RulesValue, SlotId, SpaceAnchor,
+    SpatialCounterError, SpatialParent, SpatialState, StationAssignment, StationId, StationSpec,
+    UnplacedInfo, WindowBox, WindowGeometry, WindowOpener, WindowPin, WindowRec, WindowSurface,
+    cgen_key, passive_definition_ref, passive_rules_value,
 };
 pub use deployed::{DeployedMark, DeployedUnits, UnitDeployed, refuse_if_deployed};
 pub use domain::{
@@ -135,6 +136,11 @@ pub use window::{
 #[derive(Clone, Debug)]
 pub struct SimConfig {
     /// Where quarantined and unplaced objects are projected (design D4 item 3).
+    ///
+    /// [`DEFAULT_RECOVERY_ROOM`] (the default) names no room of the operator's:
+    /// a module composed [`SimulationModule::with_holding_rooms`] then makes a
+    /// Recovery room of its own, and any other module falls back to Limbo. Any
+    /// other id is the operator's room and is used as given.
     pub recovery_room: ObjId,
 }
 
@@ -173,6 +179,9 @@ pub struct SimulationModule {
     ic_custody: Option<ic_exclusion::IcExclusionConfig>,
     tactics_movement_reads: Option<movement_custody::CustodyReadFactory>,
     field_crew_control: bool,
+    /// Whether the module makes its own in-transit and recovery rooms
+    /// ([`SimulationModule::with_holding_rooms`]).
+    holding_rooms: bool,
 }
 
 impl std::fmt::Debug for SimulationModule {
@@ -209,7 +218,28 @@ impl SimulationModule {
             ic_custody: None,
             tactics_movement_reads: None,
             field_crew_control: false,
+            holding_rooms: false,
         }
+    }
+
+    /// Make the module's own in-transit and recovery rooms, each the first
+    /// time it is needed, and remember them ([`HoldingRooms`]).
+    ///
+    /// The composed game turns this on, because its start room may be Limbo
+    /// and the fallback for both rooms is Limbo: without it a hull under way
+    /// stands beside every new character. Off (the default), both rooms stay
+    /// at the fallback, which is what a bare module in a unit rig wants: no
+    /// object is made behind the rig's back. A configured
+    /// [`SimConfig::recovery_room`] is kept either way, and then only the
+    /// in-transit room is made.
+    ///
+    /// The rooms are made on first need and not at boot, so a world in which
+    /// no carrier has set out and nothing was quarantined keeps the object
+    /// numbers it has without them.
+    #[must_use]
+    pub fn with_holding_rooms(mut self, enabled: bool) -> Self {
+        self.holding_rooms = enabled;
+        self
     }
 
     /// Opt into Sim's dedicated IC exclusion owner. The actual four-owner
@@ -587,6 +617,12 @@ impl DestroyGate for StructuralDestroyGate {
         if target == st.recovery_room && target != mush_core::LIMBO {
             return Err(format!(
                 "{} is the spatial recovery room; reconfigure it first.",
+                name(w, target)
+            ));
+        }
+        if target == st.in_transit_room && target != mush_core::LIMBO {
+            return Err(format!(
+                "{} is the spatial in-transit room; every hull under way is kept in it.",
                 name(w, target)
             ));
         }
@@ -1134,6 +1170,10 @@ impl GameModule for SimulationModule {
             handoff::register(reg, control_leases, tick::definition_descriptors()?)?;
         tick::register(reg, tick_definitions)?;
         reg.state(SpatialState::new(self.config.recovery_room));
+        reg.state(HoldingRoomsPolicy {
+            make: self.holding_rooms,
+            make_recovery: self.config.recovery_room == DEFAULT_RECOVERY_ROOM,
+        });
         let tactics_read = self
             .tactics_movement_reads
             .as_ref()
@@ -1292,6 +1332,11 @@ impl GameModule for SimulationModule {
         // directly and for changes made by intervening module load hooks.
         self.audit_movement_history(ctx)?;
         boot::reconcile_window_projections(ctx)?;
+        // A loaded world that already needs a holding room gets it now (a
+        // world from an earlier binary, its hulls in passage in Limbo). A
+        // fresh world needs none and makes none: the rooms are made on
+        // first need, so no object is numbered differently until then.
+        boot::heal_holding_rooms(ctx)?;
         // The coordinator hydrated typed leases before the load callbacks.
         // Read them through Sim's real owner lens before the first command:
         // a restarted pilot may reclaim before any periodic tick has fired.
