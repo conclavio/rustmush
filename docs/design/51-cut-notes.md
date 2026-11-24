@@ -460,7 +460,9 @@ rounds each, `sim_lenses` alone (97 tests), no retry:
 | Before, main `b0c0e6832` | 96 | 3 | `nothing_of_the_shooting…` twice, `the_switch_names_a_contact…` once | 286 s | 1,077 s |
 | After, this unit | @@PASSES@@ | @@FAILED@@ | @@WHICH@@ | @@WALL@@ s | @@SUMMED@@ s |
 
-Both soaks ran beside other sessions' builds on the box (load 20 to 35 of 32 cores).
+Both soaks ran beside other sessions' builds on the box (load 20 to 35 of 32 cores). The "after"
+row is the third soak of the converted suite. The first two were stopped on failures in one
+story, `nothing_about_an_undetected_unit…`, and what they found is under Tests.
 
 **Survey.** What the code said before anything was built, where it bears on the design:
 
@@ -519,7 +521,8 @@ Both soaks ran beside other sessions' builds on the box (load 20 to 35 of 32 cor
   several needles, the text after a mark), which mushd's `Term` implements:
   - `settled`, `ask_whole`;
   - `arena_wake`, `arena_seconds`, `arena_frames`, `the_match`, over one parser of
-    `@arena/status`'s row that undoes the terminal's wrapping;
+    `@arena/status`'s row that undoes the terminal's wrapping. The readout is read to its own
+    last line, one line a poll;
   - `at_one_wake(staff, id, floor_ms, send)`, with `set_floor` and `lift_floor`.
 - **`wait_for`** (`wait.rs`): `wait_until` for a wait that reads something. Its failure prints
   what it last read.
@@ -567,8 +570,10 @@ answer, and the two sleeps of Not built.
 - **Row 13 is re-described: not clock.** `nothing_of_the_shooting…` had a dice cause (two rounds
   fired, one hit needed: its `timeout waiting for "Hit on the "`) and a stream cause (`SCAN`
   parsed after a needle read that the second round's own outcome line could satisfy). The soak
-  of main caught each once. `nothing_about_an_undetected_unit…` was never caught, in CI's record
-  or in either soak; what it held of this class was the four hand-written sleeps.
+  of main caught each once. `nothing_about_an_undetected_unit…` was never caught on main, in
+  CI's record or in the soak. It was stream too: two reads that an arena notice in flight could
+  spoil (the report's window, the classification wait), behind four hand-written sleeps. Taking
+  the sleeps out is what showed them (Tests).
 - **Row 16 is re-described: dice.** The failed run's record shows the loser eliminated at 43 s
   with its hull and turret standing, the turret at 10 of 150 inside after three hits, and every
   part intact. Two survivable turret hits each jammed one of the turret's two guns (doc 36 cut
@@ -593,6 +598,29 @@ answer, and the two sleeps of Not built.
   three shooting loops now count a round when the arena has taken it (the magazine's row moves)
   and type it again when the arena says `FIRE cannon refused`. Sixteen of sixteen passed under
   the same load afterwards.
+- **The first two soaks of the converted suite failed 3 passes in 66**, every one in
+  `nothing_about_an_undetected_unit…`, which had not failed in main's 96. Each was stopped and
+  fixed; the soak in the table above is the run after. That story's four sleeps "for the flood
+  bucket" had been giving its reads time to settle, and without them three reads showed what
+  they were:
+  - The rig's line readers drop a sentinel's echo only when the word opens `zzq-`, which is why
+    six files' sentinels are `zzq-…` words. The kit's was not, and `observer_rule` now types the
+    kit's, so an echo that landed inside a brief read as a stray line. The kit's sentinel is
+    `zzq-sentinel`.
+  - `SIM REPORT`'s read window opens at its mark. With the story's hand-written sleeps gone, a
+    lock notice still in flight (`Locked on BW, 78% to hit.`) landed inside it and was read as
+    the report naming a contact. `sim_report` now returns the window from the center's own
+    opening line on. Main has the same window; its sleeps hid it.
+  - The wait for the sensor to classify its contact read the word `blue` anywhere in the
+    `CONTACTS` window, and the arena's `identified` notice carries it: landing behind a row that
+    still read `X1`, it ended the wait a frame early (one pass in twelve of the second soak).
+    The story's own comment warns of exactly this read. The wait now reads the row, and the
+    notice is waited for where it was looked for. Main has this one unchanged.
+  - Found on the way: a status wait that asks five times a second, typing a line and a sentinel
+    each time, types at the flood bucket's refill rate. The kit reads `@arena/status` to its own
+    last line, one line a poll, as the rig did.
+  - Between the soaks, the two row-13 stories and their neighbors ran 24 invocations side by
+    side: 144 of 144 after the first soak's fixes, @@STRESS@@ after the second's.
 - **The duel's length depends on the seed.** Sixteen clean seeds, both duel stories each: 74 to
   178 s for `sim_rematch`, 101 to 176 s for `arena_story`. `A_CLEAN_DUEL` is the shortest pair
   (74 and 106 s; main's random seeds average 127 and 136 s).
@@ -631,10 +659,12 @@ answer, and the two sleeps of Not built.
 7. **A story that leans on no roll gets a fresh seed from the rig**, printed, where doc 51 §4.1
    has the soak supply one. `scripts/soak.sh` is unchanged: every run prints its seed, a soak
    pass included.
-8. **Two stream fixes that are FL.8's kind.** `SCAN` read whole, and row 19's wait for the lock's
-   own line. The soak named both in this suite, so they are fixed here.
-9. **`observer_rule`'s sentinel word is the kit's.** Its lenses strip the sentinel's echo from a
-   transcript, and `settled` types the kit's word.
+8. **Three stream fixes that are FL.8's kind.** `SCAN` read whole, row 19's wait for the lock's
+   own line, and `sim_report` returning the report alone. The soaks named all three in this
+   suite, so they are fixed here. The other files' copies of `sim_report` have the same window.
+9. **`observer_rule`'s sentinel word is the kit's, and the kit's opens `zzq-`.** Its lenses strip
+   the sentinel's echo from a transcript, `settled` types the kit's word, and the rig's line
+   readers know a sentinel by that opening.
 10. **`Odds` is used once**, in `sim_weapons`. Everywhere else a seed made the outcome certain,
     which doc 51 §3.2 prefers. FL.5 is its next user.
 11. **The kit's `clippy::panic` count is 16, from 2** (`restriction_lints`' record): the

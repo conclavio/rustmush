@@ -2108,14 +2108,19 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     // resolves** — which is the whole reason the book keeps it.
     // The *row* has to be re-read after the rename, not the transcript: the
     // `identified` notice arrives on its own and a window that merely contains
-    // the word `blue` may still carry the `X<n>` row printed before it.
+    // the word `blue` may still carry the `X<n>` row printed before it. So the
+    // wait is on the row's own designator. It was on the word `blue` anywhere
+    // in the window, which is the very read this comment warns of: the notice
+    // landed behind a row that still read `X1`, the wait ended on the notice,
+    // and the assertion below failed (one soak pass in twelve of the converted
+    // suite; main has the same window, doc 51 unit FL.3).
     let mut classified = String::new();
     wait_until(
         STEP_TIMEOUT,
         "the controlled sensor to classify its contact",
         async || {
             classified = ask_whole(&mut ada, "CONTACTS").await;
-            classified.contains("blue")
+            designator_of(&classified).is_some_and(|row| row != contact)
         },
     )
     .await;
@@ -2138,10 +2143,12 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
         odds_row.contains("  cannon ") && odds_row.trim_end().ends_with('%'),
         "a classified row ends in the main gun's odds: {odds_row}"
     );
-    assert!(
-        strip_ansi(&ada.seen).contains(&format!("Contact {contact} identified: {renamed}, blue.")),
-        "the rename is one sentence quoting both names:\n{classified}"
-    );
+    // The rename is one sentence quoting both names. It is the arena's own
+    // notice and comes in a batch of its own, so it is waited for and not
+    // looked for: the row above can read the new name a turn before the notice
+    // has reached the terminal.
+    ada.expect(&format!("Contact {contact} identified: {renamed}, blue."))
+        .await;
     let folded = ask(
         &mut ada,
         &format!("LOCK {}", renamed.to_ascii_lowercase()),
@@ -2524,13 +2531,16 @@ async fn the_switch_names_a_contact_at_the_first_pass_over_the_real_composition(
     // **And there is never a rename to say.** The classification still happens —
     // the row's class word turns into the side — but the pilot is told nothing
     // about it, because the name it has been calling the contact does not change.
+    // The wait reads the contact's own row, as its twin above does.
     let mut classified = String::new();
     wait_until(
         STEP_TIMEOUT,
         "the controlled sensor to classify its contact",
         async || {
             classified = ask_whole(&mut ada, "CONTACTS").await;
-            classified.contains("blue")
+            classified.lines().any(|line| {
+                line.contains("bearing ") && line.contains("(rel ") && line.contains("blue")
+            })
         },
     )
     .await;
