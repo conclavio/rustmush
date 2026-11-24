@@ -13,6 +13,11 @@ all eleven questions and cut FL.1 and FL.2?", the owner answered: "Take defaults
   the owner.
 - Nothing else in the document changed from Draft 0.1.
 
+**FL.4 is cut and built** (2026-11-23, recorded here without a new draft number). The owner
+started its session, which is the further word §5 asks for. §3.6 says what was built, §5 marks
+the row, §2.4 has row 17 settled as a phase fault, and the [cut note](51-cut-notes.md) has the
+measurements.
+
 **The questions, each ruled at its default** (each in full in §6, with the alternative it was
 weighed against and the reason):
 
@@ -226,7 +231,7 @@ the hygiene session is fixing now, not yet in the list.
 | 14 | `web_e2e::spa_if_built_and_healthz…` | mushd `world_journeys` | 3 | process, likely | `/healthz` answered before the server said it was ready; cause not known |
 | 15 | two `arena_custody_split` stories | mush-gateway `split_halves` | 2 | process, likely | a restart's `Reconnected` did not come inside the limit; cause not known |
 | 16 | `sim_rematch::two_players_start_a_second_match…` | mushd `sim_lenses` | 1 | not known | |
-| 17 | `ic_buyout_dormancy::ic13_…`, `sm2_…` | mush-server `commerce_composition` | 4 | clock phase, likely | a line counted twice; cause not known. Its rig boots at the wall clock exactly as row 7's does, in the same binary |
+| 17 | `ic_buyout_dormancy::ic13_…`, `sm2_…` | mush-server `commerce_composition` | 4 | clock phase | a clerk's once-a-day act counted beside a typed line's, when the IC day turned in a stretch the story does not drain and the clerk was new to the rig's house list. Reproduced at its failing head by FL.4 |
 | 18 | `arena_contract::the_bot_reads_a_live_centre…` | mush-bot | 1 or more | stream | a status readout parsed before its last two sections had arrived |
 
 By class: figure and dice 23 runs (rows 2, 3, 4, 9, with 4b's share inside row 4's seven); clock
@@ -245,6 +250,10 @@ lib 9; mush-gateway `split_halves` 8; mush-server `split_boundary` 6; mushd `wor
   sit in the same binary, and row 7's cause was a listing re-posted on an IC day's turn, which
   can also tell a line twice. That is a reading of the code, not a reproduction. Unit FL.4
   settles it: once the rig boots at a fixed instant, the row either stops or is a stream fault.
+  **Settled 2026-11-23: a phase fault.** At the failing head (`597d2c6b`) the first story fails
+  with CI's own message when it boots at CI's own second, 42:09 past the hour, and passes at
+  28 other seconds of the hour; the cut note has the sweep. Nothing in either story reads a
+  stream.
 
 ### 2.5 Why tacsim's suites are not in the list
 
@@ -468,6 +477,33 @@ votes fell on absolute month boundaries while its house ran from boot.
 **The gate** is the twin of `world_clock_reads` (TS.10e), turned on test code: the 63 wall-clock
 reads are counted a file, and the count may only fall (§3.9).
 
+**As built (unit FL.4, 2026-11-23).** In `mush-storykit`:
+
+- **`STORY_EPOCH`** is unix second 1,900,862,627. Under the servers' calendar (`[game]` at its
+  defaults and 24 IC seconds a second) that is IC 09:30:48 on day 7 of a month; under the
+  engine test world's (one IC second a second, from zero) 17:23:47 on day 10. It is in 2030.
+  Nothing depends on that: the suite passes the same booted in 2020 and in 2049.
+- **A month is the game's schedule month**: thirty IC days counted from IC second zero
+  (`tacsim::concession::IC_MONTH_S`), which is what the monthly schedules turn on. It is not the
+  civil calendar's month.
+- **`Phase`** names the instants: `Epoch`; `DayTurn`, the last real second at least 50 IC
+  seconds before the first day's turn after the epoch (three seconds before it at 24:1);
+  `MidMonth`, the epoch's time of day in the day that begins 15 IC days before a month's turn;
+  and `Past(n)`, `n` real seconds past the epoch, for a phase the soak drew or a story pinned.
+  `Calendar` finds each on the rig's own IC clock, from the config the rig boots with.
+- **`phases!(#[tokio::test] async story)`** takes a story written as a function of its `Phase`
+  and makes the tests `story::at_the_epoch`, `story::before_a_days_turn` and
+  `story::mid_month`. A pinned phase is one more test, named in the call.
+- **`STORY_PHASE`** is `random` (a phase drawn from a whole schedule year, afresh at every
+  boot), `+<seconds>`, or a named phase's word. Every boot prints the phase it took, so a
+  failure under the soak names the phase to pin. Any other value fails the boot.
+
+**The three named phases sample the calendar; they do not aim.** Row 17 failed when a day
+turned in one six-minute stretch of a story, 15 to 21 minutes after boot, and none of the
+three puts a turn there. The soak's draw does, in about one boot in ten. A phase found that
+way is pinned in the story's `phases!` call, and the story checks at run time that the pinned
+phase still puts the turn where it was pinned for.
+
 ### 3.7 Event waits: one limit, and budgets that nest
 
 The 122 `event` sites are sound. Two rules keep them useful when they do fail.
@@ -640,6 +676,9 @@ pull request.
 cut both"). FL.3 to FL.10 stay a sketch: none is cut, and each waits for a further word from the
 owner.
 
+**FL.4 is cut and built** (2026-11-23): the owner started its session. Its row below is as it
+was sketched; [the cut note](51-cut-notes.md) says where the build differs.
+
 One pull request each. S is under a day's session, M one to two, L more. "Runs" is §2.4's count
 for the suite. FL.0 is this document and its script, merged as #771.
 
@@ -648,7 +687,7 @@ for the suite. FL.0 is this document and its script, merged as #771.
 | **FL.1 the ratchet** | `wait_budget` at today's counts (raw waits and wall-clock reads; the literal-span counter is stubbed); the `mush-storykit` crate with `wait_until`, `STEP_TIMEOUT`, `LOAD_FACTOR` and `StoryBudget` moved in from mushd's rig | mush-contract-tests, new mush-storykit, mushd tests | M | |
 | **FL.2 the detection loop** | `soak.yml`, the `soak` profile, `scripts/flake_report.py`, `flaky-known.toml` and its contract test, the retry filter generated from it; the first week's soak recorded in the cut note | .github, .config, scripts, mush-contract-tests | M | |
 | **FL.3 `sim_lenses`: figures, seed, barriers** | `Figures` and `Odds`; `ArenaConfig::seed` (the one product change, about thirty lines beside `seed_for`); `arena_wake`, `arena_seconds`, `at_one_wake`, `settled` in the kit; every literal span and "fire until" loop in mushd `sim_lenses` converted; rows 3, 4, 9, 13 and 16 closed or re-described | tacsim (the knob), mush-storykit, mushd tests | L | 21 |
-| **FL.4 `commerce_composition`: the boot instant** | `STORY_EPOCH` and `phases!`; the four rigs that boot at `unix_now_s()` boot at the epoch; ic12's three stories and the two of row 17 run at the three phases; row 17 settled as phase or stream | mush-storykit, mush-server tests, mush-contract-tests (the wall-clock budget falls) | M | 21 |
+| **FL.4 `commerce_composition`: the boot instant** (cut and built 2026-11-23) | `STORY_EPOCH` and `phases!`; the four rigs that boot at `unix_now_s()` boot at the epoch; ic12's three stories and the two of row 17 run at the three phases; row 17 settled as phase or stream | mush-storykit, mush-server tests, mush-contract-tests (the wall-clock budget falls) | M | 21 |
 | **FL.5 the bot's stories** | `Client::ask_whole` and `Reply`; one busy-sentence table for the rig; `StoryBudget` in every `mining_cohort` story; the seed and `Figures` in `arena_e2e`, with row 2's range derived and its odds stated; row 18's reader if the hygiene fix left a needle read | mush-bot tests, mush-storykit | M | 16 |
 | **FL.6 mush-server's lib and boundary** | row 10 and its neighbors onto the paused clock with `TimeSource::Tokio`; the in-`src` `world_task` tests' drain windows (row 8's kind) onto `settled`-style barriers; the `--src` scope added to `wait_budget` for mush-server | mush-server | M | 15 |
 | **FL.7 the gateway's stories** | the ten `Term` copies replaced by the kit's; `across_restart`; restart limits from the gateway's own schedule; rows 12 and 15 closed or re-described; `one_reader` turned on for mush-gateway | mush-gateway tests, mush-storykit, mush-contract-tests | M | 8 |

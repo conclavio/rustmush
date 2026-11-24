@@ -280,6 +280,15 @@ impl Phase {
         unix
     }
 
+    /// **Whether [`PHASE_VAR`] asks for a phase of its own**, so that a boot
+    /// takes that one and not the story's. A story that checks what its own
+    /// pinned phase puts where (that the day turned inside the step the phase
+    /// was pinned for) checks it only when this is false.
+    #[must_use]
+    pub fn overridden() -> bool {
+        std::env::var(PHASE_VAR).is_ok_and(|asked| !asked.trim().is_empty())
+    }
+
     /// The phase to take when the environment asked for `asked`; `draw` is
     /// the source of a drawn phase.
     fn under(self, asked: Option<&str>, calendar: Calendar, draw: impl FnOnce() -> u64) -> Phase {

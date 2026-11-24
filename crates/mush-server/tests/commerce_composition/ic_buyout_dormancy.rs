@@ -716,6 +716,22 @@ fn ic_now(tw: &TestWorld) -> i64 {
     tw.world().world_ic_now().at
 }
 
+/// The IC day the world is in, counted from IC second zero as the game counts it.
+fn ic_day(tw: &TestWorld) -> i64 {
+    ic_now(tw).div_euclid(mush_storykit::IC_DAY)
+}
+
+/// What a pinned phase's own check says when the IC day no longer turns in the two sweeps the
+/// phase was pinned for (`DAY_TURNS_BEFORE_THE_OUTFIT`, `DAY_TURNS_BEFORE_SHE_BOARDS`).
+fn pin_drifted(stretch: &str) -> String {
+    format!(
+        "the pinned phase no longer turns the IC day in the two sweeps {stretch}: the story's \
+         steps fall on other seconds than they did. Print the world's second before those \
+         sweeps, and pin the phase that turns the day about a minute into them (a turn falls \
+         2,173 s after a boot at the epoch, so `Phase::Past(2_173 - <seconds from boot>)`)."
+    )
+}
+
 /// Run the clock to IC instant `target` (one fire at the real second it falls on),
 /// landing what the fire queued.
 async fn to_ic(rig: &mut Rig, target: i64) -> Vec<(Audience, OutputEvent)> {
@@ -1661,6 +1677,30 @@ async fn ic13_a_buyout_passes_title_once_ends_the_lease_and_silences_the_share()
 // 2. The refusals
 // ---------------------------------------------------------------------------
 
+/// **The phase row 17 of `docs/flaky-tests.md` failed at, pinned** (doc 51 cut FL.4): the IC
+/// day turns in the two sweeps before the outfit, 1,030 s after the boot.
+///
+/// The story counts what one typed line queued (`drain_players`, then `len() == 1`), and the
+/// count takes in whatever the ticks queued since the last drain. A clerk that acts once an IC
+/// day queues its act in a fire at or soon after the day's turn. The two sweeps before the
+/// outfit fire ticks and drain nothing, and so do the two that close it; the counts that follow
+/// are the outfit's first purchase and the undock. A daily actor the rig's house list does not
+/// know is counted beside the pilot's own submission there, and the story fails with `left: 2,
+/// right: 1`. Twice a new daily actor reached a head before the list knew it (Stickney's
+/// clerk, 2026-11-04; the lane ports' buyers, 2026-11-19), and each time the story failed only
+/// in the runs whose wall-clock boot put a turn in such a stretch, about one in ten.
+///
+/// None of the three named phases puts a turn there. This one does, so the next such actor
+/// fails the pull request that adds it, on every run: an act queued in the fire that crosses the
+/// turn is counted at the outfit's first purchase, and one queued up to two minutes later (the
+/// lane ports' buyers act about a minute after the turn) at the undock.
+///
+/// It is a measured second, and it holds because the story's steps fall on the same seconds
+/// every run (a fixed boot, a fixed geology key): the world is stocked 708 s after the boot and
+/// the two sweeps run from 958 s to 1,080 s. The story checks that the day did turn across
+/// them, so a phase that has drifted off the stretch fails with that said, not in silence.
+const DAY_TURNS_BEFORE_THE_OUTFIT: Phase = Phase::Past(1_143);
+
 /// **The verify lens, item 4** (lead ruling L14): a buyout while goods are moving, while
 /// a queued step is at the counter, with a clearance filed, under way and docked at
 /// Stickney each refuses, and nothing is written.
@@ -1721,8 +1761,16 @@ async fn ic13_a_buyout_is_refused_under_way_cleared_elsewhere_or_with_goods_movi
         "the step landed: {:#?}",
         orders(&rig.tw, hull)
     );
+    let day = ic_day(&rig.tw);
     let _ = sweep(&mut rig, 61).await;
     let _ = sweep(&mut rig, 61).await;
+    if phase == DAY_TURNS_BEFORE_THE_OUTFIT && !Phase::overridden() {
+        assert!(
+            ic_day(&rig.tw) > day,
+            "{}",
+            pin_drifted("before the outfit")
+        );
+    }
 
     // The outfit for Stickney (the planner's figures over everything aboard), then aboard.
     let _ = outfit(&mut rig, vex).await;
@@ -1773,7 +1821,8 @@ async fn ic13_a_buyout_is_refused_under_way_cleared_elsewhere_or_with_goods_movi
 }
 phases!(
     #[tokio::test]
-    async ic13_a_buyout_is_refused_under_way_cleared_elsewhere_or_with_goods_moving
+    async ic13_a_buyout_is_refused_under_way_cleared_elsewhere_or_with_goods_moving,
+    the_day_turns_before_the_outfit = DAY_TURNS_BEFORE_THE_OUTFIT
 );
 
 // ---------------------------------------------------------------------------
@@ -3044,8 +3093,17 @@ async fn sm2_hop(rig: &mut Rig, pilot: ObjId, hull: ObjId, line: &str) -> i64 {
     burned_at
 }
 
-/// A pilot enrolled, bunkered at the chandlery for hops, and aboard at Ceres.
-async fn sm2_aboard_for_hops(rig: &mut Rig) -> (ObjId, ObjId, Enrolment) {
+/// **Row 17's phase for the hops, pinned** (doc 51 cut FL.4; [`DAY_TURNS_BEFORE_THE_OUTFIT`]
+/// has the mechanism): the IC day turns in the two sweeps before the pilot boards, 733 s after
+/// the boot, and the next count is the first hop's burn. The world is stocked 708 s after the
+/// boot and the two sweeps run from there to 830 s. An act queued in the fire that crosses the
+/// turn, or up to a minute and a half after it, is counted beside the burn.
+const DAY_TURNS_BEFORE_SHE_BOARDS: Phase = Phase::Past(1_440);
+
+/// A pilot enrolled, bunkered at the chandlery for hops, and aboard at Ceres. With `pinned`,
+/// the check of [`DAY_TURNS_BEFORE_SHE_BOARDS`]: the day turned in the two sweeps before she
+/// boards.
+async fn sm2_aboard_for_hops(rig: &mut Rig, pinned: bool) -> (ObjId, ObjId, Enrolment) {
     let _ = sweep(rig, 120).await;
     stock(rig).await;
     let vex = pilot(rig, "Vex", "vexacct").await;
@@ -3055,8 +3113,16 @@ async fn sm2_aboard_for_hops(rig: &mut Rig) -> (ObjId, ObjId, Enrolment) {
     let food = listing_of(&rig.tw, "ceres_port", "coop", "provisions");
     let _ = buy(rig, vex, fuel, 10).await;
     let _ = buy(rig, vex, food, 12).await;
+    let day = ic_day(&rig.tw);
     let _ = sweep(rig, 61).await;
     let _ = sweep(rig, 61).await;
+    if pinned {
+        assert!(
+            ic_day(&rig.tw) > day,
+            "{}",
+            pin_drifted("before she boards")
+        );
+    }
     board_from_chandlery(rig, vex, "Salt Moth").await;
     let e = enrolment(&rig.tw, vex);
     (vex, ObjId(row.hull), e)
@@ -3069,8 +3135,9 @@ async fn sm2_aboard_for_hops(rig: &mut Rig) -> (ObjId, ObjId, Enrolment) {
 /// after its last burn — docked at Ceres, the hold empty, nothing in flight.
 async fn sm2_a_week_of_hops_trips_no_recall(phase: Phase) {
     const D: i64 = 7 * 86_400;
+    let pinned = phase == DAY_TURNS_BEFORE_SHE_BOARDS && !Phase::overridden();
     let mut rig = boot_at("sm2_hops", phase).await;
-    let (vex, hull, e) = sm2_aboard_for_hops(&mut rig).await;
+    let (vex, hull, e) = sm2_aboard_for_hops(&mut rig, pinned).await;
     let _ = sm2_hop(&mut rig, vex, hull, "+ship/undock ahuna").await;
     let b0 = sm2_hop(&mut rig, vex, hull, "+ship/lift ceres").await;
     let now = rig.tw.world().now();
@@ -3086,7 +3153,7 @@ async fn sm2_a_week_of_hops_trips_no_recall(phase: Phase) {
 
     // The control: only the day-0 round trip.
     let mut rig = boot_at("sm2_hops_control", phase).await;
-    let (vex, hull, e) = sm2_aboard_for_hops(&mut rig).await;
+    let (vex, hull, e) = sm2_aboard_for_hops(&mut rig, pinned).await;
     let _ = sm2_hop(&mut rig, vex, hull, "+ship/undock ahuna").await;
     let b0 = sm2_hop(&mut rig, vex, hull, "+ship/lift ceres").await;
     let now = rig.tw.world().now();
@@ -3110,5 +3177,6 @@ async fn sm2_a_week_of_hops_trips_no_recall(phase: Phase) {
 }
 phases!(
     #[tokio::test]
-    async sm2_a_week_of_hops_trips_no_recall
+    async sm2_a_week_of_hops_trips_no_recall,
+    the_day_turns_before_she_boards = DAY_TURNS_BEFORE_SHE_BOARDS
 );
