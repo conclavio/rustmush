@@ -724,11 +724,11 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
     }
     assert!(out.contains(" tacsim.passengers.stickney@2 ("), "{out}");
     assert!(out.contains(" tacsim.passengers.ceres@1 ("), "{out}");
-    assert!(out.contains(" tacsim.quests.first_steps@1 ("), "{out}");
-    assert!(out.contains(" tacsim.quests.leila_followup@1 ("), "{out}");
+    assert!(out.contains(" tacsim.quests.first_steps@2 ("), "{out}");
+    assert!(out.contains(" tacsim.quests.leila_followup@2 ("), "{out}");
     assert!(out.contains(" tacsim.quests.port_connections@1 ("), "{out}");
     assert!(out.contains(" tacsim.quests.safe_passage@1 ("), "{out}");
-    assert!(out.contains(" tacsim.quests.survey_work@1 ("), "{out}");
+    assert!(out.contains(" tacsim.quests.survey_work@2 ("), "{out}");
     // Doc 18 cut IC2: and the lane after them (at version 3 since cut IC8).
     assert!(
         out.contains(&format!(" {LANE_PACK}@{LANE_VERSION} (")),

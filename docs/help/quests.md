@@ -314,18 +314,18 @@ Write `completion` as the giver's account of what actually happened; it becomes
 their verified work experience and is labeled as their account in the journal.
 
 The independent packs `tacsim.passengers.ceres@1` and
-`tacsim.quests.first_steps@1` require Ceres v4 and Stickney v4. New worlds load
+`tacsim.quests.first_steps@2` require Ceres v4 and Stickney v4. New worlds load
 them in dependency order. Existing worlds with those versions install them at
 boot; worlds with older station content wait for staff to plan and apply the
 dependency upgrades. No existing station pack is automatically upgraded.
-`tacsim.quests.leila_followup@1` separately requires Leila's passenger pack v2
+`tacsim.quests.leila_followup@2` separately requires Leila's passenger pack v2
 and both stations at v4. It adds two definitions to the same Leila without
 replacing her earlier quest or resetting her journey.
 `tacsim.quests.port_connections@1` requires Ceres v4 and adds Ma's optional
 introductions without changing any station NPC's identity or ordinary services.
 `tacsim.quests.safe_passage@1` requires Ceres v4 and Nadia's passenger pack v1;
 it adds Ma's passage favor to her existing catalog.
-`tacsim.quests.survey_work@1` requires Ceres v4 and the first-steps pack v1;
+`tacsim.quests.survey_work@2` requires Ceres v4 and the first-steps pack v2;
 it adds Rosalind's paid-work follow-up without changing the commission board.
 
 See also: `help passengers`, `help npc`.
