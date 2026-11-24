@@ -466,8 +466,9 @@ story, `nothing_about_an_undetected_unit…`, and what they found is under Tests
 
 **Merged with main before the pull request.** Both rows above are at `b0c0e6832`. Main then
 took FL.4 (#784), the P2-Tier 2E security pass over the arena (#785), #786 and #787. The unit was
-merged with main `9de381e74` and soaked again there, eight rounds a cell: 48 passes, none failed, 263 s
-a pass and 967 s of summed test time. The guards under Tests ran again on the merged tree.
+merged with main `9de381e74` and soaked again there, eight rounds a cell: 48 passes, none
+failed, 263 s a pass and 967 s of summed test time. The guards under Tests ran again on the
+merged tree.
 
 **Survey.** What the code said before anything was built, where it bears on the design:
 
