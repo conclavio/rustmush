@@ -218,7 +218,7 @@ fn settleable(act: &crate::surface::excursion::Act) -> bool {
 }
 
 /// Server-sealed opening authority for one lane site, computed in `project_offer` and
-/// re-verified live inside `open` whenever `PrepareCtx::world` is present (HIGH-57).
+/// re-verified live inside `open` whenever `PrepareCtx::world` is present (HIGH-57 / P2-TSC-11).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct OpenSiteAuth {
@@ -227,12 +227,22 @@ struct OpenSiteAuth {
     seated: Option<ObjId>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     rigs: Vec<ObjId>,
+    /// Eligible actor-controlled units (`from`/`shooter`) at offer time (`P2-TSC-11`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    eligible_from: Vec<ObjId>,
+    /// Eligible opposing targets visible within sensor range from `seated` (`P2-TSC-11`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    fire_targets: Vec<ObjId>,
+    /// Eligible opposing targets visible to any eligible unit led by `actor` (`P2-TSC-11`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    mark_targets: Vec<ObjId>,
 }
 
-/// **Verify presence and leadership/seat ownership for a field promotion** (HIGH-57): both
-/// units must stand on the named site's ground in distinct parties; `Mark` requires the actor to
-/// lead `from`'s party (and not `at`'s), and `Fire` requires the actor to be actively seated in
-/// `shooter`.
+/// **Verify presence and leadership/seat ownership for a field promotion** (HIGH-57 / P2-TSC-11):
+/// caller authority over `from` is verified FIRST (preventing target-presence oracles on any
+/// caller), then both units must stand on the named site's ground in distinct parties; `Mark`
+/// requires the actor to lead `from`'s party (and not `at`'s), and `Fire` requires the actor to be
+/// actively seated in `shooter`.
 fn validate_open_authority_with_seat(
     party_rows: &[super::parties::GroundParty],
     seated_unit: Option<ObjId>,
@@ -245,13 +255,16 @@ fn validate_open_authority_with_seat(
             by: from,
             of: at,
         } => {
+            let from_party = find(from)
+                .ok_or_else(|| rejected("your unit does not stand on that site's ground"))?;
+            if from_party.leader != Some(leader) {
+                return Err(rejected("only that party's leader can mark it hostile"));
+            }
             if from == at {
                 return Err(rejected(
                     "a field opens against another party on that site's ground",
                 ));
             }
-            let from_party = find(from)
-                .ok_or_else(|| rejected("your unit does not stand on that site's ground"))?;
             let at_party = find(at)
                 .ok_or_else(|| rejected("that target does not stand on that site's ground"))?;
             if from_party.key == at_party.key || at_party.leader == Some(leader) {
@@ -259,21 +272,23 @@ fn validate_open_authority_with_seat(
                     "a field opens against another party on that site's ground",
                 ));
             }
-            if from_party.leader != Some(leader) {
-                return Err(rejected("only that party's leader can mark it hostile"));
-            }
             Ok(())
         }
         PromotedBy::Fire {
             shooter, target, ..
         } => {
+            if seated_unit != Some(shooter) {
+                return Err(rejected(
+                    "you must be seated in the firing unit on that site's ground",
+                ));
+            }
+            let shooter_party = find(shooter)
+                .ok_or_else(|| rejected("your unit does not stand on that site's ground"))?;
             if shooter == target {
                 return Err(rejected(
                     "a field opens against another party on that site's ground",
                 ));
             }
-            let shooter_party = find(shooter)
-                .ok_or_else(|| rejected("your unit does not stand on that site's ground"))?;
             let target_party = find(target)
                 .ok_or_else(|| rejected("that target does not stand on that site's ground"))?;
             if shooter_party.key == target_party.key {
@@ -281,15 +296,205 @@ fn validate_open_authority_with_seat(
                     "a field opens against another party on that site's ground",
                 ));
             }
-            if seated_unit != Some(shooter) {
-                return Err(rejected(
-                    "you must be seated in the firing unit on that site's ground",
-                ));
-            }
             Ok(())
         }
         PromotedBy::Staff { .. } => Err(rejected("only staff fixtures open a staff field")),
     }
+}
+
+/// Zero-allocation [`mush_atlas::CellGrid`] over a lane site's ground surface plus the site
+/// record's opaque ground objects (`P2-TSC-11`).
+struct SiteSurfaceGrid<'a> {
+    surface: &'a mush_atlas::SurfaceComposite,
+    objects: &'a [crate::surface::site_record::GroundObject],
+}
+
+impl mush_atlas::CellGrid for SiteSurfaceGrid<'_> {
+    fn cell_at(&self, x: u16, y: u16) -> Option<(mush_atlas::TerrainClass, i32)> {
+        let (class, elev) = self.surface.cell_at(x, y)?;
+        let ix = i64::from(x);
+        let iy = i64::from(y);
+        for object in self.objects {
+            let (cx, cy) = object.pose.cell();
+            let half = i64::from(object.footprint) / 2;
+            let x0 = cx.saturating_sub(half);
+            let y0 = cy.saturating_sub(half);
+            if ix >= x0
+                && ix < x0.saturating_add(i64::from(object.footprint))
+                && iy >= y0
+                && iy < y0.saturating_add(i64::from(object.footprint))
+            {
+                return Some((super::ground::OBJECT_CLASS, elev));
+            }
+        }
+        Some((class, elev))
+    }
+}
+
+/// Whether `unit` is eligible to initiate or be targeted by a field promotion (`P2-TSC-11`):
+/// excludes `held_out` hulls, `yielded` hulls, live wrecks, and wrecks recorded on `record`.
+pub(super) fn open_unit_eligible(world: &World, record: Option<&SiteRecord>, unit: ObjId) -> bool {
+    if super::admit::held_out(world, unit) || super::raiders::yielded(world, unit) {
+        return false;
+    }
+    if mush_tactics::module::unit_of(world, unit).is_some_and(crate::arena::damage::is_wreck) {
+        return false;
+    }
+    if record.is_some_and(|rec| {
+        rec.units.iter().any(|left| {
+            left.unit == unit && left.condition == crate::surface::site_record::LeftCondition::Wreck
+        })
+    }) {
+        return false;
+    }
+    true
+}
+
+/// Eye height above terrain (cm) for surface line-of-sight traces (`P2-TSC-11`).
+fn surface_eye_cm(world: &World, unit: ObjId) -> i32 {
+    let raw = world
+        .module_state::<crate::TacsimStore>()
+        .and_then(|store| {
+            let cells = mush_tactics::module::unit_of(world, unit)?;
+            Some(crate::match_::sensor_height_cm(store.definitions(), cells))
+        })
+        .unwrap_or(0);
+    if raw == 0 {
+        mush_atlas::EYE_HEIGHT_CM
+    } else {
+        i32::try_from(raw).unwrap_or(i32::MAX)
+    }
+}
+
+/// Visual/sensor range (cells) for surface fire-order validation (`P2-TSC-11`).
+fn surface_fire_sight_cells(world: &World, unit: ObjId) -> u64 {
+    world
+        .module_state::<crate::TacsimStore>()
+        .and_then(|store| {
+            let cells = mush_tactics::module::unit_of(world, unit)?;
+            let profile = crate::match_::sensor_profile(store.definitions(), cells)?;
+            Some(u64::from(profile.max_range_cells))
+        })
+        .filter(|cells| *cells > 0)
+        .unwrap_or(crate::surface::presence::SIGHT_CELLS)
+}
+
+/// Effective ground cell of `unit` on `site` (`P2-TSC-11`): docked carriers stand at the domain's
+/// passive `(0, 0)` origin in `mush_sim`, whereas the field and surface map place them on the
+/// site's pad (`crate::surface::excursion::site_pad_cm`). Non-carrier units and explicitly placed
+/// carriers always use their own `pose` coordinates.
+fn effective_surface_cell(
+    world: &World,
+    site: &CanonicalId,
+    domain: mush_sim::DomainId,
+    unit: ObjId,
+) -> Option<(i64, i64)> {
+    let (on, pose) = mush_sim::pose_of(world, unit)?;
+    if on != domain {
+        return None;
+    }
+    if super::carrier::is_carrier(world, unit)
+        && pose.x_cm == 0
+        && pose.y_cm == 0
+        && matches!(
+            crate::port::ship::berth_of(world, unit),
+            crate::port::ship::Berth::Docked { map, .. } if map.entry == *site
+        )
+    {
+        let pad = crate::surface::excursion::site_pad_cm(world, site);
+        return Some(crate::surface::excursion::site_cell(pad.0, pad.1));
+    }
+    Some(crate::surface::excursion::site_cell(pose.x_cm, pose.y_cm))
+}
+
+/// **Enforce surface visual presence, hull eligibility, and terrain/object LOS** (`P2-TSC-11`):
+/// both `from` and `at` must be eligible (never wrecks, `held_out`, or `yielded`), stand on
+/// `domain`, and have unobstructed line of sight over the site's terrain and `record.objects`; for
+/// fire promotions (`require_sensor_range`), `at` must also lie within `from`'s visual/sensor
+/// reach so direct `tacsim_field op="open"` `SubmitSelf` cannot bypass surface fog-of-war or arm
+/// `PendingFire` onto unseen targets.
+pub(super) fn surface_sighting_valid(
+    world: &World,
+    site: &CanonicalId,
+    domain: mush_sim::DomainId,
+    record: Option<&SiteRecord>,
+    from: ObjId,
+    at: ObjId,
+    require_sensor_range: bool,
+) -> bool {
+    if !open_unit_eligible(world, record, from) || !open_unit_eligible(world, record, at) {
+        return false;
+    }
+    let Some(from_cell) = effective_surface_cell(world, site, domain, from) else {
+        return false;
+    };
+    let Some(at_cell) = effective_surface_cell(world, site, domain, at) else {
+        return false;
+    };
+    let (Ok(fx), Ok(fy), Ok(tx), Ok(ty)) = (
+        u16::try_from(from_cell.0),
+        u16::try_from(from_cell.1),
+        u16::try_from(at_cell.0),
+        u16::try_from(at_cell.1),
+    ) else {
+        return false;
+    };
+    if require_sensor_range {
+        let cells = crate::surface::excursion::cells_apart(from_cell, at_cell);
+        if cells > surface_fire_sight_cells(world, from) {
+            return false;
+        }
+    }
+    if (fx, fy) == (tx, ty) {
+        return true;
+    }
+    let Ok((composite, _)) = crate::surface::ground::site_terrain_and_biome(world, site) else {
+        return false;
+    };
+    let Some(surface) = composite.surface(&mush_atlas::SurfaceRef::Ground) else {
+        return false;
+    };
+    let objects = record.map_or(&[][..], |rec| rec.objects.as_slice());
+    let grid = SiteSurfaceGrid { surface, objects };
+    mush_atlas::trace_cells(
+        &grid,
+        mush_atlas::Eye {
+            cell: (fx, fy),
+            height_cm: surface_eye_cm(world, from),
+        },
+        mush_atlas::Eye {
+            cell: (tx, ty),
+            height_cm: surface_eye_cm(world, at),
+        },
+    )
+    .sight
+    .is_clear_or_partial()
+}
+
+/// **Party-level surface sighting check for `PromotedBy::Mark`** (`P2-TSC-11`): both `from` and
+/// `at` must be eligible units on `domain`, and at least one eligible unit of `from`'s party
+/// (`party_units`, including `from`) must have unobstructed terrain/object LOS to `at`.
+pub(super) fn party_surface_sighting_valid(
+    world: &World,
+    site: &CanonicalId,
+    domain: mush_sim::DomainId,
+    record: Option<&SiteRecord>,
+    party_units: &[ObjId],
+    from: ObjId,
+    at: ObjId,
+) -> bool {
+    if !open_unit_eligible(world, record, from) || !open_unit_eligible(world, record, at) {
+        return false;
+    }
+    if effective_surface_cell(world, site, domain, from).is_none() {
+        return false;
+    }
+    if surface_sighting_valid(world, site, domain, record, from, at, false) {
+        return true;
+    }
+    party_units.iter().copied().any(|observer| {
+        observer != from && surface_sighting_valid(world, site, domain, record, observer, at, false)
+    })
 }
 
 fn validate_open_authority(
@@ -690,10 +895,77 @@ fn pack_open_auth(
             index
         });
         let rigs = rigs_index.get(entry).cloned().unwrap_or_default();
+        // P2-TSC-11: seal surface visibility/range/eligibility snapshots into `OpenSiteAuth` so
+        // non-composed `open` paths without `PrepareCtx::world` enforce the same fog-of-war/LOS
+        // and target-eligibility checks fail-closed.
+        let site_rec = state.get(sites, &SiteKey(entry.clone())).ok().flatten();
+        let domain = domains.get(entry).copied();
+        let eligible_from: Vec<ObjId> = parties
+            .iter()
+            .filter(|row| row.leader == Some(actor) || Some(row.unit) == seated)
+            .map(|row| row.unit)
+            .filter(|unit| open_unit_eligible(w, site_rec, *unit))
+            .collect();
+        let fire_targets: Vec<ObjId> = match (domain, seated) {
+            (Some(dom), Some(shooter)) if eligible_from.contains(&shooter) => {
+                let shooter_key = parties
+                    .iter()
+                    .find(|row| row.unit == shooter)
+                    .map(|row| row.key);
+                parties
+                    .iter()
+                    .filter(|row| Some(row.key) != shooter_key)
+                    .map(|row| row.unit)
+                    .filter(|target| {
+                        surface_sighting_valid(w, entry, dom, site_rec, shooter, *target, true)
+                    })
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
+        let mark_targets: Vec<ObjId> = match domain {
+            Some(dom) if leads_here => {
+                let led_keys: BTreeSet<super::record::PartyKey> = parties
+                    .iter()
+                    .filter(|row| row.leader == Some(actor))
+                    .map(|row| row.key)
+                    .collect();
+                let led_eligible: Vec<ObjId> = parties
+                    .iter()
+                    .filter(|row| led_keys.contains(&row.key))
+                    .map(|row| row.unit)
+                    .filter(|unit| open_unit_eligible(w, site_rec, *unit))
+                    .collect();
+                if let Some(&first_led) = led_eligible.first() {
+                    parties
+                        .iter()
+                        .filter(|row| !led_keys.contains(&row.key) && row.leader != Some(actor))
+                        .map(|row| row.unit)
+                        .filter(|target| {
+                            party_surface_sighting_valid(
+                                w,
+                                entry,
+                                dom,
+                                site_rec,
+                                &led_eligible,
+                                first_led,
+                                *target,
+                            )
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                }
+            }
+            _ => Vec::new(),
+        };
         let Ok(value) = serde_json::to_value(OpenSiteAuth {
             parties,
             seated,
             rigs,
+            eligible_from,
+            fire_targets,
+            mark_targets,
         }) else {
             continue;
         };
@@ -777,7 +1049,69 @@ impl FieldProvider {
                 &ground,
             )?;
             validate_open_authority(world, &party_rows, &by)?;
+            let visible = match by {
+                PromotedBy::Mark {
+                    by: from, of: at, ..
+                } => {
+                    let from_party = party_rows
+                        .iter()
+                        .find(|row| row.unit == from)
+                        .map(|row| row.key);
+                    let party_units: Vec<ObjId> = party_rows
+                        .iter()
+                        .filter(|row| Some(row.key) == from_party)
+                        .map(|row| row.unit)
+                        .collect();
+                    party_surface_sighting_valid(
+                        world,
+                        &record.site,
+                        domain,
+                        Some(record),
+                        &party_units,
+                        from,
+                        at,
+                    )
+                }
+                PromotedBy::Fire {
+                    shooter, target, ..
+                } => surface_sighting_valid(
+                    world,
+                    &record.site,
+                    domain,
+                    Some(record),
+                    shooter,
+                    target,
+                    true,
+                ),
+                PromotedBy::Staff { .. } => {
+                    return Err(rejected("only staff fixtures open a staff field"));
+                }
+            };
+            if !visible {
+                return Err(rejected(
+                    "that target is not visible from your unit on that site's ground",
+                ));
+            }
             rigs.extend(crate::surface::act::world_rigs(world));
+        } else {
+            // P2-TSC-11 fail-closed fallback when `PrepareCtx::world` is absent (plain K3
+            // prepare): enforce the server-sealed `OpenSiteAuth` visibility/eligibility lists.
+            let visible = match by {
+                PromotedBy::Mark {
+                    by: from, of: at, ..
+                } => auth.eligible_from.contains(&from) && auth.mark_targets.contains(&at),
+                PromotedBy::Fire {
+                    shooter, target, ..
+                } => auth.eligible_from.contains(&shooter) && auth.fire_targets.contains(&target),
+                PromotedBy::Staff { .. } => {
+                    return Err(rejected("only staff fixtures open a staff field"));
+                }
+            };
+            if !visible {
+                return Err(rejected(
+                    "that target is not visible from your unit on that site's ground",
+                ));
+            }
         }
         let field = record
             .promote(now, by)
@@ -2237,6 +2571,9 @@ mod tests {
                 .collect(),
             seated,
             rigs: Vec::new(),
+            eligible_from: Vec::new(),
+            fire_targets: Vec::new(),
+            mark_targets: Vec::new(),
         };
 
         // 25 sites × 40 ground units each is well over 48 KiB monolithically.
@@ -2503,5 +2840,117 @@ mod tests {
         assert_eq!(got.ordered, vec![3, 1]);
         assert!(got.seated_sites.contains(&3));
         assert_eq!(got.seated_unit_by_site.get(&3), Some(&u_zeta_seated));
+    }
+
+    #[test]
+    fn p2_tsc_11_validate_open_authority_checks_from_before_at() {
+        use super::super::parties::GroundParty;
+        use super::super::record::PartyKey;
+
+        let leader = ObjId(10);
+        let intruder = ObjId(20);
+        let enemy_leader = ObjId(30);
+        let u_from = ObjId(100);
+        let u_target = ObjId(200);
+        let u_absent = ObjId(999);
+
+        let rows = vec![
+            GroundParty {
+                unit: u_from,
+                key: PartyKey::Unit { unit: u_from },
+                leader: Some(leader),
+            },
+            GroundParty {
+                unit: u_target,
+                key: PartyKey::Unit { unit: u_target },
+                leader: Some(enemy_leader),
+            },
+        ];
+
+        // Mark: unauthorized caller probing BOTH a present target and an absent
+        // target receives the exact same `from` authority refusal (no presence oracle).
+        let mark_present = validate_open_authority_with_seat(
+            &rows,
+            None,
+            &PromotedBy::Mark {
+                leader: intruder,
+                by: u_from,
+                of: u_target,
+            },
+        )
+        .expect_err("intruder cannot mark");
+        let mark_absent = validate_open_authority_with_seat(
+            &rows,
+            None,
+            &PromotedBy::Mark {
+                leader: intruder,
+                by: u_from,
+                of: u_absent,
+            },
+        )
+        .expect_err("intruder cannot mark absent target");
+        assert_eq!(mark_present.to_string(), mark_absent.to_string());
+        assert!(
+            mark_present
+                .to_string()
+                .contains("only that party's leader can mark it hostile"),
+            "{mark_present}"
+        );
+
+        // Fire: unseated caller probing BOTH a present target and an absent
+        // target receives the exact same seat refusal before `at` is checked.
+        let fire_present = validate_open_authority_with_seat(
+            &rows,
+            None,
+            &PromotedBy::Fire {
+                pilot: intruder,
+                shooter: u_from,
+                target: u_target,
+            },
+        )
+        .expect_err("unseated caller cannot fire");
+        let fire_absent = validate_open_authority_with_seat(
+            &rows,
+            None,
+            &PromotedBy::Fire {
+                pilot: intruder,
+                shooter: u_from,
+                target: u_absent,
+            },
+        )
+        .expect_err("unseated caller cannot fire at absent target");
+        assert_eq!(fire_present.to_string(), fire_absent.to_string());
+        assert!(
+            fire_present
+                .to_string()
+                .contains("you must be seated in the firing unit"),
+            "{fire_present}"
+        );
+
+        // Authorized callers pass for a valid enemy target and fail on absent target.
+        assert!(
+            validate_open_authority_with_seat(
+                &rows,
+                None,
+                &PromotedBy::Mark {
+                    leader,
+                    by: u_from,
+                    of: u_target,
+                },
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_open_authority_with_seat(
+                &rows,
+                Some(u_from),
+                &PromotedBy::Fire {
+                    pilot: leader,
+                    shooter: u_from,
+                    target: u_target,
+                },
+            )
+            .is_ok()
+        );
     }
 }

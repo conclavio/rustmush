@@ -169,7 +169,9 @@ use smol_str::SmolStr;
 
 use crate::arena::index::{Candidate, reach_bound_sq, square_between, square_cm};
 use crate::arena::ledger::EventKind;
-use crate::arena::rng::{DrawLabel, draw, draw_contact_id};
+#[cfg(test)]
+use crate::arena::rng::draw_contact_id;
+use crate::arena::rng::{DrawLabel, draw, draw_contact_id_epoch};
 use crate::arena::state::{
     Arena, Classification, ContactId, Designator, DueKind, OwnSighting, PartyId, Power, SeenPose,
     ShadowContact, UnitState,
@@ -805,8 +807,13 @@ impl Arena {
     pub fn designator_for(&self, viewer: ObjId, held: &ShadowContact) -> Designator {
         let named = self.sensors_cfg.designate_on_detection
             || matches!(held.class, Classification::Classified { .. });
-        if named && let Some(target) = self.unit(held.target) {
-            return target.callsign;
+        if named {
+            if let Some(target) = self.unit(held.target) {
+                return target.callsign;
+            }
+            if let Some(plot) = self.withdrawn_plots.get(&held.target) {
+                return plot.callsign;
+            }
         }
         Designator::Provisional(
             self.designators
@@ -993,7 +1000,12 @@ impl Arena {
             condition,
         } in found.into_iter().flatten()
         {
-            let id = draw_contact_id(seed, observer, target);
+            let id = draw_contact_id_epoch(
+                seed,
+                observer,
+                target,
+                self.designators.epoch(observer, target),
+            );
             match self.contacts.get_mut(observer, id) {
                 Some(held) => {
                     // Doc 16 §3.6 step 4: *no gap longer than `pass_ms`*. A gap
@@ -1133,6 +1145,16 @@ impl Arena {
             // (`Arena::lost_designators`).
             let named = self.designator_for(observer, &lost);
             self.lost_designators.insert((observer, id), named);
+            // P2-TSC-14 / P2-TSC-15: once a withdrawn target's stale plot
+            // expires, prune its tombstone if no other viewer still holds it
+            // and drop stale `held_said` rows for the expired contact.
+            if self.unit(lost.target).is_none() {
+                self.held_said
+                    .retain(|(on, _, cid), _| !(*on == observer && *cid == id));
+                if !self.contacts.has_target(lost.target) {
+                    self.withdrawn_plots.remove(&lost.target);
+                }
+            }
             journal.push((
                 t_ms,
                 EventKind::Lost {
@@ -1733,7 +1755,8 @@ impl Arena {
                 if target == mate {
                     continue;
                 }
-                let id = draw_contact_id(seed, mate, target);
+                let id =
+                    draw_contact_id_epoch(seed, mate, target, self.designators.epoch(mate, target));
                 match self.contacts.get_mut(mate, id) {
                     Some(held) => {
                         // **16b cut F.3**: the sharer's own sighting, and only
@@ -1911,7 +1934,7 @@ impl Arena {
         }
         self.units.iter().any(|viewer| {
             self.contacts.of(viewer.id).any(|(_, held)| {
-                self.unit(held.target).is_some()
+                self.target_known_to_plot(held.target)
                     && !self.contact_reads_dead(held)
                     // 16b cut U.1 (16c `T-24`): `range < reach` squared, as
                     // `range <= reach − 1`; `reach` is at least 1 here, the
@@ -1958,17 +1981,21 @@ impl Arena {
     /// §5 do not make an exception for a reader that happens to be a machine.
     #[must_use]
     pub fn contact_reads_dead(&self, held: &ShadowContact) -> bool {
-        // *Gone* first: a contact whose unit has left the match is not a fact
-        // about anything, so neither the kill this platform watched nor the
-        // reading it holds is a thing to answer with. It is the doc's sentence
-        // in the order the doc says it.
-        let Some(target) = self.unit(held.target) else {
+        let Some(fatal_sections) = self
+            .unit(held.target)
+            .map(|target| target.fatal_sections)
+            .or_else(|| {
+                self.withdrawn_plots
+                    .get(&held.target)
+                    .map(|plot| plot.fatal_mask)
+            })
+        else {
             return false;
         };
         held.known_dead
-            || held.seen_condition.is_some_and(|reading| {
-                reading.condition.destroyed_mask() & target.fatal_sections != 0
-            })
+            || held
+                .seen_condition
+                .is_some_and(|reading| reading.condition.destroyed_mask() & fatal_sections != 0)
     }
 
     /// The first [`DueKind::SensorPass`] of **every unit**, at

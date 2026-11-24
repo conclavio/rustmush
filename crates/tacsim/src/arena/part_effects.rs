@@ -165,13 +165,20 @@ pub(crate) fn derive(state: &mut UnitState, cell_cm: u16) -> Derived {
     {
         let live = match part_condition(&state.unit, &authored.component) {
             Some(condition) if !condition.is_operational() => None,
-            Some(ComponentCondition::Damaged) => Some(SensorProfile {
-                max_range_cells: scaled(
+            Some(ComponentCondition::Damaged) => {
+                // P2-TSC-28: a damaged sensor whose scaled reach floors to `0`
+                // cells is effectively offline (`None`), preserving
+                // `sensor_authored` so `scope_sight_cm` / `contact_band` never
+                // uncap range bands and `sight_cap` reports `Offline`.
+                let max_range_cells = scaled(
                     authored.max_range_cells,
                     effects.sensor.damaged_range_permille,
-                ),
-                ..authored.clone()
-            }),
+                );
+                (max_range_cells > 0).then(|| SensorProfile {
+                    max_range_cells,
+                    ..authored.clone()
+                })
+            }
             _ => Some(authored.clone()),
         };
         state.sensor_authored = (live.as_ref() != Some(&authored)).then_some(authored);
@@ -716,5 +723,69 @@ mod tests {
         let unfitted = arena.unit(UNFIT).expect("unfitted");
         assert!(!unfitted.sensor_offline());
         assert_eq!(unfitted.sight_cap(cell_cm), SightCap::Unfitted);
+    }
+
+    #[test]
+    fn p2_tsc_28_zero_cell_damaged_sensor_reads_offline_and_caps_bands() {
+        use crate::arena::view::{SightCap, band_bounds_m_for, contact_band_for};
+
+        // Case 1: 1-cell sensor damaged at stock 500 permille rounds to 0 cells.
+        let mut short_range = unit(RED, PartyId::RED, "intact", "damaged", "intact");
+        short_range.sensor = Some(SensorProfile {
+            max_range_cells: 1,
+            ..visual()
+        });
+        // Case 2: standard sensor with `damaged_range_permille = 0`.
+        let mut zero_permille = unit(BLUE, PartyId::BLUE, "intact", "damaged", "intact");
+        let mut table = crate::arena::resolution::COMPONENT_EFFECTS;
+        table.sensor.damaged_range_permille = 0;
+        zero_permille.profile.component_effects = Some(table);
+
+        let mut arena = arena_of(vec![short_range, zero_permille]);
+        let cell_cm = arena.definition.terrain.cell_cm();
+        for id in [RED, BLUE] {
+            let state = arena.unit(id).expect("unit");
+            assert!(
+                state.sensor.is_none(),
+                "0-cell rounded damaged sensor on {id:?} must derive to None (offline)"
+            );
+            assert!(
+                state.sensor_authored.is_some(),
+                "sensor_authored must be preserved for scope sizing"
+            );
+            assert!(state.sensor_offline());
+            assert_eq!(state.sight_cap(cell_cm), SightCap::Offline);
+            let expected_scope = u32::from(
+                state
+                    .sensor_authored
+                    .as_ref()
+                    .expect("authored")
+                    .max_range_cells,
+            )
+            .saturating_mul(u32::from(cell_cm));
+            assert_eq!(
+                state.scope_sight_cm(cell_cm),
+                expected_scope,
+                "scope_sight_cm must fall back to authored range rather than 0"
+            );
+            assert_eq!(
+                contact_band_for(5_000, &[10_000, 20_000, 30_000], state.sight_cap(cell_cm)),
+                "beyond"
+            );
+            assert_eq!(
+                band_bounds_m_for(state.sight_cap(cell_cm), &[10_000, 20_000, 30_000]),
+                None
+            );
+        }
+
+        // Case 3: Defensive fallback if a `Some(SensorProfile { max_range_cells: 0, .. })`
+        // ever reaches `scope_sight_cm` or `sight_cap` directly.
+        let red_mut = arena.unit_mut(RED).expect("red");
+        red_mut.sensor = Some(SensorProfile {
+            max_range_cells: 0,
+            ..visual()
+        });
+        assert_eq!(red_mut.sight_cap(cell_cm), SightCap::Offline);
+        assert_eq!(red_mut.scope_sight_cm(cell_cm), u32::from(cell_cm));
     }
 }

@@ -579,6 +579,7 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
         tally: Vec::new(),
         carried: Vec::new(),
     };
+    let field_seed = custody.seed;
     if let Some(book) = ctx.w.module_state_mut::<FieldBook>() {
         book.live.insert(
             site.clone(),
@@ -587,6 +588,7 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
                 live: live.clone(),
             },
         );
+        book.set_seed(site.clone(), field_seed);
         book.tally.remove(site);
     }
     let opened = crate::arena_bridge::open_field_task(
@@ -601,6 +603,7 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
     if let Err(error) = opened {
         if let Some(book) = ctx.w.module_state_mut::<FieldBook>() {
             book.live.remove(site);
+            book.seeds.remove(site);
         }
         for back in out {
             let _ = mush_tactics::custody::check_in(ctx, back, None);
@@ -626,6 +629,16 @@ fn admit(ctx: &mut Ctx<'_>, site: &CanonicalId, record: &SiteRecord) -> Result<(
         && live.units.iter().any(|row| {
             row.unit == *shooter && row.pilot.as_ref().is_some_and(|(p, _)| *p == *pilot)
         })
+        && live.units.iter().any(|row| row.unit == *target)
+        && super::provider::surface_sighting_valid(
+            ctx.w,
+            site,
+            domain,
+            Some(record),
+            *shooter,
+            *target,
+            true,
+        )
         && let Some((_, pose)) = mush_sim::pose_of(ctx.w, *target)
     {
         let (x, y) = crate::surface::excursion::site_cell(pose.x_cm, pose.y_cm);

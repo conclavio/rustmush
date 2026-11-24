@@ -3665,27 +3665,39 @@ const M2_FLOAT_PROBE_BITMASK: i64 = (1 << 25) - 1 + (1 << 26) + (1 << 28);
 /// `16_293_227_761_906_457_789` / `b1907260…` / `89bc84bd…`,
 /// `17_189_525_096_992_751_847` / `c93ebe43…` / `ca9d56cc…`,
 /// `6_558_500_431_099_612_070` / `0a5f5cb5…` / `7e0756f2…`.
+///
+/// **Re-blessed by Tier 2E P2-TSC-27 / P2-TSC-29** (`P2-TSC-29`: per-`(viewer, target)`
+/// re-acquisition epoch salting `ContactId` and assigning a fresh provisional `X<n>` after settled
+/// track loss, folded into `DesignatorBook::digest`; `P2-TSC-27`: deferring
+/// `relations.note_fire`/`fired_on_by` until rounds pass `TARGET_GONE`/`WRECK`/`MOVED`/`BLOCKED`):
+/// no fight moved — all four stopping times (`262,250`, `321,750`, `250,500`, and `900,000`), row
+/// 3's float-probe hashes/thinks (`3,600`)/bitmask (`369098751`) are bit-identical; only rows 0–2
+/// `state_hash`, substep hashes, and ledger digests moved. Were (HIGH-60's):
+/// `4_882_261_508_918_946_971` / `ad8815f4…` / `c0a0d3f1…`,
+/// `16_986_972_971_248_132_576` / `14e06264…` / `fa572a6b…`,
+/// `17_574_625_988_479_028_105` / `72c48287…` / `ef4570ff…`,
+/// `15_511_909_787_633_190_310` / `c4fb4187…` / `837e4f62…`.
 const M2_CROSS_PLATFORM_PINS: [(u64, i64, u64, &str, &str); 4] = [
     (
         2350,
         262250,
-        4882261508918946971,
-        "ad8815f4c2cf6dd9fc300962d074b5cb04fd0189c3fb4d098f756a06f7e8820b",
-        "c0a0d3f19704b0943c84721347cbccf9b7851cc45780ca75279330c4c04baf55",
+        3865303214002953236,
+        "3c97fb1805b71c21ea54e8b70e9ce0df77e9f52a9282dc4bc6f30a19d1f444a4",
+        "a184613c633cb3b78ab05cb5d9454c023713bb484c7598b5a673055a33a08d2c",
     ),
     (
         2351,
         321750,
-        16986972971248132576,
-        "14e06264bc899bf0eb05d4b0950051719b059aac4df4257d66631af426443eec",
-        "fa572a6b40ca32986a198d160f6d0d6f9a234c5d1f2701762a5d7687b7539bc9",
+        8454658487356090929,
+        "43d170dbfee389217dda51dce682a4ffef0ccb794eeb619c383928dfeadf6329",
+        "b2b5fd7d4d7e94a612e3a1f6c0eb71d95fe9a8b6b19a80eff86ae51058ddc926",
     ),
     (
         2352,
         250500,
-        17574625988479028105,
-        "72c4828796b96c2ca20371a71893d71f23eccf8b413fa417bb16cea646e4aea5",
-        "ef4570ff3673bcf2475dc16114a317308dd3523de3f8f46f262b7d028547abc9",
+        2442941352886770232,
+        "b513d0b4413bbf74e20f502876f33b3acc1482db139cb9dcc650e6378890a895",
+        "181b052e11df2e3134796a22f89b884cb6c4029fccc18a8cf03147f95b64d659",
     ),
     (
         2350,

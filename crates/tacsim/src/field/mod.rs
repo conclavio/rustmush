@@ -187,6 +187,9 @@ pub struct FieldBook {
     /// demotion for pairwise capture hostility checks (M33).
     fire_pairs: BTreeMap<(CanonicalId, u32), BTreeSet<(ObjId, ObjId)>>,
     fire_pair_order: std::collections::VecDeque<(CanonicalId, u32)>,
+    /// Private per-field CSPRNG seeds (`P2-TSC-12`), populated at admission/resume from the
+    /// arena's private seed and never exposed to players.
+    seeds: BTreeMap<CanonicalId, u64>,
 }
 
 /// Maximum number of recent `(site, ordinal)` fields retained in RAM for pairwise fire attribution.
@@ -281,6 +284,17 @@ impl FieldBook {
     pub(crate) fn pending(&self, site: &CanonicalId) -> bool {
         self.held.contains_key(site) || self.boot_marks.contains_key(site)
     }
+
+    /// Private CSPRNG seed for `site`'s running field (`P2-TSC-12`).
+    #[must_use]
+    pub(crate) fn seed_of(&self, site: &CanonicalId) -> Option<u64> {
+        self.seeds.get(site).copied()
+    }
+
+    /// Record the private CSPRNG seed for `site`'s running field (`P2-TSC-12`).
+    pub(crate) fn set_seed(&mut self, site: CanonicalId, seed: u64) {
+        self.seeds.insert(site, seed);
+    }
 }
 
 /// Purge all site-scoped ephemeral RAM structures when a field closes or voids (M32).
@@ -293,6 +307,7 @@ pub(crate) fn purge_site_ephemera(ctx: &mut Ctx<'_>, site: &CanonicalId, task: O
         book.fire.remove(site);
         book.tally.remove(site);
         book.stakes.remove(site);
+        book.seeds.remove(site);
         book.forget_snapshot(site);
     }
     if let Some(book) = ctx.w.module_state_mut::<eject::EjectBook>() {

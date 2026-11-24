@@ -4100,12 +4100,13 @@ fn a_loss_that_outlasts_the_window_is_still_a_loss_and_then_a_new_contact() {
         .iter()
         .position(|line| *line == format!("Contact {mark} lost."))
         .unwrap_or_else(|| panic!("the loss was never said: {lines:?}"));
-    // The LAST of them: the row was acquired once at the opening pass too, and
-    // what this property is about is the acquisition after the loss.
+    // P2-TSC-29: after a settled loss past the hysteresis window, re-acquiring
+    // the same target assigns a fresh provisional `X<n>` (`X3`, not `X2`) so
+    // stealth resets cannot be correlated by provisional designator reuse.
     let again = lines
         .iter()
-        .rposition(|line| line.starts_with("New contact X2:"))
-        .unwrap_or_else(|| panic!("the return was never said: {lines:?}"));
+        .rposition(|line| line.starts_with("New contact X3:"))
+        .unwrap_or_else(|| panic!("the return was never said under a fresh X<n>: {lines:?}"));
     assert!(loss < again, "out of order: {lines:?}");
     assert!(
         !lines.iter().any(|line| line.contains("unidentified again")),
@@ -4148,7 +4149,7 @@ fn mesh_rename_arena() -> Arena {
 
 /// Whether the hold `viewer` has on `target` was opened under a number.
 fn numbered(arena: &Arena, viewer: ObjId, target: ObjId) -> Option<bool> {
-    let id = draw_contact_id(arena.seed, viewer, target);
+    let id = arena.contacts.id_of(viewer, target)?;
     arena.contacts.get(viewer, id).map(|held| held.numbered)
 }
 
@@ -4185,6 +4186,12 @@ fn a_share_renames_a_hold_this_platform_opened_and_a_mesh_arrival_is_one_line() 
     assert_eq!(numbered(&arena, EYE, MARK), None, "the row never expired");
 
     // ---- phase 3: it comes back where only `MATE` can see it
+    let reacquired_id = tacsim::arena::draw_contact_id_epoch(arena.seed, EYE, MARK, 1);
+    assert_ne!(
+        reacquired_id,
+        draw_contact_id(arena.seed, EYE, MARK),
+        "P2-TSC-29: settled track loss must salt re-acquired ContactId"
+    );
     if let Some(state) = arena.unit_mut(EYE) {
         state.sensor = Some(SensorProfile {
             max_range_cells: 15,
@@ -4204,7 +4211,7 @@ fn a_share_renames_a_hold_this_platform_opened_and_a_mesh_arrival_is_one_line() 
                     class,
                     ..
                 } = notice
-                    && contact.id == draw_contact_id(arena.seed, EYE, MARK)
+                    && contact.id == reacquired_id
                 {
                     acquired_class.push(*class);
                 }
@@ -4230,9 +4237,9 @@ fn a_share_renames_a_hold_this_platform_opened_and_a_mesh_arrival_is_one_line() 
         !arrival.iter().any(|line| line.contains("identified:")),
         "the mesh arrival was announced as a rename of a row nobody is looking at: {arrival:?}"
     );
-    // The book still holds the number from the earlier hold — which is exactly
-    // why the `was` may not be read off it.
-    assert_eq!(arena.designators.provisional(EYE, MARK), Some(1));
+    // P2-TSC-29: the settled loss forgot the earlier provisional number, and
+    // the mesh arrival opens no provisional number of its own.
+    assert_eq!(arena.designators.provisional(EYE, MARK), None);
 
     // **`T-19`**: and the acquisition carries the class the row actually has.
     assert_eq!(
@@ -5597,5 +5604,86 @@ fn u2_the_stale_clause_moves_a_frame_at_the_arenas_own_pass_ms() {
         cockpit::stale_clause(*after, pass_ms),
         ", plotted 1 s ago",
         "the frame carries the clause the earlier one could not"
+    );
+}
+
+#[test]
+fn p2_tsc_29_settled_loss_salts_contact_id_and_provisional_designator_across_snapshots() {
+    use tacsim::arena::Snapshot;
+    use tacsim::arena::draw_contact_id_epoch;
+
+    let mut arena = arena_of(
+        vec![
+            tank(
+                EYE,
+                PartyId::RED,
+                centre(10, 10),
+                Some(SensorProfile {
+                    classify_after_ms: 20_000,
+                    ..visual()
+                }),
+            ),
+            tank(MARK, PartyId::BLUE, centre(15, 10), None),
+        ],
+        &[],
+    );
+    let _ = arena.step(0, &[] as &[Control], &[]);
+    let mut tape: Vec<u8> = Vec::new();
+
+    // 1) Initial acquisition uses epoch-0 ContactId (backward-compatible with
+    // `draw_contact_id`) and provisional designator X1.
+    for n in 1..=3 {
+        let _ = pulse(&mut arena, PULSE_MS * n, &mut tape);
+    }
+    let epoch0_id = draw_contact_id(arena.seed, EYE, MARK);
+    assert_eq!(draw_contact_id_epoch(arena.seed, EYE, MARK, 0), epoch0_id);
+    assert_eq!(arena.contacts.id_of(EYE, MARK), Some(epoch0_id));
+    assert_eq!(arena.designators.provisional(EYE, MARK), Some(1));
+    assert_eq!(arena.designators.epoch(EYE, MARK), 0);
+
+    // 2) Settled loss past TTL + hysteresis retires the (EYE, MARK) track,
+    // bumping epoch to 1 and forgetting provisional X1.
+    place(&mut arena, MARK, away(), 0);
+    for n in 4..=14 {
+        let _ = pulse(&mut arena, PULSE_MS * n, &mut tape);
+    }
+    assert_eq!(arena.contacts.id_of(EYE, MARK), None);
+    assert_eq!(
+        arena.designators.epoch(EYE, MARK),
+        1,
+        "settled loss must increment re-acquisition epoch"
+    );
+    assert_eq!(
+        arena.designators.provisional(EYE, MARK),
+        None,
+        "settled loss must forget old provisional X<n>"
+    );
+
+    // 3) Snapshot encode + decode preserves the bumped epoch so a server
+    // restart after loss cannot fall back to epoch-0 ContactId.
+    let snap = Snapshot::encode(&arena).expect("encode after settled loss");
+    let mut decoded =
+        Snapshot::decode(&snap.document, (*arena.definition).clone()).expect("decode");
+    assert_eq!(decoded.designators.epoch(EYE, MARK), 1);
+
+    // 4) Re-acquiring the same target mints a distinct epoch-1 ContactId and a
+    // fresh provisional designator X2.
+    place(&mut decoded, MARK, centre(15, 10), 0);
+    let mut said: Vec<String> = Vec::new();
+    for n in 15..=19 {
+        if let Some(frame) = pulse(&mut decoded, PULSE_MS * n, &mut tape) {
+            said.extend(cockpit::notice_lines(&frame));
+        }
+    }
+    let epoch1_id = draw_contact_id_epoch(decoded.seed, EYE, MARK, 1);
+    assert_ne!(
+        epoch1_id, epoch0_id,
+        "re-acquired contact must carry a fresh epoch-salted ContactId"
+    );
+    assert_eq!(decoded.contacts.id_of(EYE, MARK), Some(epoch1_id));
+    assert_eq!(decoded.designators.provisional(EYE, MARK), Some(2));
+    assert!(
+        said.iter().any(|line| line.starts_with("New contact X2:")),
+        "re-acquired contact must be announced under fresh X2: {said:?}"
     );
 }

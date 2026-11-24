@@ -3105,6 +3105,33 @@ pub const NO_SUCH_CONTACT: &str = "No such contact.";
 /// cadence.
 pub const SPENT_NOTICE_MS: i64 = 5_000;
 
+/// Static display and fire-control metadata captured when a unit leaves a
+/// running arena while surviving viewers still hold a [`ShadowContact`] on it
+/// (P2-TSC-15). Aged out automatically once no viewer holds a contact on the
+/// withdrawn unit, so stale plots render, compute odds/range/cover/deliberation
+/// briefs, keep `Frame::lock ∈ Frame::contacts`, and expire naturally at
+/// `contact_ttl_ms` without leaking the withdrawal instant.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WithdrawnPlot {
+    /// Target's public callsign while it was in the field.
+    pub callsign: Designator,
+    /// Whether the target arrived armed or fired in the field (for tempo/reach reads).
+    pub armed: bool,
+    /// Target's eye height, centimetres (for classified advice cover traces).
+    pub sensor_height_cm: u32,
+    /// Target chassis's fatal section bitmask.
+    pub fatal_mask: u32,
+    /// Target chassis's fatal section words.
+    pub fatal_words: Vec<SmolStr>,
+    /// Target chassis's section vocabulary in section order.
+    pub section_names: Vec<SmolStr>,
+    /// Target chassis's definition id (`tacsim.unit.line_tank`).
+    pub unit_type: SmolStr,
+    /// Target chassis's static silhouette/profile table for classified odds advice.
+    pub profile: crate::arena::resolution::UnitProfile,
+}
+
 /// **The per-viewer shadow contact store** (doc 16 §3.6): viewer platform to its
 /// contacts, contact id to what it holds.
 ///
@@ -3225,6 +3252,14 @@ impl ShadowContacts {
         self.by_viewer.remove(&viewer);
     }
 
+    /// Whether any viewer currently holds a contact pointing at `target`.
+    #[must_use]
+    pub fn has_target(&self, target: ObjId) -> bool {
+        self.by_viewer
+            .values()
+            .any(|held| held.values().any(|contact| contact.target == target))
+    }
+
     /// How many viewers hold anything.
     #[must_use]
     pub fn viewers(&self) -> usize {
@@ -3288,6 +3323,14 @@ pub struct DesignatorBook {
     /// `(viewer, target)` to the number that viewer gave that target.
     #[serde(with = "crate::arena::snapshot::pairs")]
     of: BTreeMap<(ObjId, ObjId), u16>,
+    /// Per-`(viewer, target)` re-acquisition epoch incremented when a lost
+    /// track settles (P2-TSC-29). Absent entries are epoch `0`.
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        with = "crate::arena::snapshot::pairs"
+    )]
+    epochs: BTreeMap<(ObjId, ObjId), u32>,
     /// **FNV-1a 64 over every mint, in the order it was made** (16b cut M.3):
     /// seeded at [`crate::arena::hash::FNV_OFFSET_BASIS`] and folded by
     /// [`DesignatorBook::assign`] with the viewer's `u32`, the target's `u32` and
@@ -3303,6 +3346,7 @@ impl Default for DesignatorBook {
         DesignatorBook {
             next: BTreeMap::new(),
             of: BTreeMap::new(),
+            epochs: BTreeMap::new(),
             digest: crate::arena::hash::FNV_OFFSET_BASIS,
         }
     }
@@ -3312,9 +3356,10 @@ impl DesignatorBook {
     /// The number `viewer` holds `target` under, minting the viewer's next one if
     /// it holds none.
     ///
-    /// Saturating at [`u16::MAX`], which a match cannot reach: a viewer would have
-    /// to detect 65,535 distinct targets, and the arena's own unit cap is far
-    /// under that.
+    /// Wraps from [`u16::MAX`] back to `1` and skips numbers currently held by
+    /// `viewer` in `of` so long-running persistent IC fields never saturate and
+    /// collide at `X65535` (P2-TSC-14). For the first 65,535 mints per viewer
+    /// this produces the exact monotonic sequence `1, 2, 3, ...`.
     ///
     /// **16b cut M.3**: a mint folds into [`DesignatorBook::digest`]; a pair the
     /// book already holds returns before it — `crate::arena::perception` asks
@@ -3324,14 +3369,86 @@ impl DesignatorBook {
         if let Some(held) = self.of.get(&(viewer, target)) {
             return *held;
         }
-        let next = self.next.entry(viewer).or_insert(1);
-        let issued = *next;
-        *next = next.saturating_add(1);
+        let start = self.next.get(&viewer).copied().unwrap_or(1).max(1);
+        let mut candidate = start;
+        let mut issued = start;
+        for _ in 0..u16::MAX {
+            let in_use = self
+                .of
+                .range((viewer, ObjId(0))..=(viewer, ObjId(u32::MAX)))
+                .any(|(_, &n)| n == candidate);
+            if !in_use {
+                issued = candidate;
+                break;
+            }
+            candidate = if candidate == u16::MAX {
+                1
+            } else {
+                candidate + 1
+            };
+        }
+        let next_counter = if issued == u16::MAX { 1 } else { issued + 1 };
+        self.next.insert(viewer, next_counter);
         self.of.insert((viewer, target), issued);
         let digest = crate::arena::hash::fnv1a64_update(self.digest, &viewer.0.to_le_bytes());
         let digest = crate::arena::hash::fnv1a64_update(digest, &target.0.to_le_bytes());
         self.digest = crate::arena::hash::fnv1a64_update(digest, &issued.to_le_bytes());
         issued
+    }
+
+    /// Current re-acquisition epoch for `(viewer, target)` (`0` on first
+    /// acquisition; incremented each time a lost track settles, P2-TSC-29).
+    #[must_use]
+    pub fn epoch(&self, viewer: ObjId, target: ObjId) -> u32 {
+        self.epochs.get(&(viewer, target)).copied().unwrap_or(0)
+    }
+
+    /// Retire a settled track for `(viewer, target)` (P2-TSC-29): bump its
+    /// re-acquisition epoch so future detections mint a fresh `ContactId`, and
+    /// forget the prior provisional `X<n>` so future detections issue a fresh
+    /// provisional designator.
+    pub fn retire_track(&mut self, viewer: ObjId, target: ObjId) {
+        let next_epoch = self
+            .epochs
+            .get(&(viewer, target))
+            .copied()
+            .unwrap_or(0)
+            .saturating_add(1);
+        self.epochs.insert((viewer, target), next_epoch);
+        self.of.remove(&(viewer, target));
+        let digest = crate::arena::hash::fnv1a64_update(self.digest, b"retire\0");
+        let digest = crate::arena::hash::fnv1a64_update(digest, &viewer.0.to_le_bytes());
+        let digest = crate::arena::hash::fnv1a64_update(digest, &target.0.to_le_bytes());
+        self.digest = crate::arena::hash::fnv1a64_update(digest, &next_epoch.to_le_bytes());
+    }
+
+    /// Prune withdrawn unit state from the designator book (P2-TSC-14):
+    /// removes `unit`'s viewer counter and all `(unit, _)` rows, plus any
+    /// `(_, unit)` rows not retained by active stale plots in `keep_targets`.
+    pub fn prune_unit(&mut self, unit: ObjId, keep_targets: &BTreeSet<(ObjId, ObjId)>) {
+        let had_next = self.next.remove(&unit).is_some();
+        let before_of = self.of.len();
+        self.of
+            .retain(|&(v, t), _| v != unit && (t != unit || keep_targets.contains(&(v, t))));
+        let before_epochs = self.epochs.len();
+        self.epochs
+            .retain(|&(v, t), _| v != unit && (t != unit || keep_targets.contains(&(v, t))));
+        if had_next || self.of.len() != before_of || self.epochs.len() != before_epochs {
+            let digest = crate::arena::hash::fnv1a64_update(self.digest, b"prune\0");
+            self.digest = crate::arena::hash::fnv1a64_update(digest, &unit.0.to_le_bytes());
+        }
+    }
+
+    /// Forget a single `(viewer, target)` entry after a withdrawn target's
+    /// final stale contact expires and settles (P2-TSC-14).
+    pub fn forget_pair(&mut self, viewer: ObjId, target: ObjId) {
+        let removed_of = self.of.remove(&(viewer, target)).is_some();
+        let removed_epoch = self.epochs.remove(&(viewer, target)).is_some();
+        if removed_of || removed_epoch {
+            let digest = crate::arena::hash::fnv1a64_update(self.digest, b"forget\0");
+            let digest = crate::arena::hash::fnv1a64_update(digest, &viewer.0.to_le_bytes());
+            self.digest = crate::arena::hash::fnv1a64_update(digest, &target.0.to_le_bytes());
+        }
     }
 
     /// **The running digest of every number this book has minted, in order**
@@ -4575,6 +4692,15 @@ pub struct Arena {
     /// row is already gone when the notice is finally said, so the name it read
     /// as has to be carried from the expiry that took it.
     pub held_losses: BTreeMap<(ObjId, ContactId), (i64, Designator)>,
+    /// Target `ObjId` backing each pending [`Arena::held_losses`] entry so
+    /// [`Arena::settle_held_loss`] can retire the `(viewer, target)` track
+    /// epoch and forget its provisional designator when the hysteresis window
+    /// expires (P2-TSC-29).
+    pub held_loss_targets: BTreeMap<(ObjId, ContactId), ObjId>,
+    /// Static display and fire-control tombstones for units withdrawn while
+    /// surviving viewers still hold stale [`ShadowContact`] plots on them,
+    /// pruned once unreferenced (P2-TSC-15).
+    pub withdrawn_plots: BTreeMap<ObjId, WithdrawnPlot>,
     /// **The state hash of every substep of the pulse just run**, in order, and
     /// cleared at the start of each pulse (doc 16 §3.1 "Determinism": *each substep
     /// produces a state hash recorded with its pulse*).
@@ -5065,6 +5191,8 @@ impl Arena {
             last_observer_s: None,
             pending_notices: BTreeMap::new(),
             held_losses: BTreeMap::new(),
+            held_loss_targets: BTreeMap::new(),
+            withdrawn_plots: BTreeMap::new(),
             substep_hashes: Vec::new(),
             ended: None,
             arena_cfg: arena_cfg.clone(),
@@ -5809,9 +5937,7 @@ impl Arena {
             reach != 0
                 && self.contacts.of(viewer.id).any(|(_, held)| {
                     self.relations.hostile(viewer.team, held.class)
-                        && self
-                            .unit(held.target)
-                            .is_some_and(|target| target.armed_at_checkout() || target.shots_fired > 0)
+                        && self.target_armed_for_plot(held.target)
                         && !self.contact_reads_dead(held)
                         // 16b cut U.1 (16c `T-24`): the squared test, no root.
                         && held.seen_at.within_cm(&viewer.pose, reach)
@@ -5871,11 +5997,27 @@ impl Arena {
         reach: u64,
     ) -> bool {
         self.relations.hostile(viewer.team, held.class)
-            && self
-                .unit(held.target)
-                .is_some_and(|target| target.armed_at_checkout() || target.shots_fired > 0)
+            && self.target_armed_for_plot(held.target)
             && !self.contact_reads_dead(held)
             && held.seen_at.within_cm(&viewer.pose, reach)
+    }
+
+    /// Whether `target` is either live in [`Arena::units`] or backed by a
+    /// retained [`WithdrawnPlot`] tombstone while stale contacts age out
+    /// (P2-TSC-15).
+    #[must_use]
+    pub(crate) fn target_known_to_plot(&self, target: ObjId) -> bool {
+        self.unit(target).is_some() || self.withdrawn_plots.contains_key(&target)
+    }
+
+    /// Whether `target` arrived armed or has fired, reading live state when
+    /// present or its [`WithdrawnPlot`] tombstone while stale plots age out.
+    #[must_use]
+    fn target_armed_for_plot(&self, target: ObjId) -> bool {
+        self.unit(target)
+            .map(|state| state.armed_at_checkout() || state.shots_fired > 0)
+            .or_else(|| self.withdrawn_plots.get(&target).map(|plot| plot.armed))
+            .unwrap_or(false)
     }
 
     /// **Armour plus internals, per mille of what the unit was authored with**

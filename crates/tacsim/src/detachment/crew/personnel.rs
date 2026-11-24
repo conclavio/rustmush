@@ -39,9 +39,12 @@ pub(crate) fn check(
     contract: Option<CrewContract>,
 ) -> Result<HireTerms, PersonnelIssue> {
     // A draft preference alone cannot query another person's existence or
-    // whereabouts. Establish this organizer's employment relationship first.
+    // whereabouts. Establish this organizer's live employment relationship first
+    // (treating contracts with a pending applicable NpcExit as ended, P2-TSC-13).
     let contract = contract
-        .filter(|contract| contract.employer == organizer)
+        .filter(|contract| {
+            contract.employer == organizer && !crate::field::crew::exit_applies(world, contract)
+        })
         .ok_or(PersonnelIssue::NotContracted)?;
     contract
         .validate()

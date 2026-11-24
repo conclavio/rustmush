@@ -175,6 +175,11 @@ impl Arena {
             });
         }
         unit.pose = self.free_pose(&unit, spread)?;
+        // P2-TSC-14 / P2-TSC-15: reclaim any unreferenced card definitions
+        // before admitting the joining unit, and drop any stale tombstone if a
+        // previously withdrawn hull rejoins.
+        self.gc_cards();
+        self.withdrawn_plots.remove(&id);
         let class = unit.seal.class;
         let mut admitted = crate::arena::conditions::ConditionTable::default();
         let (mut state, line) = Self::admit_unit(

@@ -338,6 +338,22 @@ impl CardCatalog {
     pub fn definition(&self, digest: DefinitionDigest) -> Option<&CardDefinition> {
         self.definitions.get(&digest)
     }
+
+    /// Garbage-collect unreferenced card definitions, retaining only digests
+    /// present in `live` across both `definitions` and `hydrated` and
+    /// recomputing `encoded_bytes` (P2-TSC-14).
+    pub fn retain_referenced(&mut self, live: &BTreeSet<DefinitionDigest>) {
+        if self.definitions.keys().all(|digest| live.contains(digest))
+            && self.hydrated.keys().all(|digest| live.contains(digest))
+        {
+            return;
+        }
+        self.definitions.retain(|digest, _| live.contains(digest));
+        self.hydrated.retain(|digest, _| live.contains(digest));
+        self.encoded_bytes = self.definitions.values().fold(0_usize, |acc, definition| {
+            acc.saturating_add(definition_size(definition).unwrap_or(0))
+        });
+    }
 }
 
 /// Small named binding carried by a hull's seal reference and the cockpit frame.
@@ -483,6 +499,11 @@ impl RuntimeProfiles {
     #[must_use]
     pub fn key(&self, index: u8) -> Option<ProfileKey> {
         self.0.get(usize::from(index)).map(|entry| entry.key)
+    }
+
+    /// Distinct definition digests referenced by these bindings (in binding order).
+    pub fn digests(&self) -> impl Iterator<Item = DefinitionDigest> + '_ {
+        self.0.iter().map(|entry| entry.key.definition)
     }
 }
 

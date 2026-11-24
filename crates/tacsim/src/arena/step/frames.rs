@@ -862,10 +862,12 @@ impl Arena {
     /// own clock, which 17b cut M1a.5 relies on.
     pub(crate) fn frame_for(&self, unit: ObjId, tempo: Tempo) -> Option<Frame> {
         let unit = self.unit(unit)?;
-        let lock = unit.lock;
-        // 16b cut Q.2: the scope and the vocabularies its readings are in,
-        // built in one walk (`Arena::frame_scope`).
         let (contacts, scan_tables) = self.frame_scope(unit.id);
+        // P2-TSC-15: enforce `Frame::lock ∈ Frame::contacts` so a frame never
+        // publishes a dangling lock whose contact row is absent.
+        let lock = unit
+            .lock
+            .filter(|id| contacts.iter().any(|row| row.id == *id));
         // **16b cut W.1, re-shaped by cut F.2**: the lock's own target, range
         // and cover. Cut W.1 needed only the range — the band each weapon's
         // lock falls in — and read it off the contact list the frame already
@@ -1055,7 +1057,7 @@ impl Arena {
         // **17b cut M1b.3** (Q2): classified, of another side, still in the
         // match — the one predicate the lock and the rest are both held to.
         let hostile = |held: &crate::arena::state::ShadowContact| {
-            self.relations.hostile(from.team, held.class) && self.unit(held.target).is_some()
+            self.relations.hostile(from.team, held.class) && self.target_known_to_plot(held.target)
         };
         let locked = from
             .lock
