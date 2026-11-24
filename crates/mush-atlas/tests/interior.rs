@@ -1068,6 +1068,34 @@ fn z3_a_world_at_version_six_takes_version_seven_from_the_shelf() {
     }
 }
 
+/// Staff lobby v6's edits undone, so a rebuild of an older version starts from v5's content:
+/// the stair named by direction again, and the British spelling v5 published (the 2026-11-24
+/// playtest). tacsim's `tests/support/mod.rs` keeps the same list.
+fn restore_staff_lobby_v5(doc: &mut Value) {
+    let mut text = serde_json::to_string(doc).expect("serializes");
+    for (v6, v5) in STAFF_LOBBY_V6_EDITS {
+        assert_eq!(
+            text.matches(v6).count(),
+            1,
+            "{v6} is in the staff lobby v6 once"
+        );
+        text = text.replace(v6, v5);
+    }
+    *doc = serde_json::from_str(&text).expect("parses");
+}
+
+/// What the staff lobby's v6 changed, each `(v6, v5)` text unique in the pack.
+const STAFF_LOBBY_V6_EDITS: [(&str, &str); 5] = [
+    (
+        "Production Office <U>;u;office;up;stairs",
+        "Up <U>;u;up;stairs",
+    ),
+    ("Lobby <D>;d;lobby;down;stairs", "Down <D>;d;down;stairs"),
+    ("a two-story lobby", "a two-storey lobby"),
+    ("labeled OVERRATED", "labelled OVERRATED"),
+    ("A meter and a bit", "A metre and a bit"),
+];
+
 /// The digest `neighborhood.staff_lobby@4` shipped with (16b cut D.5).
 const STAFF_LOBBY_V4_DIGEST: &str =
     "8d791c31a7c81c794cb78529b2735e0c1ab360aea92aa8d03c3d571388056796";
@@ -1077,6 +1105,7 @@ const STAFF_LOBBY_V4_DIGEST: &str =
 /// digest for the reason [`ooc_v6`] is.
 fn staff_lobby_v4() -> String {
     let mut doc: Value = serde_json::from_str(starter::STAFF_LOBBY_JSON).expect("the pack is json");
+    restore_staff_lobby_v5(&mut doc);
     doc["manifest"]["version"] = Value::from(4);
     let requires = doc["manifest"]["requires"]
         .as_array_mut()
@@ -1101,6 +1130,31 @@ fn staff_lobby_v4() -> String {
     serde_json::to_string(&doc).expect("json")
 }
 
+/// The digest `neighborhood.staff_lobby@5` shipped with (16b cut Z.3).
+const STAFF_LOBBY_V5_DIGEST: &str =
+    "dacbc7af257e6eececdbd28218945ede03a9114d2274a7031f5ecabcdc938adf";
+
+/// **Version 5 of the staff lobby**: the shipped bytes with the 2026-11-24 playtest's edits
+/// undone and the version put back, held to version 5's pinned digest.
+fn staff_lobby_v5() -> String {
+    let mut doc: Value = serde_json::from_str(starter::STAFF_LOBBY_JSON).expect("the pack is json");
+    restore_staff_lobby_v5(&mut doc);
+    doc["manifest"]["version"] = Value::from(5);
+    doc["manifest"]["digest"] = Value::String("0".repeat(64));
+    let unsigned = serde_json::to_string(&doc).expect("json");
+    let digest = parse_pack(&unsigned)
+        .expect("version 5 parses")
+        .computed_digest()
+        .expect("digests")
+        .to_hex();
+    assert_eq!(
+        digest, STAFF_LOBBY_V5_DIGEST,
+        "the rebuilt fixture is not the staff lobby's version 5"
+    );
+    doc["manifest"]["digest"] = Value::String(digest);
+    serde_json::to_string(&doc).expect("json")
+}
+
 /// **On a live world the staff lobby's version 5 is nothing to do** (16b cut
 /// Z.3): its one change is the `requires` a fresh boot needs beside
 /// `ooc_area@7`, so a world standing at 6 and 4 that takes the OOC pack by hand
@@ -1112,7 +1166,11 @@ fn z3_the_staff_lobby_is_nothing_to_do_on_a_world_that_took_version_seven() {
     let mut boot = shipped();
     boot[1] = ooc_v6();
     boot[2] = staff_lobby_v4();
-    let mut tw = TestWorld::with_modules(modules(boot, shipped()));
+    // The shelf holds version 5, the version this story is about (version 6 renamed the
+    // stair, which is a real update).
+    let mut shelf = shipped();
+    shelf[2] = staff_lobby_v5();
+    let mut tw = TestWorld::with_modules(modules(boot, shelf));
     let version_of = |tw: &TestWorld, pack: &str| {
         tw.world()
             .module_state::<ContentState>()

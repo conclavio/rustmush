@@ -900,7 +900,80 @@ pub fn ooc_pack_v6() -> String {
     signed_as(doc, OOC_V6_DIGEST, "the OOC pack's version 6")
 }
 
-/// **Version 4 of the staff lobby** (16b cut Z.3): the shipped version 5 at
+/// The 2026-11-24 playtest's edits to Ceres undone, so every rebuild of a published version
+/// starts from the content before them: the four stair and ladder exits named by direction
+/// again, and the British spelling. Ceres was re-signed in place at v4 for those edits, as
+/// the 2026-11-17 Co-op rewording was (pre-launch, and no kept world holds the old digest).
+pub fn restore_ceres_before_2026_11_24(doc: &mut serde_json::Value) {
+    let mut text = serde_json::to_string(doc).expect("serializes");
+    for (now, was) in CERES_2026_11_24_EDITS {
+        assert_eq!(text.matches(now).count(), 1, "{now} is in Ceres once");
+        text = text.replace(now, was);
+    }
+    *doc = serde_json::from_str(&text).expect("parses");
+}
+
+/// What the 2026-11-24 playtest changed in Ceres, each `(now, was)` text unique in the pack.
+const CERES_2026_11_24_EDITS: [(&str, &str); 15] = [
+    (
+        "Dockmaster <D>;d;dockmaster;down;stair",
+        "Down <D>;d;down;stair;dockmaster",
+    ),
+    (
+        "Arrivals <U>;u;arrivals;up;stair",
+        "Up <U>;u;up;stair;arrivals",
+    ),
+    (
+        "Authority <U>;u;authority;up;ladder",
+        "Up <U>;u;up;ladder;authority",
+    ),
+    (
+        "Registry <D>;d;registry;down;ladder",
+        "Down <D>;d;down;ladder;registry",
+    ),
+    ("air, color-banded;", "air, colour-banded;"),
+    ("air in color-banded runs", "air in colour-banded runs"),
+    ("in a different color.", "in a different colour."),
+    ("every few meters:", "every few metres:"),
+    ("a cubic meter,", "a cubic metre,"),
+    ("ENROLL AT THE DESK", "ENROL AT THE DESK"),
+    ("before the program pool", "before the programme pool"),
+    ("deck, gray and polished", "deck, grey and polished"),
+    ("with gray cases", "with grey cases"),
+    ("in Luna gray", "in Luna grey"),
+    ("the harbormaster at", "the harbourmaster at"),
+];
+
+/// Staff lobby v6's edits undone, so a rebuild of an older version starts from v5's content:
+/// the stair named by direction again, and the British spelling v5 published (the 2026-11-24
+/// playtest). `mush-atlas`'s `tests/interior.rs` keeps the same list.
+pub fn restore_staff_lobby_v5(doc: &mut serde_json::Value) {
+    let mut text = serde_json::to_string(doc).expect("serializes");
+    for (v6, v5) in STAFF_LOBBY_V6_EDITS {
+        assert_eq!(
+            text.matches(v6).count(),
+            1,
+            "{v6} is in the staff lobby v6 once"
+        );
+        text = text.replace(v6, v5);
+    }
+    *doc = serde_json::from_str(&text).expect("parses");
+}
+
+/// What the staff lobby's v6 changed, each `(v6, v5)` text unique in the pack.
+const STAFF_LOBBY_V6_EDITS: [(&str, &str); 5] = [
+    (
+        "Production Office <U>;u;office;up;stairs",
+        "Up <U>;u;up;stairs",
+    ),
+    ("Lobby <D>;d;lobby;down;stairs", "Down <D>;d;down;stairs"),
+    ("a two-story lobby", "a two-storey lobby"),
+    ("labeled OVERRATED", "labelled OVERRATED"),
+    ("A meter and a bit", "A metre and a bit"),
+];
+
+/// **Version 4 of the staff lobby** (16b cut Z.3): version 5 (the shipped bytes with
+/// [`restore_staff_lobby_v5`]) at
 /// version 4 requiring `ooc_area@6`, which is all version 5 changed, held to
 /// version 4's pinned digest. A world at `ooc_area@6` cannot boot the shipped
 /// staff lobby, whose `requires` names version 7.
@@ -908,6 +981,7 @@ pub fn ooc_pack_v6() -> String {
 pub fn staff_lobby_pack_v4() -> String {
     let mut doc: serde_json::Value =
         serde_json::from_str(mush_atlas::starter::STAFF_LOBBY_JSON).expect("the pack is json");
+    restore_staff_lobby_v5(&mut doc);
     doc["manifest"]["version"] = serde_json::Value::from(4);
     for required in doc["manifest"]["requires"]
         .as_array_mut()
@@ -2632,6 +2706,7 @@ pub fn boot_packs_with_lane(lane: mush_content::Pack) -> Vec<mush_content::Pack>
         tacsim::definitions::content::CAST_CERES_JSON,
     )
     .expect("Ceres JSON");
+    restore_ceres_before_2026_11_24(&mut old_ceres);
     old_ceres["manifest"]["version"] = 2.into();
     old_ceres["manifest"]["digest"] = ground::UNSIGNED.into();
     old_ceres["entries"]["npc.oduya"]["def"]["profile"] =

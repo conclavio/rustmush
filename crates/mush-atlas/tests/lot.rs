@@ -135,7 +135,8 @@ fn boot_world_stays_minimal_and_the_starter_makes_the_lot() {
         assert!(!latch.is_retired());
     }
     // 16b cut Z.3: a fresh world lands the shipped versions — the OOC area at 7
-    // with its twelve pods, and the staff lobby at 5, which is what requires it.
+    // with its twelve pods, and the staff lobby at 6 (5 required it; 6 named the
+    // stair for its rooms, 2026-11-24).
     let version = |id: &str| {
         content
             .latches
@@ -143,7 +144,7 @@ fn boot_world_stays_minimal_and_the_starter_makes_the_lot() {
             .map(mush_content::Applied::version)
     };
     assert_eq!(version(starter::OOC_AREA_PACK), Some(7));
-    assert_eq!(version(starter::STAFF_LOBBY_PACK), Some(5));
+    assert_eq!(version(starter::STAFF_LOBBY_PACK), Some(6));
     let pods = live(&tw)
         .filter(|o| o.kind == ObjKind::Thing && o.name.contains(" Pod "))
         .count();
@@ -350,12 +351,17 @@ fn the_staff_lock_holds_and_the_map_hides_the_office_from_a_player() {
     );
     let events = tw.run(alice, "up");
     let said = texts(&tw, &events, alice);
+    // The 2026-11-24 playtest: a locked way says it is locked, never the
+    // "You can't go that way." of an exit that is not there.
     assert!(
-        said.contains("can't go that way")
-            || said.contains("STAFF ONLY")
-            || said.contains("Permission"),
-        "the stair is locked to staff: {said}"
+        said.contains("The stair is locked: staff only."),
+        "the stair is locked to staff, and says so: {said}"
     );
+    assert!(!said.contains("can't go that way"), "{said}");
+    // By its destination's name too.
+    let events = tw.run(alice, "goto office");
+    let said = texts(&tw, &events, alice);
+    assert!(said.contains("The stair is locked: staff only."), "{said}");
     assert_eq!(
         tw.world().get(alice).and_then(|o| o.location),
         Some(room_named(&tw, "Lobby"))

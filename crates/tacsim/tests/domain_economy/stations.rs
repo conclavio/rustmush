@@ -89,7 +89,7 @@ const PINNED: [(&str, &str); 12] = [
     ),
     (
         CERES_PACK,
-        "bc3a5dfd1fb4dc6fc6b069e420e27246c33ef8d71d7f8ccfd30185572211fa29",
+        "495f770ed75ec697dd190ea3702ff400450d51e22f3d670fc0c5748445441521",
     ),
     (
         STICKNEY_REGION_PACK,
@@ -163,6 +163,7 @@ fn restore_oduya_v2(doc: &mut Value) {
 /// lore (the owner's 2026-11-17 ruling re-worded both in place for one stake per pilot and one
 /// hull at a time).
 fn restore_one_enrolment_wording(doc: &mut Value) {
+    support::restore_ceres_before_2026_11_24(doc);
     let text = serde_json::to_string(doc)
         .expect("serializes")
         .replace(
@@ -2695,4 +2696,114 @@ fn ic14_ic_inside_the_corridor_answers_already_in() {
         vec![ic_return::ALREADY_IN.to_owned()]
     );
     assert_eq!(location(&tw, pilot), Some(c04), "not moved");
+}
+
+/// **A locked way says it is locked** (the owner's 2026-11-24 playtest): in the Registry the
+/// staff ladder, typed by its key, by `goto` and by the room it leads to, answers that it is
+/// locked to staff, and so does the Dockmaster's hatch; never the "You can't go that way." of
+/// an exit that is not there. Staff climb it.
+#[test]
+fn a_staff_locked_way_at_ceres_says_it_is_locked() {
+    let mut tw = booted();
+    let registry = obj(&tw, CERES_PACK, "room.c05_registry");
+    let dockmaster = obj(&tw, CERES_PACK, "room.c14_dockmaster");
+    let pilot = tw.spawn_player("Pilot");
+    for (room, typed, refusal) in [
+        (registry, "u", "The ladder is locked: staff only."),
+        (registry, "goto up", "The ladder is locked: staff only."),
+        (registry, "authority", "The ladder is locked: staff only."),
+        (dockmaster, "h", "The hatch is locked: staff only."),
+    ] {
+        tw.world_mut().move_to(pilot, room).expect("placed");
+        let events = tw.run(pilot, typed);
+        let text = said(&tw, &events, pilot);
+        assert!(text.contains(refusal), "`{typed}`: {text}");
+        assert!(!text.contains("can't go that way"), "`{typed}`: {text}");
+        assert_eq!(location(&tw, pilot), Some(room), "`{typed}` moved nobody");
+    }
+    tw.world_mut().move_to(GOD, registry).expect("placed");
+    let _ = tw.run(GOD, "authority");
+    assert_eq!(
+        location(&tw, GOD),
+        Some(obj(&tw, CERES_PACK, "room.c16_authority"))
+    );
+}
+
+/// **Every shipped atlas exit's key is one of its own words, and no exit is named for a bare
+/// direction** (the owner's 2026-11-24 playtest; PR #769's rule for ship interiors): the
+/// bracketed label in an exit's display name walks it, and the name says where it goes
+/// ("Down" did not). Read from every atlas pack the game and the starter ship. The one
+/// exception is `<L>`, which the lobby and lounge exits show while `l` stays `look` (16b cut
+/// D.5); their word is the room's name. An exit with no label shows no key.
+#[test]
+fn every_shipped_atlas_exit_label_is_one_of_its_aliases_and_names_a_place() {
+    const DIRECTIONS: [&str; 12] = [
+        "up",
+        "down",
+        "north",
+        "south",
+        "east",
+        "west",
+        "northeast",
+        "northwest",
+        "southeast",
+        "southwest",
+        "in",
+        "out",
+    ];
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dirs = [
+        root.join("content/atlas"),
+        root.join("../mush-atlas/content"),
+    ];
+    let mut exits = 0;
+    let mut stray = Vec::new();
+    for dir in &dirs {
+        let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+            .expect("an atlas content folder")
+            .map(|e| e.expect("an entry").path())
+            .filter(|p| p.extension().is_some_and(|x| x == "json"))
+            .collect();
+        files.sort();
+        for file in files {
+            let text = std::fs::read_to_string(&file).expect("reads");
+            let doc: Value = serde_json::from_str(&text).expect("json");
+            let Some(entries) = doc["entries"].as_object() else {
+                continue;
+            };
+            let pack = file.file_name().unwrap_or_default().to_string_lossy();
+            for (id, entry) in entries {
+                if entry["kind"] != "exit" {
+                    continue;
+                }
+                for name in entry["def"]["names"].as_array().into_iter().flatten() {
+                    let name = name.as_str().expect("a name");
+                    exits += 1;
+                    let mut segments = name.split(';').map(str::trim);
+                    let display = segments.next().unwrap_or_default();
+                    let (place, label) = match display.rsplit_once('<') {
+                        Some((place, rest)) => (place.trim(), rest.strip_suffix('>')),
+                        None => (display, None),
+                    };
+                    if DIRECTIONS.iter().any(|d| place.eq_ignore_ascii_case(d)) {
+                        stray.push(format!("{pack} {id}: `{name}` is named for a direction"));
+                    }
+                    if let Some(label) = label
+                        && label != "L"
+                        && !segments.any(|alias| alias.eq_ignore_ascii_case(label))
+                    {
+                        stray.push(format!(
+                            "{pack} {id}: `{name}` shows <{label}> and has no alias `{}`",
+                            label.to_lowercase()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        exits >= 40,
+        "the shipped atlas exits are read (read {exits})"
+    );
+    assert!(stray.is_empty(), "{}", stray.join("\n"));
 }
