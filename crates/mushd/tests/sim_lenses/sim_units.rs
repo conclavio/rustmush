@@ -46,7 +46,7 @@
 use crate::shipped::mount;
 use crate::support;
 
-use support::{STEP_TIMEOUT, wait_until};
+use support::{Figures, STEP_TIMEOUT, wait_until};
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -78,10 +78,6 @@ const COMMIT_PENDING: &str = "please retry in a moment";
 const CONTROL_UNKNOWN: &str = "control state unknown";
 /// How many times a line is re-sent on a transient before the test gives up.
 const RETRY_BUDGET: usize = 40;
-/// How many rounds of the fight the test is allowed before it calls it. The
-/// cannon cycles in seconds, so this is a wall-clock budget as much as a shot
-/// count; the loop breaks on the first hit either pilot sees.
-const MAX_SHOTS: usize = 40;
 
 /// The two pilots, created before the world task spawns so their ids are stable.
 const ADA: ObjId = ObjId(2);
@@ -151,6 +147,11 @@ fn tacsim_config() -> tacsim::TacsimConfig {
     cfg.arena.ledger.summary_ms = 200;
     cfg.match_.startup_ms = 300;
     cfg.match_.board_timeout_ms = 120_000;
+    // Doc 51 rule D: the first lens needs a round from one of two machines to
+    // land. Both fire at once and either round may be the first the arena
+    // takes, so the dice are pinned to a seed on which the match's first two
+    // rolls both land whatever the odds.
+    cfg.arena.seed = Some(support::story_seed(Some(support::FIRST_TWO_SHOTS_LAND)));
     cfg
 }
 
@@ -767,36 +768,45 @@ async fn two_pilots_field_two_different_machines_and_the_pods_are_pods_again() {
     // `FIRE` would be the cannon too (`DEFAULT_WEAPON` is `cannon`); he names his
     // laser, whose cycle is the shorter.
     //
-    // Both of them shoot, because the cannon's cycle is measured in seconds and
-    // one gun firing into a per-mille roll is a test waiting out its own budget
-    // for an outcome that is a draw. Whether a *given* round lands is not the
-    // claim; the claim is that rounds from these two machines land at all, and
-    // the ledger at the end is what carries it.
+    // Both of them shoot. Whether a *given* round lands is not the claim; the
+    // claim is that rounds from these two machines land at all, and the ledger
+    // at the end is what carries it. It used to be left to the dice: forty
+    // passes of two `FIRE`s and an 800 ms sleep, for an outcome that is a draw.
+    // Now the match's first two rolls land by its seed (doc 51 rule D), both
+    // locks are the arena's before either gun fires, and the wait is for the
+    // hit to be told, inside one cycle of the slower gun read off the content
+    // (rule F).
     let contact = wait_for_contact(&mut ada).await;
     say(&mut ada, &format!("LOCK {contact}"), "Locking").await;
     poll_whole(&mut ada, "WEAPONSTATUS", "Locked on").await;
     let theirs = wait_for_contact(&mut bo).await;
     say(&mut bo, &format!("LOCK {theirs}"), "Locking").await;
+    poll_whole(&mut bo, "WEAPONSTATUS", "Locked on").await;
 
     let ada_start = ada.mark();
     let bo_start = bo.mark();
-    for _ in 0..MAX_SHOTS {
-        // Drain each shot's complete reply, including a refusal, before sending
-        // another line. This advances the SSH receive window and leaves no old
-        // suffix to complete the next command's read.
-        for (term, line) in [(&mut ada, "FIRE"), (&mut bo, "FIRE laser")] {
-            framed_line(term, line).await;
-        }
-        tokio::time::sleep(Duration::from_millis(800)).await;
-        let fight = format!(
-            "{}{}",
-            strip_ansi(&ada.seen[ada_start..]),
-            strip_ansi(&bo.seen[bo_start..])
-        );
-        if fight.contains("Hit on ") || fight.contains("Hit.") || fight.contains("is over") {
-            break;
-        }
-    }
+    let fig = Figures::of(&tacsim_config());
+    support::assert_first_shots_land(&fig, &tacsim_config(), 2);
+    let slower = fig.mount("line_tank", "cannon");
+    wait_until(
+        fig.after_one_round(slower),
+        "a round from either machine to be told as a hit",
+        async || {
+            // Each shot's complete reply is drained, a refusal included, before
+            // another line goes out. This advances the SSH receive window and
+            // leaves no old suffix to complete the next command's read.
+            for (term, line) in [(&mut ada, "FIRE"), (&mut bo, "FIRE laser")] {
+                framed_line(term, line).await;
+            }
+            let fight = format!(
+                "{}{}",
+                strip_ansi(&ada.seen[ada_start..]),
+                strip_ansi(&bo.seen[bo_start..])
+            );
+            fight.contains("Hit on ") || fight.contains("Hit.") || fight.contains("is over")
+        },
+    )
+    .await;
 
     // ---- the reading Bo's OWN platform took ---------------------------------
     //

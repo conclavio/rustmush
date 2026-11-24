@@ -141,6 +141,10 @@ fn tacsim_config(ai_fill: bool) -> tacsim::TacsimConfig {
     cfg.match_.startup_ms = 300;
     cfg.match_.board_timeout_ms = 120_000;
     cfg.match_.ai_fill = ai_fill;
+    // Doc 51 unit FL.3: no assertion here leans on a draw, so the match's dice
+    // seed is a fresh one, printed. A failure that turns out to depend on the
+    // dice after all names the seed that replays it.
+    cfg.arena.seed = Some(support::story_seed(None));
     cfg
 }
 

@@ -359,6 +359,11 @@ pub fn tacsim_config(cfg: &TacsimCfg) -> Result<tacsim::TacsimConfig, String> {
                 search_ms: cfg.arena.reflex.search_ms,
                 hunt_after_ms: cfg.arena.reflex.hunt_after_ms,
             },
+            // Doc 51 unit FL.3 (Q-51-2): no key of `[tacsim.arena]` pins a
+            // match's dice seed. A deploy's matches draw theirs from the OS
+            // (EXT-P2-11); only a test rig that builds the typed block by hand
+            // sets one.
+            seed: None,
         },
         match_: tacsim::config::MatchConfig {
             startup_ms: cfg.match_.startup_ms,
@@ -1433,6 +1438,26 @@ mod tests {
             .tacsim
     }
 
+    /// Doc 51 unit FL.3 (Q-51-2): **no config file pins a match's dice seed.**
+    ///
+    /// `ArenaConfig::seed` is a test rig's knob. A deploy's matches draw their
+    /// seed from the OS (EXT-P2-11), so the key must not exist for an operator
+    /// to write: `[tacsim.arena]` refuses it as it refuses any unknown key, and
+    /// what the mapper hands the game pins nothing.
+    #[test]
+    fn fl3_no_config_key_pins_a_match_seed() {
+        let named = toml::from_str::<mush_config::config::Config>("[tacsim.arena]\nseed = 7\n");
+        assert!(
+            named.is_err(),
+            "`[tacsim.arena].seed` parsed; a config file must not be able to pin a match's seed"
+        );
+        let typed = tacsim_config(&tacsim_cfg("")).expect("the defaults map");
+        assert_eq!(typed.arena.seed, None, "a deploy pins no seed");
+        let typed = tacsim_config(&tacsim_cfg("[tacsim.arena]\nsquad_size = 3\n"))
+            .expect("a written block maps");
+        assert_eq!(typed.arena.seed, None, "a written arena block pins none");
+    }
+
     /// Cut G: **every** value of the five blocks crosses the mapper unchanged.
     ///
     /// Written with values that are all different from the defaults, so a field
@@ -1574,6 +1599,8 @@ mod tests {
                     search_ms: 30_000,
                     hunt_after_ms: 45_000,
                 },
+                // Doc 51 unit FL.3: the one field no key maps to.
+                seed: None,
             }
         );
         assert_eq!(

@@ -32,7 +32,7 @@
 use crate::shipped::mount;
 use crate::support;
 
-use support::{STEP_TIMEOUT, wait_until};
+use support::{Odds, PULL_REQUEST_BAR, STEP_TIMEOUT, wait_until};
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -110,6 +110,10 @@ fn tacsim_config() -> tacsim::TacsimConfig {
     cfg.arena.ledger.summary_ms = 200;
     cfg.match_.startup_ms = 300;
     cfg.match_.board_timeout_ms = 120_000;
+    // Doc 51 rule D: the tanks stand where staff put them, so a pinned seed
+    // gives the same dice on every run. The seed is one on which the match's
+    // first round lands; the burst after it states its own odds where it fires.
+    cfg.arena.seed = Some(support::story_seed(Some(support::FIRST_SHOT_LANDS)));
     cfg
 }
 
@@ -720,7 +724,7 @@ async fn two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot() {
     // has told pilots to type since cut F.2 — `FIRE mg`, over the wire, on the
     // shipped tank. `WEAPONSTATUS` advertises it beside the id, and the echo is
     // the full id either way, which is what proves the word resolved.
-    let seen = ask(&mut ada, "WEAPONSTATUS", "machine_gun").await;
+    let seen = ask_whole(&mut ada, "WEAPONSTATUS").await;
     assert!(
         seen.contains("machine_gun (mg)"),
         "the row does not advertise the short name: {seen}"
@@ -729,6 +733,24 @@ async fn two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot() {
         !seen.contains("cannon ("),
         "a one-word id has no short name: {seen}"
     );
+    // "One of them lands" is a claim about chance, so it is stated (doc 51 rule
+    // D): the burst's rounds, off the content, at the chance the cockpit itself
+    // gives the coaxial on this lock. The pinned seed makes the burst the same
+    // on every run; this says how far from a coin toss it is, and fails here,
+    // with the arithmetic, the day a retune makes it one.
+    let coaxial = mount("line_tank", "machine_gun");
+    let chance = seen
+        .lines()
+        .find(|line| line.contains("machine_gun"))
+        .and_then(|row| row.split_once("% to hit")?.0.split_whitespace().next_back())
+        .and_then(|percent| percent.parse::<u32>().ok())
+        .unwrap_or_else(|| panic!("the coaxial's row gives no chance on a lock: {seen}"));
+    Odds {
+        trials: coaxial.burst,
+        need: 1,
+        p_each: f64::from(chance) / 100.0,
+    }
+    .assert_false_failure_below(PULL_REQUEST_BAR);
     let burst = ada.mark();
     let taking = bo.mark();
     say(&mut ada, "FIRE mg", "Firing machine_gun").await;

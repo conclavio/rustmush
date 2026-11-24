@@ -49,9 +49,70 @@ pub async fn wait_until(bound: Duration, label: &str, mut check: impl AsyncFnMut
     .unwrap_or_else(|_| panic!("{label} did not happen within {bound:?}"));
 }
 
+/// **Ask until the answer is good, and hand it back.** [`wait_until`] for a
+/// wait that reads something: `ask` answers `Ok` with what the story wanted,
+/// or `Err` with what it read instead, and is asked again every
+/// [`POLL_INTERVAL`] under one deadline.
+///
+/// A wait that fails should say what it was looking at. The failure prints
+/// the last `Err`, so a story that waited for a row of a readout fails with
+/// the readout and not with a bare bound.
+///
+/// # Panics
+///
+/// When `bound` passes before `ask` answers `Ok`. The message names `label`,
+/// the bound and the last thing read.
+pub async fn wait_for<T>(
+    bound: Duration,
+    label: &str,
+    mut ask: impl AsyncFnMut() -> Result<T, String>,
+) -> T {
+    let mut last = String::new();
+    let got = tokio::time::timeout(bound, async {
+        loop {
+            match ask().await {
+                Ok(value) => return value,
+                Err(read) => last = read,
+            }
+            tokio::time::sleep(POLL_INTERVAL).await;
+        }
+    })
+    .await;
+    match got {
+        Ok(value) => value,
+        Err(_) => panic!("{label} did not happen within {bound:?}; it last read:\n{last}"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn a_wait_for_hands_back_the_first_good_answer() {
+        let mut asked = 0u32;
+        let got = wait_for(STEP_TIMEOUT, "the third ask", async || {
+            asked += 1;
+            if asked == 3 {
+                Ok(asked * 10)
+            } else {
+                Err(format!("ask {asked}"))
+            }
+        })
+        .await;
+        assert_eq!(got, 30);
+    }
+
+    #[tokio::test(start_paused = true)]
+    #[should_panic(
+        expected = "a row did not happen within 5s; it last read:\nNo match is running."
+    )]
+    async fn a_wait_for_that_never_answers_fails_with_what_it_last_read() {
+        wait_for::<()>(Duration::from_secs(5), "a row", async || {
+            Err("No match is running.".to_owned())
+        })
+        .await;
+    }
 
     #[test]
     fn the_step_limit_is_the_unloaded_step_under_the_load_factor() {

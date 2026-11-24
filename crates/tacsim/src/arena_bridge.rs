@@ -4641,7 +4641,7 @@ fn status_rows(ctx: &Ctx<'_>) -> Vec<String> {
         ));
         // **16b cut Y.1**: who has been giving orders — a line of its own and not
         // a clause on the match row, because `mushd`'s test support parses that
-        // row (`arena_clock_seconds`).
+        // row (`mush_storykit::status_clock_seconds`).
         let (human, machine) = registry
             .deliberation
             .get(&match_id)

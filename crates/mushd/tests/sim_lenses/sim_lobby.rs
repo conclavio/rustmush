@@ -111,6 +111,10 @@ fn tacsim_config(ai_fill: bool) -> tacsim::TacsimConfig {
     cfg.arena.ledger.summary_ms = 100;
     cfg.match_.startup_ms = 200;
     cfg.match_.board_timeout_ms = BOARD_MS;
+    // Doc 51 unit FL.3: no assertion here leans on a draw, so the match's dice
+    // seed is a fresh one, printed. A failure that turns out to depend on the
+    // dice after all names the seed that replays it.
+    cfg.arena.seed = Some(support::story_seed(None));
     cfg
 }
 
@@ -786,8 +790,8 @@ async fn aa2_a_lead_dropped_at_the_deadline_leaves_a_lead_who_can_concede() {
     say(&mut cy, "BOARD", "climb into").await;
     say(&mut bo, "BOARD", "climb into").await;
     // Ada, red's lead, never boards. The deadline is a due world tick, so this is
-    // wall time and nothing has to be poked.
-    tokio::time::sleep(Duration::from_millis(u64::from(BOARD_MS) + 2_500)).await;
+    // wall time and nothing has to be poked: the wait is for the line the
+    // deadline tells, under the rig's step limit, and no span is slept first.
     cy.expect("never boarded").await;
     cy.expect("Good hunting").await;
 

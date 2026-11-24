@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Dev-only helpers the story suites share: one wait loop, one step limit, one story budget (doc 51)"
+description = "Dev-only helpers the story suites share: one wait loop, one step limit, one story budget, game figures read from the content, and barriers (doc 51)"
 publish = false
 
 # Doc 51 §3.8 (Q-51-1): a DEV-DEPENDENCY ONLY. No crate may name this one under
@@ -12,16 +12,22 @@ publish = false
 # `no_production_crate_links_an_excluded_crate` refuses that edge
 # (crates/mush-contract-tests/tests/ci_policy/panic_budget.rs).
 #
-# It depends on what its helpers need and no more. Doc 51's later units add
-# tacsim (the content packs, for `Figures`) and russh (`Term`) with the helper
-# that needs each.
+# It depends on what its helpers need and no more. Unit FL.3 added tacsim (the
+# content packs and the arena's draws, for `Figures`) and mush-core (the ids
+# the catalog is keyed by). Doc 51's later units add russh (`Term`) with the
+# helper that needs it.
 
 [dependencies]
+mush-core.workspace = true
+tacsim.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
 # The kit's own tests drive tokio's paused clock.
 tokio = { workspace = true, features = ["test-util"] }
+# `Figures`' own test signs a pack of its own, as a rig with a test unit does.
+mush-content.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

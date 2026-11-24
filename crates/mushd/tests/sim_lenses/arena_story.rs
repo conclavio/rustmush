@@ -110,7 +110,7 @@
 use crate::shipped::mount;
 use crate::support;
 
-use support::{STEP_TIMEOUT, wait_until};
+use support::{Figures, STEP_TIMEOUT, wait_until};
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -184,16 +184,16 @@ fn load() -> i64 {
     i64::from(cannon.magazine)
 }
 
-/// How many shots the fight is allowed before the test calls it.
-///
-/// Doc 16 §3.3's **front** hull is 400 armour over 200 internals against 120 a
-/// round, so five hull hits end it, and the front facet table splits hits evenly
-/// between the hull and the turret: about ten hits, eleven or twelve rounds at
-/// the percentage this range resolves at. This is a ceiling for the tail of that
-/// distribution and not a budget the ordinary run comes near, and a fight that
-/// reaches it fails loudly below rather than waiting for an end that is not
-/// coming.
-const MAX_SHOTS: usize = 30;
+/// The cockpit's own refusal of a `FIRE` while its last frame says the breech
+/// is busy.
+const STILL_CYCLING: &str = "Still cycling";
+/// The arena's own answer to a round the cockpit forwarded and the arena did
+/// not take: `FIRE cannon refused. Still cycling: …`, or `… Too many orders at
+/// once; …`. The cockpit says `Firing cannon.` off its last frame, and on a
+/// loaded box that frame can be seconds old, so the cockpit's word is not the
+/// shot: the round is counted when the magazine's row moves, and put back
+/// when the arena says this instead.
+const ARENA_REFUSED: &str = "FIRE cannon refused";
 
 /// The line every witness in the centre reads when the match is settled.
 const OVER: &str = "is over (red)";
@@ -248,6 +248,14 @@ fn tacsim_config() -> tacsim::TacsimConfig {
     cfg.arena.ledger.summary_ms = 200;
     cfg.match_.startup_ms = 300;
     cfg.match_.board_timeout_ms = 120_000;
+    // Doc 51 rule D: the story fights a duel to its end and says it ends at
+    // the hull or at the turret, exactly one of the two. The dice are pinned
+    // to a seed on which the first round lands and no round of the magazine
+    // can jam or damage a part, which is the one other way a duel can end
+    // (`support::A_CLEAN_DUEL`). The tanks drive to their marks, so which of
+    // the later rounds land may still differ by a meter of range from run to
+    // run; nothing below leans on that.
+    cfg.arena.seed = Some(support::story_seed(Some(support::A_CLEAN_DUEL)));
     cfg
 }
 
@@ -1189,41 +1197,52 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     // Every `(shots fired, rounds the cockpit then showed)` pair this fight could
     // read back — the in-flight half of §8's ammunition lens.
     let mut readings: Vec<(i64, i64)> = Vec::new();
-    for _ in 0..MAX_SHOTS {
+    // Doc 51 unit FL.3: the fight's bounds are the cannon's own, read off the
+    // content. It may fire the whole magazine and no more, and each round is
+    // typed until the cockpit takes it, inside one cycle of the cannon.
+    let fig = Figures::of(&tacsim_config());
+    let cannon = fig.mount("line_tank", "cannon");
+    support::assert_a_clean_duel(&fig, &tacsim_config(), cannon, "line_tank");
+    while shots < load() {
         // `FIRE` while the breech is busy is refused for the cycle and nothing
         // else; once the check-in has opened the hatch the eleven selectors refuse
         // together, which is how this loop learns the fight is over.
-        let mut fired = false;
-        for _ in 0..RETRY_BUDGET {
-            let mark = ada.mark();
-            ada.send_line("FIRE").await;
-            match ada
-                .expect_one_of_after(
-                    mark,
-                    &[
-                        "Firing cannon",
-                        "Still cycling",
-                        COMMIT_PENDING,
-                        CONTROL_UNKNOWN,
-                        OUTSIDE_COCKPIT,
-                        OVER,
-                    ],
-                )
-                .await
-            {
-                0 => {
-                    fired = true;
-                    break;
+        let mut fired = None;
+        wait_until(
+            fig.after_one_round(cannon),
+            "the cockpit to take the round, or the match to be over",
+            async || {
+                let mark = ada.mark();
+                ada.send_line("FIRE").await;
+                match ada
+                    .expect_one_of_after(
+                        mark,
+                        &[
+                            "Firing cannon",
+                            STILL_CYCLING,
+                            COMMIT_PENDING,
+                            CONTROL_UNKNOWN,
+                            OUTSIDE_COCKPIT,
+                            OVER,
+                        ],
+                    )
+                    .await
+                {
+                    0 => {
+                        fired = Some(mark);
+                        true
+                    }
+                    // The cycle, and the world's two transients: all three are a
+                    // wait and none of them is an answer about the shot.
+                    1..=3 => false,
+                    _ => true,
                 }
-                // The cycle, and the world's two transients: all three are a wait
-                // and none of them is an answer about the shot.
-                1..=3 => tokio::time::sleep(Duration::from_millis(500)).await,
-                _ => break,
-            }
-        }
-        if !fired {
+            },
+        )
+        .await;
+        let Some(fired) = fired else {
             break;
-        }
+        };
         shots += 1;
         // Read the cockpit's own count back once the mirror has caught up with
         // the shot — one pulse later, never in the same breath as the order.
@@ -1233,25 +1252,31 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
         // `ready_at_ms`, and then the count never moves: that is a round that went
         // nowhere, so the tally is put back and the loop tries again. It is the one
         // place this test has to know that the cockpit is a mirror and not the
-        // truth.
+        // truth. The arena says so in its own words (`ARENA_REFUSED`), so the
+        // wait is for one of three things it can read: the count moved, the
+        // arena refused the round, or the cockpit is gone. It used to be sixteen
+        // reads 300 ms apart, and a round the arena took later than that was
+        // counted as one that went nowhere.
         let want = load() - shots;
         let mut cockpit = true;
         let mut confirmed = false;
-        for _ in 0..16 {
-            match read_cannon_rounds(&mut ada).await {
+        wait_until(
+            STEP_TIMEOUT,
+            "the round to leave the magazine, or the arena to refuse it",
+            async || match read_cannon_rounds(&mut ada).await {
                 Some(rounds) if rounds == want => {
                     readings.push((shots, rounds));
                     confirmed = true;
-                    break;
+                    true
                 }
-                Some(_) => {}
+                Some(_) => strip_ansi(&ada.seen[fired..]).contains(ARENA_REFUSED),
                 None => {
                     cockpit = false;
-                    break;
+                    true
                 }
-            }
-            tokio::time::sleep(Duration::from_millis(300)).await;
-        }
+            },
+        )
+        .await;
         if !cockpit || strip_ansi(&ada.seen[fight_mark..]).contains(OVER) {
             break;
         }

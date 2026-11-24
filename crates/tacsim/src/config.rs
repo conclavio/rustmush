@@ -319,6 +319,20 @@ pub struct ArenaConfig {
     pub ledger: LedgerConfig,
     /// **The reflex controller's cadence, paths and doctrine** (16b cut N.1).
     pub reflex: ReflexConfig,
+    /// **A sim-center match's dice seed, pinned** (doc 51 unit FL.3, Q-51-2; a test knob, the
+    /// twin of [`FieldConfig::seed`]): `None` (the default, and production's) draws each match's
+    /// seed from the OS (`crate::match_::seed_for`, EXT-P2-11); `Some(seed)` opens every match
+    /// this world starts on `seed`, so a story whose units stand where staff posed them draws
+    /// the same dice on every run.
+    ///
+    /// **No file, no command and no player sets it.** `[tacsim.arena]` has no such key
+    /// (`mush_config`'s table refuses an unknown one, and `mush_server::config_ext` writes
+    /// `None`); only code that builds a [`TacsimConfig`] by hand, which is a test rig, can.
+    /// `serde(skip)` keeps it out of this block's encoded form as well: it is no key of an arena
+    /// snapshot, so the snapshot's shape and its pin do not move, and a resumed arena reads its
+    /// seed from its own state, never from here. The one reader is `crate::match_::start`.
+    #[serde(skip)]
+    pub seed: Option<u64>,
 }
 
 impl Default for ArenaConfig {
@@ -339,6 +353,8 @@ impl Default for ArenaConfig {
             tape_retained_max_bytes: 128 * 1024 * 1024,
             ledger: LedgerConfig::default(),
             reflex: ReflexConfig::default(),
+            // Doc 51 unit FL.3: production draws every match's seed from the OS.
+            seed: None,
         }
     }
 }

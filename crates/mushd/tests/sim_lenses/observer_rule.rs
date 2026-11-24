@@ -46,7 +46,7 @@
 use crate::shipped::mount;
 use crate::support;
 
-use support::wait_until;
+use support::{Figures, wait_until};
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
@@ -87,6 +87,18 @@ const COMMIT_PENDING: &str = "please retry in a moment";
 const CONTROL_UNKNOWN: &str = "control state unknown";
 /// How many times a line is re-sent on a transient before the test gives up.
 const RETRY_BUDGET: usize = 40;
+/// The arena's own answer to a round the cockpit forwarded and the arena did
+/// not take: `FIRE cannon refused. Still cycling: …`, or `… Too many orders at
+/// once; …`. The cockpit says `Firing cannon.` off its last frame, and on a
+/// loaded box that frame can be seconds old, so the cockpit's word is not the
+/// shot: the round is counted when the magazine's row moves, and put back
+/// when the arena says this instead.
+const ARENA_REFUSED: &str = "FIRE cannon refused";
+/// How many times the arena may refuse a `FIRE` the cockpit forwarded before a
+/// lens calls it. The cockpit reads `ready` off its last frame aged by the wall
+/// clock (16b cut AP.1), so under load the arena can still be cycling a pulse
+/// later. A refused order is no shot: it takes no number and rolls nothing.
+const ARENA_REFUSALS: usize = 4;
 
 /// The two pilots and the bystander, created before the world task spawns so
 /// their ids are stable.
@@ -121,6 +133,9 @@ const NO_SUCH_SQUAD: &str = "No such squad.";
 /// road, which is outside the stock sensor's 60 cells at every signature factor.
 const RED_CELL: (i64, i64) = (90, 97);
 const BLUE_CELL: (i64, i64) = (160, 97);
+/// The range, in meters, at which the catch-up lens calls the two tanks closed:
+/// well inside the stock sight's sixty cells.
+const CLOSED_INSIDE_M: i64 = 500;
 
 // ---------------------------------------------------------------------------
 // The rig — `sim_cockpit.rs`' boot with `web_e2e.rs`' listener bolted on
@@ -181,8 +196,31 @@ fn tacsim_config(designate: bool) -> tacsim::TacsimConfig {
     cfg.match_.board_timeout_ms = 120_000;
     cfg.sensors.designate_on_detection = designate;
     cfg.packs = observer_packs(OBSERVER_CLASSIFY_MS);
+    // Doc 51 rule D: several lenses here need one round to land (the range's,
+    // the shooting's, the missile's). Every match opens on a seed whose first
+    // roll lands whatever the odds, so none of them fires until one does.
+    cfg.arena.seed = Some(support::story_seed(Some(support::FIRST_SHOT_LANDS)));
     cfg
 }
+
+/// The figures of this file's server: its tempo, and the content it boots
+/// (the shipped packs and the two this rig adds).
+fn figures() -> Figures {
+    Figures::of(&tacsim_config(false))
+}
+
+/// [`figures`], for a lens that leans on the match's first round landing: the
+/// rig's seed is held to that promise before the lens spends the round.
+fn figures_first_shot_lands() -> Figures {
+    let fig = figures();
+    support::assert_first_shots_land(&fig, &tacsim_config(false), 1);
+    fig
+}
+
+/// The staff floor the two "one wake" lenses stand their match under: long
+/// against a round trip of a session, and a whole multiple of this file's
+/// engaged period. A referee's lever, not a game figure.
+const ONE_WAKE_FLOOR_MS: u32 = 5_000;
 
 /// Keep the provisional phase long enough for its SSH/web assertions. This is
 /// an explicitly authored test sensor and unit, selected only by the two tests
@@ -538,9 +576,13 @@ async fn ask(term: &mut Term, line: &str, needle: &str) -> String {
 /// a deliberate nonsense command, and the slice runs to *its* refusal: the world
 /// answers commands in the order it took them, so everything `line` produced is in
 /// the slice and nothing of it is still in flight.
-const SENTINEL: &str = "zzq-observer-sentinel";
+///
+/// The word is the story kit's since doc 51 unit FL.3: this file's drains are
+/// the kit's `settled`, and the lenses that strip the sentinel's echo from a
+/// transcript must strip the word the kit types.
+const SENTINEL: &str = mush_storykit::SENTINEL;
 /// The parser's refusal, which is the sentinel's answer.
-const HUH: &str = "Huh?";
+const HUH: &str = mush_storykit::SENTINEL_REFUSAL;
 
 /// The escape sequence a full-screen client sends to take the alternate screen.
 const ALT_SCREEN: &str = "\u{1b}[?1049h";
@@ -1540,10 +1582,11 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
         answers.push(seen.trim_start_matches(line).trim().to_owned());
     }
     // The battery is one pilot typing fast: the session's flood bucket (ten
-    // lines a second, thirty to a burst) is what the three Z.2 lines above
-    // spent, and the later `STARTUP` / `HEADING` burst would otherwise meet
-    // `You're doing that too fast.` Half a second refills five lines.
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // lines a second, thirty to a burst) is what the lines above spent, and
+    // the `STARTUP` / `HEADING` burst after it would otherwise meet `You're
+    // doing that too fast.` The wait is for the bucket's own room, by the
+    // terminal's copy of it, where it was half a second written by hand.
+    ada.room_for(5).await;
     for (line, answer) in orders.into_iter().zip(answers.iter()) {
         assert_eq!(
             answer, NO_SUCH_SQUAD,
@@ -1609,13 +1652,12 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
             "the off-window line named something that is not a spot: {clause:?}"
         );
     }
-    // **16b cut AG.1**: and the same window in sentences. The flood bucket is
-    // ten lines a second, thirty to a burst: the `VIEW` and its sentinel spent
-    // two, the brief and its sentinel spend two more and AE.1's `RANGE F` one
-    // after them, and a throttled sentinel answers `You're doing that too
-    // fast.`, which `ask_whole` does not retry — so the bucket is given a breath
-    // first.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // **16b cut AG.1**: and the same window in sentences. The `VIEW` and its
+    // sentinel spent two lines of the flood bucket, the brief and its sentinel
+    // spend two more and AE.1's `RANGE F` one after them, and a throttled
+    // sentinel answers `You're doing that too fast.`, which `ask_whole` does
+    // not type again: so the battery waits for the bucket's own room first.
+    ada.room_for(5).await;
     let brief = ask_whole(&mut ada, "VIEW BRIEF").await;
     let sentences = support::brief_sentences(&brief);
     support::assert_brief_shape(&sentences, "before detection");
@@ -1722,9 +1764,9 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     // **17b cut M1a.3**: one more `CONTACTS` at the battery's close, so the
     // window the acquisition assertion below reads (from the battery's mark
     // to her first `New contact`) holds an ASKED table and not only pushes:
-    // it is the empty one, with no row to carry an aspect or odds. (A breath
-    // for the flood bucket first: the `VIEW BRIEF` and Bo's reads above.)
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // it is the empty one, with no row to carry an aspect or odds. (Room in
+    // the flood bucket first: the `VIEW BRIEF` and the reads above spent it.)
+    ada.room_for(3).await;
     let empty = ask(&mut ada, "CONTACTS", NO_CONTACTS).await;
     assert!(
         !empty
@@ -2186,10 +2228,10 @@ async fn nothing_about_an_undetected_unit_crosses_on_any_surface() {
     // `CONTACTS` and a fresh `STATUS` — the brief's contact sentences are the
     // rows `CONTACTS` printed a breath earlier, one for one and under the same
     // designators, and every word of it is a number, a word of the brief's own
-    // vocabulary, or a word of her own `VIEW`, `CONTACTS` and `STATUS`. (A
-    // breath for the flood bucket first: the wait above polled `VIEW` and its
-    // sentinel, and these are six lines more.)
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // vocabulary, or a word of her own `VIEW`, `CONTACTS` and `STATUS`. (Room
+    // in the flood bucket first: the wait above polled `VIEW` and its sentinel,
+    // and these are six lines more.)
+    ada.room_for(6).await;
     let contacts_now = ask_whole(&mut ada, "CONTACTS").await;
     let brief = ask_whole(&mut ada, "VIEW BRIEF").await;
     let status_now = ask_whole(&mut ada, "STATUS").await;
@@ -2433,11 +2475,19 @@ async fn the_switch_names_a_contact_at_the_first_pass_over_the_real_composition(
 
     // The slot spelling resolves at once — before `classify_after_ms` could have
     // run — and it is the only spelling there is, so the number is refused.
+    let locking = ada.mark();
     let seen = ask(&mut ada, &format!("LOCK {named}"), "Locking").await;
     assert!(
         seen.contains(&format!("Locking {named}.")),
         "the slot designator resolves at the first pass:\n{seen}"
     );
+    // The lock is the arena's at its next pulse, and the arena says so in a
+    // line of its own (`Locked on …`). That line is waited for here, so it
+    // cannot land inside the next read's window: the refusal below is compared
+    // whole, and one soak pass in ninety-six on main read `Locked on BY.` in
+    // front of it (doc 51 unit FL.3).
+    ada.expect_after(locking, &format!("Locked on {named}"))
+        .await;
     let refused = ask(&mut ada, "LOCK X1", NO_SUCH_CONTACT).await;
     assert_eq!(
         refused.trim_start_matches("LOCK X1").trim(),
@@ -3259,39 +3309,60 @@ async fn nothing_of_the_shooting_crosses_to_the_world_or_to_the_target() {
     let cannon = mount("line_tank", "cannon");
     assert_eq!(cannon.burst, 1, "the cannon spends one round a pull");
     let mut spent = String::new();
+    // The cockpit takes a `FIRE` once the breech is free, so the order is
+    // typed until it is taken, inside one cycle of the cannon read off the
+    // content (doc 51 rule F). The first round lands by the match's seed, so
+    // the target is told of a hit whatever the second does.
+    let fig = figures_first_shot_lands();
     for round in 1..=ROUNDS {
-        for _ in 0..RETRY_BUDGET {
-            let mark = ada.mark();
-            ada.send_line("FIRE").await;
-            if ada
-                .expect_one_of_after(
-                    mark,
-                    &[
-                        "Firing cannon",
-                        "Still cycling",
-                        "No lock",
-                        COMMIT_PENDING,
-                        CONTROL_UNKNOWN,
-                    ],
-                )
-                .await
-                == 0
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
         let want = cannon.left(u32::try_from(round).expect("a round count fits"));
         spent = String::new();
-        wait_until(
-            STEP_TIMEOUT,
-            "the fired round to leave the magazine",
-            async || {
-                spent = ask_whole(&mut ada, "WEAPONSTATUS").await;
-                spent.contains(&want)
-            },
-        )
-        .await;
+        let mut refused = 0;
+        loop {
+            let mut order = 0;
+            wait_until(
+                fig.after_one_round(cannon),
+                "the cockpit to take the round",
+                async || {
+                    order = ada.mark();
+                    ada.send_line("FIRE").await;
+                    ada.expect_one_of_after(
+                        order,
+                        &[
+                            "Firing cannon",
+                            "Still cycling",
+                            "No lock",
+                            COMMIT_PENDING,
+                            CONTROL_UNKNOWN,
+                        ],
+                    )
+                    .await
+                        == 0
+                },
+            )
+            .await;
+            // The cockpit forwarded the order off its last frame; the arena
+            // takes the round (the magazine's row moves) or refuses it in its
+            // own words, and a refused order is typed again.
+            wait_until(
+                STEP_TIMEOUT,
+                "the fired round to leave the magazine, or the arena to refuse it",
+                async || {
+                    spent = ask_whole(&mut ada, "WEAPONSTATUS").await;
+                    spent.contains(&want) || strip_ansi(&ada.seen[order..]).contains(ARENA_REFUSED)
+                },
+            )
+            .await;
+            if spent.contains(&want) {
+                break;
+            }
+            refused += 1;
+            assert!(
+                refused <= ARENA_REFUSALS,
+                "the arena refused round {round} {refused} times:\n{}",
+                strip_ansi(&ada.seen[order..])
+            );
+        }
         assert!(
             !spent.is_empty(),
             "round {round} never left the barrel:
@@ -3537,13 +3608,21 @@ async fn nothing_of_the_shooting_crosses_to_the_world_or_to_the_target() {
     // still said `No reading on …` here would be the verb failing and not a
     // fixture the test does not control. Every claim below is therefore
     // unconditional.
+    //
+    // Read WHOLE (doc 51 rule S). This was a needle read on the contact's
+    // designator, and the second round's own outcome line (`Hit on BB: …`)
+    // carries the designator too: when that line landed between a scan's header
+    // and its bands, the first read returned at the header, the retry returned
+    // at the outcome line with the first scan's bands and no header, and the
+    // assertion below failed on a reply that was two halves of two answers
+    // (one soak pass in forty-two on main; `docs/flaky-tests.md`, row 13).
     let mut scanned = String::new();
     wait_until(
         STEP_TIMEOUT,
         "the scan's complete condition bands",
         async || {
-            scanned = ask(&mut ada, "SCAN", &shot_at).await;
-            scanned.contains("turret")
+            scanned = ask_whole(&mut ada, "SCAN").await;
+            scanned.contains(&shot_at) && scanned.contains("turret")
         },
     )
     .await;
@@ -5006,12 +5085,18 @@ async fn a_reclaimed_pilots_catch_up_names_nothing_the_platform_never_held() {
     // `RA` is well inside the stock sight, so `RA`'s (the same sight, both on
     // the road and moving) holds `BA` too.
     drive(&mut bo, 90).await;
+    // The gap to close is the muster's own less the range waited for, and its
+    // limit is the line tank's run-up and top speed off the content (doc 51
+    // rule F), or the rig's step limit when that is the longer.
+    let gap_m = u32::try_from((BLUE_CELL.0 - RED_CELL.0) * 10 - CLOSED_INSIDE_M)
+        .expect("the muster is wider than the range waited for");
     wait_until(
-        Duration::from_secs(90),
+        figures().crossing("line_tank", gap_m).max(STEP_TIMEOUT),
         "the two tanks to close inside the stock sight",
         async || {
             let listing = ask_whole(&mut bo, "CONTACTS").await;
-            contact_range_m(&listing, &ra).is_some_and(|range| range <= 500)
+            contact_range_m(&listing, &ra)
+                .is_some_and(|range| i64::try_from(range).is_ok_and(|m| m <= CLOSED_INSIDE_M))
         },
     )
     .await;
@@ -5904,9 +5989,11 @@ async fn i3_a_place_is_told_to_nobody_and_its_refusal_leaks_no_round() {
 
     // ---- the place ------------------------------------------------------
     let placed = i3_place(&mut god, blue, &[(96, 97), (96, 98), (96, 96), (97, 97)]).await;
-    // A few sensor passes: the contact is the same designator, or gone.
+    // A few sensor passes, counted on the arena's own clock at the sensors'
+    // own cadence: the contact is the same designator, or gone.
+    let fig = figures();
     for _ in 0..4 {
-        tokio::time::sleep(Duration::from_millis(1_000)).await;
+        support::arena_seconds(&mut god, id, fig.sensor_pass_seconds()).await;
         // Read whole, as `first_contact` reads it: no row left in flight.
         let listing = ask_whole(&mut ada, "CONTACTS").await;
         if listing.contains("(rel ") {
@@ -5919,15 +6006,7 @@ async fn i3_a_place_is_told_to_nobody_and_its_refusal_leaks_no_round() {
     }
 
     // ---- a place under a round in flight ---------------------------------
-    assert!(
-        ask(
-            &mut god,
-            &format!("@arena/tempo {id}=5000"),
-            "under a floor"
-        )
-        .await
-        .contains("under a floor of 5000 ms")
-    );
+    support::set_floor(&mut god, id, ONE_WAKE_FLOOR_MS).await;
     say(&mut ada, &format!("LOCK {contact}"), "Locking").await;
     wait_until(
         STEP_TIMEOUT,
@@ -5939,16 +6018,20 @@ async fn i3_a_place_is_told_to_nobody_and_its_refusal_leaks_no_round() {
         },
     )
     .await;
-    // Back to back: both wait in the task's buffer for the same wake.
+    // Both lines must wait in the task's buffer for the same wake, so they go
+    // out just behind a wake the test has seen, a whole floor before the next
+    // (`at_one_wake`): typed at an unknown point of a floored period, a wake
+    // could fall between their arrivals.
     let fire_mark = ada.mark();
-    let god_mark = god.mark();
-    ada.send_line("FIRE").await;
+    let mut god_mark = god.mark();
     // Back onto the cell it stood on before the first place: passable, with a
     // way out, and empty now.
-    god.send_line(&format!(
-        "@arena/place #{blue}={}, {}",
-        BLUE_MUZZLE.0, BLUE_MUZZLE.1
-    ))
+    let back = format!("@arena/place #{blue}={}, {}", BLUE_MUZZLE.0, BLUE_MUZZLE.1);
+    support::at_one_wake(&mut god, id, ONE_WAKE_FLOOR_MS, async |god| {
+        god_mark = god.mark();
+        ada.send_line("FIRE").await;
+        god.send_line(&back).await;
+    })
     .await;
     assert_eq!(
         ada.expect_one_of_after(fire_mark, &["Firing cannon", "refused", COMMIT_PENDING])
@@ -5976,14 +6059,14 @@ async fn i3_a_place_is_told_to_nobody_and_its_refusal_leaks_no_round() {
         ask_whole(&mut ada, "WEAPONSTATUS").await.contains(&spent)
     })
     .await;
-    say(
-        &mut god,
-        &format!("@arena/tempo {id}=off"),
-        "its own tempo again",
-    )
-    .await;
-    // A second for the lifted match to deliver whatever the impact tells Bo.
-    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    support::lift_floor(&mut god, id).await;
+    // The lifted match delivers whatever the impact tells Bo: the round is in
+    // the air for its flight at most, counted on the arena's own clock, and
+    // then each session is read to its end.
+    let flight_s = cannon.longest_flight().as_secs() + 1;
+    support::arena_seconds(&mut god, id, flight_s).await;
+    support::settled(&mut ada).await;
+    support::settled(&mut bo).await;
 
     // ---- what the two pilots were sent ------------------------------------
     let ada_seen = strip_ansi(&ada.seen[ada_mark..]);
@@ -6311,17 +6394,10 @@ fn o1_board_shape(answer: &str) -> Vec<String> {
 /// **Everything that has reached `term` so far is in its scrollback** (16b cut
 /// O.1): a parser refusal sent now is answered after every line the world
 /// queued for this session before it, so once its `Huh?` has arrived nothing
-/// earlier is still in flight. Retried on the transient, as [`ask_whole`] is.
+/// earlier is still in flight. It is the story kit's [`support::settled`]
+/// since doc 51 unit FL.3; the name is kept for the lenses that grew up on it.
 async fn o1_drain(term: &mut Term) {
-    for _ in 0..RETRY_BUDGET {
-        let mark = term.mark();
-        term.send_line(SENTINEL).await;
-        if term.expect_one_of_after(mark, &[HUH, COMMIT_PENDING]).await == 0 {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    panic!("the sentinel was never answered");
+    support::settled(term).await;
 }
 
 /// **The pilot's cockpit frame, asked for** (16b cut O.1): the `arena.cockpit`
@@ -6886,15 +6962,17 @@ async fn o3_the_range_is_public_in_selection_and_the_report_is_the_pilots_own() 
     say(&mut ada, &format!("LOCK {ba}"), "Locking").await;
     ada.expect_after(locking, &format!("Locked on {ba}")).await;
     let (hit_on, miss_on) = (format!("Hit on {ba}"), format!("Miss on {ba}"));
-    let mut hit = false;
-    for _ in 0..20 {
-        // One whole cannon cycle and the round's flight, with a margin: the stock
-        // cannon cycles in 15,000 ms (its content pack, doc 49 cut CC.2),
-        // so a miss leaves the next round a whole cycle away. The 12 s this wait
-        // had from the 1 s-cycle palette failed now and then (`docs/flaky-tests.md`);
-        // `sim_range`'s same wait was widened in c7b639a8f.
+    // One round, and it lands: the match's seed is chosen so that its first
+    // roll is under the rules' floor (doc 51 rule D). The wait for the cannon
+    // is bounded by its own cycle and flight, read off the content (rule F).
+    // It was a literal twice: 12 s from the 1 s-cycle palette, which failed
+    // once the cycle was 15 s, and then 21 s (`docs/flaky-tests.md`, row 3).
+    let fig = figures_first_shot_lands();
+    let cannon = fig.mount("line_tank", "cannon");
+    let mut refused = 0;
+    loop {
         wait_until(
-            Duration::from_secs(21),
+            fig.after_one_round(cannon),
             "the cannon to be ready",
             async || {
                 ask_whole(&mut ada, "WEAPONSTATUS")
@@ -6906,16 +6984,28 @@ async fn o3_the_range_is_public_in_selection_and_the_report_is_the_pilots_own() 
         .await;
         let shot = ada.mark();
         ada.send_line("FIRE").await;
-        if ada
+        match ada
             .expect_one_of_after(shot, &[hit_on.as_str(), miss_on.as_str(), "refused"])
             .await
-            == 0
         {
-            hit = true;
-            break;
+            0 => break,
+            1 => panic!(
+                "the match's first round missed a standing target, on a seed whose first roll \
+                 lands at any odds:\n{}",
+                strip_ansi(&ada.seen[shot..])
+            ),
+            _ => {
+                // A refused order is no shot: it takes no number and rolls
+                // nothing, so the round typed after it is still the first.
+                refused += 1;
+                assert!(
+                    refused <= ARENA_REFUSALS,
+                    "the arena refused the round {refused} times:\n{}",
+                    strip_ansi(&ada.seen[shot..])
+                );
+            }
         }
     }
-    assert!(hit, "twenty rounds at a standing target and not one hit");
     // Her cockpit names her own tank (`STATUS` does) and never the target's
     // object: the target is `BA`, as her sensors told it apart.
     let cockpit = strip_ansi(&ada.seen[from..]);
@@ -7046,16 +7136,14 @@ async fn a_taken_name_is_refused_the_same_way_whatever_it_collided_with() {
 
 /// Where the missile witnesses stand (16b cut AE.2): Bo's heavy at (160, 140)
 /// facing south, Ada's stock tank 60 m south of it at (160, 134) facing east,
-/// so it shows the heavy its whole left side. At 60 m a round at a standing
-/// broadside tank lands, so the test's phase 1 is not left to chance. It stood
-/// 200 m off until doc 49 cut CC.2 cut the rack's load to four; a first hit as
-/// late as the fourth round then left phase 2 an empty rack, a retried pass
-/// about one run in twenty (`docs/flaky-tests.md`).
+/// so it shows the heavy its whole left side. Phase 1 is one missile, and it
+/// lands by the match's seed (doc 51 rule D), which leaves the rest of the
+/// rack to phase 2 whatever the rack's load is. The test used to fire until a
+/// round landed: at 200 m, with the load cut to four by doc 49 cut CC.2, a
+/// first hit as late as the fourth round left phase 2 an empty rack, a retried
+/// pass about one run in twenty (`docs/flaky-tests.md`, row 4).
 const AE2_SHOOTER_POSE: &str = "@arena/pose BA=160 140 180";
 const AE2_TARGET_POSE: &str = "@arena/pose RA=160 134 90";
-/// The rack's load (`heavy_mk1`'s four, doc 49 Q-49-22) less the one round
-/// phase 2 fires: what phase 1 may spend looking for its hit.
-const AE2_PHASE_ONE_ROUNDS: usize = 3;
 
 /// **Where staff puts Ada's tank for the lost-contact shot** (16b cut AE.2):
 /// 110 cells south of Bo's heavy, behind the compound at columns 150 to 170 and
@@ -7063,22 +7151,6 @@ const AE2_PHASE_ONE_ROUNDS: usize = 3;
 /// in the air and Bo's contact on the tank (last refreshed before the place, at
 /// the same wake) expires three sensor passes into the flight.
 const AE2_BEHIND_THE_COMPOUND: (u16, u16) = (160, 30);
-
-/// Match `id`'s frame count, off `@arena/status`'s `match N: …, frames F` row (which the
-/// terminal wraps, so it is read across lines): it moves once a pulse's frame has reached the
-/// world.
-async fn ae2_frames(god: &mut Term, id: u64) -> u64 {
-    let status = ask(god, "@arena/status", "ledger writes awaiting").await;
-    let head = format!("match {id}:");
-    status
-        .split_once(head.as_str())
-        .and_then(|(_, row)| row.split_once("frames "))
-        .and_then(|(_, tail)| {
-            let digits: String = tail.chars().take_while(char::is_ascii_digit).collect();
-            digits.parse().ok()
-        })
-        .unwrap_or_else(|| panic!("no frames on match {id}'s row in:\n{status}"))
-}
 
 /// The lines of `seen` a pilot was told, without the sentinel's echo and its
 /// refusal — what [`o1_drain`] adds to a transcript to prove it complete.
@@ -7097,12 +7169,13 @@ fn ae2_told(seen: &str) -> Vec<String> {
 /// Bo flies the heavy and Ada a stock tank 60 m off, broadside to him; each
 /// holds the other, told apart, before anything is fired.
 ///
-/// 1. **In flight, nothing.** Bo fires his rack at Ada until a round lands. For
-///    every shot, what Ada is sent from the moment before Bo's `FIRE missiles`
-///    to the moment Bo is told the outcome — drained to the last line with a
-///    sentinel — is nothing at all for a miss, and for the hit only her own
-///    tank's lines: `Hit on the …` and, if a section went, `The … is
-///    destroyed`; no shooter, no callsign, no object number, no weapon.
+/// 1. **In flight, nothing.** Bo fires one missile at Ada, and it lands (the
+///    match's seed). What Ada is sent from the moment before Bo's `FIRE
+///    missiles` to the moment Bo is told the outcome — drained to the last
+///    line with a sentinel — is only her own tank's lines: `Hit on the …`
+///    and, if a section went, `The … is destroyed`; no shooter, no callsign,
+///    no object number, no weapon. An order the arena refused for its cycle
+///    told her nothing at all.
 /// 2. **The lost contact.** Under a 5,000 ms staff floor, God's `@arena/place`
 ///    of Ada's tank to behind the compound, 1.1 km away, and Bo's `FIRE
 ///    missiles` land at one wake; phase 4 takes the place first (her tank's id
@@ -7172,7 +7245,12 @@ async fn ae2_a_missile_in_flight_tells_its_target_nothing_and_a_lost_contact_rea
     let (hit_on, miss_on) = (format!("Hit on {ra}"), format!("Miss on {ra}"));
 
     // ---- (1) in flight, nothing --------------------------------------------
-    let mut hit = false;
+    let fig = figures_first_shot_lands();
+    let rack = fig.mount("heavy_mk1", "missiles");
+    assert!(
+        rack.pulls() >= 2,
+        "the rack carries a round for each phase: {rack:?}"
+    );
     // 16b cut AP.1 (16c `B-86`): `WEAPONSTATUS` reads the last frame's countdown
     // aged by the wall clock, so its `ready` is the wall's and not the arena's
     // ready frame. A pulse capped by `max_catch_up_steps` under load leaves the
@@ -7180,14 +7258,17 @@ async fn ae2_a_missile_in_flight_tells_its_target_nothing_and_a_lost_contact_rea
     // meet the arena's own `Still cycling` a pulse later — a shot not taken, which
     // is waited out and typed again, apart from the four. Every other refusal is
     // still a failure.
-    let mut shots = 0;
     let mut cycling = 0;
-    while shots < AE2_PHASE_ONE_ROUNDS {
-        wait_until(STEP_TIMEOUT, "the rack to be ready", async || {
-            ask_whole(&mut bo, "WEAPONSTATUS")
-                .await
-                .contains("missiles  ready")
-        })
+    loop {
+        wait_until(
+            fig.after_one_round(rack),
+            "the rack to be ready",
+            async || {
+                ask_whole(&mut bo, "WEAPONSTATUS")
+                    .await
+                    .contains("missiles  ready")
+            },
+        )
         .await;
         o1_drain(&mut ada).await;
         let from = ada.mark();
@@ -7211,16 +7292,22 @@ async fn ae2_a_missile_in_flight_tells_its_target_nothing_and_a_lost_contact_rea
             "the rack was refused: {}",
             strip_ansi(&bo.seen[shot..])
         );
+        // The match's first missile lands whatever its odds: a miss here is
+        // the seed's promise broken, not bad luck.
+        assert_ne!(
+            outcome,
+            1,
+            "the match's first missile missed, on a seed whose first roll lands at any odds: {}",
+            strip_ansi(&bo.seen[shot..])
+        );
         if outcome == 2 {
             cycling += 1;
             assert!(
-                cycling <= 4,
+                cycling <= ARENA_REFUSALS,
                 "the arena refused the rack for its cycle {cycling} times after the \
                  cockpit read it ready: {}",
                 strip_ansi(&bo.seen[shot..])
             );
-        } else {
-            shots += 1;
         }
         // The two SSH sessions drain independently. The shooter's hit receipt
         // does not imply the target's socket has received its own damage line.
@@ -7255,35 +7342,26 @@ async fn ae2_a_missile_in_flight_tells_its_target_nothing_and_a_lost_contact_rea
                     || (line.starts_with("The ") && line.contains(" is destroyed"))),
                 "the target's pilot read something beside her own tank's lines:\n{whole}"
             );
-            hit = true;
             break;
         }
         assert!(
             told.is_empty(),
-            "a missile that missed, or one the arena refused, told its target something:\n{whole}"
+            "a missile the arena refused told its target something:\n{whole}"
         );
     }
-    assert!(
-        hit,
-        "{AE2_PHASE_ONE_ROUNDS} missiles at a broadside tank 60 m off and not one hit"
-    );
 
     // ---- (2) the contact lost in flight -------------------------------------
-    wait_until(STEP_TIMEOUT, "the rack to be ready again", async || {
-        ask_whole(&mut bo, "WEAPONSTATUS")
-            .await
-            .contains("missiles  ready")
-    })
+    wait_until(
+        fig.after_one_round(rack),
+        "the rack to be ready again",
+        async || {
+            ask_whole(&mut bo, "WEAPONSTATUS")
+                .await
+                .contains("missiles  ready")
+        },
+    )
     .await;
-    assert!(
-        ask(
-            &mut god,
-            &format!("@arena/tempo {id}=5000"),
-            "under a floor"
-        )
-        .await
-        .contains("under a floor of 5000 ms")
-    );
+    support::set_floor(&mut god, id, ONE_WAKE_FLOOR_MS).await;
     // 16b cut AP.1 (16c `B-86`): the `ready` above is the wall's, aged off the
     // last frame, and can come a lattice step before the arena's ready frame;
     // the floor's pulled-in pulse quantises down to the lattice and may stop
@@ -7305,35 +7383,26 @@ async fn ae2_a_missile_in_flight_tells_its_target_nothing_and_a_lost_contact_rea
     o1_drain(&mut ada).await;
     // Both lines must wait in the task's buffer for the same wake, so they are sent just
     // after a wake the test has seen, a whole floor before the next. The ready read above
-    // can come at any point of a 5,000 ms floored period (its frame may be one the floor
-    // set's pulled-in pulse delivered, seconds back), and a wake falling between the
-    // `FIRE` and the place's arrival flew the round at the tank where it stood: `Hit on`,
-    // about one run in fifty (`docs/flaky-tests.md`). Setting the floor again pulls the
-    // next wake in to now (`arena_task`'s `TempoFloor`); once the world's mirror counts
-    // its frame, the floor stands between the two lines and the next wake.
-    let frames = ae2_frames(&mut god, id).await;
-    assert!(
-        ask(
-            &mut god,
-            &format!("@arena/tempo {id}=5000"),
-            "under a floor"
-        )
-        .await
-        .contains("under a floor of 5000 ms")
-    );
-    wait_until(STEP_TIMEOUT, "the pulled-in wake", async || {
-        ae2_frames(&mut god, id).await > frames
-    })
-    .await;
+    // can come at any point of a floored period (its frame may be one the floor set's
+    // pulled-in pulse delivered, seconds back), and a wake falling between the `FIRE` and
+    // the place's arrival flew the round at the tank where it stood: `Hit on`, about one
+    // run in fifty (`docs/flaky-tests.md`, row 4). `at_one_wake` sets the floor again,
+    // which pulls the next wake in to now (`arena_task`'s `TempoFloor`), and types the
+    // lines once the world's mirror has counted that wake's frame: the floor then stands
+    // between the two lines and the next wake.
     let from = ada.mark();
     let fire_mark = bo.mark();
-    let god_mark = god.mark();
-    // Back to back: both wait in the task's buffer for the same wake.
-    bo.send_line("FIRE missiles").await;
-    god.send_line(&format!(
+    let mut god_mark = god.mark();
+    let place = format!(
         "@arena/place #{red}={},{}",
         AE2_BEHIND_THE_COMPOUND.0, AE2_BEHIND_THE_COMPOUND.1
-    ))
+    );
+    support::at_one_wake(&mut god, id, ONE_WAKE_FLOOR_MS, async |god| {
+        god_mark = god.mark();
+        // Back to back: both wait in the task's buffer for the same wake.
+        bo.send_line("FIRE missiles").await;
+        god.send_line(&place).await;
+    })
     .await;
     bo.expect_after(fire_mark, "Firing missiles.").await;
     assert_eq!(
@@ -7347,7 +7416,7 @@ async fn ae2_a_missile_in_flight_tells_its_target_nothing_and_a_lost_contact_rea
         strip_ansi(&god.seen[god_mark..])
     );
     // The round leaves the rack at the next wake, a floor away at most. Then the
-    // floor is lifted — a 5,000 ms floor over this file's 100 ms tempo is slow
+    // floor is lifted — the floor over this file's 100 ms tempo is slow
     // motion — and the rest, the contact's expiry three passes in and the
     // impact 4.4 s after the shot, happens at its own arena milliseconds
     // whatever the wall does.
@@ -7357,12 +7426,7 @@ async fn ae2_a_missile_in_flight_tells_its_target_nothing_and_a_lost_contact_rea
             .contains("missiles  cycling")
     })
     .await;
-    say(
-        &mut god,
-        &format!("@arena/tempo {id}=off"),
-        "its own tempo again",
-    )
-    .await;
+    support::lift_floor(&mut god, id).await;
     wait_until(STEP_TIMEOUT, "Bo to be told the outcome", async || {
         o1_drain(&mut bo).await;
         ae2_told(&strip_ansi(&bo.seen[fire_mark..]))

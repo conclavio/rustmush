@@ -2993,6 +2993,10 @@ dependencies = [
 name = "mush-storykit"
 version = "0.1.0"
 dependencies = [
+ "mush-content",
+ "mush-core",
+ "serde_json",
+ "tacsim",
  "tokio",
 ]
 

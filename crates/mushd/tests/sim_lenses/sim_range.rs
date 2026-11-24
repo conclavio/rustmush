@@ -12,9 +12,11 @@
 //!    lands on the rear band (hull 40, engine 30, turret 30);
 //! 2. `SIM START` is accepted with the fill off, and by the time boarding opens
 //!    the target's pod is refitted to `target_mk1` — no gun, no sight;
-//! 3. she boards, starts up, holds the target as `BA`, locks it and fires until
-//!    one of her rounds is told to her as a hit — each wait bounded by one cycle
-//!    and the flight, never a fixed sleep;
+//! 3. she boards, starts up, holds the target as `BA`, locks it and fires one
+//!    round, which is told to her as a hit. The match's dice seed is chosen so
+//!    that its first roll is under the rules' floor (doc 51 rule D), and the
+//!    wait for the cannon is bounded by its own cycle and flight, read off the
+//!    content (rule F);
 //! 4. and then `SIM ABORT`, never a wall wait to the terminal head: her
 //!    `SIM REPORT` carries her own hit rate, `SIM HISTORY` reads the row
 //!    `aborted [range]`, the tape shows the target never fired, and after the
@@ -25,7 +27,7 @@
 
 use crate::support;
 
-use support::{STEP_TIMEOUT, wait_until};
+use support::{Figures, STEP_TIMEOUT, wait_until};
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -57,15 +59,10 @@ const COMMIT_PENDING: &str = "please retry in a moment";
 const CONTROL_UNKNOWN: &str = "control state unknown";
 /// How many times a line is re-sent on a transient before the test gives up.
 const RETRY_BUDGET: usize = 40;
-/// How many rounds the test fires before it calls it. Every one is aimed at a
-/// stationary target's rear from forty metres; the loop ends at the first hit.
-const MAX_SHOTS: usize = 20;
-/// **One cycle and the flight**, and a margin for the pulses either side: the
-/// stock cannon cycles in 15,000 ms (`weapons/cannon_105.json`, doc 49 cut
-/// CC.2) and a round crosses forty metres in well under a pulse. What a wait
-/// for the cannon's readiness is bounded by: a first round that misses leaves
-/// the next one a whole cycle away.
-const CYCLE_AND_FLIGHT: Duration = Duration::from_secs(21);
+/// How many times the arena may refuse a `FIRE` the cockpit forwarded before
+/// the test calls it. A refused order is no shot: it takes no number and rolls
+/// nothing, so the round typed after it is still the match's first.
+const ARENA_REFUSALS: usize = 4;
 
 /// The one pilot, created before the world task spawns so its id is stable.
 const ADA: ObjId = ObjId(2);
@@ -118,6 +115,9 @@ fn tacsim_config() -> tacsim::TacsimConfig {
     cfg.match_.startup_ms = 300;
     cfg.match_.board_timeout_ms = 120_000;
     assert!(!cfg.match_.ai_fill, "the range is proved with the fill off");
+    // Doc 51 rule D: the story needs one of Ada's rounds to land, so the match
+    // opens on a seed whose first roll lands whatever the odds.
+    cfg.arena.seed = Some(support::story_seed(Some(support::FIRST_SHOT_LANDS)));
     cfg
 }
 
@@ -558,31 +558,48 @@ async fn one_pilot_on_the_range_hits_its_target_and_reads_her_own_rate() {
         .await;
     let hit_on = format!("Hit on {target_callsign}");
     let miss_on = format!("Miss on {target_callsign}");
-    let mut hit = false;
-    for _ in 0..MAX_SHOTS {
-        // The cannon ready first, bounded by one cycle and the flight.
-        wait_until(CYCLE_AND_FLIGHT, "the cannon to be ready", async || {
-            ask_whole(&mut ada, "WEAPONSTATUS")
-                .await
-                .lines()
-                .any(|line| line.contains("cannon") && line.contains("ready"))
-        })
+    // One round, and it lands: the seed's first roll is under the rules' floor.
+    // The wait for the cannon is bounded by its own cycle and flight, read off
+    // the content, so a retune of the mount moves no number here.
+    let fig = Figures::of(&tacsim_config());
+    support::assert_first_shots_land(&fig, &tacsim_config(), 1);
+    let cannon = fig.mount("line_tank", "cannon");
+    let mut refused = 0;
+    loop {
+        wait_until(
+            fig.after_one_round(cannon),
+            "the cannon to be ready",
+            async || {
+                ask_whole(&mut ada, "WEAPONSTATUS")
+                    .await
+                    .lines()
+                    .any(|line| line.contains("cannon") && line.contains("ready"))
+            },
+        )
         .await;
         let shot = ada.mark();
         ada.send_line("FIRE").await;
         // The outcome is told at the impact, a pulse or two after the shot.
-        let outcome = ada
+        match ada
             .expect_one_of_after(shot, &[hit_on.as_str(), miss_on.as_str(), "refused"])
-            .await;
-        if outcome == 0 {
-            hit = true;
-            break;
+            .await
+        {
+            0 => break,
+            1 => panic!(
+                "the match's first round missed a standing target, on a seed whose first roll \
+                 lands at any odds:\n{}",
+                strip_ansi(&ada.seen[shot..])
+            ),
+            _ => {
+                refused += 1;
+                assert!(
+                    refused <= ARENA_REFUSALS,
+                    "the arena refused the round {refused} times:\n{}",
+                    strip_ansi(&ada.seen[shot..])
+                );
+            }
         }
     }
-    assert!(
-        hit,
-        "{MAX_SHOTS} rounds at a standing target and not one hit"
-    );
 
     // ---- `SIM ABORT`, and what the pilot reads after ------------------------
     ada.send_line("SIM ABORT").await;
