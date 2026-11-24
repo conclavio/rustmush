@@ -21,7 +21,7 @@
 //! `wait_budget` gate in `mush-contract-tests` counts the raw ones in story
 //! files and lets the count only fall.
 //!
-//! What unit FL.3 added, for the stories that run a sim-center match:
+//! Added by unit FL.3, for the stories that run a sim-center match:
 //!
 //! - [`Figures`]: a game figure (a cycle, a load, a flight, the arena's
 //!   pulse) read from the content and the configuration the story's server
@@ -36,6 +36,18 @@
 //!   the story's own [`Session`], in place of a sleep (rule C).
 //! - [`wait_for`]: [`wait_until`] for a wait that reads something, whose
 //!   failure prints what it last read.
+//!
+//! Added by unit FL.4, for a rig that boots an engine on a clock the test
+//! sets:
+//!
+//! - [`STORY_EPOCH`]: the one instant a rig boots at, in place of the wall
+//!   clock. [`Phase`] names the instants of the IC calendar a schedule-bound
+//!   story also runs at, [`phases!`] makes one test a phase, and [`Calendar`]
+//!   finds a phase on the rig's own IC clock. `STORY_PHASE` ([`PHASE_VAR`])
+//!   lets the soak draw a phase and a session pin one.
+//! - [`scratch_dir`]: a rig's data directory, named by no clock.
+//!
+//! The same gate counts a story file's reads of the wall clock.
 //!
 //! **Dev-only.** This crate is a `[dev-dependencies]` entry and nothing else:
 //! its helpers panic by design, as a failed assertion does. The panic budget's
@@ -58,6 +70,8 @@ mod barrier;
 mod budget;
 mod figures;
 mod odds;
+mod phase;
+mod scratch;
 mod wait;
 
 pub use barrier::{
@@ -68,6 +82,11 @@ pub use barrier::{
 pub use budget::{NEXTEST_TERMINATE, StoryBudget, TERMINATE_MARGIN};
 pub use figures::{Figures, Mount, story_seed};
 pub use odds::{Odds, PULL_REQUEST_BAR};
+pub use phase::{
+    BEFORE_DAY_TURN, BEFORE_MONTH_TURN_DAYS, Calendar, IC_DAY, IC_HOUR, IC_MONTH, PHASE_TESTS,
+    PHASE_VAR, Phase, STORY_EPOCH,
+};
+pub use scratch::scratch_dir;
 pub use wait::{
     LOAD_FACTOR, POLL_INTERVAL, STEP_TIMEOUT, STEP_UNLOADED, loaded, wait_for, wait_until,
 };

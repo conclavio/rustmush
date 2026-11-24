@@ -1461,7 +1461,7 @@ fn morale(
         let chance = yield_chance(total, resolve);
         let breaks = steps
             .into_iter()
-            .any(|step| super::eject::yield_draw(site, ordinal, hull, step) < chance);
+            .any(|step| super::eject::yield_draw(arena.seed, site, ordinal, hull, step) < chance);
         if let Err(error) = set_mark(ctx, hull, "morale_step", Some(reached.into())) {
             tracing::warn!(hull = hull.0, %error, "tacsim: a raider crew's morale step did not write");
             continue;

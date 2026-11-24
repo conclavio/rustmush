@@ -789,10 +789,24 @@ pub fn neutral(line: &Line) -> bool {
     )
 }
 
+/// Capacity caps protecting client memory and CPU against hostile or noisy servers (P2-TSC-25).
+const MAX_OPEN_CONTACT_ROWS: usize = 256;
+const MAX_OPEN_WEAPON_ROWS: usize = 64;
+const MAX_CONTACTS: usize = 256;
+const MAX_WEAPONS: usize = 64;
+const MAX_STRUCK: usize = 128;
+const MAX_SECTIONS: usize = 64;
+const MAX_FACETS: usize = 32;
+const MAX_NOTES: usize = 128;
+const MAX_SECTIONS_LOST: usize = 64;
+const MAX_HITS_BY_FACET: usize = 128;
+
 /// An open `CONTACTS` reply: rows with the time each was read.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct ContactsReply {
     pub rows: Vec<(ContactRow, u64)>,
+    #[serde(skip)]
+    seen: BTreeSet<String>,
     pub last_ms: u64,
     /// The rows already folded into [`Picture::contacts`] (cut AM.1): a merge
     /// at each apply point; the reply's close drops what it never named.
@@ -805,6 +819,8 @@ pub struct WeaponsReply {
     /// A lock line headed the first row (across a pause or chatter, cut AM.1).
     pub locked: bool,
     pub rows: Vec<(WeaponRow, u64)>,
+    #[serde(skip)]
+    seen: BTreeSet<String>,
     pub last_ms: u64,
     /// The rows already folded into [`Picture::weapons`] (cut AM.1).
     pub applied: usize,
@@ -1164,11 +1180,12 @@ impl Picture {
                 journal = false;
                 // A designator the open reply already holds begins the next
                 // reply (two back to back, nothing between): the first closes.
-                if self.open.contacts.as_ref().is_some_and(|open| {
-                    open.rows
-                        .iter()
-                        .any(|(held, _)| held.designator == row.designator)
-                }) {
+                if self
+                    .open
+                    .contacts
+                    .as_ref()
+                    .is_some_and(|open| open.seen.contains(&row.designator))
+                {
                     self.close_contacts(now_ms);
                 }
                 if self.open.contacts.is_none() {
@@ -1178,7 +1195,10 @@ impl Picture {
                     .open
                     .contacts
                     .get_or_insert_with(ContactsReply::default);
-                open.rows.push((row.clone(), now_ms));
+                if open.rows.len() < MAX_OPEN_CONTACT_ROWS {
+                    open.seen.insert(row.designator.clone());
+                    open.rows.push((row.clone(), now_ms));
+                }
                 open.last_ms = now_ms;
             }
             Line::NoContacts => {
@@ -1246,7 +1266,7 @@ impl Picture {
                     .open
                     .weapons
                     .as_ref()
-                    .is_some_and(|open| open.rows.iter().any(|(held, _)| held.id == row.id))
+                    .is_some_and(|open| open.seen.contains(&row.id))
                 {
                     self.close_weapons(now_ms);
                 }
@@ -1257,7 +1277,10 @@ impl Picture {
                     locked: lock_line_before,
                     ..WeaponsReply::default()
                 });
-                open.rows.push((row.clone(), now_ms));
+                if open.rows.len() < MAX_OPEN_WEAPON_ROWS {
+                    open.seen.insert(row.id.clone());
+                    open.rows.push((row.clone(), now_ms));
+                }
                 open.last_ms = now_ms;
             }
             // The game's 17b cut M1b.4: read, never acted on.
@@ -1288,10 +1311,12 @@ impl Picture {
                 gone.push(weapon.clone());
                 let mut news = false;
                 for id in gone {
-                    news |= self.struck.insert(id);
+                    if self.struck.contains(&id) || self.struck.len() < MAX_STRUCK {
+                        news |= self.struck.insert(id);
+                    }
                 }
                 if news {
-                    self.notes.push(format!(
+                    self.push_note(format!(
                         "No {weapon} aboard any more: struck from the fire schedule."
                     ));
                 }
@@ -1422,7 +1447,9 @@ impl Picture {
             } => {
                 journal = false;
                 // Staged in the open block (the guard above holds one open).
-                if let Some(block) = self.open.status.as_mut() {
+                if let Some(block) = self.open.status.as_mut()
+                    && (block.sections.contains_key(id) || block.sections.len() < MAX_SECTIONS)
+                {
                     block.applied = false;
                     block.sections.insert(
                         id.clone(),
@@ -1445,7 +1472,9 @@ impl Picture {
                     })
                 {
                     for (facet, left, max) in facets {
-                        section.facets.insert(facet.clone(), (*left, *max));
+                        if section.facets.contains_key(facet) || section.facets.len() < MAX_FACETS {
+                            section.facets.insert(facet.clone(), (*left, *max));
+                        }
                     }
                 }
                 self.status_row(now_ms);
@@ -1626,51 +1655,54 @@ impl Picture {
                     .lattice
                     .on
                     .then(|| self.lattice.phase().zip(self.lattice.rtt()));
-                let entry = self.weapon_mut(weapon);
-                entry.fired_ms = Some(now_ms);
-                entry.fired_sent_ms = sent;
-                entry.ready = false;
-                // The one clock (cut AK.1; cut AL.1): the ack lowers the slack
-                // toward nothing, then the gun is ready one learned cycle and
-                // that slack on — never sooner, whatever an earlier row left
-                // behind. With no cycle learned yet, the row is read (and the
-                // lane asks for it inside the second, while it prints the
-                // whole cycle).
-                entry.slack_ms = slack_after_ack(entry.slack_ms);
-                let slack = entry.slack_ms;
-                entry.next_ready_ms = entry
-                    .cycle_ms
-                    .map(|cycle| now_ms.saturating_add(cycle).saturating_add(slack));
-                // Cut AN.3: on the lattice, when the knob is on, the cycle is
-                // learned, the phase and a round trip short enough are known,
-                // and the gun is not benched — the next lattice point after
-                // the ack, the cycle and the guard, less the round trip.
-                let benched = entry
-                    .lattice_bench_until_ms
-                    .is_some_and(|until| now_ms < until);
-                let on_lattice = match (lattice.flatten(), entry.cycle_ms) {
-                    (Some((p, r)), Some(cycle)) if r <= LATTICE_RTT_MAX_MS && !benched => {
-                        entry.next_ready_ms = Some(
-                            next_lattice(now_ms, p)
-                                .saturating_add(cycle)
-                                .saturating_add(LATTICE_GUARD_MS)
-                                .saturating_sub(r),
-                        );
-                        Some((p, r))
+                let mut lattice_note = None;
+                if let Some(entry) = self.weapon_mut(weapon) {
+                    entry.fired_ms = Some(now_ms);
+                    entry.fired_sent_ms = sent;
+                    entry.ready = false;
+                    // The one clock (cut AK.1; cut AL.1): the ack lowers the slack
+                    // toward nothing, then the gun is ready one learned cycle and
+                    // that slack on — never sooner, whatever an earlier row left
+                    // behind. With no cycle learned yet, the row is read (and the
+                    // lane asks for it inside the second, while it prints the
+                    // whole cycle).
+                    entry.slack_ms = slack_after_ack(entry.slack_ms);
+                    let slack = entry.slack_ms;
+                    entry.next_ready_ms = entry
+                        .cycle_ms
+                        .map(|cycle| now_ms.saturating_add(cycle).saturating_add(slack));
+                    // Cut AN.3: on the lattice, when the knob is on, the cycle is
+                    // learned, the phase and a round trip short enough are known,
+                    // and the gun is not benched — the next lattice point after
+                    // the ack, the cycle and the guard, less the round trip.
+                    let benched = entry
+                        .lattice_bench_until_ms
+                        .is_some_and(|until| now_ms < until);
+                    let on_lattice = match (lattice.flatten(), entry.cycle_ms) {
+                        (Some((p, r)), Some(cycle)) if r <= LATTICE_RTT_MAX_MS && !benched => {
+                            entry.next_ready_ms = Some(
+                                next_lattice(now_ms, p)
+                                    .saturating_add(cycle)
+                                    .saturating_add(LATTICE_GUARD_MS)
+                                    .saturating_sub(r),
+                            );
+                            Some((p, r))
+                        }
+                        _ => None,
+                    };
+                    entry.on_lattice = on_lattice.is_some();
+                    entry.shots_since_read = entry.shots_since_read.saturating_add(1);
+                    entry.acks.push_back(now_ms);
+                    while entry.acks.len() > MAX_ACKS {
+                        entry.acks.pop_front();
                     }
-                    _ => None,
-                };
-                entry.on_lattice = on_lattice.is_some();
-                entry.shots_since_read = entry.shots_since_read.saturating_add(1);
-                entry.acks.push_back(now_ms);
-                while entry.acks.len() > MAX_ACKS {
-                    entry.acks.pop_front();
+                    lattice_note = on_lattice;
                 }
-                if let Some((p, r)) = on_lattice
+                if let Some((p, r)) = lattice_note
                     && !self.lattice.said
                 {
                     self.lattice.said = true;
-                    self.notes.push(format!(
+                    self.push_note(format!(
                         "Firing on the arena's lattice: phase {p} ms, round trip {r} ms."
                     ));
                 }
@@ -1865,29 +1897,32 @@ impl Picture {
                 if let Some(facet) = facet {
                     // Cut AL.2: the facet split, and the newest facet hit for
                     // the pilot's turn into the shot.
-                    let count = self
-                        .tally
-                        .hits_taken_by_facet
-                        .entry(format!("{plate} {facet}"))
-                        .or_default();
-                    *count = count.saturating_add(1);
+                    let facet_key = format!("{plate} {facet}");
+                    if self.tally.hits_taken_by_facet.contains_key(&facet_key)
+                        || self.tally.hits_taken_by_facet.len() < MAX_HITS_BY_FACET
+                    {
+                        let count = self.tally.hits_taken_by_facet.entry(facet_key).or_default();
+                        *count = count.saturating_add(1);
+                    }
                     self.own.last_hit = Some(FacetHit {
                         at_ms: now_ms,
                         plate: plate.clone(),
                         facet: facet.clone(),
                     });
-                    let cell = self
-                        .own
-                        .sections
-                        .entry(plate)
-                        .or_default()
-                        .facets
-                        .entry(facet.clone())
-                        .or_insert((0, 0));
-                    *cell = match armour {
-                        Some(figures) => *figures,
-                        None => (0, cell.1),
-                    };
+                    if self.own.sections.contains_key(&plate)
+                        || self.own.sections.len() < MAX_SECTIONS
+                    {
+                        let section_entry = self.own.sections.entry(plate).or_default();
+                        if section_entry.facets.contains_key(facet)
+                            || section_entry.facets.len() < MAX_FACETS
+                        {
+                            let cell = section_entry.facets.entry(facet.clone()).or_insert((0, 0));
+                            *cell = match armour {
+                                Some(figures) => *figures,
+                                None => (0, cell.1),
+                            };
+                        }
+                    }
                 }
                 if let Some(inside) = internals {
                     self.own
@@ -1911,14 +1946,19 @@ impl Picture {
                 ));
             }
             Line::SectionLost { section, cost } => {
-                if !self.tally.sections_lost.contains(section) {
+                if self.tally.sections_lost.len() < MAX_SECTIONS_LOST
+                    && !self.tally.sections_lost.contains(section)
+                {
                     self.tally.sections_lost.push(section.clone());
                 }
-                self.own
-                    .sections
-                    .entry(section.clone())
-                    .or_default()
-                    .condition = "destroyed".to_owned();
+                if self.own.sections.contains_key(section) || self.own.sections.len() < MAX_SECTIONS
+                {
+                    self.own
+                        .sections
+                        .entry(section.clone())
+                        .or_default()
+                        .condition = "destroyed".to_owned();
+                }
                 if cost
                     .as_deref()
                     .is_some_and(|cost| cost.contains("the tank cannot move"))
@@ -1937,7 +1977,7 @@ impl Picture {
                     && self.weapons_doubt.is_none()
                 {
                     self.weapons_doubt = Some(now_ms);
-                    self.notes.push(format!(
+                    self.push_note(format!(
                         "The {section}'s weapons are gone: no FIRE until WEAPONSTATUS says what \
                          is left."
                     ));
@@ -2495,6 +2535,12 @@ impl Picture {
         self.touch();
     }
 
+    fn push_note(&mut self, note: String) {
+        if self.notes.len() < MAX_NOTES {
+            self.notes.push(note);
+        }
+    }
+
     /// **Apply** an open `STATUS` block (cut AM.1): each section it names
     /// replaces that section of the tank's; the block stays open.
     fn apply_status(&mut self) {
@@ -2506,7 +2552,9 @@ impl Picture {
         }
         block.applied = true;
         for (id, section) in &block.sections {
-            self.own.sections.insert(id.clone(), section.clone());
+            if self.own.sections.contains_key(id) || self.own.sections.len() < MAX_SECTIONS {
+                self.own.sections.insert(id.clone(), section.clone());
+            }
         }
         self.touch();
     }
@@ -2536,7 +2584,7 @@ impl Picture {
         spot
     }
 
-    fn weapon_mut(&mut self, id: &str) -> &mut Weapon {
+    fn weapon_mut(&mut self, id: &str) -> Option<&mut Weapon> {
         let index = match self
             .weapons
             .iter()
@@ -2544,21 +2592,27 @@ impl Picture {
         {
             Some(index) => index,
             None => {
+                if self.weapons.len() >= MAX_WEAPONS {
+                    return None;
+                }
                 self.weapons.push(Weapon::new(id));
                 self.weapons.len() - 1
             }
         };
-        &mut self.weapons[index]
+        self.weapons.get_mut(index)
     }
 
     /// A contact's rename (`identified`) or its un-naming (`unidentified again`):
     /// the fixes and the track move with it, and so does the lock.
     fn rekey(&mut self, now_ms: u64, was: &str, designator: &str, side: Option<Side>) {
-        let mut contact = self
+        let existing = self
             .contacts
             .remove(was)
-            .or_else(|| self.contacts.remove(designator))
-            .unwrap_or_else(|| Contact::new(designator, now_ms));
+            .or_else(|| self.contacts.remove(designator));
+        if existing.is_none() && self.contacts.len() >= MAX_CONTACTS {
+            return;
+        }
+        let mut contact = existing.unwrap_or_else(|| Contact::new(designator, now_ms));
         contact.designator = designator.to_owned();
         contact.was = Some(was.to_owned());
         contact.side = side;
@@ -2675,10 +2729,11 @@ impl Picture {
         // Cut AN.1: any row not of the own side, an unknown included.
         self.first_contact(now_ms, row.side);
         let fix = self.row_fix(row, read_ms);
-        let mut contact = self
-            .contacts
-            .remove(&row.designator)
-            .unwrap_or_else(|| Contact::new(&row.designator, read_ms));
+        let existing = self.contacts.remove(&row.designator);
+        if existing.is_none() && self.contacts.len() >= MAX_CONTACTS {
+            return;
+        }
+        let mut contact = existing.unwrap_or_else(|| Contact::new(&row.designator, read_ms));
         // The same plot read again has only aged: it is not a second fix.
         let same_plot = contact.range_m == Some(row.range_m)
             && contact.bearing_deg == row.bearing_deg
@@ -2730,10 +2785,15 @@ impl Picture {
         for (row, read_ms) in reply.rows.iter().skip(reply.applied) {
             self.weapon_row(row, *read_ms);
         }
-        let mut carried = Vec::new();
+        let mut by_id: BTreeMap<String, Weapon> = self
+            .weapons
+            .drain(..)
+            .map(|weapon| (weapon.id.clone(), weapon))
+            .collect();
+        let mut carried = Vec::with_capacity(reply.rows.len());
         for (row, _) in &reply.rows {
-            if let Some(index) = self.weapons.iter().position(|w| w.id == row.id) {
-                carried.push(self.weapons.remove(index));
+            if let Some(weapon) = by_id.remove(&row.id) {
+                carried.push(weapon);
             }
         }
         self.weapons = carried;
@@ -2759,6 +2819,9 @@ impl Picture {
         let index = match self.weapons.iter().position(|w| w.id == row.id) {
             Some(index) => index,
             None => {
+                if self.weapons.len() >= MAX_WEAPONS {
+                    return;
+                }
                 self.weapons.push(Weapon::new(&row.id));
                 self.weapons.len() - 1
             }
@@ -2984,8 +3047,7 @@ impl Picture {
                 }
                 if news {
                     let id = entry.id.clone();
-                    self.notes
-                        .push(format!("The {id} is empty: struck from the fire schedule."));
+                    self.push_note(format!("The {id} is empty: struck from the fire schedule."));
                 }
             } else if paired {
                 // The arena refused an acked shot for something other than its
@@ -2996,7 +3058,7 @@ impl Picture {
             }
         }
         if let Some(note) = bench_note {
-            self.notes.push(note);
+            self.push_note(note);
         }
         if paired {
             self.tally.refused_shots = self.tally.refused_shots.saturating_add(1);
@@ -6783,5 +6845,96 @@ mod tests {
         assert!(p.weapons.is_empty(), "the guns with it");
         // The default is off.
         assert!(!Picture::default().lattice.on);
+    }
+
+    #[test]
+    fn hostile_flood_respects_picture_collection_bounds() {
+        let mut p = Picture::default();
+        // Flood open contacts and closed contacts beyond caps.
+        for i in 0..(MAX_OPEN_CONTACT_ROWS + 100) {
+            let line = row_line(&format!("X{i}"), "unknown", 90, 200, 0);
+            p.apply(1_000, &classify(&line));
+        }
+        assert_eq!(
+            p.open.contacts.as_ref().unwrap().rows.len(),
+            MAX_OPEN_CONTACT_ROWS
+        );
+        p.apply(
+            1_100,
+            &Line::StatusCallsign {
+                callsign: "RA".into(),
+            },
+        );
+        assert_eq!(p.contacts.len(), MAX_CONTACTS);
+
+        // Flood open weapons, weapons, struck, and notes beyond caps.
+        for i in 0..(MAX_OPEN_WEAPON_ROWS + 50) {
+            let line = format!("gun_{i}  ready  10 of 10 round(s)");
+            p.apply(2_000, &classify(&line));
+        }
+        assert_eq!(
+            p.open.weapons.as_ref().unwrap().rows.len(),
+            MAX_OPEN_WEAPON_ROWS
+        );
+        p.apply(
+            2_100,
+            &Line::StatusCallsign {
+                callsign: "RA".into(),
+            },
+        );
+        assert_eq!(p.weapons.len(), MAX_WEAPONS);
+
+        for i in 0..(MAX_STRUCK + 50) {
+            p.apply(
+                3_000,
+                &Line::NoSuchWeapon {
+                    weapon: format!("ghost_{i}"),
+                },
+            );
+        }
+        assert_eq!(p.struck.len(), MAX_STRUCK);
+        assert!(p.notes.len() <= MAX_NOTES);
+
+        // Flood STATUS sections, facets, and sections_lost beyond caps.
+        p.apply(
+            4_000,
+            &Line::StatusCallsign {
+                callsign: "RA".into(),
+            },
+        );
+        for i in 0..(MAX_SECTIONS + 40) {
+            p.apply(
+                4_001,
+                &Line::StatusSection {
+                    id: format!("sec_{i}"),
+                    condition: "intact".into(),
+                    internals: Some((10, 10)),
+                },
+            );
+            if i == 0 {
+                let facets: Vec<(String, i64, i64)> = (0..(MAX_FACETS + 20))
+                    .map(|f| (format!("facet_{f}"), 10, 10))
+                    .collect();
+                p.apply(4_002, &Line::StatusFacets { facets });
+            }
+        }
+        assert_eq!(p.open.status.as_ref().unwrap().sections.len(), MAX_SECTIONS);
+        assert_eq!(
+            p.open.status.as_ref().unwrap().sections["sec_0"]
+                .facets
+                .len(),
+            MAX_FACETS
+        );
+        for i in 0..(MAX_SECTIONS_LOST + 40) {
+            p.apply(
+                5_000,
+                &Line::SectionLost {
+                    section: format!("lost_{i}"),
+                    cost: None,
+                },
+            );
+        }
+        assert_eq!(p.tally.sections_lost.len(), MAX_SECTIONS_LOST);
+        assert!(p.own.sections.len() <= MAX_SECTIONS);
     }
 }

@@ -1217,6 +1217,13 @@ fn hold_to_the_record(lines: &[&String], what: &str) {
 /// unchanged; seeds 2359 and 2362 move (`248500` → `369500`, `412750` → `322750`) with the
 /// 11–4 split, `unlawful=0`, `reads_dead=0`, `first_divergence_ms=101377`,
 /// `time_to_first_shot_ms`, and zero twin divergences all preserved.
+/// **Tier 2E P2-TSC-27 / P2-TSC-29 re-records it**: post-loss track re-acquisition mints a fresh
+/// epoch-salted `ContactId` and `X<n>` (changing tied-target `ContactId` tiebreaks after settled
+/// loss), and `relations.note_fire`/`fired_on_by` are deferred past
+/// `TARGET_GONE`/`WRECK`/`MOVED`/`BLOCKED`. Thirteen of fifteen seeds are unchanged; seeds 2356
+/// and 2362 move (`412750` → `353000`, `322750` → `321750`), shifting the split to 9–6 with
+/// `unlawful=0`, `reads_dead=0`, `first_divergence_ms=101377`, `time_to_first_shot_ms`, and zero
+/// twin divergences all preserved.
 const M4_5_POOLED_RECORD: [&str; 21] = [
     "twin_match: seed=2350 end=elimination_blue t_ms=262250",
     "twin_match: seed=2351 end=elimination_blue t_ms=321750",
@@ -1224,21 +1231,21 @@ const M4_5_POOLED_RECORD: [&str; 21] = [
     "twin_match: seed=2353 end=elimination_blue t_ms=411750",
     "twin_match: seed=2354 end=elimination_red t_ms=398750",
     "twin_match: seed=2355 end=elimination_blue t_ms=354500",
-    "twin_match: seed=2356 end=elimination_red t_ms=412750",
+    "twin_match: seed=2356 end=elimination_blue t_ms=353000",
     "twin_match: seed=2357 end=elimination_red t_ms=262750",
     "twin_match: seed=2358 end=elimination_red t_ms=293000",
     "twin_match: seed=2359 end=elimination_red t_ms=369500",
     "twin_match: seed=2360 end=elimination_red t_ms=263750",
     "twin_match: seed=2361 end=elimination_red t_ms=324000",
-    "twin_match: seed=2362 end=elimination_red t_ms=322750",
+    "twin_match: seed=2362 end=elimination_blue t_ms=321750",
     "twin_match: seed=2363 end=elimination_red t_ms=325750",
     "twin_match: seed=2364 end=elimination_red t_ms=294750",
-    "twin_pooled: n=15 red_wins=11 blue_wins=4 draws=0",
-    "twin_divergences: tiebreak=109 line=19 reads_dead=0 landing=17106 no_line=2 fan=11 order_end=0 deg_round=0 fallback=2 cond_fire=1189 cond_stale=4 unwarranted=22 unlawful=0 floor_held=4785 slot_parallel=22 first_divergence_ms=101377",
-    "twin_divergence_basis: thinks=17106 ordered_thinks=0 (order_end and deg_round read only under an order; the pool orders nothing)",
-    "twin_gate_b: side=red shots=676 shots_per_min=8.331 time_to_first_shot_ms=114627 first_shots=15 states_at_end=[startup=0,patrol=2,approach=0,engage=20,withdraw=0,disabled=8] wrecked=8 cond_shots=643 parallel=16",
-    "twin_gate_b: side=blue shots=583 shots_per_min=7.185 time_to_first_shot_ms=114508 first_shots=15 states_at_end=[startup=0,patrol=1,approach=0,engage=11,withdraw=0,disabled=18] wrecked=18 cond_shots=546 parallel=6",
-    "twin_gate_b_pool: path_queries=566 corner_refusals=0",
+    "twin_pooled: n=15 red_wins=9 blue_wins=6 draws=0",
+    "twin_divergences: tiebreak=106 line=19 reads_dead=0 landing=16926 no_line=2 fan=11 order_end=0 deg_round=0 fallback=1 cond_fire=1176 cond_stale=4 unwarranted=22 unlawful=0 floor_held=4679 slot_parallel=18 first_divergence_ms=101377",
+    "twin_divergence_basis: thinks=16926 ordered_thinks=0 (order_end and deg_round read only under an order; the pool orders nothing)",
+    "twin_gate_b: side=red shots=670 shots_per_min=8.361 time_to_first_shot_ms=114627 first_shots=15 states_at_end=[startup=0,patrol=2,approach=0,engage=19,withdraw=0,disabled=9] wrecked=9 cond_shots=637 parallel=13",
+    "twin_gate_b: side=blue shots=576 shots_per_min=7.188 time_to_first_shot_ms=114508 first_shots=15 states_at_end=[startup=0,patrol=1,approach=0,engage=12,withdraw=0,disabled=17] wrecked=17 cond_shots=539 parallel=5",
+    "twin_gate_b_pool: path_queries=562 corner_refusals=0",
 ];
 
 /// **The stock pool, pinned to its record** (17b cut M4.5; until then the
@@ -1851,10 +1858,15 @@ impl Coverage {
 /// `16_399 / 707`, `POOLED_MATCHES_WITH_STAND_IN` remains 8) and `lance` (`8_273 / 99` →
 /// `8_350 / 86`), while `mixed` (`30_832 / 534`) is unchanged and all three lanes keep zero twin
 /// divergences.
+/// **Tier 2E P2-TSC-27 / P2-TSC-29 re-bless of all three**: fresh post-loss epoch-salted
+/// `ContactId` / `X<n>` (P2-TSC-29) and deferred `note_fire`/`fired_on_by` (P2-TSC-27) move
+/// `pooled` (`16_399 / 707` → `16_278 / 648`, `POOLED_MATCHES_WITH_STAND_IN` remains 8), `mixed`
+/// (`30_832 / 534` → `32_332 / 534`), and `lance` (`8_350 / 86` → `8_304 / 117`), with zero twin
+/// divergences across all three lanes.
 const COVERAGE: [(&str, (usize, usize)); 3] = [
-    ("pooled", (16_399, 707)),
-    ("mixed", (30_832, 534)),
-    ("lance", (8_350, 86)),
+    ("pooled", (16_278, 648)),
+    ("mixed", (32_332, 534)),
+    ("lance", (8_304, 117)),
 ];
 
 /// **The two-tank lanes' bound on a Rhai think's operations plus fees**, the

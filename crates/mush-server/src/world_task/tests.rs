@@ -11677,6 +11677,126 @@ mod e7c8_pulse {
         );
     }
 
+    /// Stage one `domain_pulse_arm` document straight through the registered
+    /// provider, as [`arm_directly`] does for the world's first arm: an arm at
+    /// `generation`, or the disarm that clears the cursor.
+    fn pulse_arm(engine: &mut mush_core::Engine, generation: u64, arm: bool, token: u8) {
+        let action = engine
+            .registry
+            .definitions()
+            .and_then(|definitions| {
+                definitions
+                    .current(&DefinitionKey {
+                        owner: OwnerId::new("sim").unwrap(),
+                        kind: DefinitionKind::new("action").unwrap(),
+                        id: DefinitionId::new("domain_pulse_arm").unwrap(),
+                    })
+                    .cloned()
+            })
+            .expect("the arm action is composed");
+        let document = json!({
+            "domain": 0,
+            "generation": generation,
+            "from_tick": 0,
+            "arm": arm,
+            "clear_units": [],
+        });
+        let invocation = invocation_of(
+            &action,
+            GOD,
+            json!({
+                "arm": serde_json::to_string(&document).unwrap(),
+                "armed_by": json!(GOD),
+            }),
+            token,
+        );
+        let (prepared, _) = engine
+            .prepare_registered_authoritative_action(
+                &action,
+                &invocation,
+                CommitToken::from_bytes([token; 16]),
+            )
+            .expect("the pulse arm prepares");
+        let (_ops, installation) = prepared.into_parts();
+        engine
+            .install_composed_action(installation)
+            .expect("the fixture installs");
+    }
+
+    /// **T1(c), the freeze the 2026-11-22 nightly found.** A domain's SECOND
+    /// promotion ticks. Before the fold its first tick returned `Err`, which
+    /// `world_task` turns into `apply_integrity_freeze`: a domain that woke,
+    /// ticked, fell quiet and woke again left the world read-only. The cause is
+    /// T1's own, one arming later: a fresh cursor was always
+    /// `(generation 1, ordinal 0, revision 1)` under the domain's one schedule
+    /// id, and `advance_key` hashes neither the clock nor `next_due`, so the
+    /// second arming's first tick minted the ingress identity the first
+    /// arming's first tick had already finalized. The cursor now carries its
+    /// pulse's generation, which is the domain record's revision and is never
+    /// reused.
+    #[tokio::test]
+    async fn vf_t1c_a_second_promotion_ticks_rather_than_freezing_the_world() {
+        let (mut engine, store, at) = pulsing_world();
+        let mut driver = DurableScheduleDriver::new(1);
+        // The first promotion's first tick, finalized in the store.
+        engine.world.set_now(at + 10);
+        let first = drive_until_staged(&mut driver, &mut engine, &store)
+            .await
+            .expect("the first promotion's first tick drives");
+        assert_eq!(
+            first, "staged",
+            "the first promotion's first tick must stage"
+        );
+        // The domain falls quiet and wakes, as the maintenance pass has it: the
+        // record stands down and pulses again, and the new pulse's generation is
+        // the record's new revision.
+        let first_generation = generation(&engine);
+        let now = engine.world.world_ic_now();
+        {
+            let state = engine
+                .world
+                .module_state_mut::<SpatialState>()
+                .expect("the spatial state");
+            let record = state.domains.get_mut(&DomainId(0)).expect("the domain");
+            let mush_sim::data::DomainClock::Pulse { period_ms, .. } = record.clock.clone() else {
+                panic!("the fixture's domain is pulsing");
+            };
+            mush_sim::tick::clear_pulse(record).expect("the domain stands down");
+            mush_sim::tick::apply_pulse(record, period_ms, &now).expect("and pulses again");
+        }
+        let second_generation = generation(&engine);
+        assert_ne!(
+            first_generation, second_generation,
+            "a second promotion is a new pulse generation"
+        );
+        // The disarm goes first, then the arm at the new generation
+        // (`run_maintenance`'s own order).
+        pulse_arm(&mut engine, first_generation, false, 45);
+        pulse_arm(&mut engine, second_generation, true, 46);
+        let owner = OwnerId::new("sim").unwrap();
+        let id = tick_schedule_id(&owner, DomainId(0)).expect("a cursor id");
+        let cursor = engine
+            .action_state()
+            .get(&handles(&engine).schedules, &id)
+            .expect("read")
+            .expect("the second promotion's cursor")
+            .clone();
+        assert_eq!(
+            (cursor.generation(), cursor.next_ordinal()),
+            (second_generation, 0),
+            "a fresh cursor carries its pulse's generation, so its identities are its own"
+        );
+        // The second promotion's first tick.
+        engine.world.set_now(at + 20);
+        let second = drive_until_staged(&mut driver, &mut engine, &store)
+            .await
+            .expect("the second promotion's first tick must not return Err: that is the freeze");
+        assert_eq!(
+            second, "staged",
+            "the second promotion's first tick must stage, not freeze the world"
+        );
+    }
+
     /// **The deferred replay row** (§3.8 deviation (e)). Drive a tick, drop
     /// the staged bundle, drive it again: the same `state_hash`. The RNG
     /// stream does not re-draw, because the window pins the resolution

@@ -1096,7 +1096,7 @@ impl Arena {
         let Some(held) = self.contacts.resolve(unit, lock) else {
             return Err(Held::Idle);
         };
-        if self.unit(held.target).is_none() {
+        if !self.target_known_to_plot(held.target) {
             return Err(Held::Idle);
         }
         // 17b cut M2.2, ruling (a): one read-dead rule for the three targets.
@@ -2262,7 +2262,7 @@ impl Arena {
         if let SlotTarget::Contact { id } = condition.target
             && !self.contacts.resolve(unit, id).is_some_and(|held| {
                 matches!(held.class, Classification::Classified { .. })
-                    && self.unit(held.target).is_some()
+                    && self.target_known_to_plot(held.target)
             })
         {
             return Err(Refusal::Unlawful);

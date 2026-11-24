@@ -23,7 +23,7 @@
 //! (`levy_account`) — a fine is never refused for want of an account. An inspection that
 //! recorded no holder, or a system principal, answers `NO_FINE_HOLDER`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use mush_core::action::{
@@ -49,6 +49,8 @@ const MAX_FINE_BYTES: usize = 2_048;
 const TICK: &str = "registry.fines";
 const TICK_SECS: u64 = 1;
 const FINES_PER_TICK: usize = 32;
+const RETRY_BASE_SECS: i64 = 2;
+const MAX_RETRY_BACKOFF_SECS: i64 = 300;
 
 /// **One recorded fine**: what the provider proved at the fine, so the tick levies exactly it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,22 +157,63 @@ impl FineHost {
     }
 }
 
-/// The fine slots announced and not yet levied (RAM).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RetryState {
+    attempts: u32,
+    next_at: i64,
+}
+
+impl Default for RetryState {
+    fn default() -> Self {
+        Self {
+            attempts: 0,
+            next_at: i64::MIN,
+        }
+    }
+}
+
+fn retry_backoff_secs(attempts: u32) -> i64 {
+    let shift = attempts.saturating_sub(1).min(8);
+    RETRY_BASE_SECS
+        .saturating_mul(1_i64 << shift)
+        .min(MAX_RETRY_BACKOFF_SECS)
+}
+
+/// The fine slots announced and not yet levied (RAM), with per-slot exponential retry backoff.
 #[derive(Clone, Default)]
-pub(crate) struct Pending(Arc<Mutex<BTreeSet<String>>>);
+pub(crate) struct Pending(Arc<Mutex<BTreeMap<String, RetryState>>>);
 
 impl Pending {
     fn note(&self, key: String) {
         self.0
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(key);
+            .insert(key, RetryState::default());
     }
-    fn take(&self, n: usize) -> Vec<String> {
-        let mut set = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        let taken: Vec<String> = set.iter().take(n).cloned().collect();
-        for key in &taken {
-            set.remove(key);
+    fn retry(&self, key: String, prior_attempts: u32, now: i64) {
+        let attempts = prior_attempts.saturating_add(1);
+        let delay = retry_backoff_secs(attempts);
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(
+                key,
+                RetryState {
+                    attempts,
+                    next_at: now.saturating_add(delay),
+                },
+            );
+    }
+    fn take_due(&self, now: i64, n: usize) -> Vec<(String, u32)> {
+        let mut map = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let taken: Vec<(String, u32)> = map
+            .iter()
+            .filter(|(_, state)| state.next_at <= now)
+            .take(n)
+            .map(|(key, state)| (key.clone(), state.attempts))
+            .collect();
+        for (key, _) in &taken {
+            map.remove(key);
         }
         taken
     }
@@ -187,8 +230,8 @@ pub(crate) fn fined_principal(record: &InspectionRecord) -> Option<mush_org::Pri
 }
 
 /// The account a fine on `principal` debits, when it has one: a character's own unscoped,
-/// active credit account (the lowest id), or an organisation's one active credit treasury on its
-/// root scope (M8c's treasury rule; two are ambiguous and read as none).
+/// active credit account (the lowest id), or an organization's active credit treasury on its
+/// root scope (deterministically the lowest account id when multiple exist).
 fn account_of(w: &World, principal: &mush_org::PrincipalId) -> Option<mush_economy::AccountId> {
     let economy = w.module_state::<mush_economy::EconomyStore>()?;
     let snapshot = economy.snapshot();
@@ -206,24 +249,32 @@ fn account_of(w: &World, principal: &mush_org::PrincipalId) -> Option<mush_econo
             .min(),
         mush_org::PrincipalId::Organization(org) => {
             let scope = mush_roll::commerce::org_holder::root_scope(w, *org)?;
-            let mut treasuries = snapshot
+            snapshot
                 .accounts()
                 .filter(credit)
-                .filter(|a| a.scope == Some(scope));
-            let account = treasuries.next()?.id;
-            treasuries.next().is_none().then_some(account)
+                .filter(|a| a.scope == Some(scope))
+                .map(|a| a.id)
+                .min()
         }
         mush_org::PrincipalId::System(_) => None,
     }
 }
 
 /// **The account the levy debits** (K1's carried-debt rule): the principal's own, or one opened
-/// now — a character's personal credit account, an organisation's treasury on its root scope —
-/// so the fine is recorded as an obligation on them however empty-handed they are.
+/// now — a character's personal credit account, an organization's treasury on its root scope —
+/// so the fine is recorded as an obligation on them however empty-handed they are. Never opens
+/// an account while the economy is frozen.
 fn levy_account(
     ctx: &mut Ctx<'_>,
     principal: &mush_org::PrincipalId,
 ) -> Option<mush_economy::AccountId> {
+    if ctx
+        .w
+        .module_state::<mush_economy::EconomyStore>()
+        .is_none_or(mush_economy::EconomyStore::is_frozen)
+    {
+        return None;
+    }
     if let Some(account) = account_of(ctx.w, principal) {
         return Some(account);
     }
@@ -241,16 +292,18 @@ fn levy_account(
         ),
         mush_org::PrincipalId::System(_) => return None,
     };
+    let instrument = mush_economy::InstrumentId::new(crate::economy::CREDIT)?;
     let id = ctx
         .w
         .module_state_mut::<mush_economy::EconomyStore>()
+        .filter(|store| !store.is_frozen())
         .and_then(mush_economy::EconomyStore::alloc_account)?;
-    mush_economy::open_account(
+    if !mush_economy::open_account(
         ctx,
         mush_economy::Account {
             id,
             owner: principal.clone(),
-            instrument: mush_economy::InstrumentId::new(crate::economy::CREDIT)?,
+            instrument,
             scope,
             name: smol_str::SmolStr::new(name),
             status: mush_economy::AccountStatus::Active,
@@ -262,7 +315,9 @@ fn levy_account(
             revision: 1,
             approval: None,
         },
-    );
+    ) {
+        return None;
+    }
     Some(id)
 }
 
@@ -573,11 +628,48 @@ pub(super) fn boot(ctx: &Ctx<'_>) {
     }
 }
 
+fn operator_authorized(
+    w: &World,
+    record: &FineRecord,
+    capability: &mush_org::CapabilityId,
+    scope: mush_org::OrgScopeId,
+) -> bool {
+    matches!(
+        mush_org::authorize_in_world(
+            w,
+            &mush_org::AuthRequest {
+                actor: record.operator,
+                capability: capability.clone(),
+                scope,
+                now: w.now(),
+                amount: Some(record.amount_minor),
+            },
+        ),
+        mush_org::Decision::Allow(_)
+    )
+}
+
+fn credit_account_ready(w: &World, credit: mush_economy::AccountId) -> bool {
+    w.module_state::<mush_economy::EconomyStore>()
+        .and_then(|economy| economy.snapshot().account(credit))
+        .is_some_and(|account| {
+            account.status == mush_economy::AccountStatus::Active
+                && account.instrument.as_str() == crate::economy::CREDIT
+        })
+}
+
 /// **The levy tick** (GOD): each noted slot's fine, if no sanction already carries its key,
 /// becomes one obligation under the recording operator's live grant, on the recorded holder's
-/// account (opened when they have none). A retryable refusal — the economy frozen or busy, the
-/// grant briefly withdrawn — re-notes the slot for the next fire; any other pages staff once.
+/// account (opened when they have none). Economy freeze and live operator authorization are
+/// checked before opening any debit account, and retryable refusals back off exponentially.
 fn tick(ctx: &mut Ctx<'_>, _: &str, _: Option<mush_core::SceneId>) {
+    if ctx
+        .w
+        .module_state::<mush_economy::EconomyStore>()
+        .is_none_or(mush_economy::EconomyStore::is_frozen)
+    {
+        return;
+    }
     let Some(host) = InspectionHost::of(ctx.w) else {
         return;
     };
@@ -592,21 +684,40 @@ fn tick(ctx: &mut Ctx<'_>, _: &str, _: Option<mush_core::SceneId>) {
     ) else {
         return;
     };
-    for key in fines.pending.take(FINES_PER_TICK) {
+    let now = ctx.w.now();
+    for (key, attempts) in fines.pending.take_due(now, FINES_PER_TICK) {
         let record = match ctx.action_state(&fines.family, &key) {
             Ok(Some(record)) => record.clone(),
             Ok(None) => continue,
             Err(error) => {
                 tracing::debug!(?error, %key, "Registry fine: slot unread");
-                fines.pending.note(key);
+                fines.pending.retry(key, attempts, now);
                 continue;
             }
         };
         if levied(ctx.w, &record) {
             continue;
         }
+        if !operator_authorized(ctx.w, &record, &capability, policy.scope()) {
+            tracing::debug!(
+                hull = record.hull.0,
+                "Registry fine: operator unauthorized, backing off"
+            );
+            fines.pending.retry(key, attempts, now);
+            continue;
+        }
+        if !credit_account_ready(ctx.w, record.credit) {
+            if fines.paged(&key) {
+                tracing::error!(
+                    hull = record.hull.0,
+                    "tacsim: a Registry fine cannot be levied (credit sink missing, inactive, \
+                     or wrong instrument); it stays recorded, and staff settle it"
+                );
+            }
+            continue;
+        }
         let Some(debit) = levy_account(ctx, &record.holder) else {
-            fines.pending.note(key);
+            fines.pending.retry(key, attempts, now);
             continue;
         };
         let spec = mush_economy::SanctionSpec {
@@ -624,7 +735,7 @@ fn tick(ctx: &mut Ctx<'_>, _: &str, _: Option<mush_core::SceneId>) {
             Ok(_) => {}
             Err(error) if retryable(&error) => {
                 tracing::debug!(%error, hull = record.hull.0, "Registry fine: levy retried");
-                fines.pending.note(key);
+                fines.pending.retry(key, attempts, now);
             }
             Err(error) => {
                 if fines.paged(&key) {
@@ -768,4 +879,163 @@ pub(crate) fn command(ctx: &mut Ctx<'_>, usage: &str) -> Result<(), CmdError> {
         ),
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mush_core::GOD;
+    use mush_testkit::TestWorld;
+
+    fn test_world() -> TestWorld {
+        struct ProbeMod;
+        impl mush_core::GameModule for ProbeMod {
+            fn name(&self) -> &'static str {
+                "p2_tsc_17_probe"
+            }
+            fn register(&mut self, reg: &mut Registrar<'_>) -> Result<(), ModError> {
+                reg.classify_commands(mush_core::CommandCompatibility::Authoritative);
+                reg.command(
+                    mush_core::CommandSpec {
+                        name: "+probe_freeze_levy".into(),
+                        shape: mush_core::ArgShape::Raw,
+                        help: "test".into(),
+                        ..mush_core::CommandSpec::default()
+                    },
+                    Arc::new(|ctx: &mut Ctx<'_>| -> Result<(), CmdError> {
+                        let target = ObjId(
+                            ctx.args
+                                .raw()
+                                .trim()
+                                .parse::<u32>()
+                                .map_err(|e| CmdError::msg(e.to_string()))?,
+                        );
+                        if !mush_economy::set_economy_frozen(ctx, true) {
+                            return Err(CmdError::msg("failed to freeze economy"));
+                        }
+                        let before = ctx
+                            .w
+                            .module_state::<mush_economy::EconomyStore>()
+                            .ok_or_else(|| CmdError::msg("missing economy store"))?
+                            .snapshot()
+                            .accounts()
+                            .count();
+                        if levy_account(ctx, &mush_org::PrincipalId::Object(target)).is_some() {
+                            return Err(CmdError::msg(
+                                "levy_account must not open accounts while frozen",
+                            ));
+                        }
+                        let after = ctx
+                            .w
+                            .module_state::<mush_economy::EconomyStore>()
+                            .ok_or_else(|| CmdError::msg("missing economy store"))?
+                            .snapshot()
+                            .accounts()
+                            .count();
+                        if before != after {
+                            return Err(CmdError::msg(format!(
+                                "account count changed while frozen: {before} -> {after}"
+                            )));
+                        }
+                        Ok(())
+                    }),
+                )?;
+                Ok(())
+            }
+        }
+        let mut tw = TestWorld::with_modules(vec![
+            Box::new(mush_org::OrgModule::new()),
+            Box::new(mush_economy::EconomyModule::new()),
+            Box::new(ProbeMod),
+        ]);
+        let _ = tw.run(
+            GOD,
+            &format!("@instrument/register {}=2", crate::economy::CREDIT),
+        );
+        tw
+    }
+
+    #[test]
+    fn p2_tsc_17_multi_treasury_org_selects_lowest_root_credit_account() {
+        let mut tw = test_world();
+        let _ = tw.run(GOD, "@org/create MultiHouse");
+        let _ = tw.run(
+            GOD,
+            &format!("@account/open org:MultiHouse={}", crate::economy::CREDIT),
+        );
+        let _ = tw.run(
+            GOD,
+            &format!("@account/open org:MultiHouse={}", crate::economy::CREDIT),
+        );
+        let org = tw
+            .world()
+            .module_state::<mush_org::OrgStore>()
+            .expect("org store")
+            .state()
+            .orgs()
+            .find(|o| o.name.as_str() == "MultiHouse")
+            .expect("org")
+            .id;
+        let root = mush_roll::commerce::org_holder::root_scope(tw.world(), org).expect("root");
+        let principal = mush_org::PrincipalId::Organization(org);
+        let mut ids: Vec<_> = tw
+            .world()
+            .module_state::<mush_economy::EconomyStore>()
+            .expect("economy")
+            .snapshot()
+            .accounts()
+            .filter(|a| a.owner == principal && a.scope == Some(root))
+            .map(|a| a.id)
+            .collect();
+        ids.sort();
+        assert_eq!(ids.len(), 2, "fixture requires >= 2 root treasuries");
+        assert_eq!(
+            account_of(tw.world(), &principal),
+            Some(ids[0]),
+            "account_of must deterministically pick the lowest root credit AccountId"
+        );
+    }
+
+    #[test]
+    fn p2_tsc_17_levy_account_refuses_when_economy_is_frozen_and_pending_backs_off() {
+        let mut tw = test_world();
+        let pilot = tw.spawn_player("Debtor");
+
+        // Freeze the economy and invoke levy_account through a real command Ctx.
+        let events = tw.run(GOD, &format!("+probe_freeze_levy {}", pilot.0));
+        assert!(
+            tw.seen_by(&events, GOD).is_empty(),
+            "probe command failed: {events:?}"
+        );
+        assert!(
+            tw.world()
+                .module_state::<mush_economy::EconomyStore>()
+                .expect("economy")
+                .is_frozen()
+        );
+
+        // Verify exponential backoff on retryable errors (e.g. Unauthorized).
+        let pending = Pending::default();
+        pending.note("hull/00000001/slot/01".to_owned());
+        let first = pending.take_due(100, 8);
+        assert_eq!(first, vec![("hull/00000001/slot/01".to_owned(), 0)]);
+        pending.retry("hull/00000001/slot/01".to_owned(), 0, 100);
+        assert!(
+            pending.take_due(101, 8).is_empty(),
+            "1s later must back off"
+        );
+        let second = pending.take_due(102, 8);
+        assert_eq!(second, vec![("hull/00000001/slot/01".to_owned(), 1)]);
+        pending.retry("hull/00000001/slot/01".to_owned(), 1, 102);
+        assert!(
+            pending.take_due(105, 8).is_empty(),
+            "3s later must back off"
+        );
+        let third = pending.take_due(106, 8);
+        assert_eq!(third, vec![("hull/00000001/slot/01".to_owned(), 2)]);
+        assert_eq!(retry_backoff_secs(1), 2);
+        assert_eq!(retry_backoff_secs(2), 4);
+        assert_eq!(retry_backoff_secs(3), 8);
+        assert_eq!(retry_backoff_secs(20), MAX_RETRY_BACKOFF_SECS);
+    }
 }

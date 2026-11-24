@@ -346,11 +346,11 @@ impl UnitState {
     /// offline (jammed/destroyed/missing) fitted sensor, and an unfitted hull.
     #[must_use]
     pub fn sight_cap(&self, cell_cm: u16) -> crate::arena::view::SightCap {
-        if let Some(sensor) = self.sensor.as_ref() {
+        if let Some(sensor) = self.sensor.as_ref().filter(|s| s.max_range_cells > 0) {
             crate::arena::view::SightCap::ReachCm(
                 u32::from(sensor.max_range_cells).saturating_mul(u32::from(cell_cm)),
             )
-        } else if self.sensor_authored.is_some() {
+        } else if self.sensor.is_some() || self.sensor_authored.is_some() {
             crate::arena::view::SightCap::Offline
         } else {
             crate::arena::view::SightCap::Unfitted
@@ -358,13 +358,15 @@ impl UnitState {
     }
 
     /// **Nominal scope size for frame/band display**, centimetres: the live
-    /// sight when operational, the authored sensor's reach while offline (so
-    /// aging contacts never expand 5x to uncapped weapon reach when a fitted
-    /// sight jams), and `0` only for a hull unfitted with any sensor.
+    /// sight when operational with non-zero reach, the authored sensor's reach
+    /// while offline or rounded to `0` cells (so aging contacts never expand 5x
+    /// to uncapped weapon reach when a fitted sight jams or degrades to 0
+    /// cells, P2-TSC-28), and `0` only for a hull unfitted with any sensor.
     #[must_use]
     pub fn scope_sight_cm(&self, cell_cm: u16) -> u32 {
         self.sensor
             .as_ref()
+            .filter(|sensor| sensor.max_range_cells > 0)
             .or(self.sensor_authored.as_ref())
             .map_or(0, |sensor| {
                 u32::from(sensor.max_range_cells).saturating_mul(u32::from(cell_cm))
@@ -1211,10 +1213,23 @@ impl Arena {
         // Accepted. The predicted point and the range are the target's pose *now*
         // — where the round is thrown, which is physics and not what the platform
         // knows (16b cut F.3; the argument is on `Shot`).
-        let Some(aim) = self.unit(target).map(|state| state.pose.clone()) else {
-            // A contact held on a unit that has left the match: the platform's
-            // knowledge is of something that is not there, and there is nothing to
-            // shoot at. Refused rather than fired, because a shot needs a point.
+        // P2-TSC-15: if the target withdrew while this viewer still holds a
+        // stale plot (backed by `withdrawn_plots`), accept the shot aimed at the
+        // last-seen pose so ammo/cycle/heat are spent and `TARGET_GONE` resolves
+        // at impact instead of leaking withdrawal via an immediate `NoLock`.
+        let (aim, live_target) = if let Some(target_state) = self.unit(target) {
+            (target_state.pose.clone(), true)
+        } else if self.withdrawn_plots.contains_key(&target)
+            && let Some(held_contact) = self.contacts.resolve(unit, contact)
+        {
+            let seen = held_contact.seen_at;
+            let mut plot_pose = state.pose.clone();
+            plot_pose.x_cm = seen.x_cm;
+            plot_pose.y_cm = seen.y_cm;
+            plot_pose.z_cm = seen.z_cm;
+            plot_pose.heading_mdeg = seen.heading_mdeg;
+            (plot_pose, false)
+        } else {
             return Err(Refusal::NoLock);
         };
         let range = self
@@ -1244,8 +1259,19 @@ impl Arena {
         // **16b cut W.2**: doc 16 §3.5 resolves here, at acceptance. One trace, for
         // the cover the presented silhouette is scaled by; its verdict on the line
         // is the impact's to spend, because acceptance never refuses for it.
-        let cover = self.fire_cover(unit, target);
-        let resolution = self.resolve_shot(unit, target, weapon, range, cover);
+        let resolution = if live_target {
+            let cover = self.fire_cover(unit, target);
+            self.resolve_shot(unit, target, weapon, range, cover)
+        } else {
+            self.aim_at(unit, contact).map_or(
+                crate::arena::resolution::Resolution::blind(
+                    "front",
+                    crate::arena::resolution::MIN_ERROR_URAD,
+                    mush_atlas::Cover::None,
+                ),
+                |aim_seen| self.resolve_seen(unit, &aim_seen, weapon),
+            )
+        };
         if let Some(observer) = &mut self.acceptance {
             observer.record(resolution.p_permille);
         }

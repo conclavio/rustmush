@@ -334,3 +334,77 @@ async fn cr4_an_uncaptured_ejection_waits_for_the_wing_then_lands_at_a_port_at_5
 async fn cr5_a_third_casualty_waits_for_a_bed_at_ceres() {
     crate::custody_rig::beds_at_ceres();
 }
+
+/// **`P2-TSC-13` regression**: while an applicable [`NpcExit`] is owed before
+/// `tacsim_crew_captured` lands, `+sortie/board` immediately treats the contract as ended and
+/// refuses boarding, and `npc_exits` returns any stray exiting NPC back to their hiring pool room
+/// without disturbing a newer rehire.
+#[test]
+fn p2_tsc_13_pending_npc_exit_blocks_boarding_and_returns_stray_npc_to_pool() {
+    let mut rig = stocked_tuned(quick);
+    let mendes = npc_named(&rig, MENDES);
+    let pool = rig
+        .tw
+        .world()
+        .get(mendes)
+        .and_then(|object| object.location)
+        .expect("Mendes stands in the Slack Line");
+    let concourse = station_room(&rig.tw, "ceres_port", "room.c07_exchange");
+    assert_ne!(pool, concourse);
+
+    // Captain at Ceres with a docked carrier hires Mendes.
+    let captain_a = crate::driving_rig::pilot(&mut rig, "CapBoard", 1);
+    let enrolled = run(&mut rig.tw, captain_a, "+coop/enroll Salt Moth");
+    assert!(enrolled.contains("now the Salt Moth"), "{enrolled}");
+    teleport(&mut rig.tw, captain_a, pool);
+    hire(&mut rig, captain_a, mendes);
+    let boarded = run(
+        &mut rig.tw,
+        captain_a,
+        &format!("+sortie/board #{}", mendes.0),
+    );
+    assert!(boarded.contains("has come aboard"), "{boarded}");
+
+    // Discharge Mendes WITHOUT landing `tacsim_crew_captured` yet: an applicable `NpcExit` is
+    // owed while the K3 contract row still exists.
+    let _ = crate::driving_rig::drain(&mut rig.tw);
+    let (discharged, queued) = command(
+        &mut rig,
+        captain_a,
+        &format!("+sortie/discharge #{}", mendes.0),
+    );
+    assert!(discharged.contains("discharged"), "{discharged}");
+    assert_eq!(queued.len(), 1, "one pending crew exit: {discharged}");
+    assert!(
+        npc_exit_of(rig.tw.world(), mendes).is_some(),
+        "applicable NpcExit is owed before tacsim_crew_captured lands"
+    );
+
+    // `+sortie/board` MUST refuse the ended contract even before the roster action lands.
+    let refused = run(
+        &mut rig.tw,
+        captain_a,
+        &format!("+sortie/board #{}", mendes.0),
+    );
+    assert!(
+        refused.contains("Crew or contract unavailable"),
+        "pending NpcExit must block +sortie/board: {refused}"
+    );
+
+    // Simulate a stray NPC standing outside `pool` while the exit settles: `npc_exits` lands
+    // `tacsim_crew_captured` and returns the stray NPC back to `pool`.
+    teleport(&mut rig.tw, mendes, concourse);
+    assert_eq!(
+        rig.tw.world().get(mendes).and_then(|o| o.location),
+        Some(concourse)
+    );
+    let (settled, heard) = hearing_until(&mut rig, captain_a, 30, |rig| {
+        npc_exit_of(rig.tw.world(), mendes).is_none()
+    });
+    assert!(settled, "owed NpcExit settles: {heard}");
+    assert_eq!(
+        rig.tw.world().get(mendes).and_then(|o| o.location),
+        Some(pool),
+        "stray exiting NPC must be returned to hiring pool room on exit completion"
+    );
+}

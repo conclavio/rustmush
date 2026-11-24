@@ -201,7 +201,7 @@ use crate::arena::motor::MotorTable;
 use crate::arena::state::{
     ActionHash, Arena, ArenaDefinition, ArenaError, ContactId, CostRow, Designator, DesignatorBook,
     DueHeap, EpochTable, HoldState, MatchEnd, MatchMode, Pilot, ShadowContacts, StopReason,
-    UnitState, check_poses,
+    UnitState, WithdrawnPlot, check_poses,
 };
 use crate::arena::step::FrameSlots;
 use crate::arena::weapons::Shot;
@@ -937,6 +937,10 @@ fn read(document: &serde_json::Value) -> Result<(SnapshotHead, Cow<'_, str>), Sn
 /// [`ArenaState`] is its owned twin, field for field; the encode → decode →
 /// encode round trip (`af1_the_encoding_is_deterministic_and_integer`)
 /// proves the two agree byte for byte.
+fn is_empty_map_ref<K, V>(map: &&BTreeMap<K, V>) -> bool {
+    map.is_empty()
+}
+
 #[derive(Serialize)]
 struct ArenaStateRef<'a> {
     units: &'a [UnitState],
@@ -973,6 +977,13 @@ struct ArenaStateRef<'a> {
     pending_catchup: &'a BTreeMap<ObjId, Catchup>,
     #[serde(serialize_with = "pairs::serialize_ref")]
     held_losses: &'a BTreeMap<(ObjId, ContactId), (i64, Designator)>,
+    #[serde(
+        skip_serializing_if = "is_empty_map_ref",
+        serialize_with = "pairs::serialize_ref"
+    )]
+    held_loss_targets: &'a BTreeMap<(ObjId, ContactId), ObjId>,
+    #[serde(skip_serializing_if = "is_empty_map_ref")]
+    withdrawn_plots: &'a BTreeMap<ObjId, WithdrawnPlot>,
     ended: &'a Option<MatchEnd>,
     arena_cfg: &'a ArenaConfig,
     match_cfg: &'a MatchConfig,
@@ -1074,6 +1085,8 @@ impl<'a> From<&'a Arena> for ArenaStateRef<'a> {
             // Reset: cleared by the frames of the pulse that staged them.
             pending_notices: _pending_notices,
             held_losses,
+            held_loss_targets,
+            withdrawn_plots,
             // Reset: cleared at the start of every pulse.
             substep_hashes: _substep_hashes,
             ended,
@@ -1123,6 +1136,8 @@ impl<'a> From<&'a Arena> for ArenaStateRef<'a> {
             at_release,
             pending_catchup,
             held_losses,
+            held_loss_targets,
+            withdrawn_plots,
             ended,
             arena_cfg,
             match_cfg,
@@ -1179,6 +1194,10 @@ struct ArenaState {
     pending_catchup: BTreeMap<ObjId, Catchup>,
     #[serde(with = "pairs")]
     held_losses: BTreeMap<(ObjId, ContactId), (i64, Designator)>,
+    #[serde(default, with = "pairs")]
+    held_loss_targets: BTreeMap<(ObjId, ContactId), ObjId>,
+    #[serde(default)]
+    withdrawn_plots: BTreeMap<ObjId, WithdrawnPlot>,
     ended: Option<MatchEnd>,
     arena_cfg: ArenaConfig,
     match_cfg: MatchConfig,
@@ -1230,6 +1249,8 @@ impl ArenaState {
             at_release,
             pending_catchup,
             held_losses,
+            held_loss_targets,
+            withdrawn_plots,
             ended,
             arena_cfg,
             match_cfg,
@@ -1323,6 +1344,8 @@ impl ArenaState {
             last_observer_s: None,
             pending_notices: BTreeMap::new(),
             held_losses,
+            held_loss_targets,
+            withdrawn_plots,
             substep_hashes: Vec::new(),
             ended,
             arena_cfg,

@@ -195,13 +195,30 @@ fn surface_target(
     let domain = super::parties::site_domain(ctx.w, site)?;
     let units = super::parties::on_ground(ctx.w, domain);
     let entrants = super::parties::entrants(ctx, site, &units);
+    let site_rec = super::close::site_record(ctx, site);
+    if !super::provider::open_unit_eligible(ctx.w, site_rec.as_ref(), unit) {
+        return None;
+    }
     let own = entrants.iter().find(|entrant| entrant.unit == unit)?.key;
     let others: Vec<ObjId> = entrants
         .iter()
-        .filter(|entrant| entrant.key != own)
+        .filter(|entrant| {
+            entrant.key != own
+                && super::provider::open_unit_eligible(ctx.w, site_rec.as_ref(), entrant.unit)
+        })
         .map(|entrant| entrant.unit)
         .collect();
-    super::commands::resolve_row(ctx, &[unit], &others, octant, band)
+    super::commands::resolve_row_visible(ctx, &[unit], &others, octant, band, |from, target| {
+        super::provider::surface_sighting_valid(
+            ctx.w,
+            site,
+            domain,
+            site_rec.as_ref(),
+            from,
+            target,
+            false,
+        )
+    })
 }
 
 /// **A delivered `ENGAGE` received on open ground** (§4a): the leader's Hostile mark on the party

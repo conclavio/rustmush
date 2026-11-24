@@ -169,9 +169,10 @@ fn unexpected(what: &str, reply: &serde_json::Value) -> String {
         .get("message")
         .and_then(serde_json::Value::as_str)
         .map_or_else(|| reply.to_string(), str::to_owned);
+    let clean = crate::terminal::plain(&said);
     format!(
         "the SSH mind service did not {what}: {}",
-        crate::tail(&said, 300)
+        crate::tail(&clean, 300)
     )
 }
 
@@ -222,14 +223,22 @@ pub fn checked_reply(reply: &serde_json::Value) -> Result<usize, String> {
             .unwrap_or_default()
     };
     if let Some(diagnostic) = list("diagnostics").first() {
-        return Err(format!("the check refused the source: {diagnostic}"));
+        let clean = crate::terminal::plain(&diagnostic.to_string());
+        return Err(format!(
+            "the check refused the source: {}",
+            crate::tail(&clean, 300)
+        ));
     }
     let reports = list("reports");
     if let Some(faulted) = reports
         .iter()
         .find(|report| report.get("fault").is_some_and(|fault| !fault.is_null()))
     {
-        return Err(format!("a check picture faulted: {faulted}"));
+        let clean = crate::terminal::plain(&faulted.to_string());
+        return Err(format!(
+            "a check picture faulted: {}",
+            crate::tail(&clean, 300)
+        ));
     }
     if reports.is_empty() {
         return Err("the check ran no picture".to_owned());
@@ -551,9 +560,29 @@ pub fn in_vocabulary(line: &str) -> bool {
 /// sentence" is as near as a reader can hold it; every submitted step is read back by the
 /// step that follows it (the holdings, the counter's row).
 fn confirmed(raw: &[String], request: &str) -> bool {
-    let Some(said) =
-        (0..raw.len()).find(|&end| lines::has(&lines::normalise(&raw[..=end].join(" ")), request))
-    else {
+    let want = lines::normalise(request);
+    let mut acc = String::new();
+    let mut said = None;
+    for (index, line) in raw.iter().enumerate() {
+        let before = acc.len();
+        for word in line.split_whitespace() {
+            if !acc.is_empty() {
+                acc.push(' ');
+            }
+            acc.push_str(word);
+        }
+        if acc.len() > before {
+            let mut start = before.saturating_sub(want.len());
+            while !acc.is_char_boundary(start) {
+                start = start.saturating_sub(1);
+            }
+            if acc[start..].contains(&want) {
+                said = Some(index);
+                break;
+            }
+        }
+    }
+    let Some(said) = said else {
         return false;
     };
     raw[said.saturating_add(1)..]
@@ -2365,5 +2394,28 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn mind_service_errors_strip_terminal_escapes_and_bidi() {
+        let reply = serde_json::json!({
+            "status": "error",
+            "message": "\x1b]52;c;cHduZWQ=\x07\x1b[31mrefused\u{009b}2J\u{202e}msg"
+        });
+        let err = read_reply(&reply).unwrap_err();
+        assert!(!err.contains('\x1b'), "{err:?}");
+        assert!(!err.contains('\x07'), "{err:?}");
+        assert!(!err.contains('\u{009b}'), "{err:?}");
+        assert!(!err.contains('\u{202e}'), "{err:?}");
+        assert!(err.contains("refused"), "{err:?}");
+
+        let diag = serde_json::json!({
+            "status": "checked",
+            "diagnostics": ["\x1b[31merr\u{202e}diag"],
+            "reports": []
+        });
+        let err = checked_reply(&diag).unwrap_err();
+        assert!(!err.contains('\x1b'), "{err:?}");
+        assert!(!err.contains('\u{202e}'), "{err:?}");
     }
 }

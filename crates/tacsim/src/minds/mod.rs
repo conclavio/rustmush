@@ -320,8 +320,10 @@ pub(crate) struct Registrar<'e> {
     pub(crate) names: Vec<&'static str>,
 }
 
-/// Register the whole API on `engine` and answer what was registered.
-fn register(engine: &mut Engine) -> Vec<&'static str> {
+/// Register every TacSim API surface except `stock::*` on `engine` and answer what
+/// was registered. Used by `stock::shared_module` so the compiled stock module is built
+/// once per process without recursing into `stock::register`.
+pub(super) fn register_without_stock(engine: &mut Engine) -> Vec<&'static str> {
     let mut api = Registrar {
         engine,
         names: Vec::new(),
@@ -331,6 +333,13 @@ fn register(engine: &mut Engine) -> Vec<&'static str> {
     kernels::register(&mut api);
     context::register(&mut api);
     stations::register(&mut api);
+    api.names
+}
+
+/// Register the whole API on `engine` and answer what was registered.
+fn register(engine: &mut Engine) -> Vec<&'static str> {
+    let names = register_without_stock(engine);
+    let mut api = Registrar { engine, names };
     stock::register(&mut api);
     api.names
 }

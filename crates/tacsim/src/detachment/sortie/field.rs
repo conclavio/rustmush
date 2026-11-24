@@ -312,6 +312,7 @@ pub(super) fn reconcile(
                 c.validate().is_ok()
                     && c.npc == character
                     && c.employer == op.id.organizer
+                    && !crate::field::crew::exit_applies(world, c)
                     && c.terms.digest().ok().as_ref() == op.roster.npc_terms.get(&character)
                     && c.terms.duties.contains(&op.roster.duty)
             });

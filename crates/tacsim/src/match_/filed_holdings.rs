@@ -8,7 +8,7 @@
 use mush_core::DefinitionDigest;
 use mush_roll::commerce::personal_filed_reader::PersonalFiledHolding;
 use mush_roll::commerce::rating::RatingClass;
-use mush_roll::{Revision, RevisionAdapter as _, SourceAdapter};
+use mush_roll::{Revision, SourceAdapter};
 use std::sync::Arc;
 
 use crate::arena::core::CoreClass;
@@ -186,9 +186,14 @@ fn decode_archival_source<S: SourceAdapter>(
             .map(|(_, source)| source);
     }
     let (_, source) = decode_material(revision, expected_definition, declared, minimum, sources)?;
-    crate::minds::authoring::RetainedRevisionRules
-        .validate(&source, revision.envelope())
-        .map_err(|_| invalid("mind_abi", "retained source archive is not valid"))?;
+    crate::minds::authoring::validate_retained_cached(
+        revision.reference().digest,
+        revision.source(),
+        &source,
+        revision.envelope(),
+        false,
+    )
+    .map_err(|_| invalid("mind_abi", "retained source archive is not valid"))?;
     Ok(source)
 }
 
@@ -220,10 +225,16 @@ fn decode_holding<S: SourceAdapter>(
     )?;
     if revision.envelope().mind_abi != crate::minds::MIND_ABI {
         // A current certificate does not authorize an arbitrary historical ABI.
-        // The known retained API4 metadata must match its immutable envelope and
+        // The known retained metadata must match its immutable envelope and
         // the unchanged source must compile in the current bounded sandbox.
-        crate::minds::authoring::validate_retained_registry(&source, revision.envelope())
-            .map_err(|_| invalid("mind_abi", "retained executable is not compatible"))?;
+        crate::minds::authoring::validate_retained_cached(
+            revision.reference().digest,
+            revision.source(),
+            &source,
+            revision.envelope(),
+            true,
+        )
+        .map_err(|_| invalid("mind_abi", "retained executable is not compatible"))?;
     }
     Ok((definition, source))
 }
@@ -312,7 +323,7 @@ mod tests {
     use crate::arena::core::ClassTable;
     use crate::arena::profile_seal::SealedCards;
     use crate::arena::state::Channel;
-    use mush_roll::{Envelope, RollError, source_digest};
+    use mush_roll::{Envelope, RevisionAdapter as _, RollError, source_digest};
     use serde_json::json;
 
     struct Source {

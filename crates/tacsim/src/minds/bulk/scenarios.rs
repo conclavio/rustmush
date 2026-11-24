@@ -246,6 +246,18 @@ impl ScenarioFactory {
             cfg,
         }
     }
+    /// Synchronous preflight on the command thread before queueing off-world
+    /// arena construction: checks operator class cap and computes a sound lower
+    /// bound on the plan's initial quota charge (`units * MIN_SUBSTEP_MS`).
+    pub(super) fn preflight(&self, recipe: &Recipe) -> Result<u64, BulkError> {
+        let class = recipe.candidate.held.rated.max(recipe.opponent.held.rated);
+        if class > self.cfg.minds.max_class {
+            return Err(invalid("proving mind exceeds the operator class cap"));
+        }
+        Ok(u64::from(recipe.per_side)
+            .saturating_mul(2)
+            .saturating_mul(u64::from(crate::arena::clock::MIN_SUBSTEP_MS)))
+    }
     /// Worker-only. Expands complete content, binds the actual carried weapons,
     /// stations/classes and selected profiles with the production seal owner.
     pub fn prepare(&self, recipe: &Recipe) -> Result<FrozenProving, BulkError> {

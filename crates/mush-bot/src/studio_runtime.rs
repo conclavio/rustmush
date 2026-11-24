@@ -571,7 +571,7 @@ pub async fn run_with_io(
     // Credentials are resolved only for a generation request. A saved studio
     // can be browsed, selected and exported without provider or SSH credentials.
     model.settings.validate()?;
-    std::fs::create_dir(&output)?;
+    crate::create_private_dir(&output)?;
     let costs = Ledger::open(
         &config.costs,
         &config.ssh,

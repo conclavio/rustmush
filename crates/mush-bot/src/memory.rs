@@ -2,7 +2,7 @@
 //! or NPC memory is consulted. Observations are records of perceptions, not truth.
 use std::{
     collections::{BTreeMap, HashSet, VecDeque},
-    fs::{File, OpenOptions},
+    fs::File,
     io::{Read, Seek, SeekFrom, Write},
     path::PathBuf,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -351,9 +351,9 @@ impl Book {
         let mut bytes = 0;
         let file = if let Some(path) = &path {
             if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-                std::fs::create_dir_all(parent)?;
+                crate::create_private_dir_all(parent)?;
             }
-            let mut file = OpenOptions::new()
+            let mut file = crate::private_open_options()
                 .read(true)
                 .write(true)
                 .create(true)

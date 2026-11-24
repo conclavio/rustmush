@@ -290,10 +290,10 @@ impl Run<'_> {
     }
 }
 fn freeze(m: &mut Manifest, dir: &Path, zero_delays: bool) -> Result<()> {
-    std::fs::create_dir(dir)?;
+    crate::create_private_dir(dir)?;
     for a in &mut m.actors {
         let actor_dir = dir.join(&a.name);
-        std::fs::create_dir(&actor_dir)?;
+        crate::create_private_dir(&actor_dir)?;
         let mut c = crate::config::Config::load(&a.config)?;
         campaign::freeze_config(&mut c, &actor_dir)?;
         if zero_delays {
@@ -321,7 +321,7 @@ pub async fn run(
     minimize: bool,
 ) -> Result<Report> {
     spec.validate(manifest)?;
-    std::fs::create_dir(output)?;
+    crate::create_private_dir(output)?;
     let output = std::fs::canonicalize(output)?;
     save_json(&output.join("source-recipe.json"), spec)?;
     let mut best = manifest.clone();
@@ -422,7 +422,7 @@ pub async fn run(
     // Export self-contained bot inputs and relative paths. The fixture executable
     // remains explicit (operator-owned toolchain), as in ordinary campaign JSON.
     let export = output.join("regression");
-    std::fs::create_dir(&export)?;
+    crate::create_private_dir(&export)?;
     freeze(&mut best, &export.join("inputs"), false)?;
     for a in &mut best.actors {
         let mut c = crate::config::Config::load(&a.config)?;

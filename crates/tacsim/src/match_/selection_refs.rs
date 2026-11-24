@@ -549,4 +549,187 @@ mod tests {
                 .is_empty()
         );
     }
+
+    #[test]
+    fn p2_tsc_31_alt_character_cannot_read_or_select_pilots_draft_library() {
+        use crate::composition as comp;
+        use crate::match_::{LOBBY_ENTRY, centre_object};
+        use mush_core::{AccountId, AccountIdentity};
+        use std::collections::BTreeMap;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Default)]
+        struct TestAccounts(Mutex<BTreeMap<ObjId, AccountId>>);
+        impl AccountIdentity for TestAccounts {
+            fn account_of(&self, character: ObjId) -> Option<AccountId> {
+                self.0.lock().ok()?.get(&character).copied()
+            }
+        }
+
+        let accounts = Arc::new(TestAccounts::default());
+        let cfg = crate::TacsimConfig {
+            enabled: true,
+            ..crate::TacsimConfig::default()
+        };
+        let game = crate::GameEconomyConfig::default();
+        let (mut mods, inventory) = comp::domain_modules_with_economy(
+            mush_economy::EconomyConfig::default(),
+            mush_atlas::AtlasConfig::default(),
+            &game,
+        );
+        for module in &mut mods {
+            if module.name() == "sim" {
+                *module = Box::new(
+                    mush_sim::SimulationModule::new()
+                        .with_field_crew_control(true)
+                        .with_accounts(accounts.clone()),
+                );
+            }
+        }
+        mods.push(comp::npc_module(comp::npc_agent_adapter()));
+        let game_content = cfg.enabled;
+        mods.push(comp::tacsim_module_wired(cfg, game_content, inventory));
+        mods.push(
+            comp::content_module_with(true, game_content).expect("the content module composes"),
+        );
+        let mut tw = mush_testkit::TestWorld::with_modules(mods);
+        let lobby = centre_object(tw.world(), LOBBY_ENTRY).expect("centre lobby");
+        let main_pilot = tw.spawn_player("MainPilot");
+        let alt_pilot = tw.spawn_player("AltPilot");
+        for pilot in [main_pilot, alt_pilot] {
+            tw.world_mut().move_to(pilot, lobby).expect("move to lobby");
+        }
+        let shared_account = AccountId::mint("p2-tsc-31-shared", 7).expect("account");
+        {
+            let mut map = accounts.0.lock().expect("accounts lock");
+            map.insert(main_pilot, shared_account);
+            map.insert(alt_pilot, shared_account);
+        }
+
+        // Seed a saved draft in MainPilot's RollStore library (not AltPilot's).
+        let source = "fn think(view, card) {}";
+        let working = mush_roll::WorkingCopy {
+            source: source.to_owned(),
+            envelope: mush_roll::Envelope {
+                schema: serde_json::json!({"sections": []}),
+                presets: serde_json::json!({}),
+                profiles: serde_json::json!({"Default": {}}),
+                rules: serde_json::json!({}),
+                declared_class: "I".to_owned(),
+                mind_abi: crate::minds::MIND_ABI.to_owned(),
+            },
+        };
+        {
+            let store = tw
+                .world_mut()
+                .module_state_mut::<crate::TacsimStore>()
+                .expect("tacsim store");
+            let _ = crate::store::install_mind_source(store, source).expect("install source");
+        }
+        {
+            let roll = tw
+                .world_mut()
+                .module_state_mut::<RollStore>()
+                .expect("roll store");
+            let created = roll
+                .prepare_create(main_pilot, "SecretDraft", working)
+                .expect("create draft");
+            roll.publish_with(created, |_| {}).expect("publish create");
+        }
+        let prepared = {
+            let roll = tw.world().module_state::<RollStore>().expect("roll store");
+            let sources = tw
+                .world()
+                .module_state::<crate::TacsimStore>()
+                .expect("tacsim store");
+            let base = roll
+                .mind(main_pilot, "SecretDraft")
+                .expect("draft mind")
+                .base();
+            roll.prepare_save(
+                main_pilot,
+                "SecretDraft",
+                base,
+                "v1",
+                None,
+                &crate::minds::authoring::RevisionRules,
+                sources,
+            )
+            .expect("save draft")
+        };
+        let (save_change, _, _) = prepared.into_parts();
+        tw.world_mut()
+            .module_state_mut::<RollStore>()
+            .expect("roll store")
+            .publish_with(save_change, |_| {})
+            .expect("publish save");
+
+        // MainPilot claims red slot (lobby enters Selection).
+        let _ = tw.run(main_pilot, "SIM TEAM red");
+        assert_eq!(
+            super::super::lobby::centre(tw.world()).map(|c| c.state),
+            Some(MatchState::Selection)
+        );
+
+        // MainPilot sees and selects its own draft cleanly.
+        let main_read = tw.run(main_pilot, "SIM MIND");
+        let main_text = tw.seen_by(&main_read, main_pilot).join("\n");
+        assert!(
+            main_text.to_ascii_lowercase().contains("secretdraft"),
+            "MainPilot must see its own saved draft: {main_text}"
+        );
+
+        // AltPilot (same AccountId) running bare SIM MIND must NOT see MainPilot's draft library.
+        let alt_read = tw.run(alt_pilot, "SIM MIND");
+        let alt_text = tw.seen_by(&alt_read, alt_pilot).join("\n");
+        assert!(
+            !alt_text.to_ascii_lowercase().contains("secretdraft"),
+            "AltPilot must not see MainPilot's saved draft library: {alt_text}"
+        );
+
+        // AltPilot must NOT be able to select MainPilot's saved draft via SIM MIND or SIM AI MIND.
+        let alt_choose = tw.run(alt_pilot, "SIM MIND draft:SecretDraft");
+        let alt_choose_text = tw.seen_by(&alt_choose, alt_pilot).join("\n");
+        assert!(
+            !alt_choose_text.contains("Your slot will carry"),
+            "AltPilot must be refused selecting MainPilot's draft: {alt_choose_text}"
+        );
+        assert!(
+            super::super::lobby::centre(tw.world())
+                .and_then(|c| c.slot_of_account(shared_account))
+                .and_then(|s| s.mind.as_ref())
+                .is_none(),
+            "slot mind must remain unset after refused alt draft selection"
+        );
+        let alt_ai = tw.run(alt_pilot, "SIM AI MIND draft:SecretDraft");
+        let alt_ai_text = tw.seen_by(&alt_ai, alt_pilot).join("\n");
+        assert!(
+            !alt_ai_text.contains("fill will carry"),
+            "AltPilot must be refused selecting MainPilot's draft for fill: {alt_ai_text}"
+        );
+
+        // MainPilot selects SecretDraft; AltPilot reading SIM MIND still must not see SecretDraft.
+        let main_pick = tw.run(main_pilot, "SIM MIND draft:SecretDraft");
+        let main_pick_text = tw.seen_by(&main_pick, main_pilot).join("\n");
+        assert!(
+            main_pick_text
+                .to_ascii_lowercase()
+                .contains("your slot will carry draft:secretdraft"),
+            "MainPilot should select its own draft: {main_pick_text}"
+        );
+        let alt_read_after = tw.run(alt_pilot, "SIM MIND");
+        let alt_text_after = tw.seen_by(&alt_read_after, alt_pilot).join("\n");
+        assert!(
+            !alt_text_after.to_ascii_lowercase().contains("secretdraft"),
+            "AltPilot must not see MainPilot's private draft choice: {alt_text_after}"
+        );
+
+        // AltPilot can still select universal Standard Doctrine cleanly.
+        let alt_std = tw.run(alt_pilot, "SIM MIND Standard");
+        let alt_std_text = tw.seen_by(&alt_std, alt_pilot).join("\n");
+        assert!(
+            alt_std_text.contains("Your slot will carry Standard Doctrine"),
+            "AltPilot should still be able to choose Standard Doctrine: {alt_std_text}"
+        );
+    }
 }

@@ -2,7 +2,7 @@
 //! retained even when a response cannot be used as a decision.
 use std::{
     collections::BTreeMap,
-    fs::{File, OpenOptions},
+    fs::File,
     io::{Read, Seek, SeekFrom, Write},
     path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
@@ -647,8 +647,10 @@ impl Ledger {
             entries: BTreeMap::new(),
         };
         if let Some(path) = path {
-            std::fs::create_dir_all(path.parent().unwrap())?;
-            let mut file = OpenOptions::new()
+            if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+                crate::create_private_dir_all(parent)?;
+            }
+            let mut file = crate::private_open_options()
                 .read(true)
                 .write(true)
                 .create(true)
@@ -1222,7 +1224,7 @@ mod tests {
             .unwrap()
             .unwrap()
             .path();
-        OpenOptions::new()
+        std::fs::OpenOptions::new()
             .append(true)
             .open(&path)
             .unwrap()

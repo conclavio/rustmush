@@ -232,7 +232,9 @@ async fn cf_review_a_crash_before_the_close_lands_keeps_the_wreck_and_the_cap_sk
     for _ in 0..3 {
         let _ = second(&mut rig);
     }
-    let (out, queued) = command(&mut rig, a, "+field/fire E");
+    // P2-TSC-11: hull_b to the east is now a wreck (ineligible as a fire target), so A opens
+    // field 2 by firing SE at C's live prospector while B's wreck is still admitted under Q-CF-26.
+    let (out, queued) = command(&mut rig, a, "+field/fire SE");
     assert_eq!(queued.len(), 1, "one promotion: {out}");
     land(&mut rig, &queued[0]).expect("the promotion lands");
     assert!(
@@ -481,4 +483,130 @@ async fn cf_review_an_extraction_out_of_a_running_field_releases_the_seat() {
         .module_state::<tacsim::arena_bridge::ArenaRegistry>()
         .and_then(|registry| registry.seat_of_pilot(b));
     assert_eq!(seated, None, "B is no pilot of the field's task");
+}
+
+/// **`P2-TSC-11` regression**: direct `tacsim_field op="open"` (`SubmitSelf`, bypassing `+field/fire`
+/// and `+field/mark` verbs) enforces surface LOS, sensor range (for `by="fire"`), and target
+/// eligibility (refusing wrecks, `held_out`, and `yielded` hulls), and never promotes the site or
+/// arms `PendingFire` on unseen or invalid targets.
+#[test]
+fn p2_tsc_11_direct_open_enforces_surface_los_range_and_excludes_invalid_hulls() {
+    let mut rig = stocked_tuned(tune);
+    let (a, _a_row, a_tvs) = on_pad(&mut rig, 1);
+    let (b, _b_row, b_tvs) = on_pad_as(&mut rig, "Second", 2, "Red Moth", 1);
+    let (a_tv, b_tv) = (a_tvs[0], b_tvs[0]);
+    launched(&mut rig, a, a_tv);
+    launched(&mut rig, b, b_tv);
+    to_cell(&mut rig, a_tv, (110, 124));
+    to_cell(&mut rig, b_tv, (114, 124));
+    seat(&mut rig, a_tv, a);
+
+    let field_action = rig
+        .tw
+        .world()
+        .module_state::<tacsim::port::families::PortHandles>()
+        .and_then(|handles| handles.field.clone())
+        .expect("tacsim_field action handle");
+    let mut seq = 1_u32;
+    let mut direct_open_via =
+        |rig: &mut Rig, actor: ObjId, by: &str, from: ObjId, at: ObjId, composed: bool| {
+            seq = seq.saturating_add(1);
+            let submit = AuthoritativeSubmit {
+                actor,
+                action: field_action.clone(),
+                subject: mush_core::PerceivedRef::SelfActor,
+                targets: Vec::new(),
+                parameters: serde_json::json!({
+                    "site": AHUNA,
+                    "op": "open",
+                    "by": by,
+                    "from": from.0,
+                    "at": at.0,
+                }),
+                key: mush_core::IdempotencyKeyText::parse_canonical(format!("p2-tsc-11-{seq}"))
+                    .expect("key"),
+            };
+            if composed {
+                crate::driving_rig::land_composed(rig, &submit)
+            } else {
+                land(rig, &submit)
+            }
+        };
+
+    // 1) Out-of-sensor-range target refused on direct `by="fire"` on BOTH plain K3 and composed paths.
+    to_cell(&mut rig, b_tv, (200, 124));
+    for composed in [false, true] {
+        let far_err = direct_open_via(&mut rig, a, "fire", a_tv, b_tv, composed)
+            .expect_err("direct op=open by=fire must reject out-of-range targets");
+        assert!(
+            far_err.contains("not visible"),
+            "unexpected out-of-range refusal (composed={composed}): {far_err}"
+        );
+    }
+    assert!(
+        site_record(&mut rig).and_then(|r| r.promoted).is_none(),
+        "out-of-range direct open must not promote site"
+    );
+
+    // 2) Occluded target behind opaque ground objects refused on BOTH `by="fire"` and `by="mark"`.
+    to_cell(&mut rig, b_tv, (114, 124));
+    let s = crate::site_record_rig::staff_member(&mut rig);
+    for (x, y) in [
+        (113, 123),
+        (114, 123),
+        (115, 123),
+        (113, 124),
+        (115, 124),
+        (113, 125),
+        (114, 125),
+        (115, 125),
+    ] {
+        crate::site_record_rig::staff(
+            &mut rig,
+            s,
+            &format!("@tacsim/site {AHUNA} drop crate 1 metal_ore {x},{y}"),
+        );
+    }
+    for composed in [false, true] {
+        assert!(
+            direct_open_via(&mut rig, a, "fire", a_tv, b_tv, composed).is_err(),
+            "direct op=open by=fire must reject occluded target (composed={composed})"
+        );
+        assert!(
+            direct_open_via(&mut rig, a, "mark", a_tv, b_tv, composed).is_err(),
+            "direct op=open by=mark must reject target occluded from entire party (composed={composed})"
+        );
+    }
+    assert!(site_record(&mut rig).and_then(|r| r.promoted).is_none());
+
+    // 3) Wreck target in clear, close sight is refused on BOTH `by="fire"` and `by="mark"`.
+    to_cell(&mut rig, b_tv, (110, 126));
+    crate::site_record_rig::staff(
+        &mut rig,
+        s,
+        &format!("@tacsim/site {AHUNA} leave #{} wreck 110,126", b_tv.0),
+    );
+    for composed in [false, true] {
+        assert!(
+            direct_open_via(&mut rig, a, "fire", a_tv, b_tv, composed).is_err(),
+            "direct op=open by=fire must reject a wrecked target (composed={composed})"
+        );
+        assert!(
+            direct_open_via(&mut rig, a, "mark", a_tv, b_tv, composed).is_err(),
+            "direct op=open by=mark must reject a wrecked target (composed={composed})"
+        );
+    }
+    assert!(site_record(&mut rig).and_then(|r| r.promoted).is_none());
+
+    // 4) A live, in-range, clear-LOS target IS accepted by direct `op="open" by="fire"`.
+    let (c, _c_row, c_tvs) = on_pad_as(&mut rig, "Third", 3, "Blue Moth", 1);
+    let c_tv = c_tvs[0];
+    launched(&mut rig, c, c_tv);
+    to_cell(&mut rig, c_tv, (110, 122));
+    direct_open_via(&mut rig, a, "fire", a_tv, c_tv, true)
+        .expect("direct op=open by=fire succeeds on live, clear-LOS, in-range target");
+    assert!(
+        site_record(&mut rig).and_then(|r| r.promoted).is_some(),
+        "valid direct open promotes site"
+    );
 }

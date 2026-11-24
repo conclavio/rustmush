@@ -6,8 +6,10 @@
 //! context, memory checks, station authority and intent limit. No native full-think
 //! escape or second budget exists. Imported modules remain disabled.
 
+use std::sync::OnceLock;
+
 use super::Registrar;
-use mush_mind::rhai::{Engine, FuncRegistration, Module, Scope};
+use mush_mind::rhai::{Engine, FuncRegistration, Module, Scope, Shared};
 
 /// The entire public helper surface, also carried by the API inventory.
 /// `stock::rules() -> bool` samples once/charges once and answers whether the
@@ -114,10 +116,27 @@ fn build(engine: &mut Engine) -> Result<Module, String> {
     Ok(module)
 }
 
+/// Compile the trusted `stock` module once per process on a real sandbox engine
+/// (without recursing into `stock::register`) and share the immutable `Shared<Module>`
+/// across every sandbox instance so constructing a sandbox never recompiles `STANDARD_RHAI`.
+fn shared_module() -> Result<Shared<Module>, String> {
+    static MODULE: OnceLock<Result<Shared<Module>, String>> = OnceLock::new();
+    MODULE
+        .get_or_init(|| {
+            let mut built = Err("stock module initialization did not run".to_owned());
+            let _ = mush_mind::Sandbox::new(&mush_mind::EngineLimits::default(), |engine| {
+                let _ = super::register_without_stock(engine);
+                built = build(engine).map(Into::into);
+            });
+            built
+        })
+        .clone()
+}
+
 pub(crate) fn register(api: &mut Registrar<'_>) {
-    match build(api.engine) {
+    match shared_module() {
         Ok(module) => {
-            api.engine.register_static_module("stock", module.into());
+            api.engine.register_static_module("stock", module);
         }
         Err(error) => {
             // Internal source regression fails closed: the namespace has no
@@ -213,5 +232,15 @@ mod tests {
             fixture::think("fn think(view, card) { loop { stock::best_hostile(view, card); } }");
         assert!(matches!(ran.result, Err(Fault::Ops)));
         assert!(ran.ctx.intents.is_empty());
+    }
+
+    #[test]
+    fn p2_tsc_19_shared_stock_module_is_compiled_once_and_reused() {
+        let first = shared_module().expect("shared stock module builds");
+        let second = shared_module().expect("shared stock module reuses cached Arc");
+        assert!(
+            std::sync::Arc::ptr_eq(&first, &second),
+            "stock::register must reuse one compiled Shared<Module> across sandboxes"
+        );
     }
 }

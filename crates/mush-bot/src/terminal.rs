@@ -16,6 +16,21 @@ enum Escape {
     StringEsc,
 }
 
+fn is_bidi_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'
+    )
+}
+
+fn is_c1_control(c: char) -> bool {
+    ('\u{0080}'..='\u{009f}').contains(&c)
+}
+
+fn allowed_terminal_char(c: char) -> bool {
+    matches!(c, '\n' | '\t') || (!c.is_control() && !is_c1_control(c) && !is_bidi_control(c))
+}
+
 impl Decoder {
     pub fn feed(&mut self, bytes: &[u8]) -> String {
         for &b in bytes {
@@ -64,7 +79,9 @@ impl Decoder {
                 }
                 Err(e) => {
                     let good = e.valid_up_to();
-                    output.push_str(std::str::from_utf8(&self.utf8[..good]).unwrap());
+                    if let Ok(prefix) = std::str::from_utf8(&self.utf8[..good]) {
+                        output.push_str(prefix);
+                    }
                     self.utf8.drain(..good);
                     if let Some(n) = e.error_len() {
                         output.push('\u{fffd}');
@@ -77,7 +94,7 @@ impl Decoder {
         }
         output
             .chars()
-            .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
+            .filter(|&c| allowed_terminal_char(c))
             .collect()
     }
 }
@@ -89,6 +106,35 @@ pub fn plain(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn c1_controls_and_bidi_overrides_are_stripped() {
+        let sample = concat!(
+            "ok",
+            "\u{0080}",
+            "\u{009b}31m",
+            "\u{009d}52;c;YQ==\u{009c}",
+            "\u{009f}",
+            "\u{061c}",
+            "\u{200e}",
+            "\u{200f}",
+            "\u{202a}",
+            "\u{202b}",
+            "\u{202c}",
+            "\u{202d}",
+            "\u{202e}",
+            "\u{2066}",
+            "\u{2067}",
+            "\u{2068}",
+            "\u{2069}",
+            "end\t\n"
+        );
+        assert_eq!(plain(sample), "ok31m52;c;YQ==end\t\n");
+        let mut d = Decoder::default();
+        assert_eq!(d.feed(b"a\xc2"), "a");
+        assert_eq!(d.feed(b"\x9bb\xe2\x80"), "b");
+        assert_eq!(d.feed(b"\xaec"), "c");
+    }
 
     #[test]
     fn fragmented_utf8_csi_and_osc_never_reach_terminal() {

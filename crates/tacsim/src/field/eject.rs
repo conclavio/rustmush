@@ -264,12 +264,17 @@ pub(crate) fn on_ejected(
         return;
     }
     let capture = holder(ctx.w, &site, &read).filter(|_| {
-        let ordinal = ctx
+        let (ordinal, seed) = ctx
             .w
             .module_state::<super::FieldBook>()
-            .and_then(|book| book.hosted(&site))
-            .map_or(0, |hosted| hosted.live.field.ordinal);
-        draw(&site, ordinal, unit, read.at_ms) < super::config(ctx.w).eject_capture_permille
+            .map_or((0, None), |book| {
+                let ord = book
+                    .hosted(&site)
+                    .map_or(0, |hosted| hosted.live.field.ordinal);
+                (ord, book.seed_of(&site))
+            });
+        let seed = seed.unwrap_or_else(|| crate::match_::seed_for(task, ctx.w.now()));
+        draw(seed, &site, ordinal, unit, read.at_ms) < super::config(ctx.w).eject_capture_permille
     });
     ejected(ctx, pilot, &site, unit, read.condition, capture);
 }
@@ -318,28 +323,54 @@ pub(crate) fn fallen(w: &World, carrier: ObjId) -> bool {
         .is_some_and(|damage| damage.has(crate::carrier_damage::CarrierLoss::CrewStranded))
 }
 
-/// **The eject's draw**, 0 to 999 (Q-42-12): FNV-1a over the field's site tag and ordinal (GC.10's
-/// `cause_prefix`), the unit and the read's arena millisecond. A capture when it is below the
-/// configured per mille, so 1,000 always captures and 0 never does.
+/// Domain separator for keyed field eject capture draws (`P2-TSC-12`).
+const EJECT_PRF_DOMAIN: &[u8] = b"tacsim.field.eject.v1\0";
+/// Domain separator for keyed raider morale yield draws (`P2-TSC-12`).
+const YIELD_PRF_DOMAIN: &[u8] = b"tacsim.field.yield.v1\0";
+
+/// **The eject's draw**, 0 to 999 (Q-42-12, `P2-TSC-12`): domain-separated SHA-256 PRF keyed with
+/// the field's private CSPRNG `seed` (never exposed to players), over the site, ordinal, unit, and
+/// arena millisecond. A capture when below the configured per mille, so 1,000 always captures and
+/// 0 never does.
 #[must_use]
-pub fn draw(site: &CanonicalId, ordinal: u32, unit: ObjId, at_ms: i64) -> u32 {
-    permille(&format!(
-        "{}eject:{}:{at_ms}",
-        super::standing::cause_prefix(site, ordinal),
-        unit.0
-    ))
+pub fn draw(seed: u64, site: &CanonicalId, ordinal: u32, unit: ObjId, at_ms: i64) -> u32 {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(EJECT_PRF_DOMAIN);
+    hasher.update(seed.to_le_bytes());
+    hasher.update(
+        u32::try_from(site.as_str().len())
+            .unwrap_or(u32::MAX)
+            .to_le_bytes(),
+    );
+    hasher.update(site.as_str().as_bytes());
+    hasher.update(ordinal.to_le_bytes());
+    hasher.update(unit.0.to_le_bytes());
+    hasher.update(at_ms.to_le_bytes());
+    permille_sha256(hasher.finalize().into())
 }
 
-/// **A raider crew's morale draw**, 0 to 999 (doc 42b cut SU.3, Q-42b-8): [`draw`]'s FNV-1a with
-/// the pressure step folded in where the eject folds the millisecond, so a resumed field draws
-/// each step exactly as before.
+/// **A raider crew's morale draw**, 0 to 999 (doc 42b cut SU.3, Q-42b-8, `P2-TSC-12`):
+/// domain-separated SHA-256 PRF keyed with the field's private CSPRNG `seed`, folding the pressure
+/// step so a resumed field draws each step identically from its persisted arena seed.
 #[must_use]
-pub fn yield_draw(site: &CanonicalId, ordinal: u32, hull: ObjId, step: u16) -> u32 {
-    permille(&format!(
-        "{}yield:{}:{step}",
-        super::standing::cause_prefix(site, ordinal),
-        hull.0
-    ))
+pub fn yield_draw(seed: u64, site: &CanonicalId, ordinal: u32, hull: ObjId, step: u16) -> u32 {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(YIELD_PRF_DOMAIN);
+    hasher.update(seed.to_le_bytes());
+    hasher.update(
+        u32::try_from(site.as_str().len())
+            .unwrap_or(u32::MAX)
+            .to_le_bytes(),
+    );
+    hasher.update(site.as_str().as_bytes());
+    hasher.update(ordinal.to_le_bytes());
+    hasher.update(hull.0.to_le_bytes());
+    hasher.update(step.to_le_bytes());
+    permille_sha256(hasher.finalize().into())
 }
 
 /// **The parties holding `hull`'s cell in `arena`** (doc 42b cut SU.3, Q-42b-9), nearest unit
@@ -382,14 +413,10 @@ pub(crate) fn holding_parties(arena: &crate::arena::Arena, hull: ObjId) -> Vec<P
     parties
 }
 
-/// FNV-1a over `seed`, per mille.
-fn permille(seed: &str) -> u32 {
-    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for byte in seed.bytes() {
-        hash ^= u64::from(byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    u32::try_from(hash % 1_000).unwrap_or(0)
+/// Reduce the leading 64 bits of a SHA-256 digest to a per-mille value in `0..1000`.
+fn permille_sha256(digest: [u8; 32]) -> u32 {
+    let [b0, b1, b2, b3, b4, b5, b6, b7, ..] = digest;
+    u32::try_from(u64::from_le_bytes([b0, b1, b2, b3, b4, b5, b6, b7]) % 1_000).unwrap_or(0)
 }
 
 /// **The eject** (this module's head): the seat released, the record stranded with a forced
@@ -505,13 +532,14 @@ mod tests {
         assert_eq!(seated_unit(&w, stranger), None);
     }
 
-    /// **Doc 42b cut SU.3** (Q-42b-8): the morale draw is the eject's FNV-1a keyed by the step,
-    /// never the millisecond: the same inputs draw the same, and the step and the hull each
-    /// change it.
+    /// **Doc 42b cut SU.3** (Q-42b-8, `P2-TSC-12`): the morale draw is keyed by the field's
+    /// private CSPRNG seed and pressure step, never the millisecond: the same inputs draw the
+    /// same, and the seed, step, and hull each change it.
     #[test]
     fn su3_the_yield_draw_is_keyed_by_the_step() {
         let site = CanonicalId::new("ahuna_port").expect("a site");
-        let draw = |hull: u32, step: u16| yield_draw(&site, 3, ObjId(hull), step);
+        let seed = 0x5eed_1234_5678_9abc;
+        let draw = |hull: u32, step: u16| yield_draw(seed, &site, 3, ObjId(hull), step);
         assert_eq!(draw(40, 2), draw(40, 2));
         assert!(draw(40, 2) < 1_000);
         let spread: std::collections::BTreeSet<u32> = (1..=10).map(|step| draw(40, step)).collect();
@@ -520,24 +548,54 @@ mod tests {
             (1..=10).map(|step| draw(40, step)).collect::<Vec<_>>(),
             (1..=10).map(|step| draw(41, step)).collect::<Vec<_>>()
         );
+        // P2-TSC-12: distinct field seeds yield distinct morale draw sequences.
+        assert_ne!(
+            (1..=10)
+                .map(|step| yield_draw(seed, &site, 3, ObjId(40), step))
+                .collect::<Vec<_>>(),
+            (1..=10)
+                .map(|step| yield_draw(seed ^ 1, &site, 3, ObjId(40), step))
+                .collect::<Vec<_>>()
+        );
     }
 
-    /// Doc 42 cut CR.4 (Q-42-12): the draw is a pure function of its seed, spread over 0..1000,
-    /// so 1,000 always captures and 0 never does.
+    /// Doc 42 cut CR.4 (Q-42-12, `P2-TSC-12`): the draw is a keyed SHA-256 PRF of the field's
+    /// private seed, spread over 0..1000, so 1,000 always captures and 0 never does, and changing
+    /// the private seed changes the draw stream so pilots cannot precompute captures offline.
     #[test]
     fn cr4_the_draw_is_seeded_and_bounded() {
         let site = CanonicalId::new("ahuna_flank").expect("an id");
-        let a = draw(&site, 3, ObjId(40), 12_000);
+        let seed_a = 0xdead_beef_cafe_babe;
+        let seed_b = 0x1122_3344_5566_7788;
+        let a = draw(seed_a, &site, 3, ObjId(40), 12_000);
         assert_eq!(
             a,
-            draw(&site, 3, ObjId(40), 12_000),
+            draw(seed_a, &site, 3, ObjId(40), 12_000),
             "the same seed draws alike"
         );
         assert!(a < 1_000);
         let spread: std::collections::BTreeSet<u32> = (0..64)
-            .map(|at| draw(&site, 3, ObjId(40), at * 100))
+            .map(|at| draw(seed_a, &site, 3, ObjId(40), at * 100))
             .collect();
         assert!(spread.len() > 32, "the pulse moves the draw: {spread:?}");
+        assert_ne!(
+            (0..16)
+                .map(|at| draw(seed_a, &site, 3, ObjId(40), at * 100))
+                .collect::<Vec<_>>(),
+            (0..16)
+                .map(|at| draw(seed_b, &site, 3, ObjId(40), at * 100))
+                .collect::<Vec<_>>(),
+            "distinct private field seeds produce distinct eject draw streams"
+        );
+        // Domain separation between eject and yield draws on equal numeric parameters.
+        assert_ne!(
+            (1..=16)
+                .map(|n| draw(seed_a, &site, 3, ObjId(40), i64::from(n)))
+                .collect::<Vec<_>>(),
+            (1..=16)
+                .map(|n| yield_draw(seed_a, &site, 3, ObjId(40), n))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

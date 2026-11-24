@@ -17,6 +17,9 @@
 //! A claim is testimony: nothing here confirms or denies a likeness, and the read prints the
 //! author's words as theirs.
 
+use std::cmp::{Ordering, Reverse};
+use std::collections::BinaryHeap;
+
 use mush_core::action::{
     ActionError, ActionErrorCode, ActionProvider, AuthoritativeActionOutput, PrincipalId,
 };
@@ -319,17 +322,150 @@ impl ActionProvider for Provider {
     }
 }
 
-/// The most claim rows one read examines (the family's pages of 128).
-const MAX_READ: usize = 1024;
 /// The claims one read prints, newest first.
 pub const CLAIMS_SHOWN: usize = 16;
+/// The deepest page one read may request, keeping top-K heap RAM bounded (`<= 256` claims).
+const MAX_CLAIM_PAGES: usize = 16;
+/// One page of `scan_action_state` (`mush_core::action_state::MAX_STATE_FAMILY_SCAN_RECORDS`).
+const SCAN_PAGE: usize = 128;
 
-/// **`@registry/claims`**: the newest [`CLAIMS_SHOWN`] claims filed with the Registry, for an
-/// operator authorized now. `usage` is `@registry`'s help, the reply to an argument.
-pub(crate) fn read(ctx: &mut Ctx<'_>, usage: &str) -> Result<(), CmdError> {
-    if !ctx.args.raw().trim().is_empty() {
-        return Err(CmdError::msg(usage));
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ReadQuery {
+    author: Option<ObjId>,
+    page: usize,
+}
+
+fn parse_read_query(raw: &str) -> Option<ReadQuery> {
+    let mut author = None;
+    let mut page = None;
+    let mut count = 0usize;
+    for token in raw.split_whitespace() {
+        count += 1;
+        if count > 2 {
+            return None;
+        }
+        if let Some(rest) = token
+            .strip_prefix("page=")
+            .or_else(|| token.strip_prefix("PAGE="))
+        {
+            if page.is_some() {
+                return None;
+            }
+            let n = crate::port::families::strict_decimal_u32(rest)
+                .and_then(|v| usize::try_from(v).ok())
+                .filter(|v| (1..=MAX_CLAIM_PAGES).contains(v))?;
+            page = Some(n);
+            continue;
+        }
+        let author_raw = token
+            .strip_prefix("author=")
+            .or_else(|| token.strip_prefix("AUTHOR="))
+            .unwrap_or(token);
+        if let Some(num) = author_raw.strip_prefix('#') {
+            if author.is_some() {
+                return None;
+            }
+            let id = crate::port::families::strict_decimal_u32(num).filter(|n| *n != 0)?;
+            author = Some(ObjId(id));
+            continue;
+        }
+        return None;
     }
+    Some(ReadQuery {
+        author,
+        page: page.unwrap_or(1),
+    })
+}
+
+type ClaimKey = (i64, ObjId, u64);
+
+struct RankedClaim {
+    key: ClaimKey,
+    claim: ClaimRecord,
+}
+
+impl PartialEq for RankedClaim {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
+    }
+}
+
+impl Eq for RankedClaim {}
+
+impl PartialOrd for RankedClaim {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for RankedClaim {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.key.cmp(&other.key)
+    }
+}
+
+/// Bounded top-K recency accumulator: holds at most `limit` newest claims in RAM while
+/// scanning arbitrarily many authors without prefix truncation.
+struct TopClaims {
+    limit: usize,
+    total: usize,
+    heap: BinaryHeap<Reverse<RankedClaim>>,
+}
+
+impl TopClaims {
+    fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            total: 0,
+            heap: BinaryHeap::with_capacity(limit.saturating_add(1)),
+        }
+    }
+
+    fn push(&mut self, claim: &ClaimRecord) {
+        self.total = self.total.saturating_add(1);
+        if self.limit == 0 {
+            return;
+        }
+        let key = (claim.at_ic.at, claim.author, claim.seq);
+        if self.heap.len() < self.limit {
+            self.heap.push(Reverse(RankedClaim {
+                key,
+                claim: claim.clone(),
+            }));
+        } else if self.heap.peek().is_some_and(|oldest| key > oldest.0.key) {
+            let _ = self.heap.pop();
+            self.heap.push(Reverse(RankedClaim {
+                key,
+                claim: claim.clone(),
+            }));
+        }
+    }
+
+    fn into_page(self, page: usize) -> (Vec<ClaimRecord>, usize) {
+        let mut ranked: Vec<RankedClaim> = self
+            .heap
+            .into_vec()
+            .into_iter()
+            .map(|Reverse(item)| item)
+            .collect();
+        ranked.sort_by_key(|item| Reverse(item.key));
+        let skip = page.saturating_sub(1).saturating_mul(CLAIMS_SHOWN);
+        let shown = ranked
+            .into_iter()
+            .skip(skip)
+            .take(CLAIMS_SHOWN)
+            .map(|item| item.claim)
+            .collect();
+        (shown, self.total)
+    }
+}
+
+/// **`@registry/claims [#<author>|author=#<author>] [page=<1..=16>]`**: the newest
+/// [`CLAIMS_SHOWN`] claims filed with the Registry, for an operator authorized now.
+/// Scans all authors into a bounded top-K heap (never prefix-truncating low `ObjId`s
+/// before recency sorting) and supports direct O(32) single-author lookups.
+pub(crate) fn read(ctx: &mut Ctx<'_>, usage: &str) -> Result<(), CmdError> {
+    let query = parse_read_query(ctx.args.raw().trim()).ok_or_else(|| CmdError::msg(usage))?;
     let actor = ctx.actor;
     let writer = InspectionHost::of(ctx.w)
         .ok_or_else(|| CmdError::msg(words::INSPECTION_OFF))?
@@ -341,31 +477,50 @@ pub(crate) fn read(ctx: &mut Ctx<'_>, usage: &str) -> Result<(), CmdError> {
     let family = writer
         .claims_family()
         .map_err(|_| CmdError::msg(words::INSPECTION_OFF))?;
-    let mut claims: Vec<ClaimRecord> = Vec::new();
-    let mut after: Option<String> = None;
-    loop {
-        let page = ctx
-            .scan_action_state(&family, after.as_deref(), 128)
-            .map_err(|_| CmdError::msg(words::INSPECTION_OFF))?;
-        claims.extend(page.entries().iter().map(|entry| entry.value().clone()));
-        after = page.next_after().map(|cursor| cursor.to_string());
-        if after.is_none() || claims.len() >= MAX_READ {
-            break;
+    let mut top = TopClaims::new(query.page.saturating_mul(CLAIMS_SHOWN));
+    if let Some(author) = query.author {
+        for slot in mush_roll::commerce::registry_inspection::claims::claim_slots(author) {
+            let maybe = ctx
+                .action_state(&family, &slot)
+                .map_err(|_| CmdError::msg(words::INSPECTION_OFF))?;
+            if let Some(claim) = maybe {
+                top.push(claim);
+            }
+        }
+    } else {
+        let mut after: Option<String> = None;
+        loop {
+            let page = ctx
+                .scan_action_state(&family, after.as_deref(), SCAN_PAGE)
+                .map_err(|_| CmdError::msg(words::INSPECTION_OFF))?;
+            for entry in page.entries() {
+                top.push(entry.value());
+            }
+            let next = page.next_after().map(|cursor| cursor.to_string());
+            if next.is_none() || next.as_deref() == after.as_deref() {
+                break;
+            }
+            after = next;
         }
     }
-    claims.sort_by_key(|c| std::cmp::Reverse((c.at_ic.at, c.author, c.seq)));
-    if claims.is_empty() {
+    let (shown, total) = top.into_page(query.page);
+    if shown.is_empty() {
         ctx.out.info(actor, words::NO_CLAIMS);
         return Ok(());
     }
     let mut lines = Vec::new();
-    for claim in claims.iter().take(CLAIMS_SHOWN) {
+    for claim in &shown {
         lines.extend(claim_lines(ctx.w, claim));
     }
-    if claims.len() > CLAIMS_SHOWN {
+    let shown_end = query
+        .page
+        .saturating_sub(1)
+        .saturating_mul(CLAIMS_SHOWN)
+        .saturating_add(shown.len());
+    if total > shown_end {
         lines.push(fill(
             words::MORE_CLAIMS,
-            &[("count", &(claims.len() - CLAIMS_SHOWN).to_string())],
+            &[("count", &(total - shown_end).to_string())],
         ));
     }
     for line in lines {
@@ -401,4 +556,124 @@ pub(crate) fn claim_lines(w: &mush_core::World, claim: &ClaimRecord) -> Vec<Stri
         &[("text", claim.text.as_str())],
     )));
     lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mush_core::{ClockRef, ClockStamp};
+    use mush_roll::commerce::registry_inspection::RegistryInspectionPolicy;
+    use smol_str::SmolStr;
+
+    fn sample_policy() -> RegistryInspectionPolicy {
+        RegistryInspectionPolicy::new(
+            mush_org::SystemPrincipalId::new("registry").expect("issuer"),
+            mush_org::OrgId(1),
+            mush_org::OrgScopeId(1),
+            vec![ObjId(10)],
+        )
+        .expect("policy")
+    }
+
+    fn sample_claim(
+        policy: &RegistryInspectionPolicy,
+        author: ObjId,
+        seq: u64,
+        at: i64,
+    ) -> ClaimRecord {
+        ClaimRecord {
+            format: 1,
+            claim: mush_core::CommitToken::from_bytes([seq as u8; 16]),
+            action: policy.claim_action().expect("claim action"),
+            authority: policy.clone(),
+            author,
+            seq,
+            hulls: vec![ObjId(77)],
+            text: SmolStr::new(format!("claim by #{} seq {seq}", author.0)),
+            at_ic: ClockStamp {
+                clock: ClockRef::WorldIc { generation: 1 },
+                at,
+            },
+        }
+    }
+
+    #[test]
+    fn p2_tsc_18_top_claims_is_not_blinded_by_1024_low_objid_claims() {
+        let policy = sample_policy();
+        let mut top = TopClaims::new(CLAIMS_SHOWN);
+        // 32 low-ObjId authors * 32 claims = 1,024 older rows (previously filled MAX_READ).
+        for author_id in 1..=32u32 {
+            for seq in 1..=32u64 {
+                let c = sample_claim(&policy, ObjId(author_id), seq, 1_000 + seq as i64);
+                top.push(&c);
+                assert!(
+                    top.heap.len() <= CLAIMS_SHOWN,
+                    "heap RAM must stay bounded at CLAIMS_SHOWN"
+                );
+            }
+        }
+        // 33rd higher-ObjId author files a newer claim after row 1,024.
+        let newer = sample_claim(&policy, ObjId(999), 1, 9_999);
+        top.push(&newer);
+        assert!(top.heap.len() <= CLAIMS_SHOWN);
+
+        let (shown, total) = top.into_page(1);
+        assert_eq!(total, 1_025);
+        assert_eq!(shown.len(), CLAIMS_SHOWN);
+        assert_eq!(
+            shown[0].author,
+            ObjId(999),
+            "33rd higher-ObjId author's newest claim must appear first"
+        );
+        assert_eq!(shown[0].at_ic.at, 9_999);
+    }
+
+    #[test]
+    fn p2_tsc_18_pagination_and_query_parser_are_bounded() {
+        let policy = sample_policy();
+        let mut top = TopClaims::new(2 * CLAIMS_SHOWN);
+        for i in 1..=40u64 {
+            let c = sample_claim(&policy, ObjId(50), i, 100 + i as i64);
+            top.push(&c);
+        }
+        let (page2, total) = top.into_page(2);
+        assert_eq!(total, 40);
+        assert_eq!(page2.len(), CLAIMS_SHOWN);
+        assert_eq!(page2[0].seq, 24);
+        assert_eq!(page2[CLAIMS_SHOWN - 1].seq, 9);
+
+        assert_eq!(
+            parse_read_query(""),
+            Some(ReadQuery {
+                author: None,
+                page: 1
+            })
+        );
+        assert_eq!(
+            parse_read_query("#42"),
+            Some(ReadQuery {
+                author: Some(ObjId(42)),
+                page: 1
+            })
+        );
+        assert_eq!(
+            parse_read_query("author=#42 page=2"),
+            Some(ReadQuery {
+                author: Some(ObjId(42)),
+                page: 2
+            })
+        );
+        for bad in [
+            "#0",
+            "page=0",
+            "page=17",
+            "page=01",
+            "#1 #2",
+            "page=1 page=2",
+            "unknown",
+            "#1 page=2 extra",
+        ] {
+            assert_eq!(parse_read_query(bad), None, "{bad}");
+        }
+    }
 }

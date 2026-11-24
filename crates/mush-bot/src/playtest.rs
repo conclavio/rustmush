@@ -590,7 +590,7 @@ pub fn make_docket(path: &Path, output: &Path) -> Result<()> {
 
 pub fn make_dockets(path: &Path, output: &Path) -> Result<()> {
     let dockets = Archive::load(path)?.dockets()?;
-    std::fs::create_dir(output)?;
+    crate::create_private_dir(output)?;
     let mut files = vec![];
     for (i, docket) in dockets.iter().enumerate() {
         let file = format!("docket-{:03}.json", i + 1);

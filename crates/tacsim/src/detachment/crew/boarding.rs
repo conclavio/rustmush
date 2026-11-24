@@ -7,11 +7,14 @@ pub(super) fn board(
     npc: ObjId,
     handles: &CrewHandles,
 ) -> Result<String, String> {
-    // Establish the caller's own agreement before consulting whereabouts.
+    // Establish the caller's own agreement before consulting whereabouts. A hire whose exit is
+    // already owed has ended and cannot be re-boarded (P2-TSC-13).
     let contract = ctx
         .action_state(&handles.contracts, &npc)
         .map_err(|_| "Crew or contract unavailable.")?
-        .filter(|contract| contract.employer == ctx.actor)
+        .filter(|contract| {
+            contract.employer == ctx.actor && !crate::field::crew::exit_applies(ctx.w, contract)
+        })
         .ok_or("Crew or contract unavailable.")?;
     check_contract(npc, Some(contract))?;
     if ctx

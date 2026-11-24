@@ -103,12 +103,25 @@ fn cell_of(ctx: &Ctx<'_>, unit: ObjId) -> Option<(i64, i64)> {
 
 /// **The flight a presence row names** (this module's head): `bearing` and an optional `band`
 /// from the nearest of `own`, the nearest match, ties to the lower object number (never shown).
+#[allow(dead_code)]
 pub(crate) fn resolve_row(
     ctx: &Ctx<'_>,
     own: &[ObjId],
     others: &[ObjId],
     bearing: Octant,
     band: Option<Band>,
+) -> Option<(ObjId, ObjId)> {
+    resolve_row_visible(ctx, own, others, bearing, band, |_, _| true)
+}
+
+/// [`resolve_row`] restricted to `(from, other)` pairs accepted by `visible` (`P2-TSC-11`).
+pub(crate) fn resolve_row_visible(
+    ctx: &Ctx<'_>,
+    own: &[ObjId],
+    others: &[ObjId],
+    bearing: Octant,
+    band: Option<Band>,
+    visible: impl Fn(ObjId, ObjId) -> bool,
 ) -> Option<(ObjId, ObjId)> {
     let own_cells: Vec<(ObjId, (i64, i64))> = own
         .iter()
@@ -121,6 +134,7 @@ pub(crate) fn resolve_row(
         };
         let Some((from, from_cell)) = own_cells
             .iter()
+            .filter(|(unit, _)| visible(*unit, *other))
             .min_by_key(|(unit, cell)| (cells_apart(*cell, at), *unit))
         else {
             continue;
@@ -501,13 +515,47 @@ fn open_by(
         .filter(|entrant| own_keys.contains(&entrant.key))
         .map(|entrant| entrant.unit)
         .collect();
+    let site_rec = super::close::site_record(ctx, &site);
+    let domain = parties::site_domain(ctx.w, &site);
+    let is_fire = door == "fire";
+    let own_eligible: Vec<ObjId> = own_for_door
+        .into_iter()
+        .filter(|unit| super::provider::open_unit_eligible(ctx.w, site_rec.as_ref(), *unit))
+        .collect();
     let others: Vec<ObjId> = units
         .iter()
         .copied()
-        .filter(|unit| !own.contains(unit))
+        .filter(|unit| {
+            !own.contains(unit)
+                && super::provider::open_unit_eligible(ctx.w, site_rec.as_ref(), *unit)
+        })
         .collect();
-    let (from, at) = resolve_row(ctx, &own_for_door, &others, bearing, band)
-        .ok_or_else(|| CmdError::msg("You see no flight there."))?;
+    let (from, at) = resolve_row_visible(ctx, &own_eligible, &others, bearing, band, |from, at| {
+        domain.is_some_and(|dom| {
+            if is_fire {
+                super::provider::surface_sighting_valid(
+                    ctx.w,
+                    &site,
+                    dom,
+                    site_rec.as_ref(),
+                    from,
+                    at,
+                    true,
+                )
+            } else {
+                super::provider::party_surface_sighting_valid(
+                    ctx.w,
+                    &site,
+                    dom,
+                    site_rec.as_ref(),
+                    &own_eligible,
+                    from,
+                    at,
+                )
+            }
+        })
+    })
+    .ok_or_else(|| CmdError::msg("You see no flight there."))?;
     open_site(ctx, actor, &site, door, (from, at))
 }
 

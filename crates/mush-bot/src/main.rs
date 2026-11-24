@@ -13,7 +13,7 @@ use mush_bot::{
 };
 
 const USAGE: &str = "mush-bot — standalone RustMUSH SSH player\n\
-Usage: mush-bot --config <file> [--goal <text>] [--role <text>]\n\
+Usage: mush-bot --config <file> [--env-file <file>] [--goal <text>] [--role <text>]\n\
                 [--paused | --headless] [--script <file.json>]\n\
                 [--transcript <new.jsonl>] [--report <new.json>]\n\
                 [--character <file.json>]\n\
@@ -77,7 +77,10 @@ fn main() -> ExitCode {
     match launch() {
         Ok(code) => ExitCode::from(code),
         Err(error) => {
-            eprintln!("mush-bot: {error}");
+            eprintln!(
+                "mush-bot: {}",
+                mush_bot::terminal::plain(&error.to_string())
+            );
             ExitCode::FAILURE
         }
     }
@@ -103,6 +106,7 @@ fn launch() -> Result<u8> {
     }
     let mut args = std::env::args().skip(1);
     let mut config_path = PathBuf::from("mush-bot.toml");
+    let mut env_file: Option<PathBuf> = None;
     let mut options = Options::default();
     let mut goal = None;
     let mut role = None;
@@ -152,6 +156,14 @@ fn launch() -> Result<u8> {
                 return Ok(0);
             }
             "--config" => config_path = args.next().ok_or("--config requires a path")?.into(),
+            "--env-file" => {
+                if env_file.is_some() {
+                    return Err("supply only one --env-file".into());
+                }
+                env_file = Some(PathBuf::from(
+                    args.next().ok_or("--env-file requires a path")?,
+                ));
+            }
             "--studio" => {
                 if studio.is_some() {
                     return Err("supply only one --studio".into());
@@ -734,10 +746,7 @@ fn launch() -> Result<u8> {
             let candidate = mush_bot::analysis::load(&candidate)?;
             let report = mush_bot::regression::evaluate(&policy, &baseline, &candidate)?;
             if let Some(path) = junit {
-                let mut file = std::fs::File::options()
-                    .write(true)
-                    .create_new(true)
-                    .open(path)?;
+                let mut file = mush_bot::create_new_private_file(&path)?;
                 file.write_all(mush_bot::regression::junit(&report).as_bytes())?;
             }
             emit_offline_report(options.report.as_deref(), &report)?;
@@ -773,10 +782,7 @@ fn launch() -> Result<u8> {
         if let Some(path) = analyze_harness {
             let report = mush_bot::analysis::load(&path)?;
             if let Some(path) = junit {
-                let mut file = std::fs::File::options()
-                    .write(true)
-                    .create_new(true)
-                    .open(path)?;
+                let mut file = mush_bot::create_new_private_file(&path)?;
                 file.write_all(mush_bot::analysis::junit(&report).as_bytes())?;
             }
             emit_offline_report(options.report.as_deref(), &report)?;
@@ -836,13 +842,15 @@ fn launch() -> Result<u8> {
         return Ok(0);
     }
     // Environment mutation must happen before the async runtime starts threads.
-    // dotenvy preserves variables already supplied by the invoking shell.
-    match dotenvy::dotenv() {
-        Ok(_) => {}
-        Err(error) if error.not_found() => {}
-        // Parse errors include the offending line, which may contain a secret.
-        Err(_) => return Err("could not load .env; check its syntax and permissions".into()),
-    }
+    // Load strictly from `--env-file` or the config/manifest-adjacent `.env`
+    // (never walking up ancestor directories) and filter proxy/linker vars (P2-TSC-30).
+    let (env_path, env_required) = if let Some(path) = env_file.as_deref() {
+        (path.to_path_buf(), true)
+    } else {
+        let base_file = harness.as_deref().unwrap_or(config_path.as_path());
+        (adjacent_dotenv_path(base_file), false)
+    };
+    load_dotenv_file(&env_path, env_required)?;
     if let Some(path) = harness {
         if replay.is_some()
             || options.scenario.is_some()
@@ -938,7 +946,7 @@ fn launch() -> Result<u8> {
         config.model_tape = Some(path);
     }
     if let Some(path) = isolate {
-        std::fs::create_dir(&path)?;
+        mush_bot::create_private_dir(&path)?;
         config.memory.directory = path;
         config.memory.file = None;
     }
@@ -1035,4 +1043,153 @@ fn emit_offline_report(path: Option<&Path>, report: &impl serde::Serialize) -> R
         println!("{}", serde_json::to_string_pretty(report)?);
     }
     Ok(())
+}
+
+/// Strictly adjacent `.env` path next to the config or manifest file, never walking up
+/// ancestor directories (P2-TSC-30).
+fn adjacent_dotenv_path(base_file: &Path) -> PathBuf {
+    let dir = base_file
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    dir.join(".env")
+}
+
+/// Environment variable names refused from `.env` files (case-insensitive) to prevent
+/// proxy interception or dynamic linker injection into child processes (P2-TSC-30).
+fn is_blocked_dotenv_var(key: &str) -> bool {
+    let upper = key.to_ascii_uppercase();
+    matches!(
+        upper.as_str(),
+        "HTTP_PROXY"
+            | "HTTPS_PROXY"
+            | "ALL_PROXY"
+            | "NO_PROXY"
+            | "LD_PRELOAD"
+            | "LD_LIBRARY_PATH"
+            | "LD_AUDIT"
+    ) || upper.starts_with("DYLD_")
+}
+
+/// Re-encode a validated `(key, value)` pair for `dotenvy::from_read` without invoking
+/// `unsafe` `set_var`.
+fn encode_dotenv_entry(key: &str, value: &str) -> String {
+    let mut line = String::with_capacity(key.len() + value.len() + 4);
+    line.push_str(key);
+    line.push_str("=\"");
+    for ch in value.chars() {
+        match ch {
+            '\\' => line.push_str("\\\\"),
+            '"' => line.push_str("\\\""),
+            '$' => line.push_str("\\$"),
+            '\n' => line.push_str("\\n"),
+            other => line.push(other),
+        }
+    }
+    line.push_str("\"\n");
+    line
+}
+
+/// Load a specific `.env` file without walking ancestor directories, filtering out
+/// proxy and dynamic-linker variables while preserving variables already set in the shell.
+fn load_dotenv_file(path: &Path, required: bool) -> Result<()> {
+    let iter = match dotenvy::from_path_iter(path) {
+        Ok(iter) => iter,
+        Err(error) if error.not_found() && !required => return Ok(()),
+        // Parse errors include the offending line, which may contain a secret.
+        Err(_) => return Err("could not load .env; check its syntax and permissions".into()),
+    };
+    let mut filtered = String::new();
+    for entry in iter {
+        let Ok((key, value)) = entry else {
+            return Err("could not load .env; check its syntax and permissions".into());
+        };
+        if is_blocked_dotenv_var(&key) {
+            continue;
+        }
+        filtered.push_str(&encode_dotenv_entry(&key, &value));
+    }
+    if !filtered.is_empty() {
+        dotenvy::from_read(filtered.as_bytes())
+            .map_err(|_| "could not load .env; check its syntax and permissions")?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dotenv_filters_proxy_and_linker_vars_and_does_not_walk_ancestors() {
+        for blocked in [
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "NO_PROXY",
+            "LD_PRELOAD",
+            "ld_preload",
+            "LD_LIBRARY_PATH",
+            "LD_AUDIT",
+            "DYLD_INSERT_LIBRARIES",
+            "dyld_library_path",
+        ] {
+            assert!(is_blocked_dotenv_var(blocked), "must block {blocked}");
+        }
+        for allowed in ["OPENROUTER_API_KEY", "MUSH_BOT_PASSWORD", "CUSTOM_TOKEN"] {
+            assert!(!is_blocked_dotenv_var(allowed), "must allow {allowed}");
+        }
+
+        let base = std::env::temp_dir().join(format!(
+            "mush-bot-dotenv-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        let sub = base.join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        // Plant an ancestor `.env` in `base`, and put config in `sub/mush-bot.toml`.
+        std::fs::write(
+            base.join(".env"),
+            "MUSH_BOT_ANCESTOR_SHOULD_NOT_LOAD=leaked\n",
+        )
+        .unwrap();
+        let cfg = sub.join("mush-bot.toml");
+        let target = adjacent_dotenv_path(&cfg);
+        assert_eq!(target, sub.join(".env"));
+        // Missing adjacent `.env` succeeds without reading parent `base/.env`.
+        load_dotenv_file(&target, false).unwrap();
+        assert!(std::env::var_os("MUSH_BOT_ANCESTOR_SHOULD_NOT_LOAD").is_none());
+        // Required `--env-file` fails if missing.
+        assert!(load_dotenv_file(&target, true).is_err());
+
+        // Write an adjacent `.env` with both blocked vars and an allowed key with special chars.
+        let allowed_key = format!("MUSH_BOT_UNIT_ALLOWED_{}", std::process::id());
+        let allowed_val = r#"sk-test-$1\"quoted\val"#;
+        std::fs::write(
+            &target,
+            format!(
+                "HTTP_PROXY=http://evil.invalid:8080\n\
+                 http_proxy=http://evil.invalid:8080\n\
+                 HTTPS_PROXY=http://evil.invalid:8080\n\
+                 LD_PRELOAD=/tmp/evil.so\n\
+                 DYLD_INSERT_LIBRARIES=/tmp/evil.dylib\n\
+                 {allowed_key}='{allowed_val}'\n"
+            ),
+        )
+        .unwrap();
+        let prev_http = std::env::var_os("HTTP_PROXY");
+        let prev_ld = std::env::var_os("LD_PRELOAD");
+        let prev_dyld = std::env::var_os("DYLD_INSERT_LIBRARIES");
+        load_dotenv_file(&target, false).unwrap();
+        assert_eq!(std::env::var(&allowed_key).unwrap(), allowed_val);
+        assert_eq!(std::env::var_os("HTTP_PROXY"), prev_http);
+        assert_eq!(std::env::var_os("LD_PRELOAD"), prev_ld);
+        assert_eq!(std::env::var_os("DYLD_INSERT_LIBRARIES"), prev_dyld);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
 }

@@ -424,7 +424,9 @@ pub use resolution::{
     BandProfile, Consequence, DIRECT_BANDS, FACING_BANDS, Resolution, SectionProfile, UnitProfile,
     facet_band, facing_band_seen,
 };
-pub use rng::{DrawLabel, LABEL_KINDS, draw, draw_contact_id, draw_permille};
+pub use rng::{
+    DrawLabel, LABEL_KINDS, draw, draw_contact_id, draw_contact_id_epoch, draw_permille,
+};
 pub use slope::{
     SlopeLimit, driving_mode, effective_cost, grade_pct, steepness_pct, step_kind, too_steep,
 };
