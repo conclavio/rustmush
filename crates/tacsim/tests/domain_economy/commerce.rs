@@ -2260,7 +2260,12 @@ fn ic8_wanted_bids_are_posted_and_render_not_buying_when_unfunded() {
         "{out}"
     );
     let out = run(&mut rig.tw, who, &format!("+market/quote {bid}=1"));
-    assert!(out.contains(mush_market::WANTED_IS_A_BID), "{out}");
+    assert!(
+        out.contains(&format!(
+            "Listing #{bid} is a bid: Freeport Works buys structural alloy stock here and sells none of it. Nothing was charged. (To sell structural alloy stock to them, type: +market/sell {bid})"
+        )),
+        "{out}"
+    );
 }
 
 // ---------------------------------------------------------------------------

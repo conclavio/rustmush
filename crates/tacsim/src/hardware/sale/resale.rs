@@ -82,8 +82,8 @@ pub const RESALE_HELP: &str = concat!(
     "for 28 days. Name your ship instead to offer her with the core fitted in her: both titles\n",
     "and her hold pass together. price is in centicredits; the venue takes 3% and the Registry 1%.\n",
     "+core/offer <core>=withdraw  withdraws it.  +core/offers  lists offers to and from you.\n",
-    "+core/accept <core>  shows an offer made to you; +core/accept <core>=go buys it, paying\n",
-    "from your own credit account as the core and its title pass to you."
+    "+core/accept <core>  shows an offer made to you. To buy it, paying from your own credit\n",
+    "account as the core and its title pass to you, type: +core/accept <core>=go"
 );
 /// The offer's grammar.
 pub const RESALE_OFFER_USAGE: &str =
@@ -137,8 +137,7 @@ pub const RESALE_QUOTE: &str =
 pub const RESALE_QUOTE_HULL: &str =
     "{seller} offers you the {name}, her hold and her core #{core}, for {price}, cuts included.";
 /// How to buy (`{core}`).
-pub const RESALE_HOW: &str =
-    "+core/accept #{core}=go buys it; your money leaves your account only as it passes to you.";
+pub const RESALE_HOW: &str = "Your money leaves your account only as it passes to you. To buy it, type: +core/accept #{core}=go";
 /// The buyer cannot pay (`{price}`).
 pub const RESALE_SHORT: &str = "Your credit account cannot cover {price}.";
 /// No account to pay from.

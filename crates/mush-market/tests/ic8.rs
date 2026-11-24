@@ -40,7 +40,7 @@ use mush_inventory::{
 };
 use mush_market::{
     CatalogEntry, CatalogSource, ListingId, ListingSpec, MarketError, MarketStore,
-    MarketVisibility, QuoteId, Supply, VendorId, WANTED_IS_A_BID, WantedSpec,
+    MarketVisibility, QuoteId, Supply, VendorId, WantedSpec,
 };
 use mush_org::{OrgId, PrincipalId};
 use mush_testkit::TestWorld;
@@ -590,7 +590,12 @@ fn ic8_wanted_round_trips_and_buy_paths_refuse() {
     let pat = r.pat;
     let quotes = market(&r.tw).quotes().count();
     let refused = err(&mut r.tw, pat, &format!("+market/quote {id}=1"));
-    assert!(refused.contains(WANTED_IS_A_BID), "{refused}");
+    assert!(
+        refused.starts_with(&format!(
+            "Listing #{id} is a bid: Ares buys Iron, graded here and sells none of it. Nothing was charged."
+        )),
+        "{refused}"
+    );
     assert_eq!(
         market(&r.tw).quotes().count(),
         quotes,
@@ -619,7 +624,12 @@ fn ic8_wanted_round_trips_and_buy_paths_refuse() {
         pat,
         &format!("+market/accept 0={}", r.pat_hold.vault().0),
     );
-    assert!(refused.contains(WANTED_IS_A_BID), "{refused}");
+    assert!(
+        refused.starts_with(&format!(
+            "Listing #{id} is a bid: Ares buys Iron, graded here and sells none of it. Nothing was charged."
+        )),
+        "{refused}"
+    );
     assert!(
         market(&r.tw)
             .quote(QuoteId(0))
@@ -1281,4 +1291,107 @@ fn ex3_a_private_vendor_listing_is_its_one_buyers() {
     assert!(refused.contains("No such listing"), "{refused}");
     let pat = r.pat;
     ok(&mut r.tw, pat, &format!("+market/quote {id}=1"));
+}
+
+// ---- the 2026-11-24 playtest: buying by name, and refusals that point the way ----
+
+/// **`+market/buy <good> <amount>` quotes by name** (`+market/buy go` is ic7's); every
+/// refusal on the way says what to type next: no amount, too much, a name nobody sells, a
+/// bid quoted as if it were an ask (who buys, who sells), a quote number that was never the
+/// buyer's, and `+market/list`'s closing lines.
+#[test]
+fn buy_by_name_and_refusals_that_point_the_way() {
+    let mut r = rig();
+    let pat = r.pat;
+    let usage = err(&mut r.tw, pat, "+market/buy");
+    assert_eq!(usage, mush_market::BUY_USAGE);
+    let nothing = err(&mut r.tw, pat, "+market/buy go");
+    assert_eq!(nothing, mush_market::BUY_NOTHING_WAITING);
+
+    let ask = stock_hold(&mut r, 10, 3);
+    let bid = {
+        let spec = wanted(&r, 500, 20);
+        post(&mut r, spec)
+    }
+    .expect("the bid posts");
+
+    // The playtester's two lines: a bid quoted, and a quote number never theirs.
+    let refused = err(&mut r.tw, pat, &format!("+market/quote {bid}=12"));
+    assert!(
+        refused.starts_with(&format!(
+            "Listing #{bid} is a bid: Ares buys Iron, graded here and sells none of it. \
+             Nothing was charged. (To sell Iron, graded to them, type: +market/sell {bid})"
+        )),
+        "{refused}"
+    );
+    assert!(
+        refused.contains("Iron, graded is sold here by Ares: +market/buy Iron, graded <amount>"),
+        "{refused}"
+    );
+    assert!(refused.contains("Ares sells Iron, graded."), "{refused}");
+    let never = err(&mut r.tw, pat, "+market/accept 41");
+    assert_eq!(
+        never,
+        format!("{}{}", mush_market::NO_SUCH_QUOTE, mush_market::QUOTE_HINT)
+    );
+
+    // The board ends with how to buy, in its own numbers, and what a "wanted" row is.
+    let board = ok(&mut r.tw, pat, "+market/list");
+    assert!(
+        board.contains(&format!(
+            "To buy, type: +market/buy <good> <amount>, for example +market/buy Iron, graded \
+             10 (or quote it by number: +market/quote {ask}=10, then +market/accept <quote>)."
+        )),
+        "{board}"
+    );
+    assert!(board.contains("Rows marked \"wanted\" are bids"), "{board}");
+
+    // Name refusals.
+    let how_much = err(&mut r.tw, pat, "+market/buy iron");
+    assert!(
+        how_much.starts_with("How much? Ares sells Iron, graded at "),
+        "{how_much}"
+    );
+    assert!(
+        how_much.ends_with("(10 for sale). To buy, type: +market/buy Iron, graded <amount>"),
+        "{how_much}"
+    );
+    let too_much = err(&mut r.tw, pat, "+market/buy iron 11");
+    assert!(
+        too_much.starts_with("No one seller here has 11 Iron, graded: the most one has is 10."),
+        "{too_much}"
+    );
+    let unknown = err(&mut r.tw, pat, "+market/buy copper 1");
+    assert_eq!(
+        unknown,
+        "Nothing called \"copper\" is for sale here. For sale here: Iron, graded. To buy, \
+         type: +market/buy <good> <amount>"
+    );
+    assert_eq!(
+        market(&r.tw)
+            .quotes_of_buyer(&PrincipalId::Object(pat))
+            .count(),
+        0,
+        "no refusal wrote a quote"
+    );
+
+    // The buy: one quote, then go.
+    let quoted = ok(&mut r.tw, pat, "+market/buy iron 4");
+    assert!(
+        quoted.starts_with("Ares sells you 4 Iron, graded at "),
+        "{quoted}"
+    );
+    assert!(quoted.contains(" in all (quote #"), "{quoted}");
+    assert!(
+        quoted.ends_with(" To buy it, type: +market/buy go"),
+        "{quoted}"
+    );
+    let q = market(&r.tw)
+        .quotes_of_buyer(&PrincipalId::Object(pat))
+        .max_by_key(|q| q.id)
+        .cloned()
+        .expect("the quote");
+    assert_eq!((q.listing, q.quantity), (ask, 4));
+    // Taking it up is `ic7`'s `buy_by_name_then_go_delivers_into_the_gate_hold`: this rig's
+    // hold-backed listing does not deliver into a crate.
 }

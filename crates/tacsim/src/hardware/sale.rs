@@ -104,7 +104,7 @@ pub const SALE_SHOP_SHORT: &str = "The fitting shop cannot pay for that core jus
 pub const SALE_NO_ACCOUNT: &str = "You hold no credit account for the shop to pay into.";
 /// The quote.
 pub const SALE_QUOTE: &str = "The fitting shop pays {price} for core #{core} and takes its title. \
-     +core/sell #{core}=go sells it.";
+     To sell it, type: +core/sell #{core}=go";
 /// Submitted.
 pub const SALE_SELLING: &str = "You hand core #{core} across the counter.";
 /// Done (the provider's receipt).

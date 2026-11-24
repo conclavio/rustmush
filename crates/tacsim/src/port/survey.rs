@@ -747,7 +747,7 @@ fn accept(ctx: &mut Ctx<'_>, id: &str, go: bool) -> Result<(), CmdError> {
         say(
             ctx,
             format!(
-                "Occator offers {reward} for fresh detailed soundings of all {pockets} pockets in {} block {}, within {} IC days. +survey/accept {id} go files it; funding follows once the filing lands.",
+                "Occator offers {reward} for fresh detailed soundings of all {pockets} pockets in {} block {}, within {} IC days. Funding follows once the filing lands. To accept it, type: +survey/accept {id} go",
                 offer.site_name,
                 char::from(b'A' + offer.block),
                 offer.term_ic_s / 86_400
@@ -835,7 +835,7 @@ fn cancel(ctx: &mut Ctx<'_>, id: &str, go: bool) -> Result<(), CmdError> {
         say(
             ctx,
             format!(
-                "Cancel {id} and return its reserved reward to Occator. +survey/cancel {id} go confirms."
+                "Cancel {id} and return its reserved reward to Occator. To confirm, type: +survey/cancel {id} go"
             ),
         );
         return Ok(());

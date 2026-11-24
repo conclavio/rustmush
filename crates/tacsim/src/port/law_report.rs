@@ -100,7 +100,7 @@ pub const REPORT_NOT_HERE: &str = "You must be at that port to file a report wit
 pub const REPORT_NO_GOODS: &str = "You no longer control the vault that received those goods.";
 /// The preview (`{who}`, `{goods}`).
 pub const REPORT_PREVIEW: &str =
-    "Report {who} for that sale. {goods}+law/report <quote> go reports it.";
+    "Report {who} for that sale. {goods}To file the report, type: +law/report <quote> go";
 /// A buyer's hand-over, in the preview.
 pub const REPORT_HANDOVER: &str = "You hand over the goods you bought. ";
 /// Filed.

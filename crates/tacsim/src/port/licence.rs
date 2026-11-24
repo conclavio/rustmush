@@ -106,8 +106,8 @@ pub const LICENCE_HELP: &str = "+license  --  The Freeport Registry's prospectin
      lets you work ore at the Registry's mining sites. +license (or +license/show) reads yours, \
      anywhere.\n+license/buy  previews a license: 2500.00cr for 168 IC days, then 28 IC days' \
      grace, bought from anywhere as a public contract with the Registry; bought while yours \
-     stands, the new term runs on from the day it ends. +license/buy go buys exactly what the \
-     preview printed. One license an account.";
+     stands, the new term runs on from the day it ends. Then type +license/buy go to buy exactly \
+     what the preview printed. One license an account.";
 /// No licence held.
 pub const LICENCE_NONE: &str = "You hold no prospecting license. +license/buy takes one from the \
      {issuer}: {fee} for {term} IC days, from anywhere.";
@@ -139,10 +139,10 @@ pub const LICENCE_NO_CREDIT: &str = "You hold no credit account to pay from; Cer
 pub const LICENCE_FUNDS: &str = "A license costs {fee}; you have {available}.";
 /// The preview of a new licence (or one after a lapse).
 pub const LICENCE_PREVIEW: &str = "The {issuer} licenses you to prospect at its sites for {term} \
-     IC days, until {until}, for {fee}. +license/buy go buys it.";
+     IC days, until {until}, for {fee}. To buy it, type: +license/buy go";
 /// The preview of an extension.
 pub const LICENCE_PREVIEW_EXTEND: &str = "The {issuer} extends your license by {term} IC days, \
-     from {from} to {until}, for {fee}. +license/buy go buys it.";
+     from {from} to {until}, for {fee}. To buy it, type: +license/buy go";
 /// A licence bought.
 pub const LICENCE_BOUGHT: &str = "The {issuer} licenses you to prospect at its sites until \
      {until}: {fee} paid, account #{account}.";

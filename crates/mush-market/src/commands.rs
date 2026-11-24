@@ -53,8 +53,8 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
             name: "+market".into(),
             shape: ArgShape::EqPair,
             switches: [
-                "list", "show", "depth", "quote", "accept", "sell", "orders", "vendors", "post",
-                "bid", "withdraw", "mine", "jobs", "history",
+                "list", "show", "depth", "quote", "accept", "buy", "sell", "orders", "vendors",
+                "post", "bid", "withdraw", "mine", "jobs", "history",
             ]
             .iter()
             .copied()
@@ -72,6 +72,10 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
                    bounded page at a time. A filter you may not use simply shows nothing. \
                    With no filter, where you stand in a port, you see that port's board.\n\
                    +market/show <listing>             one listing.\n\
+                   +market/buy <good> <amount>        buy by name in one step: the cheapest \
+                   seller here with that much quotes you the price and the total, and \
+                   +market/buy go buys it (it takes up your newest open quote). For example: \
+                   +market/buy reaction mass 12.\n\
                    +market/depth <catalog>:<code> [market=<venue>]\n\
                    \x20                                 the PUBLIC picture of a good, named by \
                    its catalog and code (a port good reads tacsim:<good>, as tacsim:metals): \
@@ -177,7 +181,7 @@ pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     Ok(())
 }
 
-fn info(ctx: &mut Ctx<'_>, msg: impl Into<String>) {
+pub(crate) fn info(ctx: &mut Ctx<'_>, msg: impl Into<String>) {
     let actor = ctx.actor;
     ctx.out.sys_to_actor(actor, "market", msg.into());
 }
@@ -232,6 +236,8 @@ fn market_cmd(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         quote(ctx)
     } else if ctx.switches.has("accept") {
         accept(ctx)
+    } else if ctx.switches.has("buy") {
+        crate::buy::buy(ctx)
     } else if ctx.switches.has("sell") {
         sell(ctx)
     } else if ctx.switches.has("orders") {
@@ -279,6 +285,7 @@ fn list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     }
     let page = api::visible(ctx.w, ctx.actor, filter.as_ref(), MARKET_PAGE, after);
     let mut out: Vec<String> = Vec::new();
+    let mut shown: Vec<crate::record::Listing> = Vec::new();
     for id in &page.ids {
         if let Some(l) = ctx
             .w
@@ -286,6 +293,7 @@ fn list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             .and_then(|s| s.listing(*id).cloned())
         {
             out.push(listing_line(ctx, &l));
+            shown.push(l);
         }
     }
     // **The cursor is unconditional on the walk, never on the match** (independent
@@ -302,6 +310,8 @@ fn list(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     if let Some(next) = page.next {
         out.push(format!("(more: +market/list after={next})"));
     }
+    // The 2026-11-24 playtest: the page ends saying how to buy, with its own numbers.
+    out.extend(crate::buy::list_footer(ctx, &shown));
     lines(ctx, out);
     Ok(())
 }
@@ -755,7 +765,7 @@ fn quote(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             info(ctx, msg);
             Ok(())
         }
-        Err(e) => Err(refuse_market(ctx, &e)),
+        Err(e) => Err(crate::buy::refuse_with_way(ctx, &e, Some(listing))),
     }
 }
 
@@ -763,7 +773,7 @@ fn quote(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
 /// of the seller's proceeds ([`crate::module::ProceedsPolicy::venue_cuts`]), with its reason, on
 /// a lot ask (a bid is sold into, never quoted; a house's sale line names its cuts). Empty when
 /// the venue takes none.
-fn venue_cut_lines(
+pub(crate) fn venue_cut_lines(
     ctx: &Ctx<'_>,
     q: &crate::record::Quote,
     instrument: Option<&mush_economy::InstrumentId>,
@@ -804,11 +814,11 @@ fn accept(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
     let lhs = ctx.args.lhs().trim().to_string();
     let mut words = lhs.split_whitespace();
     let Some(id) = words.next().and_then(parse_u64).map(QuoteId) else {
-        return Err(refuse(ctx, NO_SUCH_QUOTE));
+        return Err(no_such_quote(ctx));
     };
     let second = words.next();
     if words.next().is_some() || second.is_some_and(|w| !w.eq_ignore_ascii_case("to")) {
-        return Err(refuse(ctx, NO_SUCH_QUOTE));
+        return Err(no_such_quote(ctx));
     }
     // ---- doc 18 cut IC7: a taken-up Draw whose goods have not moved ----
     //
@@ -858,6 +868,26 @@ fn accept(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         .rhs()
         .and_then(|rhs| rhs.split_whitespace().next().and_then(parse_u64))
         .map(|id| mush_inventory::EndpointRef(mush_economy::VaultId(id)));
+    take_up(ctx, id, destination)
+}
+
+/// `No such quote.`, with the way to get one ([`crate::buy::QUOTE_HINT`]), counted as the
+/// existence-hiding refusal it is.
+fn no_such_quote(ctx: &mut Ctx<'_>) -> CmdError {
+    crate::buy::refuse_with_way(ctx, &MarketError::NoStanding(NO_SUCH_QUOTE), None)
+}
+
+/// **Take up quote `id`** (`+market/accept`'s accept, and `+market/buy go`'s): the accept, its
+/// signatory clause, and the refusal with its way forward.
+pub(crate) fn take_up(
+    ctx: &mut Ctx<'_>,
+    id: QuoteId,
+    destination: Option<mush_inventory::EndpointRef>,
+) -> Result<(), CmdError> {
+    let listing = ctx
+        .w
+        .module_state::<MarketStore>()
+        .and_then(|s| s.quote(id).map(|q| q.listing));
     // Doc 18 cut IC14 row 52 (§4.3; Q-18-47): who signs for the seller, read before
     // the accept (the listing may be drawn down by it); the venue gate names them,
     // and a gate that does not leaves the line as it was.
@@ -880,7 +910,7 @@ fn accept(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             );
             Ok(())
         }
-        Err(e) => Err(refuse_market(ctx, &e)),
+        Err(e) => Err(crate::buy::refuse_with_way(ctx, &e, listing)),
     }
 }
 

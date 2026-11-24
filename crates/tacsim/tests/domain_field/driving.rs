@@ -458,7 +458,7 @@ fn sm4b_a_drive_is_one_start_a_projected_leg_and_an_arrival() {
         leg.metres, leg.secs
     );
     let tail = format!(
-        "; charge {} → {} %, {} % after the trip home. +tv/1 drive {addr} go sends it.",
+        "; charge {} → {} %, {} % after the trip home. To send it, type: +tv/1 drive {addr} go",
         pct(before),
         pct(before - leg.cu),
         pct(before - leg.cu - home)
@@ -622,7 +622,7 @@ fn sm4b_every_target_kind_lands_where_it_says() {
             out.contains(&format!(
                 " would drive {} m to {words}: {} IC s",
                 leg.metres, leg.secs
-            )) && out.contains(&format!("+tv/1 drive {typed} go sends it.")),
+            )) && out.contains(&format!("To send it, type: +tv/1 drive {typed} go")),
             "{typed}: {out}"
         );
     }
@@ -795,7 +795,7 @@ fn sm4b_recover_from_afar_drives_home_and_climbs_aboard() {
     assert!(
         out.trim().starts_with(&recover_head(&leg))
             && out.trim().ends_with(&format!(
-                "; charge {} → {} %; hopper empty. +tv/1 recover go brings it in.",
+                "; charge {} → {} %; hopper empty. To bring it in, type: +tv/1 recover go",
                 pct(before),
                 pct(before - leg.cu)
             )),

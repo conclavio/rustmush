@@ -2319,7 +2319,7 @@ fn sm3b_dump_is_conserved_in_and_out_of_the_bay_and_refused_away_from_a_site() {
     assert_eq!(
         out.trim(),
         "Rig 1 (OWP-TV-02) would dump 2 t of metal ore, run-of-mine onto the spoil at Ahuna \
-         Flank; it cannot be taken back. +tv/1 dump go dumps it."
+         Flank; it cannot be taken back. To dump it, type: +tv/1 dump go"
     );
     assert!(queued.is_empty());
     let spoil_before = pool(&mut rig.tw, spoil, "metal_ore");
@@ -4212,7 +4212,7 @@ fn sm3b_the_dump_preview_names_what_the_start_freezes() {
     assert_eq!(
         out.trim(),
         "Rig 1 (OWP-TV-01) would dump 2 t of metal ore, run-of-mine onto the spoil at Ahuna \
-         Flank; it cannot be taken back. +tv/1 dump go dumps it."
+         Flank; it cannot be taken back. To dump it, type: +tv/1 dump go"
     );
     assert!(queued.is_empty());
     // The start freezes the same figure.

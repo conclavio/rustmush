@@ -1,12 +1,12 @@
 {
   "manifest": {
     "id": "tacsim.quests.survey_work",
-    "version": 1,
+    "version": 2,
     "kind": "campaign_seed",
-    "digest": "b5ee132b6769270205b19e1e9d3e93fe9ff2b93cbf5b063129a86ee6537d0c89",
+    "digest": "a1a48dc6fecc292d89ecaf177f19a82106234c6afb04783ab5b957236d2710ed",
     "requires": [
       { "id": "neighborhood.ceres_freeport", "version": 4 },
-      { "id": "tacsim.quests.first_steps", "version": 1 }
+      { "id": "tacsim.quests.first_steps", "version": 2 }
     ]
   },
   "brief": {
@@ -28,7 +28,7 @@
             "title": "Complete a survey commission and receive its payment",
             "room_pack": "neighborhood.ceres_freeport",
             "room_entry": "room.c07_exchange",
-            "instructions": "Read +survey and +survey <id>. Choose any available commission; +survey/accept <id> previews and +survey/accept <id> go files it. Wait for funding, then complete fresh soundings across all 256 pockets of its block within seven IC days. help mining explains coverage, quiet soundings and equipment; plan your route and provisions. An unfinished commission can already exist when you accept this invitation. After completion and payment, return to the Exchange: +quest/check Rosalind=tacsim.quests.survey_work/quest.qureshi_signed_work, then +quest/finish Rosalind=tacsim.quests.survey_work/quest.qureshi_signed_work. Your chart stays private. Occator pays the ordinary reward; this invitation adds only my personal relationship bonus. Abandoning it does not cancel a commission.",
+            "instructions": "Read +survey and +survey <id>. Choose any available commission; +survey/accept <id> previews it; to file it, type +survey/accept <id> go and press Enter. Wait for funding, then complete fresh soundings across all 256 pockets of its block within seven IC days. help mining explains coverage, quiet soundings and equipment; plan your route and provisions. An unfinished commission can already exist when you accept this invitation. After completion and payment, return to the Exchange: +quest/check Rosalind=tacsim.quests.survey_work/quest.qureshi_signed_work, then +quest/finish Rosalind=tacsim.quests.survey_work/quest.qureshi_signed_work. Your chart stays private. Occator pays the ordinary reward; this invitation adds only my personal relationship bonus. Abandoning it does not cancel a commission.",
             "objective": { "kind": "survey_commission" }
           }
         ],
