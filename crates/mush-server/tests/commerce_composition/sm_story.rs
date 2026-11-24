@@ -46,6 +46,7 @@ use mush_server::persist;
 use mush_server::quarantine::QuarantineSpool;
 use mush_server::timeline;
 use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore};
+use mush_storykit::{Calendar, Phase};
 use mush_testkit::TestWorld;
 use tacsim::TacsimStore;
 use tacsim::definitions::GoodsTable;
@@ -62,56 +63,13 @@ use tacsim::surface::{ActKind, ChartKey, RigKey, RigRecord, Run};
 /// **The story's geology key** (the brief's decision R17): the tacsim suites' `KEY_1` bytes
 /// (`tests/support/geology_keyed.rs`, which a mush-server test cannot import), so the ground is
 /// the one SM.7's and SM.8's tacsim tests measured.
-const STORY_KEY: [u8; 32] = *b"rustmush-sm1-geology-test-key-01";
+pub(crate) const STORY_KEY: [u8; 32] = *b"rustmush-sm1-geology-test-key-01";
 /// Ahuna Flank's port entry.
 const AHUNA: &str = "ahuna_port";
 /// The hull's name.
 const HULL: &str = "Salt Moth";
 /// The most mining runs the story makes before it fails, naming what it got.
 const MAX_RUNS: usize = 4;
-/// **The real second each arm's story starts at** (unix seconds, later than any boot): the IC
-/// clock is a pure function of the real one (`[game].ic_epoch` is the IC datetime at unix 0), so
-/// two arms booted seconds apart read the same IC instants only from a shared real start.
-const STORY_T0: i64 = 1_900_000_000;
-/// **The step a later start moves by** (the cut SM.8 fix round's tests/T7): 365 IC days at rate
-/// 24 in real seconds, so a start moved past [`STORY_T0`] keeps its IC time of day and, near
-/// enough, its IC date.
-const STORY_STEP: i64 = 365 * 86_400 / 24;
-/// The real seconds a start lies past the first boot at least: both arms boot before it.
-const STORY_MARGIN: i64 = 3_600;
-
-/// **The shared real start of both arms** (tests/T7: never a date bomb): [`STORY_T0`] while the
-/// box's clock is [`STORY_MARGIN`] short of it, else the first [`STORY_STEP`] past it that is —
-/// read once, before either boot, so both arms start at the same instant.
-fn story_t0(now: i64) -> i64 {
-    let earliest = now.saturating_add(STORY_MARGIN);
-    if earliest <= STORY_T0 {
-        return STORY_T0;
-    }
-    let steps = earliest
-        .saturating_sub(STORY_T0)
-        .saturating_add(STORY_STEP - 1)
-        / STORY_STEP;
-    STORY_T0.saturating_add(steps.saturating_mul(STORY_STEP))
-}
-
-/// **The shared start is never in the past** (tests/T7): before 2030 it is [`STORY_T0`]; after,
-/// a whole number of [`STORY_STEP`]s past it, at least [`STORY_MARGIN`] ahead of the clock.
-#[test]
-fn sm8_the_story_start_is_never_in_the_past() {
-    assert_eq!(story_t0(1_800_000_000), STORY_T0);
-    for now in [
-        STORY_T0 - STORY_MARGIN + 1,
-        STORY_T0,
-        2_000_000_000,
-        4_000_000_000,
-    ] {
-        let t0 = story_t0(now);
-        assert!(t0 >= now + STORY_MARGIN, "{now} → {t0}");
-        assert!(t0 < now + STORY_MARGIN + STORY_STEP, "{now} → {t0}");
-        assert_eq!((t0 - STORY_T0) % STORY_STEP, 0, "{now} → {t0}");
-    }
-}
 
 // ---------------------------------------------------------------------------
 // The rig: `build_engine` over a kept in-memory store (`ic_slice_loop.rs`'s)
@@ -123,23 +81,14 @@ fn cid(word: &str) -> CanonicalId {
 
 /// A fresh scratch dir (the `boot_parity.rs` pattern).
 fn scratch_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "mush-smstory-{tag}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos())
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("a scratch dir");
-    dir
+    mush_storykit::scratch_dir("mush-smstory", tag).expect("a scratch dir")
 }
 
 /// **Write a fixed geology key into `dir`** in the `DurableKeyStore` layout, by hand (the
 /// `geology_keys.rs` tests' way): `geology-key-0000000001.hex` holding the 32 bytes as 64
 /// lowercase hex digits and a newline, and `geology-ring-0000000001.json` naming it current; both
 /// mode 0600 and the directory 0700 on unix (the reader refuses a wider file or directory).
-fn write_fixed_key(dir: &Path, key: [u8; 32]) {
+pub(crate) fn write_fixed_key(dir: &Path, key: [u8; 32]) {
     use std::fmt::Write as _;
     std::fs::create_dir_all(dir).expect("the key directory");
     let mut hex = String::with_capacity(65);
@@ -217,12 +166,20 @@ impl Drop for Rig {
     }
 }
 
-/// **Boot the production root** over a fresh in-memory store, the key directory shared.
-async fn boot(tag: &str, key_dir: &Path) -> Rig {
-    let cfg = config(tag, key_dir);
+/// **The rig's IC calendar**, from the `[game]` it boots with: the rate and the IC instant at
+/// unix zero, so a phase is found on the calendar the engine itself keeps.
+fn calendar(cfg: &Config) -> Calendar {
+    let clock = cfg.game.game_clock().expect("[game] parses");
+    Calendar::new(clock.ic_ratio, clock.epoch_offset)
+}
+
+/// **Boot the production root** under `cfg` over a fresh in-memory store, at real second
+/// `boot_unix`. The rig never reads the wall clock (doc 51 rule T): the story's two arms boot at
+/// one instant, which the test takes from the story epoch.
+async fn boot(cfg: Config, boot_unix: i64) -> Rig {
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     let spool = QuarantineSpool::open(cfg.server.data_dir.join("quarantine")).expect("a spool");
-    let booted = boot::build_engine(&cfg, &store, &spool)
+    let booted = boot::build_engine_at(&cfg, &store, &spool, boot_unix)
         .await
         .expect("the split half boots");
     assert_eq!(
@@ -1176,10 +1133,9 @@ struct PostImage {
 /// a plain `build_engine` re-boot over the kept store falls between the first and the second cycle
 /// of the first mining run.
 #[allow(clippy::too_many_lines)]
-async fn play(rig: &mut Rig, t0: i64, restart_mid_run: bool) -> PostImage {
-    // 1. The world ready at rate 24, the geology key the fixed one; both arms from one real start.
-    assert!(rig.tw.world().now() < t0, "the story starts after the boot");
-    rig.tw.set_now(t0);
+async fn play(rig: &mut Rig, restart_mid_run: bool) -> PostImage {
+    // 1. The world ready at rate 24, the geology key the fixed one; both arms booted at one
+    //    instant, so they read the same IC instants throughout.
     let _ = sweep(rig, 120).await;
     stock(rig).await;
     let report = run(rig, GOD, "@tacsim/port status").await;
@@ -1622,19 +1578,18 @@ async fn sm8_the_story_on_the_production_composition() {
     write_fixed_key(&keys, STORY_KEY);
     let key_file = keys.join("geology-key-0000000001.hex");
     let before = std::fs::read(&key_file).expect("the key file");
-    let unix_now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| {
-            i64::try_from(since.as_secs()).unwrap_or(i64::MAX)
-        });
-    let t0 = story_t0(unix_now);
+    // One boot instant for both arms: the IC clock is a pure function of the real one
+    // (`[game].ic_epoch` is the IC datetime at unix 0), so two arms booted at different seconds
+    // would read different IC instants.
+    let straight_cfg = config("a", &keys);
+    let boot_unix = Phase::Epoch.boot_unix(calendar(&straight_cfg));
     let straight = {
-        let mut rig = boot("a", &keys).await;
-        play(&mut rig, t0, false).await
+        let mut rig = boot(straight_cfg, boot_unix).await;
+        play(&mut rig, false).await
     };
     let restarted = {
-        let mut rig = boot("b", &keys).await;
-        play(&mut rig, t0, true).await
+        let mut rig = boot(config("b", &keys), boot_unix).await;
+        play(&mut rig, true).await
     };
     assert_eq!(
         std::fs::read(&key_file).expect("the key file"),

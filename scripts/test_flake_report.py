@@ -129,6 +129,25 @@ class TheSoak(unittest.TestCase):
         self.assertEqual((fact["firm"], fact["broken"]), (False, False))
 
 
+class TheRecord(unittest.TestCase):
+    RECORD = [
+        ("7", "| 7 | `ic_slice_loop::ic12_part_one_a_leg_by_hand` | ... |"),
+        ("17", "| 17 | `ic_buyout_dormancy::sm2_a_week_of_hops_trips_no_recall` | ... |"),
+    ]
+
+    def test_a_test_is_found_by_its_own_name(self):
+        test = (BINARY, "ic_slice_loop::ic12_part_one_a_leg_by_hand")
+        self.assertEqual(report.record_row(self.RECORD, test), "7")
+        self.assertIsNone(report.record_row(self.RECORD, (BINARY, "a_module::nobody_wrote_down")))
+
+    def test_a_story_run_at_named_phases_is_found_by_the_story(self):
+        for phase in report.PHASE_TESTS:
+            test = (BINARY, f"ic_buyout_dormancy::sm2_a_week_of_hops_trips_no_recall::{phase}")
+            self.assertEqual(report.record_row(self.RECORD, test), "17")
+        # A phase's word alone names no story.
+        self.assertIsNone(report.record_row(self.RECORD, (BINARY, "mid_month")))
+
+
 class TheList(unittest.TestCase):
     def test_a_row_covers_a_test_a_module_or_a_binary(self):
         rows = [

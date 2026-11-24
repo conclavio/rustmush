@@ -429,7 +429,12 @@ fn record_names(record: &str, number: u32, test: &str) -> Result<(), String> {
         return Ok(());
     }
     // The record writes a root-level test bare and a module's as `module::test`.
-    let short = test.rsplit("::").next().unwrap_or(test);
+    let mut names = test.rsplit("::");
+    let mut short = names.next().unwrap_or(test);
+    // A story run through `phases!` is `<story>::<phase>`; the record names the story.
+    if PHASE_TESTS.contains(&short) {
+        short = names.next().unwrap_or(short);
+    }
     if line.contains(short) {
         Ok(())
     } else {
@@ -438,6 +443,11 @@ fn record_names(record: &str, number: u32, test: &str) -> Result<(), String> {
         ))
     }
 }
+
+/// **The tests `phases!` makes of one story** (`mush_storykit::PHASE_TESTS`, doc 51 §3.6): a
+/// story run at the named phases is a module of the story's name that the macro makes, holding
+/// one test a phase. The gate's own test holds this list to the kit's.
+pub const PHASE_TESTS: [&str; 3] = ["at_the_epoch", "before_a_days_turn", "mid_month"];
 
 /// The crate directory of a package, by the `name` in its manifest.
 fn package_dir(root: &Path, package: &str) -> Option<PathBuf> {
@@ -476,9 +486,25 @@ fn find(root: &Path, row: &Row) -> Result<(), String> {
     };
     let mut file = root_file;
     let mut is_root = true;
-    for segment in segments {
-        let (next, next_is_root) = descend(&file, is_root, segment)
-            .ok_or_else(|| format!("no module `{segment}` in {}", scan::relative(root, &file)))?;
+    let last = segments.len().checked_sub(1);
+    for (at, segment) in segments.iter().copied().enumerate() {
+        let Some((next, next_is_root)) = descend(&file, is_root, segment) else {
+            // No file and no `mod` holds a story run through `phases!`: the macro makes the
+            // module, and the function is one of the phases its call names.
+            let phased = Some(at) == last
+                && function.is_some_and(|phase| {
+                    fs::read_to_string(&file).is_ok_and(|source| {
+                        has_phased_test(&scan::strip_comments_and_literals(&source), segment, phase)
+                    })
+                });
+            if phased {
+                return Ok(());
+            }
+            return Err(format!(
+                "no module `{segment}` in {}",
+                scan::relative(root, &file)
+            ));
+        };
         file = next;
         is_root = next_is_root;
     }
@@ -543,6 +569,27 @@ fn descend(file: &Path, is_root: bool, name: &str) -> Option<(PathBuf, bool)> {
         }
     }
     None
+}
+
+/// Whether `code` (comments and literals blanked) runs `story` through `phases!` and that call
+/// makes a test named `phase`: one of [`PHASE_TESTS`], or a phase the call pins under that name
+/// (`phases!(#[test] story, the_day_turns_at_the_counter = Phase::Past(1_322))`).
+fn has_phased_test(code: &str, story: &str, phase: &str) -> bool {
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    code.match_indices("phases!(").any(|(at, _)| {
+        let call = code
+            .get(at..)
+            .and_then(|rest| rest.split(';').next())
+            .unwrap_or("");
+        let mut words = call.split(|c: char| !word(c));
+        let names_story = words.any(|found| found == story);
+        let pinned = call
+            .split(',')
+            .skip(1)
+            .filter_map(|pin| pin.split('=').next())
+            .any(|name| name.trim() == phase);
+        names_story && (PHASE_TESTS.contains(&phase) || pinned)
+    })
 }
 
 /// Whether `code` (comments and literals blanked) defines a function `name`

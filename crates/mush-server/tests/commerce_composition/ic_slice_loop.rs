@@ -66,6 +66,7 @@ use mush_server::persist;
 use mush_server::quarantine::QuarantineSpool;
 use mush_server::timeline;
 use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore};
+use mush_storykit::{Calendar, Phase, phases};
 use mush_testkit::TestWorld;
 use tacsim::TacsimStore;
 use tacsim::definitions::GoodsTable;
@@ -88,16 +89,7 @@ fn cid(word: &str) -> CanonicalId {
 
 /// A fresh scratch data dir (the `boot_parity.rs` pattern).
 fn scratch_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "mush-icslice-{tag}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos())
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("a scratch dir");
-    dir
+    mush_storykit::scratch_dir("mush-icslice", tag).expect("a scratch dir")
 }
 
 /// **The config dev1's rate-24 deploy renders** (doc 18 §4.7 "Config flips"): the
@@ -118,7 +110,12 @@ fn config(tag: &str) -> Config {
     // Doc 20 cut SM.1: a production-shaped config carries the geology key (the shipped
     // template names one), so the readiness report's geology line reads Ready and
     // `stock()` can wait on "Ready: every binding above is in place."
-    cfg.tacsim.geology.key_dir = Some(cfg.server.data_dir.join("geology-keys"));
+    let key_dir = cfg.server.data_dir.join("geology-keys");
+    // Doc 51 rule D: one ground for every run. An empty key directory provisions a fresh random
+    // key, and the ground it gives decides how many fires the sites' clerks need to open it, so
+    // the second every later step of a story falls on would follow a draw. The key is `sm_story`'s.
+    crate::sm_story::write_fixed_key(&key_dir, crate::sm_story::STORY_KEY);
+    cfg.tacsim.geology.key_dir = Some(key_dir);
     cfg
 }
 
@@ -180,11 +177,27 @@ fn boxed_boot_engine<'a>(
     })
 }
 
+/// **The rig's IC calendar**, from the `[game]` it boots with: the rate and the IC instant at
+/// unix zero, so a phase is found on the calendar the engine itself keeps.
+fn calendar(cfg: &Config) -> Calendar {
+    let clock = cfg.game.game_clock().expect("[game] parses");
+    Calendar::new(clock.ic_ratio, clock.epoch_offset)
+}
+
+/// **At the story epoch** (doc 51 rule T): the rig never reads the wall clock, so a story sees
+/// the same IC calendar on every run. A story about a schedule boots through [`boot_at`].
 async fn boot(tag: &str) -> Rig {
+    boot_at(tag, Phase::Epoch).await
+}
+
+/// [`boot`] at a named phase of the IC calendar (doc 51 §3.6), for a story run through
+/// `phases!`. `STORY_PHASE` overrides it for a whole run, and the boot prints the phase it took.
+async fn boot_at(tag: &str, phase: Phase) -> Rig {
     let cfg = config(tag);
+    let boot_unix = phase.boot_unix(calendar(&cfg));
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     let spool = QuarantineSpool::open(cfg.server.data_dir.join("quarantine")).expect("a spool");
-    let booted = boxed_boot_engine(&cfg, &store, &spool, mush_config::unix_now_s())
+    let booted = boxed_boot_engine(&cfg, &store, &spool, boot_unix)
         .await
         .expect("the split half boots");
     assert_eq!(
@@ -225,6 +238,50 @@ async fn boot(tag: &str) -> Rig {
     let out = run(&mut rig, GOD, "@tacsim/port arm off").await;
     assert!(out.contains("Freeport arm: laid up"), "{out}");
     rig
+}
+
+/// **The kit's calendar is the game's** (doc 51 rule F: a figure is held to its source). The
+/// story kit links no game crate, so it writes the hour, the day and the schedule month out;
+/// this suite links both and holds them equal.
+#[test]
+fn the_story_kits_calendar_is_the_games() {
+    assert_eq!(mush_storykit::IC_HOUR, mush_core::clock::SECS_PER_HOUR);
+    assert_eq!(mush_storykit::IC_DAY, mush_core::clock::SECS_PER_DAY);
+    assert_eq!(mush_storykit::IC_MONTH, tacsim::concession::IC_MONTH_S);
+}
+
+/// **The story epoch sits on no boundary of this rig's calendar** (doc 51 §3.6), read from the
+/// `[game]` the rig boots with: twenty IC minutes clear of an hour's turn, six IC hours of a
+/// day's and five IC days of a schedule month's. A changed `ic_epoch` default or rig rate that
+/// moved the epoch onto a boundary fails here, and the three named phases are three instants.
+#[test]
+fn the_story_epoch_is_on_no_boundary_of_the_rigs_calendar() {
+    use mush_storykit::{IC_DAY, IC_HOUR, IC_MONTH, STORY_EPOCH};
+    let cfg = config("epoch");
+    let calendar = calendar(&cfg);
+    let _ = std::fs::remove_dir_all(&cfg.server.data_dir);
+    for (period, clear) in [
+        (IC_HOUR, 20 * 60),
+        (IC_DAY, 6 * IC_HOUR),
+        (IC_MONTH, 5 * IC_DAY),
+    ] {
+        assert!(
+            calendar.since_turn(STORY_EPOCH, period) >= clear
+                && calendar.until_turn(STORY_EPOCH, period) >= clear,
+            "the epoch is within {clear} IC seconds of a turn of {period}: {}",
+            calendar.place(STORY_EPOCH)
+        );
+    }
+    let [epoch, day_turn, mid_month] = Phase::NAMED.map(|phase| phase.instant(calendar));
+    assert!(
+        epoch < day_turn && day_turn < mid_month,
+        "{epoch} {day_turn} {mid_month}"
+    );
+    assert!(calendar.until_turn(day_turn, IC_DAY) < 4 * 24);
+    assert_eq!(
+        calendar.since_turn(mid_month, IC_MONTH).div_euclid(IC_DAY),
+        15
+    );
 }
 
 /// **Persist the step's legacy work** as the world task does after every step — the
@@ -1365,10 +1422,9 @@ async fn traffic_look(rig: &mut Rig, viewer: ObjId, port: &str, room: &str) -> S
 /// pack's own words, sells both goods with doc 18's exact lines, and walks back to the
 /// hull by §2 day 2's words. Every figure is computed; money is conserved; every tonne
 /// traces to a seeded receipt; every hold write leaves the limits met.
-#[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn ic12_part_one_a_leg_by_hand() {
-    let mut rig = boot("part1").await;
+async fn ic12_part_one_a_leg_by_hand(phase: Phase) {
+    let mut rig = boot_at("part1", phase).await;
     let _ = sweep(&mut rig, 120).await;
     stock(&mut rig).await;
     let report = run(&mut rig, GOD, "@tacsim/port status").await;
@@ -1998,6 +2054,10 @@ async fn ic12_part_one_a_leg_by_hand() {
     // A fresh tester's help (doc 18 §5 IC12 row).
     assert_help(&mut rig, pilot).await;
 }
+phases!(
+    #[tokio::test]
+    async ic12_part_one_a_leg_by_hand
+);
 
 // ---------------------------------------------------------------------------
 // Shared set-up: enrolment and the Ceres outfit at the play rate
@@ -2170,10 +2230,9 @@ fn asks_of(tw: &TestWorld, entry: &str) -> Vec<(ListingId, String, u64)> {
 /// line by line against figures computed from the boards and the planning core (the
 /// fill to the return's fixed point; the alloys "short of 55 t: funds"). The pilot
 /// reconnects at Ceres to the watch log; the statement reads two sales.
-#[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn ic12_part_two_the_queue_runs_the_return() {
-    let mut rig = boot("part2").await;
+async fn ic12_part_two_the_queue_runs_the_return(phase: Phase) {
+    let mut rig = boot_at("part2", phase).await;
     let _ = sweep(&mut rig, 120).await;
     stock(&mut rig).await;
     let ceres_asks = asks_of(&rig.tw, "ceres_port");
@@ -2772,6 +2831,10 @@ async fn ic12_part_two_the_queue_runs_the_return() {
     assert_eq!(rig.boots, 4);
     assert_no_pages(&rig.tw);
 }
+phases!(
+    #[tokio::test]
+    async ic12_part_two_the_queue_runs_the_return
+);
 
 /// What part 2's Stickney buys must come to, computed (never read back from the
 /// log): each quantity and the log line the executor writes for it.
@@ -4426,13 +4489,12 @@ fn has_log(tw: &TestWorld, hull: ObjId, line: &str) -> bool {
 /// (the constant), the hold shape, and that nothing moved. `REFUSED_RETRY`,
 /// `INTAKE_TAKEN`, `HELD_FILL` and `HELD_FILL_PLAN` are pinned at the unit level
 /// (`executor.rs`'s `ic12_*` tests: no step on the shipped packs reaches them).
-#[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn ic12_the_sailing_plan_skips_and_holds() {
+async fn ic12_the_sailing_plan_skips_and_holds(phase: Phase) {
     use tacsim::port::executor as ex;
 
     // ---- Ceres: the consumable holds, NO_BID, three dropped burns ----
-    let mut rig = boot("skips-ceres").await;
+    let mut rig = boot_at("skips-ceres", phase).await;
     let _ = sweep(&mut rig, 120).await;
     stock(&mut rig).await;
     let ada = pilot(&mut rig, "Ada", "adaacct").await;
@@ -4652,7 +4714,7 @@ async fn ic12_the_sailing_plan_skips_and_holds() {
     drop(rig);
 
     // ---- Stickney: UNDER_MIN, NOTHING_ABOARD, the late hand-overs ----
-    let mut rig = boot("skips-stickney").await;
+    let mut rig = boot_at("skips-stickney", phase).await;
     let _ = sweep(&mut rig, 120).await;
     stock(&mut rig).await;
     let ben = pilot(&mut rig, "Ben", "benacct").await;
@@ -4878,6 +4940,10 @@ async fn ic12_the_sailing_plan_skips_and_holds() {
     );
     assert_no_pages(&rig.tw);
 }
+phases!(
+    #[tokio::test]
+    async ic12_the_sailing_plan_skips_and_holds
+);
 
 /// **Doc 18 cut IC14 row 40 (lead ruling L23): a counter refusal is retried, on the
 /// shipped packs.** A hull docked at Stickney with metal concentrate aboard queues

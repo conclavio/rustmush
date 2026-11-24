@@ -444,3 +444,228 @@ below).
   first runs on the night after the merge. Its command ran by hand over real runs (Tests).
 - **A hard limit a cell** (above), and **a random phase and seed** (FL.3, FL.4).
 - **The `redis` group in the soak.** One shared instance cannot serve six cells (doc 51 §4.1).
+
+## FL.4
+
+`commerce_composition`: the boot instant. Built 2026-11-23 on `b0c0e6832` (main with #783 merged). It adds two modules
+to `mush-storykit`, takes the three rigs of mush-server's `commerce_composition` suite that booted at the wall clock
+onto a fixed instant and a fixed geology key, runs five stories at named phases of the IC calendar, and settles row
+17 of `docs/flaky-tests.md`. It changes no product code.
+
+Every measurement below is from conclav.dev, by hand as `ghrunner`, in clones with their own target directory, on
+cores 24 to 31 while another session's soak held the rest. A run is one test in its own process, as nextest runs
+it. A "boot second" is the minute and second of the real hour a rig boots at: at 24:1 an IC day turns on the real
+hour.
+
+**Survey.**
+
+- **Three rigs booted at the wall clock, not four.** `ic_slice_loop` and `ic_buyout_dormancy` passed
+  `mush_config::unix_now_s()` to `build_engine_at`. `sm_story` called `build_engine`, which reads it, and then set its
+  clock to a start computed from `SystemTime::now()` (`story_t0`): 1,900,000,000 until 2030, so that story has always
+  run at one phase, IC 18:40. The fourth file with a `clock` row, `market_issuer`, boots a `TestWorld` and read the
+  wall clock only to name its scratch directory, as all four did.
+- **The calendar.** The rigs boot `[game]` at its defaults with `ic_ratio = 24`: `ic = ic_at_unix_zero + 24 × unix`,
+  so a day turns every 3,600 real seconds, on the hour. The game's monthly schedules (the Assembly's vote, a
+  stockpile's budget) turn on thirty IC days counted from IC second zero (`tacsim::concession::IC_MONTH_S`), not on the
+  civil calendar's month.
+- **Row 17 is a phase fault, and it reproduces at both heads that failed.** Each tree below is that head with one
+  change, the boot second read from a variable. "In the window" is failed runs over runs booted inside it.
+
+  | Tree | Story | In the window | Outside it |
+  |---|---|---|---|
+  | `597d2c6b`, 2026-11-19, the head of [44444459400](https://github.com/conclavio/rustmush/actions/runs/44444459400) | `ic13_a_buyout_is_refused_…` | 16 of 17 booted from 41:00 to 45:00 | 0 of 35 |
+  | | `sm2_a_week_of_hops_…` | 4 of 4 booted from 47:20 to 48:00 | 0 of 55 |
+  | `62a8a8382`, 2026-11-04, the parent of `4ce4158e5` | `ic13_a_buyout_is_refused_…` | 3 of 3 booted at 42:00, 44:00 and 46:00 | 0 of 27 |
+  | | `sm2_a_week_of_hops_…` | none found | 0 of 30 |
+
+  The CI run started the first story at 02:42:09 UTC (read from its log). Booted at that second it fails with CI's
+  own text, to the minute it prints: `Clearance filed for Stickney Yards: … arrival in 18.4 IC days, about 03:09 UTC
+  today. … left: 2, right: 1`. The second story fails in its window with CI's `the hop's burn … left: 2, right: 1`.
+  CI started it at 44:37, three minutes before the window, and at that second it passed here in every run. The
+  likely difference is the random geology key (below), which moves a story's steps by up to 192 s from run to run;
+  that is a reading, not shown.
+- **The cause.** Each story counts what one typed line queued (`drain_players`, then `len() == 1`). The count takes
+  in whatever the ticks queued since the last drain, less the actors on a house list the rig keeps by hand, whose
+  submissions it lands quietly. A clerk that acts once an IC day queues its act at or soon after the day's turn. The
+  stories have stretches where ticks fire and nothing is drained (two 61-s sweeps at a time), and a run failed when
+  its wall-clock boot put the turn in one while the list lacked an actor. Twice a daily actor reached a head before
+  the list had it: IN.5's Stickney clerk (added to the list in `4ce4158e5`, 2026-11-04) and EX.9's lane-port buyers
+  (added in `bca28628f`, two hours after the failing run of 2026-11-19).
+  **It is not a stream fault.** Both stories read state in one process; nothing is parsed off a stream.
+- **Main does not fail at any boot second tried**, 763 runs: the whole suite once at the wall clock, unchanged
+  (93); then with the boot second read from a variable, the suite at the epoch, at the day-turn instant and at the
+  mid-month instant (92 each), in 2020 and in 2049 (92 each), the five stories at 30 seconds of the hour two minutes
+  apart (150), and the same five twelve times each at one second (60). Nothing in the suite depends on the phase
+  today, or on whether the boot second is before or after the wall clock. **No product defect was found.**
+- **The three named phases do not reach row 17's stretch.** On this unit's tree, with one daily actor taken off the
+  dormancy rig's list (Luna's clerk) and the two stories run at 60 boot seconds a minute apart (`STORY_PHASE=+N`):
+  the first fails at four in a row (a turn 913 to 1,093 s after the boot), the second at one (733 s), and both pass
+  at the three named phases. With all of EX.9's actors off the list the first fails at seven in a row and the second
+  at all sixty. The steps a turn has to reach: the world reads Ready 708 s after the boot; the first story's two
+  sweeps before its outfit run from 958 s to 1,080 s and the two that close it from 1,080 s to 1,202 s; the
+  second's two before boarding run from 708 s to 830 s. From the epoch the first turn is 2,173 s away; from the
+  day-turn phase, 3 s.
+- **A story was not the same on every run, even at one boot second.** The two ic rigs gave the engine an empty
+  geology key directory, so each boot provisioned a random key, and the ground decides how many fires the sites'
+  clerks need before the world reads Ready. On main, at one boot second, 74 of 84 world bring-ups took 98 fires,
+  nine took 96 and one 130 (a fire is 6 s). With `sm_story`'s fixed key, 84 of 84 took 98 and ended on the same
+  second. `sm_story` has pinned its key since SM.8 for this reason. The same variation shows at the failing head:
+  the first story booted at 44:00 failed in one run and passed in another.
+- **nextest's test ids move.** `phases!` makes `<story>::<phase>`, so the old ids of the five stories are gone.
+  Outside the suite they were named only in `flaky-known.toml` (row 17's two) and its generated block.
+
+**Built.**
+
+- **`mush_storykit::phase`** (`src/phase.rs`):
+  - `STORY_EPOCH`, unix second 1,900,862,627: IC 09:30:48 on day 7 of a schedule month under the servers' calendar,
+    17:23:47 on day 10 under the engine test world's.
+  - `Calendar::new(rate, ic_at_unix_zero)`, which a rig builds from the `GameClock` of the config it boots with. It
+    reads the IC second at a real one, finds the real second for an IC instant, and counts to and from a turn.
+  - `Phase::{Epoch, DayTurn, MidMonth, Past(n)}`, `Phase::NAMED`, `Phase::instant(calendar)`, and
+    `Phase::boot_unix(calendar)`, which is what a rig calls: the phase's instant unless `STORY_PHASE` asks for
+    another, and one printed line naming the phase taken and where it falls (`story phase mid-month: boot at unix
+    1900891427, IC 09:30:48 on day 15 of the schedule month's 0 to 29`).
+  - `STORY_PHASE` (`PHASE_VAR`): `random` draws from a whole schedule year at every boot; `+<seconds>` and the words
+    `epoch`, `day-turn` and `mid-month` set every boot of a run. Anything else fails the boot.
+    `Phase::overridden()` says whether it is set.
+  - `phases!(#[tokio::test] async story)`, and the same without `async` for a plain test: a module named for the
+    story holding `at_the_epoch`, `before_a_days_turn`, `mid_month`, and one test for each pinned phase the call
+    names. `PHASE_TESTS` is the three names.
+  - `IC_HOUR`, `IC_DAY` and `IC_MONTH`, which the suite holds equal to `mush_core::clock`'s and tacsim's.
+- **`mush_storykit::scratch_dir(suite, tag)`** (`src/scratch.rs`): a fresh directory named by the process id and a
+  counter, with no clock in it.
+- **The rigs.** `ic_slice_loop` and `ic_buyout_dormancy`: `boot(tag)` is `boot_at(tag, Phase::Epoch)`, and
+  `boot_at` takes the phase's second from the kit. Both write `sm_story`'s fixed geology key into their key
+  directory before the boot. `sm_story`: both arms boot at one second, taken once from `Phase::Epoch`; `story_t0`,
+  its three constants and its test `sm8_the_story_start_is_never_in_the_past` are deleted, since no start is
+  computed from the clock any more. All four files take their scratch directory from the kit.
+- **Five stories at the three named phases**, through `phases!`: `ic12_part_one_a_leg_by_hand`,
+  `ic12_part_two_the_queue_runs_the_return`, `ic12_the_sailing_plan_skips_and_holds`,
+  `ic13_a_buyout_is_refused_under_way_cleared_elsewhere_or_with_goods_moving` and
+  `sm2_a_week_of_hops_trips_no_recall`. Each body is as it was but for its boot.
+- **Two pinned phases, one for each row 17 story**: `the_day_turns_before_the_outfit` (`Phase::Past(1_143)`, a
+  turn 1,030 s after the boot) and `the_day_turns_before_she_boards` (`Phase::Past(1_440)`, 733 s). Each story
+  checks, at its pinned phase only, that the IC day did turn across the two sweeps the phase was pinned for, and
+  fails with how to pin it again if it did not.
+- **Two tests of the kit's figures, in the suite**: the hour, the day and the month are the game's; and the epoch
+  is clear of every boundary of the calendar the rig really boots with.
+- **Row 17 closed.** Its two rows are off `flaky-known.toml` (34 rows left), the generated retry block follows,
+  `docs/flaky-tests.md` has the cause, and `docs/flaky-observed.md` is refreshed.
+- **`wait_budget` re-blessed down**: the four files' `clock` rows are gone.
+- **The gate and the report read `<story>::<phase>`.** `flaky_known` finds a listed test of that form by the
+  story's `phases!` call (the three named phases, or a phase the call pins under that name) and reads the record's
+  row by the story's name. `scripts/flake_report.py` matches such a test to the record the same way. Without this
+  a story run at phases could not be put on the known list at all, because no source line spells its tests.
+
+**Tests.**
+
+**The suite by boot, before and after.** A cell is failed runs over runs. "Before" is main `b0c0e6832` with the boot
+second read from a variable and nothing else changed. "After" is this unit.
+
+| The rigs boot at | Before | After |
+|---|---|---|
+| the wall clock | 0 of 93, the suite once on unchanged main | no rig reads it |
+| the epoch | 0 of 92, the suite; 0 of 60, the five stories twelve times | 0 of 29, every rig story with its boot set to the epoch |
+| the day-turn instant | 0 of 92 | 0 of 29, the same set to the day-turn phase |
+| the mid-month instant | 0 of 92 | 0 of 29, the same set to the mid-month phase |
+| a boot in 2020, a boot in 2049 | 0 of 184 | not run |
+| as a pull request runs it: the five stories at their named and pinned phases, the rest at the epoch | no such run | 0 of 318, three passes of the suite's 106 tests |
+| seconds across the hour | 0 of 150: the five stories at 30 seconds, two minutes apart | 0 of 435: every rig story at 15 seconds, four minutes apart |
+| a drawn phase a boot (`STORY_PHASE=random`), six passes | no such run | 0 of 174: every rig story six times, 186 boots, each at its own drawn phase |
+
+Before, 763 runs and no failure. After, 1,014 runs and no failure. "Every rig story" is the 29 stories of the three
+rigs, one test a story. The suite did not fail before this unit at any phase tried, so the rate that changed is the
+one row 17 records: at the heads that failed, its first story in about one boot in fifteen (the Survey's table).
+
+**The pinned phases, proven both ways**, in a throwaway clone:
+
+| Tree | The six tests at named phases | `the_day_turns_before_the_outfit` | `the_day_turns_before_she_boards` |
+|---|---|---|---|
+| this unit | pass | pass | pass |
+| this unit, with Luna's clerk taken off the house list | pass | fails: `Clearance filed for Stickney Yards: … left: 2, right: 1` | fails: `the hop's burn … left: 2, right: 1` |
+
+Those are the two texts of row 17.
+
+**The rest.**
+
+- `mush-storykit`: 32 unit tests and one doc test. Three examples that show `phases!` are marked not to compile,
+  because a `#[test]` in a doc test never runs and clippy refuses one; the unit tests call the macro for real, in
+  its plain, async and pinned forms.
+- `mush-contract-tests`, whole, with no fail-fast: 35 in the lib, 98 passed and 8 ignored in `ci_policy`, 92 in
+  `engine_contracts`. `flaky_known::a_story_run_at_named_phases_is_found_by_its_phases_call` is new: a listed
+  `<story>::mid_month` is found, a phase nobody pinned is refused, and so is a phase's name under a story that is
+  not run through `phases!`.
+- `scripts/test_flake_report.py`: 17, two of them new.
+- `cargo fmt --check` on the three crates; clippy with `-D warnings` over `mush-storykit` and
+  `mush-contract-tests` on every target and over mush-server's tests; rustdoc with `-D warnings` over the kit in
+  both modes and over `mush-contract-tests` with private items.
+- **CI on the branch**, before the pull request was opened (run
+  [45311775699](https://github.com/conclavio/rustmush/actions/runs/45311775699), a dispatch):
+  every cell a pull request runs is green. `rest-server` took 27 minutes against 21 on main's last run
+  ([45285692521](https://github.com/conclavio/rustmush/actions/runs/45285692521)); the slowest cell of the run was
+  `tacsim-integration-2` at 28.
+
+**`wait_budget`**, the gate's files, which `python scripts/wait_audit.py --budget` prints row for row:
+
+| | Before | After |
+|---|---:|---:|
+| Wall-clock reads in mush-server's story files | 13 | 6 |
+| of them in `commerce_composition` | 7, in four files | 0 |
+| Wall-clock reads in story files, the tree | 54 | 47 |
+| Raw waits in story files, the tree | 526 | 526 |
+
+**Summed minutes** (doc 43 rule 2.3 #14), from CI's JUnit reports. On main's last run the suite was 93 tests and 45.5 summed
+minutes, the five stories 9.7 of them. On the branch's run it is 106 tests and 70.1 summed minutes: the five stories
+at the epoch 10.0, at their two other named phases 20.1, and the two pinned phases 4.0. So the suite costs about 24
+summed minutes more a run, and the `rest-server` cell six minutes more of wall clock.
+
+**Divergences.** Where this differs from doc 51, or from the brief the unit was cut with:
+
+1. **Three rigs, not four, and the read that was left is gone too.** The Survey's first point. The fourth file's
+   read was a directory name. `scratch_dir` is not in the unit's row; it is why the suite's count is zero and not
+   four.
+2. **The three named phases are kept as doc 51 wrote them, and they are not what catches row 17.** Doc 51 §3.6
+   expected a schedule-bound story to be covered by the epoch, a day's turn and mid-month. Row 17 needs a turn
+   inside one stretch of the story, so each of its stories has a fourth, pinned phase. A pinned phase is a measured
+   second, which rule F would not allow a wait to be. It stands because the story's steps now fall on the same
+   seconds every run, and because the story checks it at run time. The soak's drawn phase is the net under it.
+3. **The geology key is pinned in the two ic rigs.** That is rule D, not rule T, and no row of §5 names it. Without
+   it a named phase is not one instant of the story, and a pinned phase could not be aimed.
+4. **A month is the game's thirty-day schedule month**, which the kit's constant says in its comment.
+5. **`MidMonth` keeps the epoch's time of day.** "15 IC days before a month's turn" to the second is also a day's
+   turn. The phase boots in the day that begins fifteen days before the turn, at the epoch's time of day, so that
+   it moves one thing.
+6. **`DayTurn` is three real seconds before the turn** under the servers' calendar: the last whole second at least
+   50 IC seconds before it, and a second is 24 IC seconds.
+7. **`phases!` takes the story's name, not its body**, and the test attribute to use. `macro_rules!` cannot join two
+   names into one, so the tests are `<story>::<phase>` in a module, and the story stays an ordinary function that
+   rustfmt formats. The old test ids of the five stories are gone.
+8. **`STORY_PHASE` takes more than `random`**: `+<seconds>` to set what the soak printed, and the three words.
+9. **The kit still depends on tokio alone.** `Calendar` is two numbers and `GameClock`'s one rule. Linking
+   mush-core for them would put the engine under every story crate's kit, so the suite holds the kit's three
+   calendar constants to the game's instead.
+10. **The epoch is in 2030**, as `sm_story`'s old start was. The suite passes the same booted in 2020 and in 2049.
+11. **The gate and the report changed** (Built, the last point), and with them four of FL.2's files:
+    `src/flaky_known.rs`, its test, `scripts/flake_report.py` and its test.
+12. **One test of the old set is deleted**: `sm8_the_story_start_is_never_in_the_past` tested arithmetic that is
+    gone.
+13. **The rates are by-hand runs of the suite's binary, not `scripts/soak.sh`'s.** Doc 51 §5 asks for the soak's
+    rate. These stories run on a clock the test sets and wait on nothing, so the soak's load adds nothing to them,
+    and a by-hand run can set the boot second, which the soak cannot do for the tree before this unit.
+
+**Not built.**
+
+- **A drawn phase in any other suite.** Only the three `commerce_composition` rigs read `STORY_PHASE`. tacsim's
+  field rigs still boot on a month's boundary (doc 51 §3.6), and mushd's, the gateway's and the bot's rigs boot real
+  servers at the wall clock.
+- **One rig for the suite.** The three rigs are still three copies of one file, by an old lead ruling, and the
+  house list that row 17 turned on is kept in each. A daily actor all three must know is still three edits.
+- **A count that does not depend on the list.** The stories still count every submission that is not the house's.
+  A count of the pilot's own would not see a new daily actor at all. Whether a commerce story should fail when one
+  appears is a question about what the stories are for, and it is not this unit's.
+- **The other private copies of `scratch_dir`.** The tree holds 48; four are converted here.
+- **The first night's soak with drawn phases.** The soak reads `STORY_PHASE=random` from the night this merges.
+  What it draws for this suite is the six passes above until then.
+- **A cell of its own for the suite.** The `rest-server` cell is now within a minute of the slowest cell of a
+  pull request's run (27 against 28). Giving `commerce_composition` its own cell, as #244 gave `split_boundary`
+  one, is a `ci.yml` change and the owner's call. It is asked in the pull request.

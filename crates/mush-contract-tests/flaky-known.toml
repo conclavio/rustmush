@@ -155,24 +155,6 @@ listed = "2026-11-23"
 expires = "2026-12-07"
 note = "on watch; seen once"
 
-[[flaky]]
-binary = "mush-server::commerce_composition"
-test = "ic_buyout_dormancy::ic13_a_buyout_is_refused_under_way_cleared_elsewhere_or_with_goods_moving"
-class = "clock-phase"
-row = 17
-listed = "2026-11-23"
-expires = "2026-12-07"
-note = "on watch; the class is doc 51's likely reading, which unit FL.4 settles"
-
-[[flaky]]
-binary = "mush-server::commerce_composition"
-test = "ic_buyout_dormancy::sm2_a_week_of_hops_trips_no_recall"
-class = "clock-phase"
-row = 17
-listed = "2026-11-23"
-expires = "2026-12-07"
-note = "on watch; the class is doc 51's likely reading, which unit FL.4 settles"
-
 # --- Carried over from the `load-sensitive` retry: no failure on record -----
 #
 # The eighteen entries of the old filter that match no row of the record.
