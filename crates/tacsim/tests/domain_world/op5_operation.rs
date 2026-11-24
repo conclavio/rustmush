@@ -292,3 +292,20 @@ fn op5_with_no_frame_composed_nothing_is_declared() {
         None
     );
 }
+
+/// **Doc 50 cut OP.5: a tick with nothing to record writes no record.** Before the Review
+/// fills the arm has nothing to say, so the Assembly's tick leaves `tacsim:isidis_op` unwritten.
+/// The first tick used to write an empty one in every world, which the M7 author and buyer
+/// story read as a `tacsim` row changing under a refused completion (the 2026-11-21 nightly).
+#[test]
+fn op5_a_tick_with_nothing_to_record_writes_no_record() {
+    let frame = Arc::new(FakeFrame::default());
+    let mut tw = booted(Some(&frame));
+    tick(&mut tw);
+    tick(&mut tw);
+    assert_eq!(
+        tacsim::isidis_op::record(tw.world()),
+        None,
+        "nothing declared and nothing decided is no record"
+    );
+}
