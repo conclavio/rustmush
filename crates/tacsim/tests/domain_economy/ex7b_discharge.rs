@@ -388,7 +388,7 @@ fn ex7b_a_discharge_is_refused_with_its_own_sentence() {
         .find_map(|line| {
             line.trim()
                 .strip_prefix("Accept: ")
-                .filter(|line| line.contains(&format!("#{}=", okonkwo.0)))
+                .filter(|line| *line == format!("+sortie/hire #{}", okonkwo.0))
         })
         .unwrap_or_else(|| panic!("the officer is on offer: {offers}"))
         .to_owned();
