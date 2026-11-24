@@ -2410,7 +2410,9 @@ fn ic12_a_world_latched_at_the_old_station_versions_takes_the_new_through_plan_a
         assert!(!apply.contains("STOPPED"), "{apply}");
         assert_eq!(version(&tw, pack), Some(to), "{pack}");
     }
-    assert_eq!(live_objects(&tw), objects, "an update makes no object");
+    // An update makes no object; Ceres v4 drops one: the Limbo door's return exit, one way
+    // since the 2026-11-24 playtest (`+ooc` is the way out).
+    assert_eq!(live_objects(&tw), objects - 1, "an update makes no object");
     let reader = tw.spawn_player("Reader");
     for (pack, room, key, opening) in IC12_DETAILS {
         let here = obj(&tw, pack, room);
@@ -2508,7 +2510,8 @@ fn oduya_desk_upgrade_preserves_identity_location_inventory_and_memory() {
         "{plan}\n{apply}"
     );
     assert_eq!(obj(&tw, CERES_PACK, "npc.oduya"), oduya);
-    assert_eq!(live_objects(&tw), objects);
+    // One object fewer: v4's one-way Limbo door drops its return exit.
+    assert_eq!(live_objects(&tw), objects - 1);
     assert_eq!(location(&tw, oduya), Some(moved_to));
     assert_eq!(location(&tw, ledger), Some(oduya));
     assert_eq!(
@@ -2644,7 +2647,8 @@ fn qureshi_trust_upgrade_keeps_identity_memory_and_staff_affiliation() {
         "{plan}\n{apply}"
     );
     assert_eq!(obj(&tw, CERES_PACK, "npc.qureshi"), qureshi);
-    assert_eq!(live_objects(&tw), objects);
+    // One object fewer: v4's one-way Limbo door drops its return exit.
+    assert_eq!(live_objects(&tw), objects - 1);
     assert_eq!(location(&tw, qureshi), Some(off_duty));
     assert_eq!(location(&tw, stamp), Some(qureshi));
     assert_eq!(
