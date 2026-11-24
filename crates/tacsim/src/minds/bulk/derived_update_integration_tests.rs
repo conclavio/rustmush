@@ -260,23 +260,32 @@ pub(super) async fn exercise(
             .find(|v| v.get("filed") == Some(&json!(updated.content().id())))
             .ok_or("updated royalties")?;
         assert_eq!(old_royalty.get("edges"), next_royalty.get("edges"));
-        // Requalification still uses immutable birth, while its actual current-line
-        // preimage proves the new compatible head.
+        // A compatible update needs no requalification, and the Roll refuses one that
+        // selects the unchanged birth parent while the child's term is live: it would
+        // restore nothing (the security audit's HIGH-19, `check_qualification_growth`).
+        // This step used to commit that no-op; the listing above already carried the
+        // updated revision on the birth qualification, and `owner_qualification::exercise`
+        // holds the requalifications that change something.
         let parent_licence: LicenceId = serde_json::from_value(
             one(rows(&saved.disk, "roll", "roll_mind_owner_parent"))?
                 .pointer("/parent/licence")
                 .ok_or("parent")?
                 .clone(),
         )?;
-        commit(
-            &mut w,
-            "roll",
-            "replace_owner_parent_qualification",
-            1,
-            BUYER,
-            START + 3,
-            json!({"owner_licence":owner.get(),"parent_licence":parent_licence.get()}),
-        )?;
+        let before_refusal = disk(&w);
+        assert!(
+            crate::test_checks::is_refusal(commit(
+                &mut w,
+                "roll",
+                "replace_owner_parent_qualification",
+                1,
+                BUYER,
+                START + 3,
+                json!({"owner_licence":owner.get(),"parent_licence":parent_licence.get()}),
+            )),
+            "a requalification on the unchanged birth parent is refused"
+        );
+        assert_eq!(disk(&w), before_refusal, "and the refusal writes nothing");
         let after = capture(&w, &disk(&w));
         assert!(
             crate::test_checks::is_refusal(Rig::personal(f, Compose::ENTITLEMENTS).boot(&after)),

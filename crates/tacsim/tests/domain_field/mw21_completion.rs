@@ -186,21 +186,27 @@ fn accounts(world: &M8World) -> BTreeMap<u64, (String, i64)> {
         .collect()
 }
 
-/// **No credit but the ports' own day** between `before` and `after`. Doc 48 unit EX.9 runs the
-/// ports' day whoever is at sea: every costed facility's owner pays its running cost once an IC
-/// day into the System sink [`tacsim::port::upkeep::UPKEEP_SINK`], and the System faucet
-/// [`tacsim::port::upkeep::EXPORT_FAUCET`] pays the consumers back for what they used up. So the
-/// sink may rise, and the other accounts together may take no more than the faucet paid out.
-/// Any other credit, or an account that came or went, is a payment.
-fn no_credit_but_upkeep(
+/// **Only the ports' own day** between `before` and `after`, and none of it the story's. The
+/// ports keep their day whoever is at sea. Doc 48 unit EX.9 has every costed facility's owner
+/// pay its running cost into the System sink and the System faucet pay the consumers back;
+/// doc 50 cut OP.8 has the hauling house fund its helms' purses and pay the lane's
+/// institutions for what its hulls carry. Those are payments between the ports' own accounts,
+/// and how much of them falls inside a passage moves with every retune of the lane. So the
+/// check names what a mind's flight must leave alone, not what the ports may do:
+///
+/// - no account came or went;
+/// - the ledger closes: every credit has its debit, the System sink and faucet included, so
+///   nothing was minted and nothing lost;
+/// - `hers`, the accounts of the story's own people, did not move either way.
+///
+/// It used to allow the other accounts together no more than the faucet paid out, which read a
+/// retune of the faucet (1,000 cr an IC day to 100, lane v53 and v54) and a second hauling hull
+/// as a payment on her account (the 2026-11-22 nightly).
+fn only_the_ports_own_day(
     before: &BTreeMap<u64, (String, i64)>,
     after: &BTreeMap<u64, (String, i64)>,
+    hers: &[u64],
 ) -> Result<(), String> {
-    let system = |id: &str| format!("System(SystemPrincipalId({id:?}))");
-    let (sink, faucet) = (
-        system(tacsim::port::upkeep::UPKEEP_SINK),
-        system(tacsim::port::upkeep::EXPORT_FAUCET),
-    );
     if before.keys().ne(after.keys()) {
         return Err(format!("the accounts changed: {before:?} to {after:?}"));
     }
@@ -210,22 +216,15 @@ fn no_credit_but_upkeep(
         .filter(|((_, (_, was)), (_, now))| now != was)
         .map(|((id, (owner, was)), (_, now))| (*id, owner.as_str(), now - was))
         .collect();
-    let paid_out: i64 = moved
-        .iter()
-        .filter(|(_, owner, _)| *owner == faucet)
-        .map(|(_, _, delta)| -delta)
-        .sum();
-    let credited: i64 = moved
-        .iter()
-        .filter(|(_, owner, delta)| *delta > 0 && *owner != sink && *owner != faucet)
-        .map(|(_, _, delta)| delta)
-        .sum();
-    if credited <= paid_out.max(0) {
-        Ok(())
-    } else {
-        Err(format!(
-            "credited {credited} past the faucet's {paid_out}: {moved:?}"
-        ))
+    let net: i64 = moved.iter().map(|(_, _, delta)| delta).sum();
+    if net != 0 {
+        return Err(format!("the ledger did not close, {net} over: {moved:?}"));
+    }
+    match moved.iter().find(|(id, _, _)| hers.contains(id)) {
+        Some(touched) => Err(format!(
+            "a payment touched the story's own, {touched:?}: {moved:?}"
+        )),
+        None => Ok(()),
     }
 }
 
@@ -1035,11 +1034,16 @@ async fn mw21_a_bought_mind_flies_its_buyers_ship_and_her_first_command_wins() {
         (&json!(sealed.claim.to_hex()), &json!(buyer.0), licence),
         "the claim the seal reads, dispatched by the buyer under her license"
     );
+    // The story's own purses: the mind's author's and its buyer's.
+    let theirs = [
+        crate::m8_end_user::credit(&world, author).0.0,
+        crate::m8_end_user::credit(&world, buyer).0.0,
+    ];
     let at_her_berth = books(&mut world);
     let boundary = sail_and_lose_the_link(&mut world.rig, buyer, hull);
     let under_way = books(&mut world);
     assert_eq!(
-        no_credit_but_upkeep(&at_her_berth.accounts, &under_way.accounts),
+        only_the_ports_own_day(&at_her_berth.accounts, &under_way.accounts, &theirs),
         Ok(()),
         "her passage is paid in her stores, not in credits"
     );
@@ -1405,18 +1409,28 @@ async fn mw21_a_bought_mind_flies_its_buyers_ship_and_her_first_command_wins() {
 
     // 5. Only her own stores, from her sailing to her berth.
     for (when, then) in [("at the reconnect", &at_the_reconnect), ("docked", &docked)] {
-        // Doc 48 unit EX.9: the facilities' running costs fall due as the IC days pass.
+        // Doc 48 unit EX.9 and doc 50 cut OP.8: the facilities' running costs fall due and the
+        // hauling house pays its own way as the IC days pass.
         assert_eq!(
-            no_credit_but_upkeep(&under_way.accounts, &then.accounts),
+            only_the_ports_own_day(&under_way.accounts, &then.accounts, &theirs),
             Ok(()),
-            "no account but the running-cost sink took a credit while a mind flew her ({when})"
+            "the ledger closed and neither of the story's purses moved while a mind flew her ({when})"
         );
         let rows = moved(&under_way.typed, &then.typed);
         eprintln!("MW21 rows moved since she sailed ({when}): {rows:?}");
+        // Doc 50 cuts OP.3 and OP.8: a house hauler that sailed in the window filed its haul
+        // and bought its cargo at a storefront, and each draw on a storefront's lot leaves the
+        // market's receipt. That is the ports' own day too. No other market row may move, and
+        // no row of the Roll or the economy at all.
+        let hauled = rows.contains_key("tacsim/tacsim.haul_ledger");
         assert!(
-            rows.keys()
-                .all(|family| family.starts_with("tacsim/") || family.starts_with("inventory/")),
-            "no row of the market, the Roll or the economy moved ({when}): {rows:?}"
+            rows.keys().all(|family| {
+                family.starts_with("tacsim/")
+                    || family.starts_with("inventory/")
+                    || (hauled && family == "market/market_lot_draws")
+            }),
+            "no row of the Roll or the economy moved, and of the market only a hauler's lot draws \
+             ({when}): {rows:?}"
         );
         // Doc 48 unit EX.9: the ports' own day (their consumers using up stock, a mill's batch)
         // moves the ports' pools too; her hold is the stores check below. With no port day,

@@ -155,10 +155,13 @@ pub fn request(w: &World) -> Result<OperationRequest, String> {
 /// **The arm's step** (on the Assembly's tick): declare on the Review's fill, then write the
 /// outcome once.
 pub(crate) fn tick(ctx: &mut Ctx<'_>) {
-    let kept = record(ctx.w).cloned();
-    let mut doc = kept.clone().unwrap_or_default();
+    let kept = record(ctx.w).cloned().unwrap_or_default();
+    let mut doc = kept.clone();
     step(ctx, &mut doc);
-    if kept.as_ref() != Some(&doc) {
+    // No record kept reads as the empty one: a step that leaves it empty has
+    // nothing to write. Comparing against `None` wrote an empty record on the
+    // first tick of every world, one with no Review and no Isidis included.
+    if doc != kept {
         crate::store::put_isidis_op(ctx, &doc);
     }
 }
