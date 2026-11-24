@@ -55,7 +55,7 @@ fn hire(rig: &mut Rig, who: ObjId, npc: ObjId) {
         .find_map(|line| {
             line.trim()
                 .strip_prefix("Accept: ")
-                .filter(|line| line.contains(&format!("#{}=", npc.0)))
+                .filter(|line| *line == format!("+sortie/hire #{}", npc.0))
         })
         .unwrap_or_else(|| panic!("{npc:?} is on offer: {offers}"))
         .to_owned();
@@ -93,7 +93,10 @@ fn hearing_until(
 
 /// Whether `npc` is on offer to `who` where `who` stands.
 fn on_offer(rig: &mut Rig, who: ObjId, npc: ObjId) -> bool {
-    run(&mut rig.tw, who, "+sortie/crew").contains(&format!("+sortie/hire #{}=", npc.0))
+    let accept = format!("Accept: +sortie/hire #{}", npc.0);
+    run(&mut rig.tw, who, "+sortie/crew")
+        .lines()
+        .any(|line| line.trim() == accept)
 }
 
 /// **CR.1's NPC exit on `at`'s ground** (this module's head).

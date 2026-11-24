@@ -55,7 +55,10 @@ fn discharge(rig: &mut Rig, who: ObjId, npc: ObjId) -> String {
 
 /// Whether `npc` is on offer to `who` where `who` stands.
 fn on_offer(rig: &mut Rig, who: ObjId, npc: ObjId) -> bool {
-    run(&mut rig.tw, who, "+sortie/crew").contains(&format!("+sortie/hire #{}=", npc.0))
+    let accept = format!("Accept: +sortie/hire #{}", npc.0);
+    run(&mut rig.tw, who, "+sortie/crew")
+        .lines()
+        .any(|line| line.trim() == accept)
 }
 
 /// A sentence's fixed head, up to its first placeholder after `{name}`.

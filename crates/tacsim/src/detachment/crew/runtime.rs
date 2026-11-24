@@ -20,6 +20,27 @@ pub struct CrewHandles {
     pub contracts: StateFamilyHandle<ObjId, CrewContract>,
     pub action: DefinitionRef,
 }
+/// The hiring terms `+sortie/crew` last showed each viewer, keyed by (viewer, NPC): what the
+/// short `+sortie/hire #<npc>` accepts. RAM only, never saved, so a restart empties it and the
+/// viewer reads the offers again. Each listing replaces the viewer's rows, so a viewer holds at
+/// most one port room's offers.
+#[derive(Clone, Debug, Default)]
+pub struct ShownOffers(BTreeMap<(ObjId, ObjId), CanonicalHash>);
+impl ShownOffers {
+    pub(super) fn show(
+        &mut self,
+        viewer: ObjId,
+        rows: impl IntoIterator<Item = (ObjId, CanonicalHash)>,
+    ) {
+        self.0.retain(|(who, _), _| *who != viewer);
+        for (npc, terms) in rows {
+            self.0.insert((viewer, npc), terms);
+        }
+    }
+    pub(super) fn shown(&self, viewer: ObjId, npc: ObjId) -> Option<CanonicalHash> {
+        self.0.get(&(viewer, npc)).copied()
+    }
+}
 fn bad(e: impl std::fmt::Display) -> ModError {
     ModError::msg(e.to_string())
 }
@@ -102,6 +123,7 @@ pub fn register(
     )?;
     let handles = CrewHandles { contracts, action };
     reg.state(handles.clone());
+    reg.state(ShownOffers::default());
     Ok(handles)
 }
 pub(super) fn check_contract(npc: ObjId, contract: Option<&CrewContract>) -> Result<bool, String> {

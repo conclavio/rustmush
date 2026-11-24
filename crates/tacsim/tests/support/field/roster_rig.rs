@@ -387,7 +387,7 @@ fn hire(rig: &mut Rig, who: ObjId, npc: ObjId) {
         .find_map(|line| {
             line.trim()
                 .strip_prefix("Accept: ")
-                .filter(|line| line.contains(&format!("#{}=", npc.0)))
+                .filter(|line| *line == format!("+sortie/hire #{}", npc.0))
         })
         .unwrap_or_else(|| panic!("#{} is on offer: {offers}", npc.0))
         .to_owned();

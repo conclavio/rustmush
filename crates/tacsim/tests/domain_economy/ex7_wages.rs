@@ -9,6 +9,9 @@
 //!    arrears are paid.
 //! 3. **A player lists themselves for crew hire:** `+sortie/available` puts them on the port's
 //!    job board, as a technician among their duties, until they withdraw.
+//! 4. **The short accept:** `+sortie/hire #<npc>` hires at the terms `+sortie/crew` last showed
+//!    the captain; unread, or changed by staff since she read them, it is refused and nothing
+//!    is queued, so she still accepts exactly the terms she read.
 //!
 //! **What is a fixture.** The captains' money (minted by staff); the hires, the wages and the
 //! board are the production path, and the clock runs at the live rate.
@@ -96,7 +99,7 @@ pub(crate) fn hire(rig: &mut Rig, who: ObjId, npc: ObjId) -> String {
         .find_map(|line| {
             line.trim()
                 .strip_prefix("Accept: ")
-                .filter(|line| line.contains(&format!("#{}=", npc.0)))
+                .filter(|line| *line == format!("+sortie/hire #{}", npc.0))
         })
         .unwrap_or_else(|| panic!("#{} is on offer: {offers}", npc.0))
         .to_owned();
@@ -293,5 +296,85 @@ fn ex7_a_player_lists_themselves_for_crew_hire_on_the_board() {
     assert!(
         run(&mut rig.tw, who, "+sortie/unavailable").contains("You are not listed for crew hire."),
         "nothing left to withdraw"
+    );
+}
+
+/// **The short accept**: `+sortie/hire #<npc>` hires at the terms `+sortie/crew` last showed this
+/// captain. Before she has read them it is refused; after staff change the offer it is refused
+/// until she reads it again, and then it hires at the changed terms (here by the NPC's name). The
+/// long form, `#<npc>=<terms hash>`, is not printed.
+#[test]
+fn ex7_the_short_accept_hires_only_the_terms_that_were_read() {
+    use tacsim::detachment::crew::OFFER_ATTR;
+    let mut rig = stocked();
+    let who = employer(&mut rig, "Employer", 1, "Salt Moth");
+    mint(&mut rig, who, 100_000);
+    let mendes = npc(&rig, MENDES);
+    let room = rig
+        .tw
+        .world()
+        .get(mendes)
+        .and_then(|o| o.location)
+        .expect("Mendes stands in the Slack Line");
+    teleport(&mut rig.tw, who, room);
+    let short = format!("+sortie/hire #{}", mendes.0);
+
+    let (said, queued) = command(&mut rig, who, &short);
+    assert!(queued.is_empty(), "nothing hired unread: {said}");
+    assert!(
+        said.contains(
+            "Read +sortie/crew first: +sortie/hire accepts the terms it last showed you."
+        ),
+        "{said}"
+    );
+
+    let offers = run(&mut rig.tw, who, "+sortie/crew");
+    assert!(
+        offers
+            .lines()
+            .any(|l| l.trim() == format!("Accept: {short}")),
+        "{offers}"
+    );
+    assert!(!offers.contains(&format!("{short}=")), "no hash: {offers}");
+
+    // Staff change the offer after she read it: Mendes no longer takes recovery work.
+    let mut changed = rig
+        .tw
+        .world()
+        .get(mendes)
+        .and_then(|o| o.attrs.get(OFFER_ATTR))
+        .and_then(|a| a.as_json())
+        .cloned()
+        .expect("Mendes' offer");
+    assert_eq!(changed["duties"], serde_json::json!(["mining", "recovery"]));
+    changed["duties"] = serde_json::json!(["mining"]);
+    rig.tw
+        .world_mut()
+        .set_attr(
+            mendes,
+            OFFER_ATTR,
+            mush_core::Attr::json(changed, mush_core::GOD),
+        )
+        .expect("staff rewrite the offer");
+
+    let (said, queued) = command(&mut rig, who, &short);
+    assert!(queued.is_empty(), "the changed terms are not hired: {said}");
+    assert!(
+        said.contains(
+            "Those hiring terms have changed since you read them. Read +sortie/crew again."
+        ),
+        "{said}"
+    );
+
+    let offers = run(&mut rig.tw, who, "+sortie/crew");
+    assert!(offers.contains("duties: mining; "), "{offers}");
+    // By name this time: the short accept takes the NPC's name as well as their number.
+    let (said, queued) = command(&mut rig, who, &format!("+sortie/hire {MENDES}"));
+    assert_eq!(queued.len(), 1, "one hire: {said}");
+    land_composed(&mut rig, &queued[0]).expect("the hire lands");
+    let contract = run(&mut rig.tw, who, &format!("+sortie/contract #{}", mendes.0));
+    assert!(
+        contract.contains("unit operator; duties: mining; hiring port: "),
+        "hired at the terms read the second time: {contract}"
     );
 }
