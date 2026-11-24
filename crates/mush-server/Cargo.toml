@@ -106,6 +106,9 @@ mush-contract-tests.workspace = true
 # NPC / authoritative-action fixtures drive the `toy` test ruleset instead. A
 # dev-dependency only: no production build of `mush-server` links `mush-testkit`.
 mush-testkit = { workspace = true, features = ["toy-ruleset"] }
+# Doc 51 cut FL.4: the instant a rig boots at (`STORY_EPOCH`, `phases!`). The
+# `commerce_composition` rigs boot there and no longer at the wall clock.
+mush-storykit.workspace = true
 # WS01-S11D: not new crate edges — both are normal dependencies above. The test
 # build additionally turns on their `debug-checks` features, which is where the
 # two recomputation-equivalence walks that used to ride `cfg(debug_assertions)`

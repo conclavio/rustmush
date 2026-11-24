@@ -118,8 +118,6 @@ filter = '''
   | (binary_id(mush-gateway::split_halves) & test(=restart_survival::restart_mid_scene_resumes_in_current_room))
   | (binary_id(mush-gateway::split_halves) & test(=server_unit::a_gateway_started_before_its_server_serves_the_gap_then_heals))
   | (binary_id(mush-server) & test(=world_task::tests::what_still_waits_when_the_loop_ends_is_answered_not_dropped))
-  | (binary_id(mush-server::commerce_composition) & test(=ic_buyout_dormancy::ic13_a_buyout_is_refused_under_way_cleared_elsewhere_or_with_goods_moving))
-  | (binary_id(mush-server::commerce_composition) & test(=ic_buyout_dormancy::sm2_a_week_of_hops_trips_no_recall))
   | (binary_id(mush-server::split_boundary) & test(/^ipc_authoritative_action::/))
   | (binary_id(mush-server::split_boundary) & test(/^ipc_window::/))
   | (binary_id(mush-server::split_boundary) & test(=boot_parity::stop_ledger_archive_joins_the_pass_rather_than_detaching_it))

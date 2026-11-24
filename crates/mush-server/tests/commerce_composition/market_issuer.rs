@@ -98,16 +98,7 @@ impl CatalogSource for TestCatalog {
 // ---- rig -------------------------------------------------------------------
 
 fn scratch_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "mush-marketissuer-{tag}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos())
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("a scratch directory");
-    dir
+    mush_storykit::scratch_dir("mush-marketissuer", tag).expect("a scratch directory")
 }
 
 /// A memory-backed config on a scratch data dir with `[tacsim.economy].market`

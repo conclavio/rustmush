@@ -56,6 +56,7 @@ use mush_server::persist;
 use mush_server::quarantine::QuarantineSpool;
 use mush_server::timeline;
 use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore};
+use mush_storykit::{Calendar, Phase, phases};
 use mush_testkit::TestWorld;
 use tacsim::TacsimStore;
 use tacsim::definitions::GoodsTable;
@@ -78,16 +79,7 @@ fn cid(word: &str) -> CanonicalId {
 
 /// A fresh scratch data dir (the `boot_parity.rs` pattern).
 fn scratch_dir(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "mush-icslice-{tag}-{}-{}",
-        std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_nanos())
-    ));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("a scratch dir");
-    dir
+    mush_storykit::scratch_dir("mush-icslice", tag).expect("a scratch dir")
 }
 
 /// **The config dev1's rate-24 deploy renders** (doc 18 §4.7 "Config flips"): the
@@ -108,7 +100,12 @@ fn config(tag: &str) -> Config {
     // Doc 20 cut SM.1: a production-shaped config carries the geology key (the shipped
     // template names one), so the readiness report's geology line reads Ready and
     // `stock()` can wait on "Ready: every binding above is in place."
-    cfg.tacsim.geology.key_dir = Some(cfg.server.data_dir.join("geology-keys"));
+    let key_dir = cfg.server.data_dir.join("geology-keys");
+    // Doc 51 rule D: one ground for every run. An empty key directory provisions a fresh random
+    // key, and the ground it gives decides how many fires the sites' clerks need to open it, so
+    // the second every later step of a story falls on would follow a draw. The key is `sm_story`'s.
+    crate::sm_story::write_fixed_key(&key_dir, crate::sm_story::STORY_KEY);
+    cfg.tacsim.geology.key_dir = Some(key_dir);
     cfg
 }
 
@@ -170,11 +167,27 @@ fn boxed_boot_engine<'a>(
     })
 }
 
+/// **The rig's IC calendar**, from the `[game]` it boots with: the rate and the IC instant at
+/// unix zero, so a phase is found on the calendar the engine itself keeps.
+fn calendar(cfg: &Config) -> Calendar {
+    let clock = cfg.game.game_clock().expect("[game] parses");
+    Calendar::new(clock.ic_ratio, clock.epoch_offset)
+}
+
+/// **At the story epoch** (doc 51 rule T): the rig never reads the wall clock, so a story sees
+/// the same IC calendar on every run. A story about a schedule boots through [`boot_at`].
 async fn boot(tag: &str) -> Rig {
+    boot_at(tag, Phase::Epoch).await
+}
+
+/// [`boot`] at a named phase of the IC calendar (doc 51 §3.6), for a story run through
+/// `phases!`. `STORY_PHASE` overrides it for a whole run, and the boot prints the phase it took.
+async fn boot_at(tag: &str, phase: Phase) -> Rig {
     let cfg = config(tag);
+    let boot_unix = phase.boot_unix(calendar(&cfg));
     let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
     let spool = QuarantineSpool::open(cfg.server.data_dir.join("quarantine")).expect("a spool");
-    let booted = boxed_boot_engine(&cfg, &store, &spool, mush_config::unix_now_s())
+    let booted = boxed_boot_engine(&cfg, &store, &spool, boot_unix)
         .await
         .expect("the split half boots");
     assert_eq!(
@@ -1651,10 +1664,9 @@ async fn ic13_a_buyout_passes_title_once_ends_the_lease_and_silences_the_share()
 /// **The verify lens, item 4** (lead ruling L14): a buyout while goods are moving, while
 /// a queued step is at the counter, with a clearance filed, under way and docked at
 /// Stickney each refuses, and nothing is written.
-#[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn ic13_a_buyout_is_refused_under_way_cleared_elsewhere_or_with_goods_moving() {
-    let mut rig = boot("refusals").await;
+async fn ic13_a_buyout_is_refused_under_way_cleared_elsewhere_or_with_goods_moving(phase: Phase) {
+    let mut rig = boot_at("refusals", phase).await;
     let _ = sweep(&mut rig, 120).await;
     stock(&mut rig).await;
     let vex = pilot(&mut rig, "Vex", "vexacct").await;
@@ -1759,6 +1771,10 @@ async fn ic13_a_buyout_is_refused_under_way_cleared_elsewhere_or_with_goods_movi
     assert_eq!(title_owner(&rig.tw, hull), Some(trust(&rig.tw)));
     assert_no_pages(&rig.tw);
 }
+phases!(
+    #[tokio::test]
+    async ic13_a_buyout_is_refused_under_way_cleared_elsewhere_or_with_goods_moving
+);
 
 // ---------------------------------------------------------------------------
 // 3. The refund
@@ -3051,10 +3067,9 @@ async fn sm2_aboard_for_hops(rig: &mut Rig) -> (ObjId, ObjId, Enrolment) {
 /// time): a hop to Ahuna and back on day 0 and again on day 6 keep the charter past a week
 /// from the first return; the control, with only the day-0 round trip, is recalled a week
 /// after its last burn — docked at Ceres, the hold empty, nothing in flight.
-#[tokio::test]
-async fn sm2_a_week_of_hops_trips_no_recall() {
+async fn sm2_a_week_of_hops_trips_no_recall(phase: Phase) {
     const D: i64 = 7 * 86_400;
-    let mut rig = boot("sm2_hops").await;
+    let mut rig = boot_at("sm2_hops", phase).await;
     let (vex, hull, e) = sm2_aboard_for_hops(&mut rig).await;
     let _ = sm2_hop(&mut rig, vex, hull, "+ship/undock ahuna").await;
     let b0 = sm2_hop(&mut rig, vex, hull, "+ship/lift ceres").await;
@@ -3070,7 +3085,7 @@ async fn sm2_a_week_of_hops_trips_no_recall() {
     assert!(tacsim::port_tick::recall_pages(rig.tw.world()).is_empty());
 
     // The control: only the day-0 round trip.
-    let mut rig = boot("sm2_hops_control").await;
+    let mut rig = boot_at("sm2_hops_control", phase).await;
     let (vex, hull, e) = sm2_aboard_for_hops(&mut rig).await;
     let _ = sm2_hop(&mut rig, vex, hull, "+ship/undock ahuna").await;
     let b0 = sm2_hop(&mut rig, vex, hull, "+ship/lift ceres").await;
@@ -3093,3 +3108,7 @@ async fn sm2_a_week_of_hops_trips_no_recall() {
         );
     }
 }
+phases!(
+    #[tokio::test]
+    async sm2_a_week_of_hops_trips_no_recall
+);

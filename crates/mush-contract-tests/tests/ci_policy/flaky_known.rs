@@ -176,6 +176,52 @@ fn a_row_naming_a_test_that_no_longer_exists_is_refused() {
     assert_one(&problems, "names nothing in the tree: no crates");
 }
 
+/// **A story run at named phases can be listed** (doc 51 §3.6): `phases!` makes the tests
+/// `<story>::<phase>`, which no source line spells. The gate finds the story's `phases!` call,
+/// takes the three named phases and any phase the call pins, and reads the record's row by the
+/// story's name.
+#[test]
+fn a_story_run_at_named_phases_is_found_by_its_phases_call() {
+    assert_eq!(flaky_known::PHASE_TESTS, mush_storykit::PHASE_TESTS);
+    let story = "ic_buyout_dormancy::sm2_a_week_of_hops_trips_no_recall";
+    let phased = |phase: &str| {
+        doctored(|rows| {
+            let row = first(rows);
+            row.binary = "mush-server::commerce_composition".to_string();
+            row.test = Some(format!("{story}::{phase}"));
+            row.class = "clock-phase".to_string();
+            row.row = Some(17);
+        })
+    };
+    for phase in flaky_known::PHASE_TESTS {
+        let problems = phased(phase);
+        assert!(
+            !problems
+                .iter()
+                .any(|p| p.contains("names nothing in the tree") || p.contains("does not name")),
+            "{phase}: {problems:#?}"
+        );
+    }
+    let problems = phased("a_phase_nobody_pinned");
+    assert!(
+        problems.iter().any(|p| p
+            .contains("names nothing in the tree: no module `sm2_a_week_of_hops_trips_no_recall`")),
+        "{problems:#?}"
+    );
+    // A phase's name under a story that is not run through `phases!` names nothing.
+    let problems = doctored(|rows| {
+        let row = first(rows);
+        row.binary = "mush-server::commerce_composition".to_string();
+        row.test = Some("ic_buyout_dormancy::ic13_a_refunded_buyout_re_leases::mid_month".into());
+    });
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.contains("no module `ic13_a_refunded_buyout_re_leases`")),
+        "{problems:#?}"
+    );
+}
+
 #[test]
 fn a_row_with_no_class_or_no_row_of_the_record_is_refused() {
     let problems = doctored(|rows| first(rows).class = "load".to_string());

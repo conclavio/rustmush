@@ -2889,6 +2889,7 @@ dependencies = [
  "mush-script",
  "mush-sim",
  "mush-store",
+ "mush-storykit",
  "mush-tactics",
  "mush-testkit",
  "mush-weather",

@@ -5,12 +5,8 @@
 #   WAIT_BUDGET_BLESS=1 cargo test -p mush-contract-tests --test ci_policy wait_budget::
 # A raise carries a written reason; the prefer-instead is `mush-storykit`.
 #
-# total: 68 raw waits, 13 wall-clock reads
+# total: 68 raw waits, 6 wall-clock reads
 wait 9 9 tests/commerce_composition/e0_ledger_durability.rs
-clock 2 2 tests/commerce_composition/ic_buyout_dormancy.rs
-clock 2 2 tests/commerce_composition/ic_slice_loop.rs
-clock 1 1 tests/commerce_composition/market_issuer.rs
-clock 2 2 tests/commerce_composition/sm_story.rs
 wait 3 3 tests/split_boundary/authoritative_durable_outbox.rs
 wait 7 7 tests/split_boundary/boot_parity.rs
 clock 1 1 tests/split_boundary/boot_parity.rs

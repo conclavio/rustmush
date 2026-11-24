@@ -166,8 +166,16 @@ def read_record(path=RECORD):
     return rows
 
 
+# The tests `phases!` makes of one story (mush-storykit, doc 51 §3.6): the test is
+# `<story>::<phase>`, and the record names the story.
+PHASE_TESTS = ("at_the_epoch", "before_a_days_turn", "mid_month")
+
+
 def record_row(record, test):
-    short = test[1].rsplit("::", 1)[-1]
+    parts = test[1].split("::")
+    short = parts[-1]
+    if short in PHASE_TESTS and len(parts) > 1:
+        short = parts[-2]
     return next((number for number, line in record if short in line), None)
 
 
