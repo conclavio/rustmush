@@ -4830,5 +4830,69 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void DisplayOptions_DpiAwareSizingResolutionListUiScaleAndEscModalClose()
+        {
+            // 1. Windows DPI scale snapping (96 / 120 / 144 / 192 / invalid 0 DPI)
+            Assert.AreEqual(1.0f, TacSim.UI.TacSimDisplayOptions.ComputeWindowsDpiScale(0f), 0.001f);
+            Assert.AreEqual(1.0f, TacSim.UI.TacSimDisplayOptions.ComputeWindowsDpiScale(96f), 0.001f);
+            Assert.AreEqual(1.25f, TacSim.UI.TacSimDisplayOptions.ComputeWindowsDpiScale(120f), 0.001f);
+            Assert.AreEqual(1.5f, TacSim.UI.TacSimDisplayOptions.ComputeWindowsDpiScale(144f), 0.001f);
+            Assert.AreEqual(2.0f, TacSim.UI.TacSimDisplayOptions.ComputeWindowsDpiScale(192f), 0.001f);
+
+            // 2. Default windowed size scales up generously for 4K / ultrawide high-DPI monitors
+            var size1080 = TacSim.UI.TacSimDisplayOptions.ComputeDefaultWindowSize(1920, 1080, 1.0f);
+            Assert.AreEqual(1600, size1080.Width);
+            Assert.AreEqual(900, size1080.Height);
+
+            var size4k = TacSim.UI.TacSimDisplayOptions.ComputeDefaultWindowSize(3840, 2160, 1.5f);
+            Assert.GreaterOrEqual(size4k.Width, 2100);
+            Assert.LessOrEqual(size4k.Width, (int)(3840 * 0.90f));
+            Assert.LessOrEqual(size4k.Height, (int)(2160 * 0.88f));
+
+            var sizeUltrawide = TacSim.UI.TacSimDisplayOptions.ComputeDefaultWindowSize(5120, 1440, 1.5f);
+            Assert.GreaterOrEqual(sizeUltrawide.Width, 2000);
+            Assert.LessOrEqual(sizeUltrawide.Height, (int)(1440 * 0.88f));
+
+            // 3. Resolution list deduplicates hardware modes and clamps strictly to monitor bounds
+            var choices = TacSim.UI.TacSimDisplayOptions.BuildResolutionChoices(
+                new[]
+                {
+                    new UnityEngine.Resolution { width = 2560, height = 1440 },
+                    new UnityEngine.Resolution { width = 2560, height = 1440 },
+                    new UnityEngine.Resolution { width = 7680, height = 4320 }
+                },
+                monitorWidth: 2560,
+                monitorHeight: 1440);
+            Assert.AreEqual(2560, choices[0].Width);
+            Assert.AreEqual(1440, choices[0].Height);
+            Assert.IsFalse(choices.Exists(c => c.Width > 2560 || c.Height > 1440));
+            Assert.AreEqual(1, choices.FindAll(c => c.Width == 2560 && c.Height == 1440).Count);
+
+            // 4. UI Scale updates scaled reference resolution cleanly
+            UnityEngine.Vector2 ref150 = TacSim.UI.TacSimDisplayOptions.ComputeScaledReferenceResolution(1.5f);
+            Assert.AreEqual(1280f, ref150.x, 0.5f);
+            Assert.AreEqual(720f, ref150.y, 0.5f);
+
+            // 5. Hud wires DisplayOptions modal and ESC closes it before lower layers
+            var go = new UnityEngine.GameObject("HudDisplayOptionsTest");
+            try
+            {
+                var hud = go.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                Assert.IsNotNull(hud.DisplayOptions, "BuildHud must wire TacSimDisplayOptions");
+                Assert.IsFalse(hud.DisplayOptions.IsOpen);
+
+                hud.DisplayOptions.SetOpen(true);
+                Assert.IsTrue(hud.DisplayOptions.IsOpen);
+                Assert.IsTrue(hud.TryCloseTopmostModal(), "ESC / TryCloseTopmostModal must close DisplayOptions first");
+                Assert.IsFalse(hud.DisplayOptions.IsOpen);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(go);
+            }
+        }
     }
 }

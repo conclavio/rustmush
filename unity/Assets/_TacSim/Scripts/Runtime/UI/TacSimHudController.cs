@@ -74,6 +74,7 @@ namespace TacSim.UI
         public bool IsInitialized { get; private set; }
         public TacSimMissionOverlays Overlays { get; private set; }
         public TacSimEconomyPanels EconomyPanels { get; private set; }
+        public TacSimDisplayOptions DisplayOptions { get; private set; }
         public TradeTerminalTab ActiveTradeTab { get; private set; } = TradeTerminalTab.Exchange;
         public string ActiveHullRef => _activeHullRef;
         public string ActivePortHint => _activePortHint;
@@ -473,7 +474,7 @@ namespace TacSim.UI
 
             var scaler = canvasGo.AddComponent<CanvasScaler>();
             scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-            scaler.referenceResolution = new Vector2(1920f, 1080f);
+            scaler.referenceResolution = TacSimDisplayOptions.ComputeScaledReferenceResolution(TacSimDisplayOptions.CurrentUiScale);
             scaler.matchWidthOrHeight = 0.5f;
             canvasGo.AddComponent<GraphicRaycaster>();
 
@@ -482,6 +483,10 @@ namespace TacSim.UI
 
             Overlays = gameObject.GetComponent<TacSimMissionOverlays>() ?? gameObject.AddComponent<TacSimMissionOverlays>();
             Overlays.BuildOverlays(_hudRoot.transform, _uiFont);
+
+            DisplayOptions = gameObject.GetComponent<TacSimDisplayOptions>() ?? gameObject.AddComponent<TacSimDisplayOptions>();
+            DisplayOptions.BuildModal(canvasGo.transform, _uiFont);
+            DisplayOptions.ApplyStartupPreferences();
 
             IsInitialized = true;
             ShowLoginOverlay(true, "Sign in to mushd (e.g. https://dev1.conclav.io) to enter the 2350 Corridor.");
@@ -514,8 +519,11 @@ namespace TacSim.UI
             SetRect(_netBadgeText.rectTransform, new Vector2(0.50f, 0f), new Vector2(0.61f, 1f), Vector2.zero, Vector2.zero);
 
             _shipAndClockText = CreateText(topBar.transform, "IC 08:00 UTC | HULL: UNCHARTERED | RMB: Orbit Camera", 15, FontStyle.Normal, TextAnchor.MiddleRight, new Color(0.62f, 0.84f, 0.96f));
-            // Reserve 224px at the far right of TopStrip for the docked `[F10] MINDS & SEALING` launcher pill (`U-H29`).
-            SetRect(_shipAndClockText.rectTransform, new Vector2(0.58f, 0f), new Vector2(1f, 1f), Vector2.zero, new Vector2(-228f, 0f));
+            // Reserve 324px at the far right of TopStrip for `OPTIONS` (`-316..-212`) + `[F10] MINDS & SEALING` (`-204..-6`).
+            SetRect(_shipAndClockText.rectTransform, new Vector2(0.56f, 0f), new Vector2(1f, 1f), Vector2.zero, new Vector2(-324f, 0f));
+
+            var optionsTopBtn = CreateButton(topBar.transform, "OPTIONS", new Color(0.14f, 0.26f, 0.38f), () => DisplayOptions?.SetOpen(true));
+            SetRect(optionsTopBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-316f, 6f), new Vector2(-212f, -6f));
 
             // 2. Center-Bottom [E] Contextual Interaction Banner
             _interactBanner = CreatePanel(_hudRoot.transform, "InteractBanner", new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(-240f, 128f), new Vector2(240f, 198f), new Color(0.05f, 0.12f, 0.18f, 0.92f));
@@ -912,6 +920,8 @@ namespace TacSim.UI
         private void BuildLoginAndAvatarOverlay(Transform root)
         {
             _loginPanel = CreatePanel(root, "LoginOverlay", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, new Color(0.02f, 0.04f, 0.07f, 0.90f));
+            var loginOptionsBtn = CreateButton(_loginPanel.transform, "DISPLAY / OPTIONS", new Color(0.14f, 0.28f, 0.42f), () => DisplayOptions?.SetOpen(true));
+            SetRect(loginOptionsBtn.GetComponent<RectTransform>(), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-196f, -54f), new Vector2(-20f, -16f));
             var card = CreatePanel(_loginPanel.transform, "LoginCard", new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-350f, -218f), new Vector2(350f, 218f), new Color(0.06f, 0.10f, 0.16f, 0.98f));
 
             var title = CreateText(card.transform, "RUSTMUSH // TACSIM 2350 — 3D CLIENT", 22, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(0.45f, 0.90f, 1f));
@@ -1055,6 +1065,11 @@ namespace TacSim.UI
         /// </summary>
         public bool TryCloseTopmostModal()
         {
+            if (DisplayOptions != null && DisplayOptions.IsOpen)
+            {
+                DisplayOptions.SetOpen(false);
+                return true;
+            }
             var term = ResolveActiveMindTerminal();
             if (term != null && term.IsTerminalOpen)
             {
@@ -1090,6 +1105,11 @@ namespace TacSim.UI
             if (Input.GetKeyDown(KeyCode.Escape))
             {
                 TryCloseTopmostModal();
+            }
+
+            if (Input.GetKeyDown(KeyCode.F11) && !IsTextInputFocused)
+            {
+                DisplayOptions?.ToggleBorderlessFullscreen();
             }
 
             if (Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter))
