@@ -900,49 +900,25 @@ pub fn ooc_pack_v6() -> String {
     signed_as(doc, OOC_V6_DIGEST, "the OOC pack's version 6")
 }
 
-/// The 2026-11-24 playtest's edits to Ceres undone, so every rebuild of a published version
-/// starts from the content before them: the four stair and ladder exits named by direction
-/// again, and the British spelling. Ceres was re-signed in place at v4 for those edits, as
-/// the 2026-11-17 Co-op rewording was (pre-launch, and no kept world holds the old digest).
+/// Every text edit made to Ceres in place at v4 undone (the 2026-11-24 playtest's exit names
+/// and US spelling; Ceres was re-signed in place, as the 2026-11-17 Co-op rewording was), so a
+/// rebuild of a published version starts from the text it had. The `[now, was]` pairs live in
+/// `ceres_in_place_edits.json`, which mush-server's `relay_registry.rs` reads too; a new
+/// in-place edit adds a group there.
 pub fn restore_ceres_before_2026_11_24(doc: &mut serde_json::Value) {
+    let edits: serde_json::Value = serde_json::from_str(include_str!("ceres_in_place_edits.json"))
+        .expect("the edits are json");
     let mut text = serde_json::to_string(doc).expect("serializes");
-    for (now, was) in CERES_2026_11_24_EDITS {
-        assert_eq!(text.matches(now).count(), 1, "{now} is in Ceres once");
-        text = text.replace(now, was);
+    for group in edits["edits"].as_array().expect("edits") {
+        for pair in group["pairs"].as_array().expect("pairs") {
+            let now = pair[0].as_str().expect("now");
+            let was = pair[1].as_str().expect("was");
+            assert_eq!(text.matches(now).count(), 1, "{now} is in Ceres once");
+            text = text.replace(now, was);
+        }
     }
     *doc = serde_json::from_str(&text).expect("parses");
 }
-
-/// What the 2026-11-24 playtest changed in Ceres, each `(now, was)` text unique in the pack.
-const CERES_2026_11_24_EDITS: [(&str, &str); 15] = [
-    (
-        "Dockmaster <D>;d;dockmaster;down;stair",
-        "Down <D>;d;down;stair;dockmaster",
-    ),
-    (
-        "Arrivals <U>;u;arrivals;up;stair",
-        "Up <U>;u;up;stair;arrivals",
-    ),
-    (
-        "Authority <U>;u;authority;up;ladder",
-        "Up <U>;u;up;ladder;authority",
-    ),
-    (
-        "Registry <D>;d;registry;down;ladder",
-        "Down <D>;d;down;ladder;registry",
-    ),
-    ("air, color-banded;", "air, colour-banded;"),
-    ("air in color-banded runs", "air in colour-banded runs"),
-    ("in a different color.", "in a different colour."),
-    ("every few meters:", "every few metres:"),
-    ("a cubic meter,", "a cubic metre,"),
-    ("ENROLL AT THE DESK", "ENROL AT THE DESK"),
-    ("before the program pool", "before the programme pool"),
-    ("deck, gray and polished", "deck, grey and polished"),
-    ("with gray cases", "with grey cases"),
-    ("in Luna gray", "in Luna grey"),
-    ("the harbormaster at", "the harbourmaster at"),
-];
 
 /// Staff lobby v6's edits undone, so a rebuild of an older version starts from v5's content:
 /// the stair named by direction again, and the British spelling v5 published (the 2026-11-24
