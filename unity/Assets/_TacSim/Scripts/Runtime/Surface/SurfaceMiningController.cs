@@ -66,9 +66,14 @@ namespace TacSim.Surface
         private Transform _otherRigsRoot;
         private Transform _scanPulseRing;
         private Transform _drillSparksGlow;
+        private LineRenderer _roverRouteLine;
+        private Transform _roverWaypointRing;
         private float _pulseScale = -1f;
         private Color _pulseColor = Color.cyan;
         private float _drillActiveUntil;
+
+        public bool IsRouteSplineVisible => _roverRouteLine != null && _roverRouteLine.enabled;
+        public int RouteSplinePointCount => _roverRouteLine != null ? _roverRouteLine.positionCount : 0;
 
         private bool _hasCachedHullSiteCell;
         private int _cachedHullSiteX;
@@ -334,6 +339,90 @@ namespace TacSim.Surface
             sparks.GetComponent<MeshRenderer>().sharedMaterial = UrpMaterialFactory.GetEmissive("DrillGlow", new Color(1f, 0.65f, 0.15f), new Color(1f, 0.72f, 0.2f) * 2.6f);
             _drillSparksGlow = sparks.transform;
             _drillSparksGlow.gameObject.SetActive(false);
+
+            var splineGo = new GameObject("RoverRouteSpline");
+            splineGo.transform.SetParent(transform, false);
+            _roverRouteLine = splineGo.AddComponent<LineRenderer>();
+            _roverRouteLine.useWorldSpace = true;
+            _roverRouteLine.startWidth = 0.42f;
+            _roverRouteLine.endWidth = 0.28f;
+            _roverRouteLine.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("RoverSplineMat", new Color(0.28f, 0.94f, 1.0f, 0.85f));
+            _roverRouteLine.positionCount = 0;
+            _roverRouteLine.enabled = false;
+
+            var wpRing = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            wpRing.name = "RoverWaypointRing";
+            wpRing.transform.SetParent(transform, false);
+            wpRing.transform.localScale = new Vector3(4.2f, 0.10f, 4.2f);
+            var wrc = wpRing.GetComponent<Collider>();
+            if (wrc != null) { if (Application.isPlaying) Destroy(wrc); else DestroyImmediate(wrc); }
+            wpRing.GetComponent<MeshRenderer>().sharedMaterial =
+                UrpMaterialFactory.GetHologramUnlit("RoverWpRingMat", new Color(0.28f, 0.96f, 0.86f, 0.65f));
+            _roverWaypointRing = wpRing.transform;
+            _roverWaypointRing.gameObject.SetActive(false);
+        }
+
+        public void SyncRoverRouteSpline()
+        {
+            if (_roverRouteLine == null) return;
+            if (!IsExcursionActive || TerrainGrid == null || ActiveRoverRig?.Root == null)
+            {
+                _roverRouteLine.positionCount = 0;
+                _roverRouteLine.enabled = false;
+                if (_roverWaypointRing != null) _roverWaypointRing.gameObject.SetActive(false);
+                return;
+            }
+
+            Vector3 roverPos = ActiveRoverRig.Root.transform.position;
+            var pts = new List<Vector3>(16);
+            pts.Add(roverPos + Vector3.up * 0.55f);
+
+            if (_activeLegWaypoints.Count > 0)
+            {
+                for (int i = 0; i < _activeLegWaypoints.Count; i++)
+                {
+                    var wp = _activeLegWaypoints[i];
+                    Vector3 worldWp = SurfaceStageOrigin + TerrainGrid.SiteCmToLocalPos(wp.XCm, wp.YCm, 0.55f);
+                    if (Vector3.Distance(pts[pts.Count - 1], worldWp) > 0.35f)
+                        pts.Add(worldWp);
+                }
+            }
+            else if (_hasDriveWaypoint)
+            {
+                Vector3 dstWorld = SurfaceStageOrigin + _roverTargetLocalPos + Vector3.up * 0.55f;
+                if (Vector3.Distance(roverPos, dstWorld) > 1.2f)
+                {
+                    // Sample 6 terrain-hugging intermediate points along the drive vector
+                    for (int s = 1; s <= 6; s++)
+                    {
+                        float t = s / 6f;
+                        Vector3 localLerp = Vector3.Lerp(roverPos - SurfaceStageOrigin, _roverTargetLocalPos, t);
+                        localLerp.y = TerrainGrid.SampleElevationMeters(localLerp.x, localLerp.z) + 0.55f;
+                        pts.Add(SurfaceStageOrigin + localLerp);
+                    }
+                }
+            }
+
+            bool show = pts.Count >= 2;
+            _roverRouteLine.positionCount = show ? pts.Count : 0;
+            if (show)
+            {
+                for (int i = 0; i < pts.Count; i++)
+                    _roverRouteLine.SetPosition(i, pts[i]);
+            }
+            _roverRouteLine.enabled = show;
+
+            if (_roverWaypointRing != null)
+            {
+                _roverWaypointRing.gameObject.SetActive(show);
+                if (show)
+                {
+                    Vector3 endPos = pts[pts.Count - 1];
+                    _roverWaypointRing.position = new Vector3(endPos.x, endPos.y - 0.40f, endPos.z);
+                    float pulse = 3.6f + 0.8f * Mathf.Sin(Time.time * 4f);
+                    _roverWaypointRing.localScale = new Vector3(pulse, 0.10f, pulse);
+                }
+            }
         }
 
         public void EnterSurfaceMode()
@@ -806,6 +895,7 @@ namespace TacSim.Surface
                 }
             }
 
+            SyncRoverRouteSpline();
             OnSurfaceTelemetryChanged?.Invoke();
         }
 
@@ -1052,6 +1142,7 @@ namespace TacSim.Surface
             ActiveRoverRig.Root.transform.position = SurfaceStageOrigin + localPos;
             ActiveRoverRig.Root.transform.rotation = Quaternion.Euler(0f, _roverHeadingDeg, 0f);
             ActiveRoverRig.UpdateArticulation(dt, _roverSpeedKph, null, drilling);
+            SyncRoverRouteSpline();
         }
 
         public void StepRoverKinematics(ref Vector3 localPos, float dt, double nowMonotonicSec)

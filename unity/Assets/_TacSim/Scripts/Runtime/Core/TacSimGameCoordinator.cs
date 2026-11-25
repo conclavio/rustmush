@@ -344,9 +344,14 @@ namespace TacSim.Core
             };
             ArenaStage.OnWeaponShotFired += isLaser =>
             {
-                if (Audio == null) return;
-                if (isLaser) Audio.PlayLaserPulse();
-                else Audio.PlayRailgunCrack();
+                if (Audio != null)
+                {
+                    if (isLaser) Audio.PlayLaserPulse();
+                    else Audio.PlayRailgunCrack();
+                }
+                Hud?.FloatingCallouts?.ShowCallout(
+                    isLaser ? "LASER STRIKE" : "MAIN GUN SALVO",
+                    isLaser ? new Color(1f, 0.36f, 0.42f, 1f) : new Color(1f, 0.84f, 0.34f, 1f));
             };
             ArenaStage.OnRequestArenaMapSubscribe += () =>
             {
@@ -372,6 +377,8 @@ namespace TacSim.Core
             Hud.OnCameraModeRequested += SetCameraMode;
             Hud.OnStandFromHelmRequested += StandFromHelm;
             Hud.OnCycleTargetRequested += HandleCycleTarget;
+            Hud.OnCycleOrbitalCameraRequested += HandleCycleOrbitalCamera;
+            Hud.OnSpaceQuickFireRequested += HandleSpaceQuickFire;
 
             if (Hud.Minimap != null)
             {
@@ -471,6 +478,7 @@ namespace TacSim.Core
                 {
                     if (Audio != null) Audio.PlayUiClick();
                     Hud?.AppendLogLine($"<color=#66FFAA>[WAYFINDER]</color> Arrived at <b>{MushProtocol.EscapeUnityRichText(destName)}</b>.");
+                    Hud?.FloatingCallouts?.ShowCallout($"ARRIVED: {destName.ToUpperInvariant()}", new Color(0.35f, 1f, 0.68f, 1f));
                     Hud?.OpsDirectory?.SyncWayfinderBanner(ActiveStage);
                 };
             }
@@ -673,6 +681,33 @@ namespace TacSim.Core
                 () => HandleWorldInteractable(wi),
                 "LOOK",
                 () => ExecutePlayerCommand("look"));
+        }
+
+        private void HandleCycleOrbitalCamera()
+        {
+            if (ActiveStage != TacSimActiveStage.ShipHelmSeated || CameraRig == null || (SpaceStage != null && SpaceStage.IsDockingActive))
+                return;
+            CameraRigMode next = CameraRig.Mode == CameraRigMode.ShipBridgeHolo
+                ? CameraRigMode.OrbitalExterior
+                : (CameraRig.Mode == CameraRigMode.OrbitalExterior
+                    ? CameraRigMode.OrbitalTacticalHigh
+                    : CameraRigMode.ShipBridgeHolo);
+            SetCameraMode(next);
+            string lbl = next == CameraRigMode.OrbitalTacticalHigh
+                ? "CAMERA: TACTICAL HIGH-ORBIT"
+                : (next == CameraRigMode.OrbitalExterior ? "CAMERA: ORBITAL CHASE" : "CAMERA: BRIDGE HOLO-TANK");
+            Hud?.FloatingCallouts?.ShowCallout(lbl, new Color(0.38f, 0.92f, 1f, 1f), 1.6f);
+        }
+
+        private void HandleSpaceQuickFire()
+        {
+            if (ActiveStage != TacSimActiveStage.ShipHelmSeated || SpaceStage == null || SpaceStage.IsDockingActive)
+                return;
+            if (SpaceStage.ActiveLock != null && !string.IsNullOrEmpty(SpaceStage.ActiveLock.ShipId))
+            {
+                ExecutePlayerCommand("+tac/fire");
+                Hud?.FloatingCallouts?.ShowCallout("WEAPONS FREE — FIRING", new Color(1f, 0.44f, 0.28f, 1f));
+            }
         }
 
         private void HandleCycleTarget()
@@ -2535,17 +2570,20 @@ namespace TacSim.Core
                     {
                         SurfaceStage.TriggerScanPulseVfx(seismicSounding: true);
                         if (Audio != null) Audio.PlayRadarScanPing();
+                        Hud?.FloatingCallouts?.ShowCallout("SEISMIC SOUNDING PULSE", new Color(1f, 0.78f, 0.28f, 1f));
                     }
                     else if (plainLine.IndexOf("scan", StringComparison.OrdinalIgnoreCase) >= 0 &&
                              plainLine.IndexOf("field", StringComparison.OrdinalIgnoreCase) >= 0)
                     {
                         SurfaceStage.TriggerScanPulseVfx(seismicSounding: false);
                         if (Audio != null) Audio.PlayRadarScanPing();
+                        Hud?.FloatingCallouts?.ShowCallout("SURFACE RADAR SWEEP", new Color(0.32f, 0.94f, 1f, 1f));
                     }
                     else if (plainLine.IndexOf("mining cycle", StringComparison.OrdinalIgnoreCase) >= 0 ||
                              plainLine.IndexOf("hopper", StringComparison.OrdinalIgnoreCase) >= 0)
                     {
                         SurfaceStage.TriggerDrillVfx(3.0f);
+                        Hud?.FloatingCallouts?.ShowCallout("CORE DRILL EXTRACTING ORE", new Color(0.35f, 1f, 0.62f, 1f));
                     }
                 }
 
@@ -2556,16 +2594,19 @@ namespace TacSim.Core
                     {
                         SpaceStage.TriggerNavalWeaponVfx("torp");
                         if (Audio != null) Audio.PlayTorpedoLaunch();
+                        Hud?.FloatingCallouts?.ShowCallout("TORPEDO SALVO AWAY", new Color(1f, 0.56f, 0.22f, 1f));
                     }
                     else if (plainLine.IndexOf("Railgun salvo fired", StringComparison.OrdinalIgnoreCase) >= 0)
                     {
                         SpaceStage.TriggerNavalWeaponVfx("railgun");
                         if (Audio != null) Audio.PlayRailgunCrack();
+                        Hud?.FloatingCallouts?.ShowCallout("SPINAL RAILGUN SALVO", new Color(1f, 0.86f, 0.34f, 1f));
                     }
                     else if (plainLine.IndexOf("Laser battery fired", StringComparison.OrdinalIgnoreCase) >= 0)
                     {
                         SpaceStage.TriggerNavalWeaponVfx("beam");
                         if (Audio != null) Audio.PlayLaserPulse();
+                        Hud?.FloatingCallouts?.ShowCallout("LASER BATTERY FIRED", new Color(1f, 0.36f, 0.40f, 1f));
                     }
                 }
             }

@@ -193,6 +193,11 @@ namespace TacSim.Arena
         private float _nextLiveHelmSendTime;
         private Transform _radarPulseRing;
         private float _radarPulseScale = -1f;
+        private LineRenderer _arenaRangeRing;
+        private LineRenderer _arenaLockBeam;
+
+        public bool IsArenaLockBeamActive => _arenaLockBeam != null && _arenaLockBeam.enabled;
+        public bool IsArenaRangeRingVisible => _arenaRangeRing != null && _arenaRangeRing.enabled;
 
         private sealed class ActiveShotTracer
         {
@@ -254,6 +259,27 @@ namespace TacSim.Arena
             pulseGo.SetActive(false);
             _radarPulseRing = pulseGo.transform;
             _radarPulseScale = -1f;
+
+            var rangeGo = new GameObject("ArenaWeaponRangeRing");
+            rangeGo.transform.SetParent(_vfxRoot, false);
+            _arenaRangeRing = rangeGo.AddComponent<LineRenderer>();
+            _arenaRangeRing.useWorldSpace = true;
+            _arenaRangeRing.loop = true;
+            _arenaRangeRing.startWidth = 0.35f;
+            _arenaRangeRing.endWidth = 0.35f;
+            _arenaRangeRing.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("ArenaRangeRingMat", new Color(0.24f, 0.86f, 0.96f, 0.32f));
+            _arenaRangeRing.positionCount = 40;
+            _arenaRangeRing.enabled = false;
+
+            var lockGo = new GameObject("ArenaTargetLockBeam");
+            lockGo.transform.SetParent(_vfxRoot, false);
+            _arenaLockBeam = lockGo.AddComponent<LineRenderer>();
+            _arenaLockBeam.useWorldSpace = true;
+            _arenaLockBeam.positionCount = 2;
+            _arenaLockBeam.startWidth = 0.24f;
+            _arenaLockBeam.endWidth = 0.16f;
+            _arenaLockBeam.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("ArenaLockBeamMat", new Color(1.0f, 0.32f, 0.20f, 0.65f));
+            _arenaLockBeam.enabled = false;
 
             var sunGo = new GameObject("ArenaDirectionalFill");
             sunGo.transform.SetParent(transform, false);
@@ -916,6 +942,49 @@ namespace TacSim.Arena
                     aimYaw = Mathf.Atan2(d.x, d.z) * Mathf.Rad2Deg;
             }
             PlayerRig.UpdateArticulation(dt, State.SpeedKph, aimYaw);
+            SyncArenaTacticalVisuals();
+        }
+
+        public void SyncArenaTacticalVisuals()
+        {
+            if (PlayerRig?.Root == null || TerrainGrid == null || State == null || State.IsWreck)
+            {
+                if (_arenaRangeRing != null) _arenaRangeRing.enabled = false;
+                if (_arenaLockBeam != null) _arenaLockBeam.enabled = false;
+                return;
+            }
+
+            Vector3 ownPos = PlayerRig.Root.transform.position;
+            if (_arenaRangeRing != null)
+            {
+                const int Segs = 40;
+                const float RangeRadiusM = 68f;
+                _arenaRangeRing.positionCount = Segs;
+                for (int i = 0; i < Segs; i++)
+                {
+                    float ang = (i / (float)Segs) * Mathf.PI * 2f;
+                    float wx = ownPos.x + Mathf.Cos(ang) * RangeRadiusM;
+                    float wz = ownPos.z + Mathf.Sin(ang) * RangeRadiusM;
+                    float wy = ArenaStageOrigin.y + TerrainGrid.SampleElevationMeters(wx - ArenaStageOrigin.x, wz - ArenaStageOrigin.z) + 0.65f;
+                    _arenaRangeRing.SetPosition(i, new Vector3(wx, wy, wz));
+                }
+                _arenaRangeRing.enabled = true;
+            }
+
+            if (_arenaLockBeam != null)
+            {
+                if (!string.IsNullOrEmpty(State.LockedDesignator) &&
+                    TryGetContactWorldPosition(State.LockedDesignator, out Vector3 targetPos))
+                {
+                    _arenaLockBeam.SetPosition(0, ownPos + Vector3.up * 2.4f);
+                    _arenaLockBeam.SetPosition(1, targetPos);
+                    _arenaLockBeam.enabled = true;
+                }
+                else
+                {
+                    _arenaLockBeam.enabled = false;
+                }
+            }
         }
 
         private void SpawnShotTracer(Vector3 startWorld, Vector3 endWorld, bool isLaser)

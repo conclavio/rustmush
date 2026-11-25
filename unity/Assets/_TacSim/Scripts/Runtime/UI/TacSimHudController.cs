@@ -74,6 +74,8 @@ namespace TacSim.UI
         public event Action<CameraRigMode> OnCameraModeRequested;
         public event Action OnStandFromHelmRequested;
         public event Action OnCycleTargetRequested;
+        public event Action OnCycleOrbitalCameraRequested;
+        public event Action OnSpaceQuickFireRequested;
 
         public static TacSimHudController ActiveInstance { get; private set; }
 
@@ -91,6 +93,7 @@ namespace TacSim.UI
         public TacSimCharacterSheet CharacterSheet { get; private set; }
         public TacSimTacticalBrackets TacticalBrackets { get; private set; }
         public TacSimOpsDirectory OpsDirectory { get; private set; }
+        public TacSimFloatingCallouts FloatingCallouts { get; private set; }
         public ChatLogTab ActiveChatTab { get; private set; } = ChatLogTab.All;
         public int QuickActionSlotCount => _quickSlotActions.Count;
         public bool IsDockingHudVisible => _dockingPanel != null && _dockingPanel.activeSelf;
@@ -475,6 +478,7 @@ namespace TacSim.UI
             CharacterSheet?.ResetSessionState();
             OpsDirectory?.ResetSessionState();
             TacticalBrackets?.ResetSessionState();
+            FloatingCallouts?.ResetSessionState();
             UnitFrames?.ResetSessionState();
             Minimap?.ResetSessionState();
             ResolveActiveMindTerminal()?.ResetSessionState();
@@ -571,9 +575,12 @@ namespace TacSim.UI
         {
             _hudRoot = CreatePanel(root, "GameplayHud", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, Color.clear);
 
-            // 0. Pooled 3D Screen-Space Tactical Brackets Layer (first sibling so it renders behind HUD panels & modals)
+            // 0. Pooled 3D Screen-Space Tactical Brackets & Floating Callouts Layers (rendered behind HUD panels & modals)
             TacticalBrackets = gameObject.GetComponent<TacSimTacticalBrackets>() ?? gameObject.AddComponent<TacSimTacticalBrackets>();
             TacticalBrackets.BuildLayer(_hudRoot.transform, _uiFont);
+
+            FloatingCallouts = gameObject.GetComponent<TacSimFloatingCallouts>() ?? gameObject.AddComponent<TacSimFloatingCallouts>();
+            FloatingCallouts.BuildLayer(_hudRoot.transform, _uiFont);
 
             // 1. Top Telemetry Strip
             var topBar = CreatePanel(_hudRoot.transform, "TopStrip", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(16f, -64f), new Vector2(-16f, -10f), new Color(0.04f, 0.07f, 0.11f, 0.86f));
@@ -1282,6 +1289,14 @@ namespace TacSim.UI
                 if (Input.GetKeyDown(KeyCode.Tab))
                 {
                     OnCycleTargetRequested?.Invoke();
+                }
+                else if (Input.GetKeyDown(KeyCode.V))
+                {
+                    OnCycleOrbitalCameraRequested?.Invoke();
+                }
+                else if (Input.GetKeyDown(KeyCode.Space))
+                {
+                    OnSpaceQuickFireRequested?.Invoke();
                 }
                 else if (IsWalkQuickActionsVisible && _quickSlotActions.Count > 0)
                 {

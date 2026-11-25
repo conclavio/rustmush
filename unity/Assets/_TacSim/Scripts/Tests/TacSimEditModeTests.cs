@@ -5307,5 +5307,98 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void CombatSpaceSurfaceVfxAndCallouts_TacticalGridRoverSplineArenaLockBeamAndPopups()
+        {
+            var rootGo = new UnityEngine.GameObject("CombatVfxAndCalloutsTest");
+            try
+            {
+                // 1. SpaceFlightController 3D Homeworld/EVE tactical reference plane, drop-lines & lock tether
+                var spaceGo = new UnityEngine.GameObject("SpaceVfxTest");
+                spaceGo.transform.SetParent(rootGo.transform, false);
+                var space = spaceGo.AddComponent<TacSim.Space.SpaceFlightController>();
+                space.BuildSpaceStage(null);
+                Assert.IsTrue(space.IsTacticalGridVisible, "Orbital tactical reference plane must build active");
+                Assert.AreEqual(0, space.ActiveDropLineCount);
+
+                space.ApplyHolotankFeed(JsonNode.Parse(@"{
+                    ""own"": { ""id"": ""own1"", ""x_km"": 0, ""y_km"": 0, ""z_km"": 0 },
+                    ""contacts"": [{ ""id"": ""C1"", ""label"": ""Corsair"", ""x_km"": 18, ""y_km"": -6, ""z_km"": 4, ""iff"": ""hostile"", ""locked"": true }],
+                    ""rocks"": [{ ""id"": ""A"", ""x_km"": 5, ""y_km"": 7, ""z_km"": -2 }]
+                }"));
+                Assert.GreaterOrEqual(space.ActiveDropLineCount, 2, "Perceived orbital contacts & rocks must draw vertical drop-lines to tactical plane");
+                Assert.IsTrue(space.HasActiveLockTether, "Locked contact must render 3D trajectory lock tether");
+
+                space.SetTacticalGridVisible(false);
+                Assert.IsFalse(space.IsTacticalGridVisible);
+
+                // 2. OrbitalTacticalHigh camera mode configuration
+                var camGo = new UnityEngine.GameObject("CamRigTest", typeof(UnityEngine.Camera));
+                camGo.transform.SetParent(rootGo.transform, false);
+                var rig = camGo.AddComponent<TacSim.Character.TacSimCameraRig>();
+                rig.ControlledCamera = camGo.GetComponent<UnityEngine.Camera>();
+                rig.SetMode(TacSim.Character.CameraRigMode.OrbitalTacticalHigh);
+                Assert.AreEqual(TacSim.Character.CameraRigMode.OrbitalTacticalHigh, rig.Mode);
+                Assert.AreEqual(8000f, rig.ControlledCamera.farClipPlane, 1f);
+
+                // 3. SurfaceMiningController 3D rover route spline over live site.map leg
+                var surfGo = new UnityEngine.GameObject("SurfaceSplineTest");
+                surfGo.transform.SetParent(rootGo.transform, false);
+                var surf = surfGo.AddComponent<TacSim.Surface.SurfaceMiningController>();
+                surf.BuildSurfaceStage(null, "occator_rim");
+                surf.EnterSurfaceMode();
+                surf.ApplySiteMapFrame(JsonNode.Parse(@"{
+                    ""width"": 8,
+                    ""height"": 8,
+                    ""site"": {
+                        ""site"": ""Occator Rim"",
+                        ""grid"": { ""x0"": 0, ""y0"": 0, ""span"": 1, ""cell_cm"": 1000 },
+                        ""rigs"": [{
+                            ""slot"": 1,
+                            ""cell"": [1, 1],
+                            ""leg"": {
+                                ""started_ic"": 100,
+                                ""waypoints"": [{""x_cm"": 1500, ""y_cm"": 1500, ""at_s"": 0}, {""x_cm"": 6500, ""y_cm"": 6500, ""at_s"": 10}]
+                            }
+                        }]
+                    },
+                    ""rows"": [""........"",""........"",""........"",""........"",""........"",""........"",""........"",""........""],
+                    ""you"": [1, 1]
+                }"));
+                Assert.IsTrue(surf.IsRouteSplineVisible, "Active rover drive leg must render terrain-hugging 3D route spline");
+                Assert.GreaterOrEqual(surf.RouteSplinePointCount, 2);
+
+                // 4. OocArenaController 3D weapon range ring & target lock laser beam
+                var arenaGo = new UnityEngine.GameObject("ArenaVfxTest");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(null, null);
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""seated"": true, ""match"": 42, ""callsign"": ""R1"", ""party"": ""R"", ""unit_type"": ""tacsim.unit.line_tank"",
+                    ""x_cm"": 12000, ""y_cm"": 12000, ""lock_designator"": ""B1"", ""lock_range_m"": 260, ""lock_percent"": 78,
+                    ""contacts"": [{ ""designator"": ""B1"", ""party"": ""B"", ""relation"": ""hostile"", ""cell"": [18, 18], ""range_m"": 260 }]
+                }"));
+                arena.SyncArenaTacticalVisuals();
+                Assert.IsTrue(arena.IsArenaRangeRingVisible, "Live arena player rig must render 3D tactical range ring");
+                Assert.IsTrue(arena.IsArenaLockBeamActive, "Locked arena contact must render 3D target lock laser line");
+
+                // 5. Pooled Floating Combat & Telemetry Callouts lifecycle
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                Assert.IsNotNull(hud.FloatingCallouts);
+                hud.FloatingCallouts.ShowCallout("TORPEDO SALVO AWAY", UnityEngine.Color.yellow, durationSec: 1.0f);
+                Assert.AreEqual(1, hud.FloatingCallouts.ActivePopupCount);
+                Assert.AreEqual("TORPEDO SALVO AWAY", hud.FloatingCallouts.LastShownText);
+                hud.FloatingCallouts.StepAnimation(0.5f);
+                Assert.AreEqual(1, hud.FloatingCallouts.ActivePopupCount);
+                hud.FloatingCallouts.StepAnimation(0.6f);
+                Assert.AreEqual(0, hud.FloatingCallouts.ActivePopupCount, "Expired callouts must cleanly deactivate into pool");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
