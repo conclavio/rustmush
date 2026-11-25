@@ -1,0 +1,25 @@
+{
+  "about": "Every text edit made to neighborhood.ceres_freeport in place at version 4 that a rebuild of a published version (v1 to v3) must undo, as [now, was] pairs, each `now` unique in the pack, undone in order. Read by tacsim tests/support/mod.rs (restore_ceres_before_2026_11_24) and mush-server tests/split_boundary/relay_registry.rs (ceres_v2). A new in-place edit adds a group here.",
+  "edits": [
+    {
+      "why": "the owner's 2026-11-24 playtest: the stair and ladder exits named for their rooms, and the pack's US spelling",
+      "pairs": [
+        ["Dockmaster <D>;d;dockmaster;down;stair", "Down <D>;d;down;stair;dockmaster"],
+        ["Arrivals <U>;u;arrivals;up;stair", "Up <U>;u;up;stair;arrivals"],
+        ["Authority <U>;u;authority;up;ladder", "Up <U>;u;up;ladder;authority"],
+        ["Registry <D>;d;registry;down;ladder", "Down <D>;d;down;ladder;registry"],
+        ["air, color-banded;", "air, colour-banded;"],
+        ["air in color-banded runs", "air in colour-banded runs"],
+        ["in a different color.", "in a different colour."],
+        ["every few meters:", "every few metres:"],
+        ["a cubic meter,", "a cubic metre,"],
+        ["ENROLL AT THE DESK", "ENROL AT THE DESK"],
+        ["before the program pool", "before the programme pool"],
+        ["deck, gray and polished", "deck, grey and polished"],
+        ["with gray cases", "with grey cases"],
+        ["in Luna gray", "in Luna grey"],
+        ["the harbormaster at", "the harbourmaster at"]
+      ]
+    }
+  ]
+}

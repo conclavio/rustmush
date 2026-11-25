@@ -623,72 +623,6 @@ context = "your mind licence {} term"
 reason = "persisted bytes, Q-46-2: a doc 46 ct0 snapshot pins this string"
 
 [[allow]]
-file = "crates/tacsim/content/atlas/neighborhood.ceres_freeport.json"
-word = "colour"
-context = "and air, colour-banded; the hoses"
-reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
-
-[[allow]]
-file = "crates/tacsim/content/atlas/neighborhood.ceres_freeport.json"
-word = "metres"
-context = "every few metres: PAST T"
-reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
-
-[[allow]]
-file = "crates/tacsim/content/atlas/neighborhood.ceres_freeport.json"
-word = "ENROL"
-context = "FIRST CAPTAINS: ENROL AT THE"
-reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
-
-[[allow]]
-file = "crates/tacsim/content/atlas/neighborhood.ceres_freeport.json"
-word = "programme"
-context = "programme"
-reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
-
-[[allow]]
-file = "crates/tacsim/content/atlas/neighborhood.ceres_freeport.json"
-word = "colour"
-context = "colour"
-reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
-
-[[allow]]
-file = "crates/tacsim/content/atlas/neighborhood.ceres_freeport.json"
-word = "grey"
-context = "the deck, grey and polished"
-reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
-
-[[allow]]
-file = "crates/tacsim/content/atlas/neighborhood.ceres_freeport.json"
-word = "grey"
-context = "stacked with grey cases stencilled"
-reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
-
-[[allow]]
-file = "crates/tacsim/content/atlas/neighborhood.ceres_freeport.json"
-word = "metre"
-context = "metre"
-reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
-
-[[allow]]
-file = "crates/tacsim/content/atlas/neighborhood.ceres_freeport.json"
-word = "grey"
-context = "in Luna grey with the"
-reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
-
-[[allow]]
-file = "crates/tacsim/content/atlas/neighborhood.ceres_freeport.json"
-word = "harbourmaster"
-context = "harbourmaster"
-reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
-
-[[allow]]
-file = "crates/tacsim/content/atlas/neighborhood.ceres_freeport.json"
-word = "colour"
-context = "air in colour-banded runs along"
-reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
-
-[[allow]]
 file = "crates/tacsim/content/atlas/neighborhood.stickney_yards.json"
 word = "harbourmaster"
 context = "harbourmaster"
@@ -856,24 +790,6 @@ word = "licence"
 context = "licence"
 reason = "persisted bytes, Q-46-2: a doc 46 ct0 snapshot pins this string"
 
-
-[[allow]]
-file = "crates/mush-atlas/content/neighborhood.staff_lobby.json"
-word = "storey"
-context = "storey"
-reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
-
-[[allow]]
-file = "crates/mush-atlas/content/neighborhood.staff_lobby.json"
-word = "metre"
-context = "A metre and a"
-reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
-
-[[allow]]
-file = "crates/mush-atlas/content/neighborhood.staff_lobby.json"
-word = "labelled"
-context = "circled and labelled OVERRATED in"
-reason = "published pack history: a test rebuilds this pack's published versions; US spelling at its next version bump"
 
 [[allow]]
 file = "crates/mush-bot/src/mine/minds.rs"
