@@ -3249,6 +3249,11 @@ pub fn depart(
     // without this the ship, its exposed mounts and the " sets out." narrative
     // all stayed in the room it departed from for the whole passage. A refused
     // move rolls the entry back, so a refusal still mutates nothing.
+    //
+    // The room itself is made here, the first time any carrier sets out
+    // (`HoldingRooms`): a refused move after it leaves an empty room behind,
+    // which the next departure uses.
+    crate::boot::want_holding_rooms(ctx, true, false);
     if let Some(book) = ctx.w.module_state_mut::<JourneyBook>() {
         book.journeys.insert(carrier, record.clone());
     }

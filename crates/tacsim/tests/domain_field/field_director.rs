@@ -650,18 +650,26 @@ async fn lane3_a_barge_whose_drive_is_down_stays_on_the_ground() {
     rig.tw.world_mut().set_connected(a, false);
 
     // It turns for home — on its losses or its time — and its standing hulls board; the barge
-    // cannot follow.
-    let boarded = until(&mut rig, &mut rx, &mut lines, 300, |rig, _| {
-        raiders.iter().all(|hull| {
-            mush_sim::pose_of(rig.tw.world(), *hull).is_none()
-                || site_record(rig)
-                    .is_some_and(|record| record.units.iter().any(|left| left.unit == *hull))
-        })
+    // cannot follow. Which way it turns is the fight's dice, and the arena seeds them from the
+    // units' object numbers, so the wait takes both courses. On its time the field runs to the
+    // band's floor and every hull is out at the ramp or down on the record before it ends. On its
+    // losses (the guard takes the worn hull) the survivor withdraws holding its fire, the guard
+    // loses it and the field disengages first: the survivor is left standing where it is, which
+    // is this rule's own word for the hulls of a barge that cannot lift.
+    let turned = until(&mut rig, &mut rx, &mut lines, 300, |rig, _| {
+        let settled =
+            task(rig).is_none() && site_record(rig).is_some_and(|record| record.promoted.is_none());
+        settled
+            || raiders.iter().all(|hull| {
+                mush_sim::pose_of(rig.tw.world(), *hull).is_none()
+                    || site_record(rig)
+                        .is_some_and(|record| record.units.iter().any(|left| left.unit == *hull))
+            })
     })
     .await;
     assert!(
-        boarded,
-        "the standing hull goes home up the ramp; kills {:?}",
+        turned,
+        "the raid goes home up the ramp, or the field ends with it on the ground; kills {:?}",
         kills(&lines)
     );
     assert!(

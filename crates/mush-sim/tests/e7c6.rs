@@ -3202,3 +3202,373 @@ fn ic0_a_non_staff_place_list_is_refused_before_the_catalog_is_consulted() {
     assert_eq!(route.drive_class().as_str(), "manual");
     assert_eq!(route.propellant(), 0);
 }
+
+// ======================================================================
+// The module's own in-transit and recovery rooms (`with_holding_rooms`)
+// ======================================================================
+//
+// Limbo is the fallback for both rooms, and Limbo is a start room on any world
+// that renders `start_room = 0`. So the composed game has the module make two
+// rooms of its own, each the first time it is needed; these cases prove a hull
+// under way is in neither a start room nor a newcomer's sight, and pin what a
+// player standing beside one could do on a world that still has the fallback.
+
+/// The module as the composition roots build it: its own two rooms on.
+fn holding_modules() -> Vec<Box<dyn mush_core::GameModule>> {
+    vec![
+        Box::new(SimulationModule::new().with_holding_rooms(true)),
+        Box::new(ScenesModule::new()),
+    ]
+}
+
+fn holding_scene() -> (TestWorld, Fx) {
+    let mut tw = TestWorld::with_modules(holding_modules());
+    tw.set_now(1_000);
+    let fx = build(&mut tw);
+    (tw, fx)
+}
+
+fn newcomer(tw: &mut TestWorld, name: &str) -> ObjId {
+    tw.world_mut()
+        .create(ObjKind::Player, name, GOD, Some(LIMBO))
+        .unwrap()
+}
+
+/// The names a bare `look` lists as the contents of `who`'s room.
+fn look_contents(tw: &mut TestWorld, who: ObjId) -> Vec<String> {
+    let events = tw.run(who, "look");
+    mush_testkit::last_room_view(&events)
+        .unwrap_or_else(|| panic!("look showed no room: {}", texts(&events)))
+        .contents
+        .iter()
+        .map(|c| c.name.clone())
+        .collect()
+}
+
+/// The module's own rooms as its document names them, if it has written one.
+fn holding_doc(tw: &mut TestWorld) -> Option<mush_sim::HoldingRooms> {
+    let kv = fold_kv(tw, "sim");
+    let doc = kv
+        .iter()
+        .find(|(key, _)| key == mush_sim::HOLDING_ROOMS_KEY)
+        .map(|(_, value)| value.clone())?;
+    Some(serde_json::from_value(doc).expect("a holding-rooms document"))
+}
+
+/// Stop the fixture's journey: its destination pauses and the leg runs out, so
+/// the root is quarantined.
+fn stop_the_journey(tw: &mut TestWorld, fx: &Fx) {
+    ok(tw, "@domain/pause 1");
+    advance(tw, 1_301);
+    assert_eq!(*journey(tw, fx.carrier).state(), JourneyState::Failed);
+    assert!(state(tw).is_quarantined(fx.carrier));
+}
+
+/// **Each room is made the first time it is needed, once, and a reboot keeps
+/// both.** A world in which nothing has sailed has neither and keeps its object
+/// numbers (the arena seeds its dice from them). The first departure makes the
+/// in-transit room, the first quarantine the recovery room: rooms in no room,
+/// distinct from each other and from Limbo, named by the document the module
+/// wrote. A second departure and a reboot make nothing more.
+#[test]
+fn hr1_each_room_is_made_on_first_need_and_a_reboot_keeps_both() {
+    let mut bare = boot();
+    bare.set_now(1_000);
+    build(&mut bare);
+    let unshifted = bare.world().next_id();
+
+    let (mut tw, fx) = holding_scene();
+    assert_eq!(state(&tw).in_transit_room, LIMBO, "nothing has sailed");
+    assert_eq!(state(&tw).recovery_room, LIMBO, "nothing is quarantined");
+    assert_eq!(holding_doc(&mut tw), None);
+    assert_eq!(
+        tw.world().next_id(),
+        unshifted,
+        "a world in which nothing has sailed was renumbered"
+    );
+
+    depart(&mut tw, &fx);
+    let transit = state(&tw).in_transit_room;
+    assert_ne!(transit, LIMBO, "a hull under way stands in Limbo");
+    assert_eq!(state(&tw).recovery_room, LIMBO, "still nothing quarantined");
+    assert_eq!(
+        holding_doc(&mut tw),
+        Some(mush_sim::HoldingRooms {
+            in_transit: Some(transit),
+            recovery: None,
+        })
+    );
+
+    stop_the_journey(&mut tw, &fx);
+    let recovery = state(&tw).recovery_room;
+    assert_ne!(recovery, LIMBO, "a quarantined hull stands in Limbo");
+    assert_ne!(
+        transit, recovery,
+        "wrecks and ships in passage share a room"
+    );
+    assert_eq!(state(&tw).in_transit_room, transit);
+    for (room, name) in [
+        (transit, mush_sim::IN_TRANSIT_ROOM_NAME),
+        (recovery, mush_sim::RECOVERY_ROOM_NAME),
+    ] {
+        let row = tw.world().get(room).expect("the room exists");
+        assert_eq!(row.kind, ObjKind::Room);
+        assert_eq!(row.name, name);
+        assert_eq!(row.location, None, "a holding room stands in no room");
+        assert_eq!(row.owner, GOD);
+        assert!(!row.flags.contains(Flags::JUMP_OK));
+    }
+    assert_eq!(
+        holding_doc(&mut tw),
+        Some(mush_sim::HoldingRooms {
+            in_transit: Some(transit),
+            recovery: Some(recovery),
+        })
+    );
+
+    // Under way again (the divert releases the hold), then a reboot: the same
+    // two rooms, and nothing new is made.
+    ok(&mut tw, "@domain/resume 1");
+    ok(
+        &mut tw,
+        &format!("@journey/divert #{}=home #{}:50", fx.carrier.0, fx.phobos.0),
+    );
+    assert_eq!(loc(&tw, fx.carrier), Some(transit));
+    let before = tw.world().next_id();
+    let boot = tw.persisted_boot();
+    let tw2 = tw.reboot_into(holding_modules(), boot).expect("reboot");
+    assert_eq!(state(&tw2).in_transit_room, transit);
+    assert_eq!(state(&tw2).recovery_room, recovery);
+    assert_eq!(loc(&tw2, fx.carrier), Some(transit));
+    assert_eq!(
+        tw2.world().next_id(),
+        before,
+        "a second boot made a room it already had"
+    );
+}
+
+/// **The owner's report, closed.** With Limbo as the start room, a hull under
+/// way (and the craft bolted to it) is not in Limbo and a newcomer's `look`
+/// there does not list it; nor does a stopped journey's quarantined root come
+/// back to Limbo. Something that IS in Limbo is listed, so the look is not
+/// blind.
+#[test]
+fn hr2_a_hull_under_way_is_not_in_the_start_room_and_a_newcomer_does_not_see_it() {
+    let (mut tw, fx) = holding_scene();
+    let start_room = LIMBO;
+    let who = newcomer(&mut tw, "Newcomer");
+    thing(&mut tw, "Crate");
+
+    depart(&mut tw, &fx);
+    assert!(book(&tw).under_way(fx.carrier));
+    let transit = state(&tw).in_transit_room;
+    assert_ne!(transit, start_room);
+    assert_eq!(loc(&tw, fx.carrier), Some(transit));
+    assert_eq!(loc(&tw, fx.craft), Some(transit), "an exposed mount");
+    for hull in [fx.carrier, fx.craft] {
+        assert!(
+            !tw.world().contents_of(start_room).contains(&hull),
+            "a hull under way stands in the start room"
+        );
+    }
+    let seen = look_contents(&mut tw, who);
+    assert!(
+        seen.iter().any(|n| n == "Crate"),
+        "the look is blind: {seen:?}"
+    );
+    assert!(
+        !seen.iter().any(|n| n == "Leopard" || n == "Locust"),
+        "a newcomer sees a hull under way: {seen:?}"
+    );
+    assert!(mush_sim::verify_projections(state(&tw), tw.world()).is_empty());
+
+    // The journey stops: the root is quarantined, into the recovery room.
+    stop_the_journey(&mut tw, &fx);
+    let recovery = state(&tw).recovery_room;
+    assert_ne!(recovery, start_room);
+    assert_eq!(loc(&tw, fx.carrier), Some(recovery));
+    let seen = look_contents(&mut tw, who);
+    assert!(
+        !seen.iter().any(|n| n == "Leopard" || n == "Locust"),
+        "a newcomer sees a quarantined hull: {seen:?}"
+    );
+    assert!(mush_sim::verify_projections(state(&tw), tw.world()).is_empty());
+}
+
+/// **What a player beside such a hull can do, on a world still at the
+/// fallback** (the module's own rooms off, so the hull stands in Limbo with the
+/// player, as it did on the dev boxes). They see it and may look at it. They
+/// cannot take it or teleport it: under way, and again once its journey has
+/// stopped. The refusals are the placement gate's, not a lock on the hull.
+#[test]
+fn hr3_a_player_beside_a_hull_sees_it_and_can_neither_take_nor_move_it() {
+    let (mut tw, fx) = scene();
+    let who = newcomer(&mut tw, "Bystander");
+    depart(&mut tw, &fx);
+    assert_eq!(loc(&tw, fx.carrier), Some(LIMBO), "the fallback is Limbo");
+
+    let seen = look_contents(&mut tw, who);
+    assert!(seen.iter().any(|n| n == "Leopard"), "{seen:?}");
+    let events = tw.run(who, "look Leopard");
+    assert!(!has_error(&events), "{}", texts(&events));
+
+    let take = |tw: &mut TestWorld, verb: &str| {
+        let events = tw.run(who, &format!("{verb} Leopard"));
+        assert!(has_error(&events), "{verb}: {}", texts(&events));
+        assert_ne!(loc(tw, fx.carrier), Some(who), "{verb} took the hull");
+        texts(&events)
+    };
+    for verb in ["get", "take"] {
+        let refused = take(&mut tw, verb);
+        assert!(
+            refused.contains("is under way; it moves only along its journey"),
+            "{refused}"
+        );
+    }
+    let events = tw.run(who, &format!("@teleport #{}=#{}", fx.carrier.0, fx.field.0));
+    assert!(has_error(&events), "{}", texts(&events));
+    assert_eq!(loc(&tw, fx.carrier), Some(LIMBO));
+
+    stop_the_journey(&mut tw, &fx);
+    assert_eq!(loc(&tw, fx.carrier), Some(LIMBO));
+    let refused = take(&mut tw, "get");
+    assert!(
+        refused.contains("journey stopped and it is not placed anywhere"),
+        "{refused}"
+    );
+}
+
+/// **Nobody walks in, and neither room can be destroyed.** A player cannot
+/// teleport to either room; staff can, and see the hull there; `@destroy`
+/// refuses both by name.
+#[test]
+fn hr4_the_rooms_are_closed_to_players_and_refuse_destruction() {
+    let (mut tw, fx) = holding_scene();
+    let who = newcomer(&mut tw, "Newcomer");
+    depart(&mut tw, &fx);
+    let transit = state(&tw).in_transit_room;
+
+    tw.run(who, &format!("@teleport #{}", transit.0));
+    assert_eq!(loc(&tw, who), Some(LIMBO), "a player reached In Transit");
+    ok(&mut tw, &format!("@teleport #{}", transit.0));
+    assert_eq!(loc(&tw, GOD), Some(transit));
+    let seen = look_contents(&mut tw, GOD);
+    assert!(seen.iter().any(|n| n == "Leopard"), "{seen:?}");
+    let refused = err(&mut tw, &format!("@destroy #{}", transit.0));
+    assert!(
+        refused.contains("is the spatial in-transit room"),
+        "{refused}"
+    );
+
+    stop_the_journey(&mut tw, &fx);
+    let recovery = state(&tw).recovery_room;
+    tw.run(who, &format!("@teleport #{}", recovery.0));
+    assert_eq!(loc(&tw, who), Some(LIMBO), "a player reached Recovery");
+    let refused = err(&mut tw, &format!("@destroy #{}", recovery.0));
+    assert!(
+        refused.contains("is the spatial recovery room"),
+        "{refused}"
+    );
+}
+
+/// **A world from an earlier binary heals at its next boot.** Its hull under
+/// way and that hull's exposed mount stand in Limbo; the boot makes the
+/// in-transit room, because something is in passage, and moves both out. The
+/// projection audit agrees. Nothing is quarantined, so no recovery room is
+/// made.
+#[test]
+fn hr5_a_world_from_an_earlier_binary_moves_its_hulls_out_of_limbo_at_boot() {
+    let (mut tw, fx) = scene();
+    depart(&mut tw, &fx);
+    assert_eq!(loc(&tw, fx.carrier), Some(LIMBO));
+    assert_eq!(loc(&tw, fx.craft), Some(LIMBO));
+
+    let boot = tw.persisted_boot();
+    let tw2 = tw.reboot_into(holding_modules(), boot).expect("reboot");
+    let transit = state(&tw2).in_transit_room;
+    assert_ne!(transit, LIMBO);
+    assert_eq!(state(&tw2).recovery_room, LIMBO, "nothing is quarantined");
+    assert!(book(&tw2).under_way(fx.carrier), "the journey survived");
+    assert_eq!(loc(&tw2, fx.carrier), Some(transit));
+    assert_eq!(loc(&tw2, fx.craft), Some(transit));
+    assert!(!tw2.world().contents_of(LIMBO).contains(&fx.carrier));
+    assert!(mush_sim::verify_projections(state(&tw2), tw2.world()).is_empty());
+}
+
+/// **The same boot heals a quarantined hull**: a world from an earlier binary
+/// whose journey had stopped has its root in Limbo, and the boot makes the
+/// recovery room and moves it in.
+#[test]
+fn hr6_a_world_from_an_earlier_binary_moves_its_quarantined_hull_out_of_limbo_at_boot() {
+    let (mut tw, fx) = scene();
+    depart(&mut tw, &fx);
+    stop_the_journey(&mut tw, &fx);
+    assert_eq!(loc(&tw, fx.carrier), Some(LIMBO));
+
+    let boot = tw.persisted_boot();
+    let tw2 = tw.reboot_into(holding_modules(), boot).expect("reboot");
+    let recovery = state(&tw2).recovery_room;
+    assert_ne!(recovery, LIMBO);
+    assert_eq!(state(&tw2).in_transit_room, LIMBO, "nothing is in passage");
+    assert!(state(&tw2).is_quarantined(fx.carrier));
+    assert_eq!(loc(&tw2, fx.carrier), Some(recovery));
+    assert!(!tw2.world().contents_of(LIMBO).contains(&fx.carrier));
+    assert!(mush_sim::verify_projections(state(&tw2), tw2.world()).is_empty());
+}
+
+/// **A configured recovery room is kept**, and then only the in-transit room is
+/// ever made: a stopped journey's root goes to the configured room and the
+/// document names no recovery room of the module's own.
+#[test]
+fn hr7_a_configured_recovery_room_is_kept_and_only_the_in_transit_room_is_made() {
+    // The first object a fresh world makes, so its number is known beforehand.
+    let configured = ObjId(2);
+    let mut tw = TestWorld::with_modules(vec![
+        Box::new(
+            SimulationModule::with_config(mush_sim::SimConfig {
+                recovery_room: configured,
+            })
+            .with_holding_rooms(true),
+        ),
+        Box::new(ScenesModule::new()),
+    ]);
+    let made = tw
+        .world_mut()
+        .create(ObjKind::Room, "Staff Recovery", GOD, None)
+        .unwrap();
+    assert_eq!(made, configured);
+    tw.set_now(1_000);
+    let fx = build(&mut tw);
+
+    depart(&mut tw, &fx);
+    let transit = state(&tw).in_transit_room;
+    assert_ne!(transit, LIMBO);
+    stop_the_journey(&mut tw, &fx);
+    assert_eq!(state(&tw).recovery_room, configured);
+    assert_eq!(loc(&tw, fx.carrier), Some(configured));
+    assert_eq!(
+        holding_doc(&mut tw),
+        Some(mush_sim::HoldingRooms {
+            in_transit: Some(transit),
+            recovery: None,
+        })
+    );
+}
+
+/// **A host destroyed by code sets what it held aside in the Recovery room**,
+/// made by that event: the one path that first wants the room from inside a
+/// world event's handler. Nothing has sailed, so no in-transit room is made.
+#[test]
+fn hr8_a_destroyed_interior_quarantines_its_occupants_into_the_recovery_room() {
+    let (mut tw, fx) = holding_scene();
+    assert_eq!(state(&tw).recovery_room, LIMBO);
+    destroy(&mut tw, fx.cargo);
+    let recovery = state(&tw).recovery_room;
+    assert_ne!(recovery, LIMBO, "the occupants were set aside in Limbo");
+    assert_eq!(state(&tw).in_transit_room, LIMBO, "nothing has sailed");
+    for a in &fx.aboard[4..] {
+        assert!(state(&tw).is_quarantined(*a));
+        assert_eq!(loc(&tw, *a), Some(recovery));
+        assert!(!tw.world().contents_of(LIMBO).contains(a));
+    }
+}

@@ -21,6 +21,14 @@ pub use mush_core::RulesValue;
 pub const NS: &str = "sim";
 /// The allocator doc.
 pub const META_KEY: &str = "meta";
+/// The doc naming the rooms the module made for itself ([`HoldingRooms`]).
+pub const HOLDING_ROOMS_KEY: &str = "holding_rooms";
+/// The name the in-transit room is made with. A label only: the room is found
+/// by the id in the [`HOLDING_ROOMS_KEY`] doc, so staff may rename it.
+pub const IN_TRANSIT_ROOM_NAME: &str = "In Transit";
+/// The name the recovery room is made with. A label only, as
+/// [`IN_TRANSIT_ROOM_NAME`] is.
+pub const RECOVERY_ROOM_NAME: &str = "Recovery";
 /// The only driver cut 1 accepts: a passive domain that holds placements and
 /// never ticks (design §6.2 `DomainClock::Passive`).
 pub const PASSIVE_DRIVER: &str = "sim.passive";
@@ -1091,14 +1099,16 @@ pub struct SpatialState {
     /// Domain id allocator resume point.
     pub next_domain_id: u64,
     /// Where quarantined/unplaced objects are projected (design D4 item 3).
+    /// The configured room, else the room the module made for itself
+    /// ([`HoldingRooms`]), else [`DEFAULT_RECOVERY_ROOM`].
     pub recovery_room: ObjId,
     /// Where a carrier root that is **under way** is projected (E7 cut 6 fold,
-    /// D2). Same shape as [`SpatialState::recovery_room`] and the same default
-    /// ([`DEFAULT_IN_TRANSIT_ROOM`], the engine's own nowhere-room), but a
-    /// different meaning: a *stopped* journey quarantines its root into
-    /// `recovery_room`, while a root that is still moving projects here, so a
-    /// departed ship actually leaves the room it departed from and staff can
-    /// tell "in passage" from "wrecked" at a glance.
+    /// D2). Same shape as [`SpatialState::recovery_room`], but a different
+    /// meaning: a *stopped* journey quarantines its root into `recovery_room`,
+    /// while a root that is still moving projects here, so a departed ship
+    /// actually leaves the room it departed from and staff can tell "in
+    /// passage" from "wrecked" at a glance. The room the module made for
+    /// itself ([`HoldingRooms`]), else [`DEFAULT_IN_TRANSIT_ROOM`].
     pub in_transit_room: ObjId,
     /// The audit ledger of staff spatial operations and system recoveries.
     pub recovery: Ledger,
@@ -1538,12 +1548,57 @@ pub(crate) fn persist_control_gen(out: &mut Outbox, unit: ObjId, generation: u64
     );
 }
 
-/// The default recovery room when none is configured.
+/// The rooms the module made for itself, by object id: the document under
+/// [`HOLDING_ROOMS_KEY`].
+///
+/// A world's start room may be [`LIMBO`] (the dev boxes render `START_ROOM=0`),
+/// so Limbo is not a nowhere-room: a hull projected there stands beside every
+/// new character. A module composed [`with_holding_rooms`] therefore makes two
+/// rooms of its own, each the first time it is needed (the first carrier to
+/// set out; the first object quarantined or set aside), and writes their ids
+/// here; every later boot reads them back. No exit leads to either room and
+/// neither is `JUMP_OK`, so only staff reach them.
+///
+/// A field is absent until that room is made. The recovery field stays absent
+/// while [`SimConfig::recovery_room`] names a room, because the configured room
+/// is then the recovery room.
+///
+/// [`with_holding_rooms`]: crate::SimulationModule::with_holding_rooms
+/// [`SimConfig::recovery_room`]: crate::SimConfig
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HoldingRooms {
+    /// Where a carrier root that is under way is projected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_transit: Option<ObjId>,
+    /// Where quarantined and unplaced objects are projected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<ObjId>,
+}
+
+/// Whether this module makes [`HoldingRooms`], as it was composed: a state slot,
+/// so the commands and ticks that first need a room can read it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HoldingRoomsPolicy {
+    /// The module was composed [`with_holding_rooms`].
+    ///
+    /// [`with_holding_rooms`]: crate::SimulationModule::with_holding_rooms
+    pub make: bool,
+    /// No recovery room is configured, so the module makes its own.
+    pub make_recovery: bool,
+}
+
+pub(crate) fn persist_holding_rooms(out: &mut Outbox, rooms: &HoldingRooms) {
+    json_set(out, SmolStr::new_static(HOLDING_ROOMS_KEY), rooms);
+}
+
+/// The recovery room of a world that has neither a configured one nor one the
+/// module made ([`HoldingRooms`]).
 pub const DEFAULT_RECOVERY_ROOM: ObjId = LIMBO;
 
-/// The default in-transit room when none is configured (E7 cut 6 fold, D2).
-/// [`LIMBO`] is the engine's own nowhere-room: nothing walks in and nothing
-/// there is takeable, which is exactly what an under-way hull needs.
+/// The in-transit room of a world whose module has not made one
+/// ([`HoldingRooms`]; E7 cut 6 fold, D2). [`LIMBO`] always exists, which is all
+/// this fallback promises: players can stand there on a world whose start room
+/// it is, so the composed game never leaves an under-way hull here.
 pub const DEFAULT_IN_TRANSIT_ROOM: ObjId = LIMBO;
 
 #[cfg(test)]

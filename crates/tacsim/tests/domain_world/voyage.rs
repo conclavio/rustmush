@@ -2485,6 +2485,78 @@ fn ic14_t9_a_rate_change_mid_journey_keeps_the_frozen_leg_seconds() {
     assert!(ship.contains("under way for Stickney Yards"), "{ship}");
 }
 
+/// The names a bare `look` lists as the contents of `who`'s room.
+fn look_contents(tw: &mut TestWorld, who: ObjId) -> Vec<String> {
+    let events = tw.run(who, "look");
+    mush_testkit::last_room_view(&events)
+        .unwrap_or_else(|| panic!("look showed no room: {}", said(tw, &events, who)))
+        .contents
+        .iter()
+        .map(|c| c.name.clone())
+        .collect()
+}
+
+/// **A Dray under way stands in the sim's own in-transit room, never in a start
+/// room** (the dev1 playtest of 2026-11-24: a hauler in passage stood in Limbo,
+/// where every new character lands on a box that renders `START_ROOM=0`). On the
+/// game's composition the room is made when the first hull sets out; a newcomer
+/// in Limbo does not see the hull and cannot go where it is. Brought beside it
+/// by staff, a player sees it and can do no more: `get` is refused by the
+/// placement gate, and `+ship/board` boards only from a berth gallery.
+#[test]
+fn a_dray_under_way_is_out_of_the_start_room_and_out_of_reach() {
+    let (mut rig, pilot, row) = aboard_with_load(24, 53, 19);
+    let hull = ObjId(row.hull);
+    let start_room = mush_core::LIMBO;
+    let newcomer = rig.tw.spawn_player("Newcomer");
+    assert_eq!(location(&rig.tw, newcomer), Some(start_room));
+    let _ = undock_and_burn(&mut rig, pilot, hull);
+    for _ in 0..4 {
+        let _ = fire_quietly(&mut rig);
+        if journey(&rig.tw, hull).is_some() {
+            break;
+        }
+    }
+    assert!(
+        journey(&rig.tw, hull).is_some_and(|j| j.state().is_under_way()),
+        "the Dray is under way"
+    );
+    let name = rig.tw.world().get(hull).expect("the hull").name.clone();
+    let transit = rig
+        .tw
+        .world()
+        .module_state::<SpatialState>()
+        .expect("sim state")
+        .in_transit_room;
+    assert_ne!(transit, start_room, "hulls under way stand in a start room");
+    assert_eq!(location(&rig.tw, hull), Some(transit));
+    assert!(!rig.tw.world().contents_of(start_room).contains(&hull));
+    let seen = look_contents(&mut rig.tw, newcomer);
+    assert!(!seen.contains(&name), "a newcomer sees {name}: {seen:?}");
+
+    // Nobody walks in: a player's own teleport is refused.
+    let _ = run(&mut rig.tw, newcomer, &format!("@teleport #{}", transit.0));
+    assert_eq!(location(&rig.tw, newcomer), Some(start_room));
+
+    // Beside the hull (staff brought them), a player sees it and no more.
+    teleport(&mut rig.tw, newcomer, transit);
+    let seen = look_contents(&mut rig.tw, newcomer);
+    assert!(seen.contains(&name), "{seen:?}");
+    let take = run(&mut rig.tw, newcomer, &format!("get #{}", hull.0));
+    assert!(
+        take.contains("is under way; it moves only along its journey"),
+        "{take}"
+    );
+    assert_eq!(location(&rig.tw, hull), Some(transit), "the hull was taken");
+    let board = run(&mut rig.tw, newcomer, "+ship/board");
+    assert!(board.contains(tacsim::port::ship::BOARD_WHERE), "{board}");
+    assert_eq!(location(&rig.tw, newcomer), Some(transit));
+
+    // The passage is untouched by the visit.
+    let ship = run(&mut rig.tw, pilot, "+ship");
+    assert!(ship.contains("under way for Stickney Yards"), "{ship}");
+}
+
 /// **Doc 18 cut IC14 row 21 (lead rulings L8b, L20): a reboot between the launch and
 /// its verification tells the grant once.** The launch flies on one fire; the server
 /// reboots before the next (its RAM verification gone); the first fire after the boot

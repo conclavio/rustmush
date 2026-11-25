@@ -1097,6 +1097,14 @@ fn apply_plan(ctx: &mut Ctx<'_>, plan: Plan) -> Result<(), SpatialError> {
 
 /// Plan and apply in one step against a command context.
 pub fn run(ctx: &mut Ctx<'_>, t: &Transition) -> Result<(), SpatialError> {
+    // A transition that sets its object aside wants the recovery room, made
+    // the first time one does (`HoldingRooms`).
+    if matches!(
+        t,
+        Transition::Quarantine { .. } | Transition::Unplace { keep: false, .. }
+    ) {
+        crate::boot::want_holding_rooms(ctx, false, true);
+    }
     let plan = {
         let st = ctx
             .w
@@ -1131,6 +1139,9 @@ pub(crate) fn set_carrier_root_quarantine(
     quarantined: bool,
     reason: &str,
 ) -> Result<(), SpatialError> {
+    // Held, the root projects into the recovery room; released, back into
+    // the in-transit room. Either is made the first time it is wanted.
+    crate::boot::want_holding_rooms(ctx, !quarantined, quarantined);
     let plan = {
         let st = ctx
             .w

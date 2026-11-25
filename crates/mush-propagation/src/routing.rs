@@ -415,8 +415,10 @@ pub fn place(world: &World, state: &SpatialState, object: ObjId) -> Option<ObjId
     } else {
         crate::context::place_of(state, world, object)?
     };
+    // Limbo with the two projection rooms: see `context::place_of`.
     (room != state.recovery_room
         && room != state.in_transit_room
+        && room != mush_core::LIMBO
         && world.get(room).is_some_and(|o| o.kind == ObjKind::Room))
     .then_some(room)
 }

@@ -30,7 +30,7 @@ domain, `@spatial/unspace`, or `@spatial/unplace` first).
 | `Direct` in a domain | on the map at a driver-owned pose | the domain's presentation room |
 | `Interior` in a space | inside a hangar/bay, optionally in a named compartment | the space's room |
 | `Attached` on a host mount | mounted on a carrier | the host's location if the mount is *exposed*, else inside the host |
-| `Unplaced` | a spatial entity currently nowhere | the recovery room when quarantined; otherwise left where it is |
+| `Unplaced` | a spatial entity currently nowhere | the in-transit room while its journey is under way; the recovery room when quarantined; otherwise left where it is |
 
 The graph is acyclic and at most 8 deep. An interior space anchored to a
 moving host must be placed under that host; one fixed in a domain must be
@@ -51,6 +51,33 @@ holds, and the global exits and `home` refuse too. On a Co-op Dray the way in
 and out is the player's own: `+ship/board` in the berth gallery places you in the
 Airlock, and `+ship/leave` in the Airlock, docked, takes you back to the gallery
 (see "help ships").
+
+## The in-transit room and the recovery room
+
+Two rooms belong to the simulation itself:
+
+- **In Transit** holds every carrier that is under way on a journey, and
+  whatever rides on its exposed mounts, from the moment it sets out until it
+  arrives.
+- **Recovery** holds what is quarantined: a carrier whose journey stopped,
+  whatever `@spatial/unplace` set aside without `/keep`, and anything a boot
+  could not validate.
+
+The server makes each room the first time it is needed: In Transit when the
+first carrier sets out, Recovery when the first object is quarantined or set
+aside. It remembers each by object number in its own record. So a wiped world
+has them again with no staff step, renaming one loses nothing, and a world in
+which nothing has sailed yet has neither. Neither room stands in another room
+and no exit leads to either, so a player cannot walk or teleport in, and a ship
+in passage is never in a start room or in a newcomer's `look`. Staff can
+`@teleport` to either room. `@destroy` refuses both.
+
+To find what is in them without going there: `@journey` lists the carriers
+under way and where each is bound, `@spatial/quarantine` lists the quarantined
+objects, and `@spatial <obj>` shows one object's placement.
+
+A world first booted by an earlier server kept these objects in Limbo. Its next
+boot makes the room each needs and moves them in.
 
 ## Domains
 
