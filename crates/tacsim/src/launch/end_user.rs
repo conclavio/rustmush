@@ -52,7 +52,7 @@ pub const END_USER_HELP: &str = "+enduser  --  The Registry's Class III end-user
      without it no shop builds you a Class III core or hands one over. +enduser (or \
      +enduser/show) reads where you stand, from anywhere.\n+enduser/apply  previews a \
      registration: 2500.00cr, once, paid to the Registry from your own credit account. \
-     +enduser/apply go registers you. One registration a character; it does not lapse and \
+     Then type +enduser/apply go to register. One registration a character; it does not lapse and \
      cannot be sold or handed on.";
 /// No Active launch on this world.
 pub const END_USER_NOT_OPEN: &str = "The Registry takes no end-user registrations on this world.";
@@ -71,7 +71,7 @@ pub const END_USER_NO_CREDIT: &str = "You hold no credit account to pay the Regi
 pub const END_USER_FUNDS: &str = "An end-user registration costs {fee}; you have {available}.";
 /// The preview.
 pub const END_USER_PREVIEW: &str = "The Registry registers you as a Class III end user for \
-     {fee}, once. +enduser/apply go registers you.";
+     {fee}, once. To register, type: +enduser/apply go";
 /// Registered now.
 pub const END_USER_DONE: &str =
     "The Registry lists you as a Class III end user: {fee} paid, account #{account}.";

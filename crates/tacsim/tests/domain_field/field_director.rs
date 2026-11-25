@@ -699,10 +699,11 @@ async fn lane3_a_barge_whose_drive_is_down_stays_on_the_ground() {
     rig.tw.world_mut().set_connected(a, false);
 
     // It turns for home — on its losses or its time — and its standing hulls board; the barge
-    // cannot follow.
+    // cannot follow. The wait also takes a field that disengages before the last hull reaches the
+    // ramp, since either way the barge itself cannot lift.
     let mut ceased = false;
     let opened_at = rig.tw.world().now();
-    let boarded = until(&mut rig, &mut rx, &mut lines, 300, |rig, _| {
+    let turned = until(&mut rig, &mut rx, &mut lines, 300, |rig, _| {
         // Until just before the raid's time in the field is up (its turn for home), and then
         // the gun is stood down: a held FIRE keeps the cannon on its lock, and a sixth round
         // would wreck the barge the story is about.
@@ -712,16 +713,19 @@ async fn lane3_a_barge_whose_drive_is_down_stays_on_the_ground() {
             ceased = true;
             let _ = crate::driving_rig::run(&mut rig.tw, gunner, &format!("FIRE {gun} OFF"));
         }
-        raiders.iter().all(|hull| {
-            mush_sim::pose_of(rig.tw.world(), *hull).is_none()
-                || site_record(rig)
-                    .is_some_and(|record| record.units.iter().any(|left| left.unit == *hull))
-        })
+        let settled =
+            task(rig).is_none() && site_record(rig).is_some_and(|record| record.promoted.is_none());
+        settled
+            || raiders.iter().all(|hull| {
+                mush_sim::pose_of(rig.tw.world(), *hull).is_none()
+                    || site_record(rig)
+                        .is_some_and(|record| record.units.iter().any(|left| left.unit == *hull))
+            })
     })
     .await;
     assert!(
-        boarded,
-        "the standing hull goes home up the ramp; kills {:?}",
+        turned,
+        "the raid goes home up the ramp, or the field ends with it on the ground; kills {:?}",
         kills(&lines)
     );
     assert!(

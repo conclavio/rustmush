@@ -280,7 +280,10 @@ fn compose_server_modules<E>(
     .into_iter()
     .chain(game.reserved_rooms.iter().copied())
     .collect();
+    // The start room may be Limbo, which is also the sim's fallback for a hull
+    // under way and for a quarantined object: the sim makes rooms of its own.
     let simulation = mush_sim::SimulationModule::new()
+        .with_holding_rooms(true)
         .with_field_crew_control(tacsim_delegate)
         .with_tactics_movement_reads::<mush_tactics::movement_custody::MovementCustodyReader>()
         .with_route_catalog(Arc::new(self::sim_routes::TacsimRouteCatalog))

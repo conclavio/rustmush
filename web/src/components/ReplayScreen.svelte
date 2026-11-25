@@ -358,7 +358,9 @@
   });
 </script>
 
-<svelte:window onkeydown={onWindowKeydown} />
+<!-- Capture, so the replay's own keys (its `+` zoom above all, 2026-11-24) are
+     spent here before the shell's window handler would open the box with them. -->
+<svelte:window onkeydowncapture={onWindowKeydown} />
 
 <div class="replay">
   {#if doc === null || view === null}

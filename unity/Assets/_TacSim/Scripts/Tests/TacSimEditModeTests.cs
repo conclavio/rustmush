@@ -4830,5 +4830,178 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void DisplayOptions_DpiAwareSizingResolutionListUiScaleAndEscModalClose()
+        {
+            // 1. Windows DPI scale snapping (96 / 120 / 144 / 192 / invalid 0 DPI)
+            Assert.AreEqual(1.0f, TacSim.UI.TacSimDisplayOptions.ComputeWindowsDpiScale(0f), 0.001f);
+            Assert.AreEqual(1.0f, TacSim.UI.TacSimDisplayOptions.ComputeWindowsDpiScale(96f), 0.001f);
+            Assert.AreEqual(1.25f, TacSim.UI.TacSimDisplayOptions.ComputeWindowsDpiScale(120f), 0.001f);
+            Assert.AreEqual(1.5f, TacSim.UI.TacSimDisplayOptions.ComputeWindowsDpiScale(144f), 0.001f);
+            Assert.AreEqual(2.0f, TacSim.UI.TacSimDisplayOptions.ComputeWindowsDpiScale(192f), 0.001f);
+
+            // 2. Default windowed size scales up generously for 4K / ultrawide high-DPI monitors
+            var size1080 = TacSim.UI.TacSimDisplayOptions.ComputeDefaultWindowSize(1920, 1080, 1.0f);
+            Assert.AreEqual(1600, size1080.Width);
+            Assert.AreEqual(900, size1080.Height);
+
+            var size4k = TacSim.UI.TacSimDisplayOptions.ComputeDefaultWindowSize(3840, 2160, 1.5f);
+            Assert.GreaterOrEqual(size4k.Width, 2100);
+            Assert.LessOrEqual(size4k.Width, (int)(3840 * 0.90f));
+            Assert.LessOrEqual(size4k.Height, (int)(2160 * 0.88f));
+
+            var sizeUltrawide = TacSim.UI.TacSimDisplayOptions.ComputeDefaultWindowSize(5120, 1440, 1.5f);
+            Assert.GreaterOrEqual(sizeUltrawide.Width, 2000);
+            Assert.LessOrEqual(sizeUltrawide.Height, (int)(1440 * 0.88f));
+
+            // 3. Resolution list deduplicates hardware modes and clamps strictly to monitor bounds
+            var choices = TacSim.UI.TacSimDisplayOptions.BuildResolutionChoices(
+                new[]
+                {
+                    new UnityEngine.Resolution { width = 2560, height = 1440 },
+                    new UnityEngine.Resolution { width = 2560, height = 1440 },
+                    new UnityEngine.Resolution { width = 7680, height = 4320 }
+                },
+                monitorWidth: 2560,
+                monitorHeight: 1440);
+            Assert.AreEqual(2560, choices[0].Width);
+            Assert.AreEqual(1440, choices[0].Height);
+            Assert.IsFalse(choices.Exists(c => c.Width > 2560 || c.Height > 1440));
+            Assert.AreEqual(1, choices.FindAll(c => c.Width == 2560 && c.Height == 1440).Count);
+
+            // 4. UI Scale updates scaled reference resolution cleanly
+            UnityEngine.Vector2 ref150 = TacSim.UI.TacSimDisplayOptions.ComputeScaledReferenceResolution(1.5f);
+            Assert.AreEqual(1280f, ref150.x, 0.5f);
+            Assert.AreEqual(720f, ref150.y, 0.5f);
+
+            // 5. Hud wires DisplayOptions modal and ESC closes it before lower layers
+            var go = new UnityEngine.GameObject("HudDisplayOptionsTest");
+            try
+            {
+                var hud = go.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                Assert.IsNotNull(hud.DisplayOptions, "BuildHud must wire TacSimDisplayOptions");
+                Assert.IsFalse(hud.DisplayOptions.IsOpen);
+
+                hud.DisplayOptions.SetOpen(true);
+                Assert.IsTrue(hud.DisplayOptions.IsOpen);
+                Assert.IsTrue(hud.TryCloseTopmostModal(), "ESC / TryCloseTopmostModal must close DisplayOptions first");
+                Assert.IsFalse(hud.DisplayOptions.IsOpen);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(go);
+            }
+        }
+
+        [Test]
+        public void SolarSystemOrrery_DecodesSkyChartComputesLogScaleLagRings3DProjectionBridgeHoloAndEscClose()
+        {
+            const string skyChartJson = @"{
+                ""schema"": { ""id"": ""sky.chart"", ""version"": 1, ""shape"": ""grid"" },
+                ""chart"": {
+                    ""date"": ""2351-05-13"",
+                    ""ic_now"": 74152540800,
+                    ""model"": ""ephemeris"",
+                    ""rate_permille"": 1000,
+                    ""vantage"": { ""port"": ""ceres"", ""body"": ""ceres"", ""hull"": ""dray"", ""payload_kg"": 42000, ""occupants"": 2 },
+                    ""scale"": { ""kind"": ""log"", ""au_max"": 10.0, ""r0_au"": 0.3 },
+                    ""bodies"": [
+                        { ""id"": ""earth"", ""label"": ""Earth"", ""glyph"": ""E"", ""parent"": null, ""r_au"": 1.010, ""lon_deg"": 232.0, ""lat_deg"": 0.0, ""x_au"": -0.62, ""y_au"": -0.80, ""z_au"": 0.0, ""period_days"": 365.25, ""here"": false, ""from_here_au"": 2.412, ""lag_s"": 1203.0 },
+                        { ""id"": ""luna"", ""label"": ""Luna"", ""glyph"": ""l"", ""parent"": ""earth"", ""r_au"": 1.012, ""lon_deg"": 232.2, ""lat_deg"": 0.1, ""x_au"": -0.62, ""y_au"": -0.80, ""z_au"": 0.0, ""period_days"": 365.25, ""here"": false, ""from_here_au"": 2.414, ""lag_s"": 1204.0 },
+                        { ""id"": ""mars"", ""label"": ""Mars"", ""glyph"": ""M"", ""parent"": null, ""r_au"": 1.524, ""lon_deg"": 120.0, ""lat_deg"": 1.8, ""x_au"": -0.76, ""y_au"": 1.32, ""z_au"": 0.05, ""period_days"": 687.0, ""here"": false, ""from_here_au"": 1.482, ""lag_s"": 739.0 },
+                        { ""id"": ""ceres"", ""label"": ""Ceres"", ""glyph"": ""C"", ""parent"": null, ""r_au"": 2.768, ""lon_deg"": 45.0, ""lat_deg"": 9.4, ""x_au"": 1.95, ""y_au"": 1.95, ""z_au"": 0.45, ""period_days"": 1680.0, ""here"": true, ""from_here_au"": null, ""lag_s"": null }
+                    ],
+                    ""routes"": [
+                        {
+                            ""to"": ""stickney"",
+                            ""venue"": ""stickney_yards"",
+                            ""body"": ""mars"",
+                            ""legs"": [ { ""from"": ""ceres"", ""to"": ""mars"" } ],
+                            ""loaded"": { ""total_s"": 194400, ""burn_t"": 18.4, ""crew_days"": 4.5 },
+                            ""empty"": { ""total_s"": 151200, ""burn_t"": 12.1, ""crew_days"": 3.5 },
+                            ""direct"": { ""km"": 221704044, ""total_s"": 180000, ""burn_t"": 17.0 }
+                        }
+                    ],
+                    ""window"": [
+                        {
+                            ""to"": ""stickney"",
+                            ""now"": { ""total_s"": 194400, ""burn_t"": 18.4, ""crew_days"": 4.5 },
+                            ""fastest"": { ""offset_days"": 42, ""total_s"": 158400, ""burn_t"": 14.2 },
+                            ""cheapest"": { ""offset_days"": 48, ""total_s"": 162000, ""burn_t"": 13.8 },
+                            ""worst"": { ""offset_days"": 210, ""total_s"": 312000, ""burn_t"": 31.5 }
+                        }
+                    ]
+                }
+            }";
+
+            var frame = TacSim.Space.TacSimSolarChartFrame.FromJson(TacSim.Core.JsonNode.Parse(skyChartJson));
+            Assert.IsNotNull(frame);
+            Assert.AreEqual("2351-05-13", frame.Date);
+            Assert.AreEqual(4, frame.Bodies.Count);
+            Assert.AreEqual(1, frame.Routes.Count);
+            Assert.AreEqual(1, frame.Windows.Count);
+            Assert.AreEqual("ceres", frame.FindHereBody()?.Id);
+
+            // Logarithmic radial scale matches web/src/lib/chart.ts formula exactly
+            double fCeres = TacSim.Space.TacSimSolarChartFrame.RadialFraction(2.768, 10.0, 0.3);
+            double expected = System.Math.Log(1.0 + 2.768 / 0.3) / System.Math.Log(1.0 + 10.0 / 0.3);
+            Assert.AreEqual(expected, fCeres, 1e-6);
+
+            // Light-lag ring sampling & 3D tilt elevation stems
+            var lag12 = frame.ComputeLagRingUv(12, 1.0f, UnityEngine.Vector2.zero, tiltDeg: 38f, yawDeg: 0f, steps: 48);
+            Assert.AreEqual(49, lag12.Count);
+
+            var ceres = frame.FindBody("ceres");
+            var uvTilted = frame.ProjectBodyToUv(ceres, 1.0f, UnityEngine.Vector2.zero, tiltDeg: 38f, yawDeg: 0f, out var footTilted);
+            Assert.Greater(uvTilted.y, footTilted.y, "Inclined Ceres (+9.4 deg lat) must lift above ecliptic plane in 3D tilt mode");
+
+            // Hit-testing selects nearest primary body cleanly
+            var hit = frame.FindNearestPrimaryBody(uvTilted, 1.0f, UnityEngine.Vector2.zero, tiltDeg: 38f, yawDeg: 0f);
+            Assert.AreEqual("ceres", hit?.Id);
+
+            // Route dossier formats passage, burn, and 1-year launch window
+            string dossier = frame.BuildBodyAndRouteDossier(frame.FindBody("mars"), frame.Routes[0]);
+            Assert.IsTrue(dossier.Contains("STICKNEY"));
+            Assert.IsTrue(dossier.Contains("1-YEAR LAUNCH WINDOW"));
+            Assert.IsTrue(dossier.Contains("54.0 h"));
+
+            // HUD SolarMap modal integration + Bridge 3D Holo-Tank solar system projection
+            var rootGo = new UnityEngine.GameObject("SolarOrreryHudTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                Assert.IsNotNull(hud.SolarMap);
+
+                var cmds = new List<string>();
+                hud.SolarMap.OnCommandRequested += cmds.Add;
+                hud.SolarMap.ApplyChartFrame(frame);
+                Assert.AreEqual("stickney", hud.SolarMap.SelectedPortId);
+
+                hud.SolarMap.SetOpen(true);
+                Assert.IsTrue(hud.SolarMap.IsOpen);
+                hud.SolarMap.DispatchPlotCourse();
+                hud.SolarMap.DispatchQueueDepart();
+                Assert.Contains("+ship/plan stickney", cmds);
+                Assert.Contains("+ship/order depart stickney", cmds);
+
+                Assert.IsTrue(hud.TryCloseTopmostModal(), "ESC must close Solar System Orrery");
+                Assert.IsFalse(hud.SolarMap.IsOpen);
+
+                // Bridge 3D Holo-Tank projects solar system when docked
+                var shipGo = new UnityEngine.GameObject("BridgeHoloSolarTest");
+                shipGo.transform.SetParent(rootGo.transform, false);
+                var ship = shipGo.AddComponent<TacSim.World.ShipInteriorController>();
+                ship.BuildInterior(null);
+                ship.ApplySolarChartFrame(frame);
+                Assert.IsTrue(ship.IsHoloShowingSolarSystem, "Docked Bridge Holo-Tank must display live Solar System projection");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

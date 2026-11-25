@@ -55,7 +55,10 @@ fn discharge(rig: &mut Rig, who: ObjId, npc: ObjId) -> String {
 
 /// Whether `npc` is on offer to `who` where `who` stands.
 fn on_offer(rig: &mut Rig, who: ObjId, npc: ObjId) -> bool {
-    run(&mut rig.tw, who, "+sortie/crew").contains(&format!("+sortie/hire #{}=", npc.0))
+    let accept = format!("Accept: +sortie/hire #{}", npc.0);
+    run(&mut rig.tw, who, "+sortie/crew")
+        .lines()
+        .any(|line| line.trim() == accept)
 }
 
 /// A sentence's fixed head, up to its first placeholder after `{name}`.
@@ -385,7 +388,7 @@ fn ex7b_a_discharge_is_refused_with_its_own_sentence() {
         .find_map(|line| {
             line.trim()
                 .strip_prefix("Accept: ")
-                .filter(|line| line.contains(&format!("#{}=", okonkwo.0)))
+                .filter(|line| *line == format!("+sortie/hire #{}", okonkwo.0))
         })
         .unwrap_or_else(|| panic!("the officer is on offer: {offers}"))
         .to_owned();

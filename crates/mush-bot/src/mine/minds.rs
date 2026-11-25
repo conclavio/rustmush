@@ -834,7 +834,8 @@ pub mod haul {
     /// `tacsim::services::haul::HAUL_USAGE`.
     pub const HAUL_USAGE: &str = "Usage: +haul  |  +haul/post <qty> <good> to=<port> fee=<cr>";
     /// `tacsim::services::haul::POST_PREVIEW`.
-    pub const POST_PREVIEW: &str = "). +haul/post ... go posts it.";
+    pub const POST_PREVIEW: &str =
+        "). To post it, type the same +haul/post line again with go at the end.";
     /// `tacsim::services::haul::POSTED`.
     pub const POSTED: &str = "escrowed and paid on delivery.";
     /// `tacsim::services::haul::NO_VENUE`.
@@ -884,7 +885,7 @@ pub mod haul {
     /// `tacsim::services::haul::NOT_ABOARD`.
     pub const NOT_ABOARD: &str = "You carry no goods for haul";
     /// `tacsim::services::haul::DELIVER_PREVIEW`.
-    pub const DELIVER_PREVIEW: &str = ". +haul/deliver <job> go hands them over.";
+    pub const DELIVER_PREVIEW: &str = ". To hand them over, type: +haul/deliver <job> go";
     /// `tacsim::services::haul::DELIVERING`.
     pub const DELIVERING: &str = "are handed over; the fee and your bond follow.";
     /// `tacsim::services::haul::TOLD_DELIVERED`.
@@ -922,7 +923,8 @@ pub mod escort {
     /// `tacsim::services::escort::ESCORT_USAGE`.
     pub const ESCORT_USAGE: &str = "Usage: +escort  |  +escort/post <hull> to=<port>|field=<site";
     /// `tacsim::services::escort::POST_PREVIEW`.
-    pub const POST_PREVIEW: &str = "IC days. +escort/post ... go posts it.";
+    pub const POST_PREVIEW: &str =
+        "IC days. To post it, type the same +escort/post line again with go at the end.";
     /// `tacsim::services::escort::POSTED`.
     pub const POSTED: &str = "escrowed and paid when she is seen through.";
     /// `tacsim::services::escort::NOT_YOURS`.
@@ -1039,8 +1041,8 @@ pub mod core_resale {
     pub const RESALE_QUOTE: &str = " offers you core #";
     /// `tacsim::hardware::sale::resale::RESALE_QUOTE_HULL`'s tail.
     pub const RESALE_QUOTE_HULL: &str = ", cuts included.";
-    /// `tacsim::hardware::sale::resale::RESALE_HOW`'s tail.
-    pub const RESALE_HOW: &str = "your money leaves your account only as it passes to you";
+    /// `tacsim::hardware::sale::resale::RESALE_HOW`'s head.
+    pub const RESALE_HOW: &str = "Your money leaves your account only as it passes to you";
     /// `tacsim::hardware::sale::resale::RESALE_SHORT`'s head.
     pub const RESALE_SHORT: &str = "Your credit account cannot cover ";
     /// `tacsim::hardware::sale::resale::RESALE_NO_ACCOUNT`.

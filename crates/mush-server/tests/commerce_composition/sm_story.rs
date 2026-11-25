@@ -1185,7 +1185,7 @@ async fn play(rig: &mut Rig, restart_mid_run: bool) -> PostImage {
     walk(rig, pilot, "concourse", c04).await;
     walk(rig, pilot, "exchange", c07).await;
     let terms = run(rig, pilot, "+tv/lease").await;
-    assert!(terms.contains("+tv/lease go signs it."), "{terms}");
+    assert!(terms.contains("To sign it, type: +tv/lease go"), "{terms}");
     let leased = run(rig, pilot, "+tv/lease go").await;
     assert!(
         leased.contains("Occator Water & Propellant leases you "),
@@ -1342,7 +1342,7 @@ async fn play(rig: &mut Rig, restart_mid_run: bool) -> PostImage {
         .replace("{room}", &(limit_t - 12).to_string());
     assert!(
         preview.contains(&format!(
-            "; hopper 12 of 12 t{then}. +tv/1 recover go brings it in."
+            "; hopper 12 of 12 t{then}. To bring it in, type: +tv/1 recover go"
         )),
         "{preview}\nwanted: …{then}"
     );
@@ -1608,4 +1608,149 @@ async fn sm8_the_story_on_the_production_composition() {
     );
     assert!(straight.hopper.is_empty(), "the hopper is empty");
     assert!(straight.balances.iter().all(|(_, posted, _)| *posted >= 0));
+}
+
+/// **The 2026-11-24 playtest's first purchase, on the production composition**: a fresh captain
+/// walks in from Limbo, enrolls and refits, plans Ahuna Flank, and at the chandlery types the two
+/// lines the playthrough used to print as examples (a bid's number quoted, a quote number never
+/// theirs) — each refusal says what to type next — then reads the board, whose last lines say
+/// how to buy, buys reaction mass and voyage provisions **by name** to the plan's figures for both
+/// legs (`+market/buy <good> <amount>`, then `+market/buy go`), boards and lifts, and settles on
+/// Ahuna's pad.
+#[tokio::test]
+async fn first_fuel_bought_by_name_then_launch() {
+    let keys = scratch_dir("fuel-keys");
+    write_fixed_key(&keys, STORY_KEY);
+    let cfg = config("fuel", &keys);
+    let boot_unix = Phase::Epoch.boot_unix(calendar(&cfg));
+    let mut rig = boot(cfg, boot_unix).await;
+    let rig = &mut rig;
+    let _ = sweep(rig, 120).await;
+    stock(rig).await;
+    let pilot = pilot(rig, "Wren", "wrenacct").await;
+    let c01 = station_room(&rig.tw, "ceres_port", "room.c01_berth_gallery");
+    let c02 = station_room(&rig.tw, "ceres_port", "room.c02_pressure");
+    let c03 = station_room(&rig.tw, "ceres_port", "room.c03_arrivals");
+    let c04 = station_room(&rig.tw, "ceres_port", "room.c04_concourse");
+    let c05 = station_room(&rig.tw, "ceres_port", "room.c05_registry");
+    let c07 = station_room(&rig.tw, "ceres_port", "room.c07_exchange");
+    let c08 = station_room(&rig.tw, "ceres_port", "room.c08_chandlery");
+    walk(rig, pilot, "c", c03).await;
+    walk(rig, pilot, "registry", c05).await;
+    let enrolled = run(rig, pilot, &format!("+coop/enroll {HULL}")).await;
+    assert!(enrolled.contains(&format!("now the {HULL}")), "{enrolled}");
+    let refit = run(rig, pilot, "+coop/refit prospector").await;
+    assert!(refit.contains("as a Dray-P"), "{refit}");
+    let hull = ObjId(hull_row(&rig.tw, pilot).hull);
+    walk(rig, pilot, "out", c03).await;
+    walk(rig, pilot, "concourse", c04).await;
+    walk(rig, pilot, "exchange", c07).await;
+    walk(rig, pilot, "chandlery", c08).await;
+
+    // The playtester's two lines: a bid's number, and a quote number that was never theirs.
+    let bid = market(&rig.tw)
+        .live_listings()
+        .filter(|l| l.market.as_str() == "ceres" && l.source.is_wanted())
+        .map(|l| l.id)
+        .min()
+        .expect("a Ceres bid");
+    let refused = run(rig, pilot, &format!("+market/quote {bid}=12")).await;
+    assert!(
+        refused.starts_with(&format!("Listing #{bid} is a bid: ")),
+        "{refused}"
+    );
+    assert!(
+        refused.contains("sells none of it. Nothing was charged."),
+        "{refused}"
+    );
+    assert!(
+        refused.contains("+market/list shows what is for sale."),
+        "{refused}"
+    );
+    let never = run(rig, pilot, "+market/accept 41").await;
+    assert_eq!(
+        never,
+        format!("{}{}", mush_market::NO_SUCH_QUOTE, mush_market::QUOTE_HINT)
+    );
+    let board = run(rig, pilot, "+market/list").await;
+    assert!(
+        board.contains("\nTo buy, type: +market/buy <good> <amount>, for example +market/buy "),
+        "{board}"
+    );
+    assert!(board.contains("Rows marked \"wanted\" are bids"), "{board}");
+    assert!(
+        board.contains("reaction mass") && board.contains("at Occator Water & Propellant"),
+        "{board}"
+    );
+
+    // Bunker by name to the plan's figures for both legs, the leg home with a full hold.
+    let fuel_ask = listing_of(&rig.tw, "ceres_port", "occator", "propellant");
+    let mut bought = 0;
+    for _ in 0..6 {
+        let plan = run(rig, pilot, "+ship/plan ahuna").await;
+        let (burn, tank) = plan_numbers(&plan, "Burn ", "(tank ").expect(&plan);
+        let (days, locker) = plan_numbers(&plan, "Stores ", "(locker ").expect(&plan);
+        let (home_burn, home_days) = leg_home_full(&plan).expect(&plan);
+        let (want_tank, want_locker) = (burn + home_burn, days + home_days);
+        if tank >= want_tank && locker >= want_locker {
+            break;
+        }
+        for (good, short) in [
+            ("reaction mass", want_tank.saturating_sub(tank)),
+            ("voyage provisions", want_locker.saturating_sub(locker)),
+        ] {
+            if short == 0 {
+                continue;
+            }
+            let quoted = run(rig, pilot, &format!("+market/buy {good} {short}")).await;
+            assert!(
+                quoted.contains(&format!(" sells you {short} {good} at ")),
+                "{quoted}"
+            );
+            assert!(
+                quoted.ends_with(" To buy it, type: +market/buy go"),
+                "{quoted}"
+            );
+            if good == "reaction mass" {
+                let price = cr(price_of(&rig.tw, fuel_ask));
+                assert!(
+                    quoted.starts_with(&format!(
+                        "Occator Water & Propellant sells you {short} reaction mass at {price} each: "
+                    )),
+                    "{quoted}"
+                );
+            }
+            let agreed = run(rig, pilot, "+market/buy go").await;
+            assert!(agreed.contains("Agreed."), "{agreed}");
+            let queued = drain_players(rig).await;
+            assert_eq!(queued.len(), 1, "{agreed}");
+            land_all(rig, &queued).await;
+            bought += 1;
+        }
+    }
+    assert!(bought >= 2, "both goods were bought by name");
+    let _ = sweep(rig, 61).await;
+    let _ = sweep(rig, 61).await;
+
+    // Board and lift.
+    walk(rig, pilot, "exchange", c07).await;
+    walk(rig, pilot, "concourse", c04).await;
+    walk(rig, pilot, "arrivals", c03).await;
+    walk(rig, pilot, "lobby", c02).await;
+    walk(rig, pilot, "gallery", c01).await;
+    let boarded = run(rig, pilot, "+ship/board").await;
+    assert!(
+        boarded.contains(&format!("You cycle the lock into the {HULL}.")),
+        "{boarded}"
+    );
+    let _ = fly(rig, pilot, hull, "+ship/lift ahuna").await;
+    assert!(
+        matches!(
+            tacsim::port::ship::berth_of(rig.tw.world(), hull),
+            tacsim::port::ship::Berth::Docked { map, .. } if map.entry.as_str() == AHUNA
+        ),
+        "settled on Ahuna's pad"
+    );
+    assert_no_pages(&rig.tw);
+    let _ = std::fs::remove_dir_all(&keys);
 }

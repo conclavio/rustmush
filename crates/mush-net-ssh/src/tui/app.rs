@@ -14,8 +14,9 @@
 //! `Esc` closes an overlay, and every other key is the screen's own binding
 //! or — on the scene screen — a one-letter exit (D-I-19). `Enter` enters
 //! **input** mode (prefilled from the focused pane's highlighted row, or
-//! restoring a kept draft); `"` `:` `;` `\` enter it with the trigger typed;
-//! `/` enters it with the palette open. In input mode the box is a normal
+//! restoring a kept draft); `"` `:` `;` `\` `+` `/` enter it with that
+//! character typed (2026-11-24: `/` no longer opens the palette; `^K` does).
+//! In input mode the box is a normal
 //! MUSH line with the D-I-6 editing keys, `Enter` submits and stays,
 //! `Enter` on an empty box returns to nav, `Esc` returns to nav keeping the
 //! draft, and every nav hotkey is `Alt+key`. `^K` (palette), `^P` (sticky
@@ -3805,10 +3806,11 @@ impl TuiApp {
             Key::Char(c @ '0'..='9') => self.switch_screen(c as u8 - b'0', r),
             Key::Enter if self.focus_the_picture_row() => {}
             Key::Enter => self.enter_input(None),
-            Key::Char(c @ ('"' | ':' | ';' | '\\')) => self.enter_input(Some(c.to_string())),
-            Key::Char('/') => {
-                self.enter_input(Some("/".to_string()));
-                self.open_palette(budget);
+            // The owner, 2026-11-24: "in the same way that \" and : automatically
+            // activate the chat box, + and / should as well". A `/` is only a
+            // `/` now (a local command's slash); the palette is `^K`'s.
+            Key::Char(c @ ('"' | ':' | ';' | '\\' | '+' | '/')) => {
+                self.enter_input(Some(c.to_string()));
             }
             Key::Esc => {
                 self.palette = None;
@@ -3830,7 +3832,7 @@ impl TuiApp {
             // `n`, `o` and `u`) and the cockpit would run `scan` on `n` — so
             // `@notui`, typed straight in as the floor sentence says, is
             // submitted as exactly `@notui`. The digits, `g`/`G`, Tab, the
-            // arrows, Enter, `/` and `?` keep their arms above: none sends
+            // arrows, Enter, the box's triggers and `?` keep their arms above: none sends
             // anything. At or above the floor nothing changes.
             //
             // The letter is typed, not a prefill: a draft kept by Esc is left
@@ -4273,10 +4275,6 @@ impl TuiApp {
                 self.cancel_answer(r);
                 self.leave_input(true);
                 budget.palette_dirty = false;
-            }
-            Key::Char('/') if self.line.is_empty() => {
-                self.line.insert('/');
-                self.open_palette(budget);
             }
             Key::Char(c) => {
                 if budget.allow_history_materialize(&self.line) {
@@ -6284,9 +6282,7 @@ impl TuiApp {
             Line::from("0-9 screens   Tab focus   Up/Down PgUp/PgDn scroll   g/G top/bottom"),
             Line::from("g (or /history) at the top loads older scene history from the server"),
             Line::from("/clear hides what is on screen; @notui then @tui starts a fresh view"),
-            Line::from(
-                "Enter type   \" : ; \\ speak   / palette   ^K palette   ^P mode   ^] leave",
-            ),
+            Line::from("Enter type   \" : ; \\ + / open the box   ^K palette   ^P mode   ^] leave"),
             Line::from("In the box: Alt+key = the nav key   Esc keeps the draft   Enter stays"),
             Line::from(
                 "Alt+letter opens a lettered screen where the server publishes one (c: the sky chart, q: the quarry, m: the market)",
@@ -6716,7 +6712,7 @@ mod tests {
     }
 
     #[test]
-    fn triggers_enter_input_with_the_prefix_and_slash_opens_the_palette() {
+    fn triggers_enter_input_with_the_prefix_and_ctrl_k_opens_the_palette() {
         let mut app = app();
         app.feed_input(b"\"");
         assert_eq!(app.mode(), Mode::Input);
@@ -6725,6 +6721,23 @@ mod tests {
         app.feed_input(b":");
         assert_eq!(app.input_text(), ":");
         app.feed_input(b"\x1b");
+        // 2026-11-24 (the owner): `+` and `/` open the box the way `"` and
+        // `:` do, and neither opens the palette.
+        for trigger in ["+", "/"] {
+            app.feed_input(trigger.as_bytes());
+            assert_eq!(app.mode(), Mode::Input, "{trigger}");
+            assert_eq!(app.input_text(), trigger);
+            assert!(!app.palette_open(), "{trigger}");
+            app.feed_input(b"\x1b");
+        }
+        // A `/` typed into an empty box is just a `/`.
+        app.feed_input(b"\r\x15/");
+        assert_eq!(
+            (app.mode(), app.input_text()),
+            (Mode::Input, "/".to_string())
+        );
+        assert!(!app.palette_open());
+        app.feed_input(b"\x15\x1b");
         app.apply_event(&OutputEvent::Panel {
             feed: SmolStr::new_static("commands.list"),
             kind: PanelFrameKind::Keyframe,
@@ -6733,7 +6746,7 @@ mod tests {
                 { "name": "@mail", "usage": "@mail [<n>]", "summary": "Mail." },
             ]}),
         });
-        app.feed_input(b"/");
+        app.feed_input(b"\x0b");
         assert!(app.palette_open());
         assert_eq!(app.input_text(), "/");
         app.feed_input(b"lo");
@@ -6746,13 +6759,13 @@ mod tests {
             "look [<thing>]",
             "a game command loses the slash"
         );
-        app.feed_input(b"\x15/cle\r");
+        app.feed_input(b"\x15\x0bcle\r");
         assert_eq!(
             app.input_text(),
             "/clear",
             "a client-local command keeps it"
         );
-        app.feed_input(b"\x15/xyz");
+        app.feed_input(b"\x15\x0bxyz");
         app.feed_input(b"\x1b");
         assert!(!app.palette_open());
         assert_eq!(
@@ -9751,8 +9764,8 @@ mod tests {
         assert!(!text.contains("Esc closes"), "{text}");
         assert_eq!(sentence_of(&text), floor_line(80), "{text}");
 
-        // The palette below the floor: `/` then `cl` shows `/clear`.
-        app.feed_input(b"/cl");
+        // The palette below the floor: `^K` then `cl` shows `/clear`.
+        app.feed_input(b"\x0bcl");
         assert!(app.palette_open());
         let text = super::super::frame_text(&mut app, 80, 24);
         assert!(
@@ -10959,7 +10972,7 @@ mod tests {
     }
 
     /// **The global keys pass through the picture** (§7.3): `^G` does
-    /// nothing on screen 0; `?` and `/` open the help and the palette over
+    /// nothing on screen 0; `?` and `^K` open the help and the palette over
     /// the text cockpit, and the picture comes back when they close; `"`
     /// opens the chat line over the picture; `F1` prefills `ORDER ALL `;
     /// `^]` detaches.
@@ -10972,7 +10985,7 @@ mod tests {
         assert!(app.help_open() && !app.pixel_active());
         app.feed_input(b"\x1b");
         assert!(!app.help_open() && app.pixel_active());
-        app.feed_input(b"/");
+        app.feed_input(b"\x0b");
         assert!(app.palette_open() && !app.pixel_active());
         app.feed_input(b"\x1b");
         app.feed_input(b"\x1b");
@@ -12354,7 +12367,7 @@ mod tests {
         assert!(app.feed_input(b"d").submit.is_empty());
 
         // Palette exit entries also insert `goto <exit>` and drop invalid names.
-        app.feed_input(b"/");
+        app.feed_input(b"\x0b");
         let entries = app.palette_entries();
         assert!(entries.contains(&"goto \"say owned".to_string()));
         assert!(entries.contains(&"goto @destroy me".to_string()));
@@ -12392,7 +12405,7 @@ mod tests {
         // 1. Open palette and send a 32 KiB burst of alternating `a` + Backspace:
         // `refilter_palette()` must run at most ONCE at the end of the packet (`P2-CLIENT-3`).
         let mut palette_burst = Vec::with_capacity(32 * 1024);
-        palette_burst.push(b'/');
+        palette_burst.push(0x0b); // ^K
         for _ in 0..16_383 {
             palette_burst.extend_from_slice(b"a\x7f");
         }

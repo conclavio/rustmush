@@ -1330,7 +1330,7 @@ fn sm8_recover_files_the_unload_and_the_hopper_empties() {
         .replace("{room}", &(ore_limit_t(&rig.tw) - 10 - t).to_string());
     assert!(
         out.trim().ends_with(&format!(
-            "; hopper {t} of 12 t{then}. +tv/1 recover go brings it in."
+            "; hopper {t} of 12 t{then}. To bring it in, type: +tv/1 recover go"
         )),
         "{out}\nwanted: …{then}"
     );
@@ -2376,7 +2376,7 @@ fn sm8_a_shrunk_hold_unloads_what_fits_and_says_what_stays() {
         .replace("{stays}", &words(&rig.tw, &[("metal_ore", 7)]));
     assert!(
         out.trim()
-            .ends_with(&format!("{part}. +tv/1 recover go brings it in.")),
+            .ends_with(&format!("{part}. To bring it in, type: +tv/1 recover go")),
         "{out}\nwanted: …{part}"
     );
     let _ = recover_landed(&mut rig, pilot, 1, tv);

@@ -1627,7 +1627,7 @@ impl PixelView {
                 Key::Char('r') => self.orders.push("+tac/scan".to_string()),
                 Key::Char('v') => self.cycle_space_view(),
                 Key::Esc | Key::Char('q') => self.close(),
-                Key::Char('0'..='9' | '"' | ':' | ';' | '\\' | '/' | '?' | 'p')
+                Key::Char('0'..='9' | '"' | ':' | ';' | '\\' | '/' | '?' | '+' | 'p')
                 | Key::Enter
                 | Key::Ctrl(_)
                 | Key::Alt(_) => return KeyUse::Passed,
@@ -1647,7 +1647,7 @@ impl PixelView {
                 Key::Char('r') => self.orders.push("+tac/scan".to_string()),
                 Key::Char('v') => self.cycle_space_view(),
                 Key::Esc | Key::Char('q') => self.close(),
-                Key::Char('0'..='9' | '"' | ':' | ';' | '\\' | '/' | '?' | 'p')
+                Key::Char('0'..='9' | '"' | ':' | ';' | '\\' | '/' | '?' | '+' | 'p')
                 | Key::Enter
                 | Key::Ctrl(_)
                 | Key::Alt(_) => return KeyUse::Passed,
@@ -1697,7 +1697,7 @@ impl PixelView {
         if self.kind == PictureKind::Docking {
             if matches!(
                 key,
-                Key::Char('0'..='9' | '"' | ':' | ';' | '\\' | '/' | '?' | 'p')
+                Key::Char('0'..='9' | '"' | ':' | ';' | '\\' | '/' | '?' | '+' | 'p')
                     | Key::Enter
                     | Key::Esc
                     | Key::Ctrl(_)
@@ -4408,7 +4408,9 @@ mod tests {
         for digit in '0'..='9' {
             assert_eq!(v.key(Key::Char(digit), t0), KeyUse::Passed);
         }
-        for ch in ['?', '"', ':', ';', '/', '\\'] {
+        // `+` too (2026-11-24): the holotank does not zoom on it, so it opens
+        // the box as on every screen.
+        for ch in ['?', '"', ':', ';', '/', '\\', '+'] {
             assert_eq!(v.key(Key::Char(ch), t0), KeyUse::Passed);
         }
         assert_eq!(v.key(Key::Ctrl('k'), t0), KeyUse::Passed);

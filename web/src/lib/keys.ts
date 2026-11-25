@@ -27,6 +27,7 @@ export const GLOBAL_KEYS: ReadonlySet<string> = new Set([
   "\\",
   "/",
   "?",
+  "+",
 ]);
 
 /** `g` / `G` jump the focused pane to its top and bottom. */
@@ -36,8 +37,11 @@ export const JUMP_KEYS: ReadonlySet<string> = new Set(["g", "G"]);
  * always use them (D-I-19). */
 export const RESERVED_EXIT_KEYS: readonly string[] = ["n", "e", "s", "w", "u", "d", "o"];
 
-/** The speech triggers that open the composer with themselves typed. */
-export const TRIGGER_KEYS: ReadonlySet<string> = new Set(['"', ":", ";", "\\"]);
+/** The keys that open the composer with themselves typed: the speech
+ * triggers, and (the owner, 2026-11-24: "in the same way that \" and :
+ * automatically activate the chat box, + and / should as well") `+` and `/`.
+ * The palette is Ctrl/⌘+K's alone. */
+export const TRIGGER_KEYS: ReadonlySet<string> = new Set(['"', ":", ";", "\\", "+", "/"]);
 
 /** A keyboard event reduced to what the model needs. */
 export interface KeyInput {
@@ -124,9 +128,6 @@ function bareIntent(
     }
     if (TRIGGER_KEYS.has(key)) {
       return { kind: "compose", prefill: key };
-    }
-    if (key === "/") {
-      return { kind: "palette" };
     }
     if (key === "Tab") {
       return { kind: "pane", dir: 1 };

@@ -44,11 +44,14 @@ describe("navIntent", () => {
     }
   });
 
-  it("Enter and the triggers open the composer, / and ^K the palette, ? help", () => {
+  it("Enter and the triggers open the composer, ^K the palette, ? help", () => {
     expect(navIntent(k("Enter"), exits, bindings)).toEqual({ kind: "compose", prefill: "" });
     expect(navIntent(k('"'), exits, bindings)).toEqual({ kind: "compose", prefill: '"' });
     expect(navIntent(k(":"), exits, bindings)).toEqual({ kind: "compose", prefill: ":" });
-    expect(navIntent(k("/"), exits, bindings)).toEqual({ kind: "palette" });
+    // 2026-11-24 (the owner): `+` and `/` open the box as `"` and `:` do.
+    expect(navIntent(k("+"), exits, bindings)).toEqual({ kind: "compose", prefill: "+" });
+    expect(navIntent(k("/"), exits, bindings)).toEqual({ kind: "compose", prefill: "/" });
+    expect(navIntent(k("+", { inField: true }), exits, bindings)).toBeNull();
     expect(navIntent(k("k", { ctrl: true }), exits, bindings)).toEqual({ kind: "palette" });
     expect(navIntent(k("k", { meta: true, inField: true }), exits, bindings)).toEqual({
       kind: "palette",

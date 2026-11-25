@@ -11,14 +11,18 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use mush_core::{DefinitionRef, Flags, ModError, ModuleBootData, ModuleCtx, ObjId, RulesValue};
+use mush_core::{
+    Attr, DefinitionRef, Flags, GOD, LIMBO, ModError, ModuleBootData, ModuleCtx, ObjId, ObjKind,
+    RulesValue, World, WorldEvent,
+};
 
 use crate::data::{
-    DomainRecord, DomainStatus, HeldPlacement, HostAssignments, HostMounts, HostStations,
-    InteriorSpaceRecord, META_KEY, PASSIVE_DRIVER, PlacementRecord, SpaceAnchor, SpatialParent,
-    SpatialState, UnplacedInfo, checked_placement_revision, passive_definition_ref,
-    passive_rules_value, persist_assignments, persist_del, persist_placement, persist_space,
-    placement_key,
+    DEFAULT_RECOVERY_ROOM, DomainRecord, DomainStatus, HOLDING_ROOMS_KEY, HeldPlacement,
+    HoldingRooms, HoldingRoomsPolicy, HostAssignments, HostMounts, HostStations,
+    IN_TRANSIT_ROOM_NAME, InteriorSpaceRecord, META_KEY, PASSIVE_DRIVER, PlacementRecord,
+    RECOVERY_ROOM_NAME, SpaceAnchor, SpatialParent, SpatialState, UnplacedInfo,
+    checked_placement_revision, passive_definition_ref, passive_rules_value, persist_assignments,
+    persist_del, persist_holding_rooms, persist_placement, persist_space, placement_key,
 };
 use crate::graph::{ancestors, project, rebuild};
 use crate::station::{StationFallback, StationFallbacks, fallback_key};
@@ -281,6 +285,7 @@ pub(crate) fn load_boot(
 ) -> Result<usize, ModError> {
     let mut st = SpatialState::new(recovery_room);
     let mut meta_next: Option<u64> = None;
+    let mut holding = HoldingRooms::default();
     let mut placements: BTreeMap<ObjId, PlacementRecord> = BTreeMap::new();
     let mut raw_assignments: Vec<HostAssignments> = Vec::new();
     let mut station_fallbacks: Vec<StationFallback> = Vec::new();
@@ -298,6 +303,15 @@ pub(crate) fn load_boot(
                     .and_then(serde_json::Value::as_u64)
                     .ok_or_else(|| ModError::msg("sim: meta doc is corrupt (no next_domain_id)"))?,
             );
+        } else if key == HOLDING_ROOMS_KEY {
+            // Drop-on-unreadable, never fatal: the rooms are only where things
+            // are shown, and a module composed to make them makes them again.
+            match serde_json::from_value::<HoldingRooms>(value) {
+                Ok(rooms) => holding = rooms,
+                Err(error) => {
+                    tracing::error!(%key, %error, "sim: unreadable holding-rooms doc ignored");
+                }
+            }
         } else if key.starts_with("domain:") {
             let mut value = value;
             upgrade_domain_doc(&mut value)
@@ -490,6 +504,24 @@ pub(crate) fn load_boot(
         None => 0,
     };
     st.next_domain_id = meta_next.unwrap_or(0).max(discovered_next);
+
+    // The rooms the module made for itself on an earlier boot, read before any
+    // projection below is computed. A configured recovery room wins over the
+    // made one. An id that no longer names a live room is dropped, which leaves
+    // the fallback in place until `ensure_holding_rooms` makes the room again.
+    if let Some(room) = holding
+        .in_transit
+        .filter(|room| holding_room_usable(ctx.w, *room))
+    {
+        st.in_transit_room = room;
+    }
+    if recovery_room == DEFAULT_RECOVERY_ROOM
+        && let Some(room) = holding
+            .recovery
+            .filter(|room| holding_room_usable(ctx.w, *room))
+    {
+        st.recovery_room = room;
+    }
 
     // If duplicate input somehow supplied both readable and unreadable values
     // for one canonical key, the held posture wins: never activate ambiguous
@@ -781,6 +813,181 @@ pub(crate) fn load_boot(
         crate::links::refresh_actor_links(ctx.w, actor);
     }
     Ok(quarantined)
+}
+
+/// Whether `room` can serve as a holding room: a live room.
+fn holding_room_usable(w: &World, room: ObjId) -> bool {
+    w.get(room)
+        .is_some_and(|o| o.kind == ObjKind::Room && !o.flags.contains(Flags::GOING))
+}
+
+const IN_TRANSIT_ROOM_DESC: &str = "Hulls that are under way are kept here until they arrive. \
+    Nothing here can be taken or boarded. @journey lists them and where each is bound.";
+const RECOVERY_ROOM_DESC: &str = "Objects the spatial layer has set aside wait here for staff. \
+    @spatial/quarantine lists them and @spatial/recover releases one.";
+
+/// A room of the module's own: owned by God, in no room, with no exit to it.
+fn make_holding_room(ctx: &mut ModuleCtx<'_>, name: &str, desc: &str) -> Result<ObjId, ModError> {
+    let room = ctx
+        .w
+        .create(ObjKind::Room, name, GOD, None)
+        .map_err(|error| ModError::msg(format!("sim: could not make the {name} room: {error}")))?;
+    ctx.emit_world_event(&WorldEvent::ObjCreated {
+        obj: room,
+        kind: ObjKind::Room,
+        creator: GOD,
+    });
+    ctx.w
+        .set_attr(room, "desc", Attr::text(desc, GOD))
+        .map_err(|error| {
+            ModError::msg(format!("sim: could not describe the {name} room: {error}"))
+        })?;
+    Ok(room)
+}
+
+/// **Make the module's own in-transit room, its recovery room or both, each
+/// the first time it is wanted** (see [`HoldingRooms`]), and move into a new
+/// room whatever the fallback room was holding for it.
+///
+/// `want_transit` is asked by a departure, `want_recovery` by a quarantine or
+/// an unplace that sets its object aside; the end of boot asks for whichever a
+/// loaded world already needs ([`heal_holding_rooms`]). A room already known
+/// (made earlier in this process, or read from the document by [`load_boot`])
+/// is kept, so each room is made once in a world's life. Nothing is made for a
+/// module that was not composed to make them, and no recovery room is made
+/// while one is configured ([`HoldingRoomsPolicy`]).
+///
+/// **Made on first need, never at boot for its own sake.** A room made at
+/// every world's first boot would renumber every object made after it, and the
+/// arena seeds its dice from unit object numbers: a world in which no hull has
+/// sailed must keep the numbers, and so the fights, it has today.
+///
+/// The move matters on a world that last booted an earlier binary: its
+/// under-way roots, their exposed mounts and its quarantined objects stand in
+/// Limbo, and each is re-projected here so none waits for its next arrival to
+/// leave.
+pub(crate) fn ensure_holding_rooms(
+    ctx: &mut ModuleCtx<'_>,
+    want_transit: bool,
+    want_recovery: bool,
+) -> Result<(), ModError> {
+    let Some(policy) = ctx
+        .w
+        .module_state::<HoldingRoomsPolicy>()
+        .copied()
+        .filter(|policy| policy.make)
+    else {
+        return Ok(());
+    };
+    let (in_transit, recovery) = {
+        let state = ctx
+            .w
+            .module_state::<SpatialState>()
+            .ok_or_else(|| ModError::msg("sim: state slot missing"))?;
+        (state.in_transit_room, state.recovery_room)
+    };
+    let need_transit = want_transit && in_transit == LIMBO;
+    let need_recovery = want_recovery && policy.make_recovery && recovery == LIMBO;
+    if !need_transit && !need_recovery {
+        return Ok(());
+    }
+    let in_transit = if need_transit {
+        make_holding_room(ctx, IN_TRANSIT_ROOM_NAME, IN_TRANSIT_ROOM_DESC)?
+    } else {
+        in_transit
+    };
+    let recovery = if need_recovery {
+        make_holding_room(ctx, RECOVERY_ROOM_NAME, RECOVERY_ROOM_DESC)?
+    } else {
+        recovery
+    };
+    persist_holding_rooms(
+        ctx.out,
+        &HoldingRooms {
+            in_transit: (in_transit != LIMBO).then_some(in_transit),
+            recovery: (policy.make_recovery && recovery != LIMBO).then_some(recovery),
+        },
+    );
+    let moves: Vec<(ObjId, ObjId)> = {
+        let state = ctx
+            .w
+            .module_state_mut::<SpatialState>()
+            .ok_or_else(|| ModError::msg("sim: state slot missing"))?;
+        state.in_transit_room = in_transit;
+        state.recovery_room = recovery;
+        let state = ctx
+            .w
+            .module_state::<SpatialState>()
+            .ok_or_else(|| ModError::msg("sim: state slot missing"))?;
+        let made = |room: ObjId| {
+            (need_transit && room == in_transit) || (need_recovery && room == recovery)
+        };
+        let mut moves: Vec<(ObjId, ObjId)> = state
+            .placements
+            .keys()
+            .filter_map(|object| Some((*object, project(state, ctx.w, *object)?)))
+            .filter(|(_, target)| made(*target))
+            .collect();
+        if need_recovery {
+            // A held record has no projection: boot stands its object in the
+            // recovery room, which until now was the fallback.
+            moves.extend(
+                state
+                    .held_placements
+                    .keys()
+                    .map(|object| (*object, recovery)),
+            );
+        }
+        moves
+    };
+    for (object, target) in moves {
+        if ctx
+            .w
+            .get(object)
+            .is_none_or(|row| row.flags.contains(Flags::GOING) || row.location == Some(target))
+        {
+            continue;
+        }
+        match ctx.w.move_to(object, target) {
+            Ok(()) => {
+                tracing::info!(obj = %object, dest = %target, "sim: moved into its holding room");
+            }
+            Err(error) => {
+                tracing::error!(obj = %object, dest = %target, %error, "sim: could not move an object into its holding room");
+            }
+        }
+    }
+    tracing::info!(%in_transit, %recovery, made_in_transit = need_transit, made_recovery = need_recovery, "sim: holding room made");
+    Ok(())
+}
+
+/// [`ensure_holding_rooms`] from a command or a tick, where a room that cannot
+/// be made must not refuse the move that wanted it: the refusal is logged and
+/// the fallback room stands in.
+pub(crate) fn want_holding_rooms(ctx: &mut ModuleCtx<'_>, transit: bool, recovery: bool) {
+    if let Err(error) = ensure_holding_rooms(ctx, transit, recovery) {
+        tracing::error!(%error, "sim: a holding room could not be made; Limbo stands in");
+    }
+}
+
+/// **The end of boot: make the rooms a loaded world already needs.** A carrier
+/// under way wants the in-transit room; a quarantined record or a held
+/// placement wants the recovery room. A fresh world has neither and makes
+/// nothing; a world that last booted an earlier binary, with hulls in passage
+/// standing in Limbo, makes the room and moves them in.
+pub(crate) fn heal_holding_rooms(ctx: &mut ModuleCtx<'_>) -> Result<(), ModError> {
+    let want_transit = ctx
+        .w
+        .module_state::<crate::journey::JourneyBook>()
+        .is_some_and(|book| book.journeys.values().any(|j| j.state().is_under_way()));
+    let want_recovery = ctx.w.module_state::<SpatialState>().is_some_and(|state| {
+        !state.held_placements.is_empty()
+            || state
+                .placements
+                .keys()
+                .any(|obj| state.is_quarantined(*obj))
+    });
+    ensure_holding_rooms(ctx, want_transit, want_recovery)
 }
 
 fn window_projection(state: &SpatialState, object: ObjId) -> bool {

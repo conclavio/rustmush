@@ -47,20 +47,21 @@ mod tests {
         assert_eq!(packs[3].manifest().id().as_str(), CONTACT_PACK);
         assert_eq!(packs[4].manifest().id().as_str(), SAFE_PASSAGE_PACK);
         assert_eq!(packs[5].manifest().id().as_str(), SURVEY_WORK_PACK);
-        for pack in &packs {
-            assert_eq!(pack.manifest().version(), 1);
-        }
+        // The three packs whose instructions name a `go` line moved to version 2 with their
+        // wording (the 2026-11-24 playtest); the rest are at 1.
+        let versions: Vec<u32> = packs.iter().map(|p| p.manifest().version()).collect();
+        assert_eq!(versions, [1, 2, 2, 1, 1, 2]);
         assert_eq!(
             packs[0].manifest().digest().to_hex(),
             "301e09f0fa594021b296a2ec356d54a64dc117345084e3b1c4d15dc99804aa48"
         );
         assert_eq!(
             packs[1].manifest().digest().to_hex(),
-            "4eb6f8b8f310f795debc20ae8d7e4f4810ea2ea56705d36adb4925b2594a5a0d"
+            "28df05748cea045a81c2d98b712f2bd58d6f1010abe5ff52d61d6a3fe06ace26"
         );
         assert_eq!(
             packs[2].manifest().digest().to_hex(),
-            "522dbb14ea7d8580178c90267d988f62ee3e80c9537743086ab3a23931838e72"
+            "11ebc86cf02e4276474755824fd2acb62dbf62948152263226dc3c6e5baba4ac"
         );
         assert_eq!(
             packs[3].manifest().digest().to_hex(),
@@ -72,7 +73,7 @@ mod tests {
         );
         assert_eq!(
             packs[5].manifest().digest().to_hex(),
-            "b5ee132b6769270205b19e1e9d3e93fe9ff2b93cbf5b063129a86ee6537d0c89"
+            "a1a48dc6fecc292d89ecaf177f19a82106234c6afb04783ab5b957236d2710ed"
         );
         assert!(
             packs[1]
@@ -288,7 +289,7 @@ mod tests {
                 .iter()
                 .map(|dependency| (dependency.id.as_str(), dependency.version))
                 .collect::<Vec<_>>(),
-            vec![("neighborhood.ceres_freeport", 4), (PACK, 1)]
+            vec![("neighborhood.ceres_freeport", 4), (PACK, 2)]
         );
         let def = pack
             .entry(&CanonicalId::new("quest.qureshi_signed_work").unwrap())

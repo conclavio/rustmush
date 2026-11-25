@@ -201,7 +201,8 @@ Every trading room has a board, and `look` reads it. Each line is one house's
 offer — the price, how much is left, the house and the clerk who signs for it —
 or one house's bid: a wanted line, with the price it pays and how much more it
 will take. `+market/list` in a port shows that port's listings, each with the
-number you quote it by.
+number you quote it by. Any public room of the port trades on its board:
+`+market/buy <good> <amount>` buys by name, then `+market/buy go`.
 
 Stock is finite and every tonne of it is on record. A line counts down as it
 sells; when a board says SOLD OUT, it is. A wanted line takes goods until its

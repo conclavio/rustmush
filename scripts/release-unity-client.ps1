@@ -57,6 +57,8 @@ param(
 
     [bool]$Prerelease = $true,
 
+    [switch]$AllowGraybox,
+
     [switch]$DryRun
 )
 
@@ -263,14 +265,23 @@ foreach ($t in $Targets) {
     if ($SkipBuild) {
         Write-Host "     Skipping Unity build (-SkipBuild); packaging existing $stageDir..."
     } else {
+        if (-not $AllowGraybox) {
+            $idaDir = Join-Path $UnityProject "Assets\Ida Faber"
+            $hskDir = Join-Path $UnityProject "Assets\Heavy Station Kit"
+            if (-not (Test-Path $idaDir) -or -not (Test-Path $hskDir)) {
+                throw "Commercial 3D asset packs are missing from '$UnityProject\Assets' (expected 'Ida Faber' and 'Heavy Station Kit'). Import them via 'TacSim -> 1. Import Vertical Slice Assets' or run from the checkout that has them imported (pass -AllowGraybox to override)."
+            }
+        }
         if (Test-Path $stageDir) {
             Remove-Item -Recurse -Force $stageDir
         }
         New-Item -ItemType Directory -Force -Path $stageDir | Out-Null
 
         $prevEnv = $env:TACSIM_BUILD_OUTPUT
+        $prevGraybox = $env:TACSIM_ALLOW_GRAYBOX
         try {
             $env:TACSIM_BUILD_OUTPUT = $outExe
+            if ($AllowGraybox) { $env:TACSIM_ALLOW_GRAYBOX = "1" } else { $env:TACSIM_ALLOW_GRAYBOX = $null }
             $unityArgs = @(
                 "-batchmode",
                 "-quit",
@@ -289,6 +300,7 @@ foreach ($t in $Targets) {
             }
         } finally {
             $env:TACSIM_BUILD_OUTPUT = $prevEnv
+            $env:TACSIM_ALLOW_GRAYBOX = $prevGraybox
         }
     }
 

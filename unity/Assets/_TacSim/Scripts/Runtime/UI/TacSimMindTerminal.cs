@@ -1618,7 +1618,7 @@ namespace TacSim.UI
 
             var scaler = canvasGo.AddComponent<CanvasScaler>();
             scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-            scaler.referenceResolution = new Vector2(1920f, 1080f);
+            scaler.referenceResolution = TacSimDisplayOptions.ComputeScaledReferenceResolution(TacSimDisplayOptions.CurrentUiScale);
             scaler.matchWidthOrHeight = 0.5f;
             canvasGo.AddComponent<GraphicRaycaster>();
 

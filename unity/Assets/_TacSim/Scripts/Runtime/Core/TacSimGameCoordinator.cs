@@ -352,6 +352,22 @@ namespace TacSim.Core
                 Hud.Overlays.OnToggleVehicleCameraViewRequested += ToggleGroundVehicleCameraMode;
             }
 
+            if (Hud.SolarMap != null)
+            {
+                Hud.SolarMap.OnRefreshChartRequested += () =>
+                {
+                    if (_ws != null && _ws.IsConnected && _ws.HasAdvertisedPanel("sky.chart"))
+                        _ws.SendPanelSubscribe("sky.chart");
+                };
+                Hud.SolarMap.OnCommandRequested += ExecutePlayerCommand;
+                Hud.SolarMap.OnOpenSailingPlanRequested += destPort =>
+                {
+                    if (!string.IsNullOrEmpty(destPort) && TradeState != null)
+                        TradeState.SelectedDestinationPort = destPort;
+                    OpenVisualTradeTerminal("SAILING PLAN & CORRIDOR ROUTE BUILDER", openSailingTab: true);
+                };
+            }
+
             _contentSync.OnSyncLog += msg =>
             {
                 if (Hud != null)
@@ -359,7 +375,12 @@ namespace TacSim.Core
             };
             _contentSync.OnPacksUpdated += _ => RefreshLoadedContentAfterSync();
 
-            _ws.OnHelloReceived += () => _contentSync.RequestManifestOverWebSocket(_ws, Time.realtimeSinceStartup);
+            _ws.OnHelloReceived += () =>
+            {
+                _contentSync.RequestManifestOverWebSocket(_ws, Time.realtimeSinceStartup);
+                if (_ws.HasAdvertisedPanel("sky.chart"))
+                    _ws.SendPanelSubscribe("sky.chart");
+            };
             _ws.OnRoomReceived += HandleServerRoomView;
             _ws.OnNarrativeReceived += HandleServerNarrative;
             _ws.OnChannelReceived += HandleServerChannel;
@@ -2111,6 +2132,16 @@ namespace TacSim.Core
                     }
                     if (data != null && data.IsObject && data["simulator"].IsObject && ArenaStage != null)
                         ApplySimulatorTradeRoster(data["simulator"]);
+                    break;
+                }
+                case "sky.chart":
+                {
+                    var chart = TacSimSolarChartFrame.FromJson(data);
+                    if (chart != null)
+                    {
+                        Hud?.SolarMap?.ApplyChartFrame(chart);
+                        ShipInterior?.ApplySolarChartFrame(chart);
+                    }
                     break;
                 }
                 case "space.holotank":

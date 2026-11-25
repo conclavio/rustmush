@@ -1681,7 +1681,7 @@ fn sm7_a_fair_seven_tonne_pocket_yields_two_two_two_one_then_worked_out() {
     let room = (ore_mass_limit(&rig.tw) - u64::from(tonnes) * 1_000) / 1_000;
     let tail = format!(
         "; hopper 0 → {tonnes} of 12 t; hold room after: {room} t; charge {} → {} % ({} % after the \
-         trip home). +tv/1 mine go starts it.",
+         trip home). To start it, type: +tv/1 mine go",
         pct(before),
         pct(before - cost),
         pct(before - cost - home)
@@ -3318,7 +3318,9 @@ fn sm7_pits_render_for_everyone() {
     assert!(
         out.trim()
             .starts_with("No reading here: the first cycle will tell. ")
-            && out.contains(&format!("{PIT_WORKED_OUT} +tv/1 mine go starts it.")),
+            && out.contains(&format!(
+                "{PIT_WORKED_OUT} To start it, type: +tv/1 mine go"
+            )),
         "{out}"
     );
     to_cell(&mut rig, b_tv, part.stand);
@@ -3326,7 +3328,7 @@ fn sm7_pits_render_for_everyone() {
     assert!(
         out.trim()
             .starts_with("No reading here: the first cycle will tell. ")
-            && out.contains(&format!("{PIT_WORKED} +tv/1 mine go starts it.")),
+            && out.contains(&format!("{PIT_WORKED} To start it, type: +tv/1 mine go")),
         "{out}"
     );
     // While A's run holds it, the lock refuses first.
@@ -4168,7 +4170,8 @@ fn sm7_the_reading_names_the_family() {
         .replace("{n}", "1")
         .replace("{word}", verb_word(other));
     assert!(
-        out.trim().starts_with(&head) && out.contains(&format!("{also} +tv/1 mine go starts it.")),
+        out.trim().starts_with(&head)
+            && out.contains(&format!("{also} To start it, type: +tv/1 mine go")),
         "{out}\nwanted: {head} … {also}"
     );
     let barren_family = OreFamily::ALL

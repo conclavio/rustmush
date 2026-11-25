@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using TacSim.Character;
 using TacSim.Core;
 using TacSim.Net;
+using TacSim.Space;
 using TMPro;
 using UnityEngine;
 
@@ -42,6 +43,10 @@ namespace TacSim.World
         private Transform _cargoPalletsRoot;
         private WorldInteractable _airlockLeaveInteractable;
         private float _holoSpinDeg;
+        private TacSimSolarChartFrame _lastSolarChart;
+        private bool _holoShowingTacticalContacts;
+
+        public bool IsHoloShowingSolarSystem => !_holoShowingTacticalContacts && _lastSolarChart != null && _lastSolarChart.Bodies.Count > 0;
 
         // Companionway stairwell openings in ship local X/Z so climbing between Passage (Y=0),
         // Bridge (Y=+3.4m), and Cargo Hold (Y=-3.6m) has full head & capsule clearance.
@@ -1234,9 +1239,81 @@ namespace TacSim.World
 
             if (!renderedAny)
             {
-                // Ambient Ceres / waypoint markers when docked
-                CreateHoloSphere(_holotankBlipsRoot, new Vector3(0.42f, 0.12f, 0.28f), 0.14f, friendlyMat);
-                CreateHoloSphere(_holotankBlipsRoot, new Vector3(-0.35f, -0.08f, 0.38f), 0.07f, rockMat);
+                _holoShowingTacticalContacts = false;
+                if (_lastSolarChart != null && _lastSolarChart.Bodies.Count > 0)
+                {
+                    RenderSolarSystemHoloIntoTank(_lastSolarChart);
+                }
+                else
+                {
+                    // Ambient Ceres / waypoint markers when docked before first sky.chart frame
+                    CreateHoloSphere(_holotankBlipsRoot, new Vector3(0.42f, 0.12f, 0.28f), 0.14f, friendlyMat);
+                    CreateHoloSphere(_holotankBlipsRoot, new Vector3(-0.35f, -0.08f, 0.38f), 0.07f, rockMat);
+                }
+            }
+            else
+            {
+                _holoShowingTacticalContacts = true;
+            }
+        }
+
+        /// <summary>
+        /// Projects live `sky.chart` solar system bodies, orbital inclination stems, and cleared route beams
+        /// onto the 3D Bridge Holo-Tank whenever docked or when no active tactical contacts are present.
+        /// </summary>
+        public void ApplySolarChartFrame(TacSimSolarChartFrame chart)
+        {
+            _lastSolarChart = chart;
+            if (_holotankBlipsRoot == null || chart == null || chart.Bodies.Count == 0)
+                return;
+            if (_holoShowingTacticalContacts)
+                return;
+
+            for (int i = _holotankBlipsRoot.childCount - 1; i >= 0; i--)
+            {
+                var ch = _holotankBlipsRoot.GetChild(i).gameObject;
+                if (Application.isPlaying) Destroy(ch);
+                else DestroyImmediate(ch);
+            }
+            RenderSolarSystemHoloIntoTank(chart);
+        }
+
+        private void RenderSolarSystemHoloIntoTank(TacSimSolarChartFrame chart)
+        {
+            Material sunMat = UrpMaterialFactory.GetHologramUnlit("HoloSun", new Color(1.0f, 0.86f, 0.32f, 0.95f));
+            Material hereMat = UrpMaterialFactory.GetHologramUnlit("HoloHereBody", new Color(0.25f, 1.0f, 0.72f, 0.92f));
+            Material bodyMat = UrpMaterialFactory.GetHologramUnlit("HoloPlanet", new Color(0.42f, 0.82f, 1.0f, 0.82f));
+            Material routeMat = UrpMaterialFactory.GetHologramUnlit("HoloRouteArc", new Color(1.0f, 0.76f, 0.26f, 0.65f));
+
+            // Glowing central Sun
+            CreateHoloSphere(_holotankBlipsRoot, Vector3.zero, 0.13f, sunMat);
+
+            var bodyPositions = new Dictionary<string, Vector3>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < chart.Bodies.Count; i++)
+            {
+                var b = chart.Bodies[i];
+                if (!string.IsNullOrEmpty(b.ParentId)) continue;
+                Vector3 pos = chart.ProjectBodyToBridgeHoloTank(b, maxRadiusM: 0.68f, maxVertM: 0.28f);
+                bodyPositions[b.Id] = pos;
+                CreateHoloSphere(_holotankBlipsRoot, pos, b.Here ? 0.095f : 0.06f, b.Here ? hereMat : bodyMat);
+            }
+
+            // Route beams between cleared corridor bodies
+            for (int i = 0; i < chart.Routes.Count; i++)
+            {
+                var r = chart.Routes[i];
+                for (int k = 0; k < r.Legs.Count; k++)
+                {
+                    if (bodyPositions.TryGetValue(r.Legs[k].From, out Vector3 a) &&
+                        bodyPositions.TryGetValue(r.Legs[k].To, out Vector3 b))
+                    {
+                        Vector3 diff = b - a;
+                        float len = diff.magnitude;
+                        if (len < 0.01f) continue;
+                        var beam = CreateLocalBox(_holotankBlipsRoot, $"HoloRoute_{r.To}_{k}", (a + b) * 0.5f, new Vector3(0.012f, 0.012f, len), routeMat, collider: false);
+                        beam.transform.localRotation = Quaternion.LookRotation(diff.normalized, Vector3.up);
+                    }
+                }
             }
         }
 

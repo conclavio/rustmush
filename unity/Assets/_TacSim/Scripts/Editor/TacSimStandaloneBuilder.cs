@@ -234,7 +234,21 @@ namespace TacSim.Editor
         {
             UrpBootstrap.EnsureUrpAssigned();
             AssetPackImporter.EnsureIdaFaberHumanoidRigs();
-            AssetPackImporter.PopulateOrRefreshCatalog();
+            var catalog = AssetPackImporter.PopulateOrRefreshCatalog();
+
+            bool allowGraybox = string.Equals(
+                Environment.GetEnvironmentVariable("TACSIM_ALLOW_GRAYBOX"),
+                "1",
+                StringComparison.Ordinal);
+            if (!allowGraybox && (catalog == null || catalog.stellarTrooperFemale == null || catalog.stationConsoleProp == null))
+            {
+                throw new BuildFailedException(
+                    "[TacSim Builder] Aborting standalone build: commercial 3D asset packs (Ida Faber / Heavy Station Kit) " +
+                    "are not imported in this checkout's unity/Assets/ folder, which would produce a mannequin-only graybox build. " +
+                    "Run 'TacSim -> 1. Import Vertical Slice Assets' (or build from the worktree with 3d_assets imported), " +
+                    "or pass -AllowGraybox / TACSIM_ALLOW_GRAYBOX=1 to intentionally build a graybox test client.");
+            }
+
             StageEmbeddedFallbackPacks();
             VerticalSliceSceneBuilder.BuildStandaloneBootstrapScene();
             OptimizePackTextureImportSettings();

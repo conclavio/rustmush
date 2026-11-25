@@ -138,7 +138,7 @@ pub const CLAIM_PREVIEW: &str = "You would file a salvage claim on the {name} at
 /// The claim filed: `{name}`, `{registry}`, `{contract}`, `{window}`.
 pub const CLAIM_FILED: &str = "You file a salvage claim on the {name} at the {registry} (contract #{contract}). It becomes your title if nobody defeats it within {window}.";
 /// The notice: `{name}`, `{claimant}`, `{registry}`, `{site}`, `{window}`, `{contract}`.
-pub const NOTICE_BODY: &str = "{claimant} has filed a salvage claim on the {name}, recovered at {site}, at the {registry} (contract #{contract}). It becomes {claimant}'s title unless it is defeated within {window}. +salvage/contest {hull} go contests it.";
+pub const NOTICE_BODY: &str = "{claimant} has filed a salvage claim on the {name}, recovered at {site}, at the {registry} (contract #{contract}). It becomes {claimant}'s title unless it is defeated within {window}. To contest it, type: +salvage/contest {hull} go";
 /// The notice's subject: `{name}`.
 pub const NOTICE_SUBJECT: &str = "Salvage claim: the {name}";
 /// The contest preview on evidence: `{name}`, `{kind}`.
