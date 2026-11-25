@@ -365,7 +365,7 @@ namespace UnityEngine
         N = 110, O = 111, P = 112, Q = 113, R = 114, S = 115, T = 116, U = 117, V = 118, W = 119, X = 120, Y = 121, Z = 122,
         KeypadEnter = 271, UpArrow = 273, DownArrow = 274, RightArrow = 275, LeftArrow = 276,
         F1 = 282, F2 = 283, F3 = 284, F4 = 285, F5 = 286, F6 = 287, F7 = 288, F8 = 289, F9 = 290, F10 = 291, F11 = 292, F12 = 293,
-        RightShift = 303, LeftShift = 304, RightControl = 305, LeftControl = 306
+        RightShift = 303, LeftShift = 304, RightControl = 305, LeftControl = 306, RightAlt = 307, LeftAlt = 308
     }
 
     public static class Input

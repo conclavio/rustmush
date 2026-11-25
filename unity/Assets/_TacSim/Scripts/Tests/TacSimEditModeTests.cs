@@ -5074,5 +5074,140 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void TacticalHudAndSheet_CharacterSheetTabsAvatarSwapAnd3DBracketProjection()
+        {
+            // 1. Pure-math 3D screen-space bracket projection: on-screen, off-screen clamp, behind-camera perimeter mirror
+            TacSim.UI.TacSimTacticalBrackets.ComputeCanvasPositionFromScreenPoint(
+                new UnityEngine.Vector3(960f, 540f, 25f), 1920f, 1080f, new UnityEngine.Vector2(1920f, 1080f), 50f,
+                out var centerPos, out bool behindCenter, out bool clampedCenter);
+            Assert.IsFalse(behindCenter);
+            Assert.IsFalse(clampedCenter);
+            Assert.AreEqual(0f, centerPos.x, 1f);
+            Assert.AreEqual(0f, centerPos.y, 1f);
+
+            TacSim.UI.TacSimTacticalBrackets.ComputeCanvasPositionFromScreenPoint(
+                new UnityEngine.Vector3(3500f, 540f, 25f), 1920f, 1080f, new UnityEngine.Vector2(1920f, 1080f), 50f,
+                out var offRightPos, out bool behindRight, out bool clampedRight);
+            Assert.IsFalse(behindRight);
+            Assert.IsTrue(clampedRight, "Off-screen target must clamp inside canvas margin");
+            Assert.AreEqual(910f, offRightPos.x, 1f);
+
+            TacSim.UI.TacSimTacticalBrackets.ComputeCanvasPositionFromScreenPoint(
+                new UnityEngine.Vector3(1200f, 700f, -15f), 1920f, 1080f, new UnityEngine.Vector2(1920f, 1080f), 50f,
+                out var behindPos, out bool isBehind, out bool clampedBehind);
+            Assert.IsTrue(isBehind, "Negative screen Z must flag target as behind camera");
+            Assert.IsTrue(clampedBehind, "Behind-camera target must clamp to viewport perimeter");
+            Assert.Less(behindPos.x, 0f, "Target behind-right should mirror to left edge indicator");
+
+            var rootGo = new UnityEngine.GameObject("TacticalHudAndSheetTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                Assert.IsNotNull(hud.CharacterSheet, "BuildHud must wire [C] Character/Ship Sheet modal");
+                Assert.IsNotNull(hud.TacticalBrackets, "BuildHud must wire pooled 3D Tactical Brackets layer");
+
+                var camGo = new UnityEngine.GameObject("MainCamera");
+                camGo.tag = "MainCamera";
+                camGo.transform.SetParent(rootGo.transform, false);
+                var cam = camGo.AddComponent<UnityEngine.Camera>();
+
+                var spaceGo = new UnityEngine.GameObject("SpaceTest");
+                spaceGo.transform.SetParent(rootGo.transform, false);
+                var space = spaceGo.AddComponent<TacSim.Space.SpaceFlightController>();
+                space.BuildSpaceStage(null);
+                space.ApplyHolotankFeed(JsonNode.Parse(@"{
+                    ""own"": { ""id"": ""own1"", ""x_km"": 0, ""y_km"": 0, ""z_km"": 0 },
+                    ""contacts"": [{ ""id"": ""V1"", ""label"": ""Vanguard"", ""x_km"": 12, ""y_km"": 4, ""z_km"": 0, ""iff"": ""hostile"" }],
+                    ""rocks"": [{ ""id"": ""A"", ""x_km"": -5, ""y_km"": 2, ""z_km"": 0 }]
+                }"));
+                space.ApplyCockpitFeed(JsonNode.Parse(@"{
+                    ""throttle_permille"": 500,
+                    ""emcon"": ""ghost"",
+                    ""fire"": {
+                        ""lock"": { ""ship_id"": ""V1"", ""label"": ""Vanguard"", ""range_m"": 12600, ""facet"": ""left"" },
+                        ""mounts"": [{ ""id"": ""L1"", ""family"": ""laser"", ""state"": ""ready"", ""damage_at_lock"": 42 }]
+                    }
+                }"));
+
+                var surfaceGo = new UnityEngine.GameObject("SurfaceTest");
+                surfaceGo.transform.SetParent(rootGo.transform, false);
+                var surface = surfaceGo.AddComponent<TacSim.Surface.SurfaceMiningController>();
+                surface.BuildSurfaceStage(null, "occator_rim");
+                surface.EnterSurfaceMode();
+
+                var arenaGo = new UnityEngine.GameObject("ArenaTest");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(null, null);
+                arena.State.Callsign = "R1";
+                arena.State.ArmorFrontPct = 82;
+                arena.State.ArmorLeftPct = 44;
+                arena.State.ArmorRearPct = 20;
+                arena.State.Heat = 650;
+                arena.State.HeatMax = 1000;
+                arena.State.LockedDesignator = "B1";
+                arena.State.LockHitPercent = 73;
+                arena.State.Contacts.Add(new TacSim.Arena.ArenaContactState
+                {
+                    Designator = "B1",
+                    ClassLabel = "line_tank",
+                    Party = "B",
+                    Friendly = false,
+                    CellX = 12,
+                    CellY = 14,
+                    RangeM = 480f
+                });
+
+                var trade = new TacSim.World.TacSimTradeAndShipState();
+
+                // 2. Character/Ship Sheet tabs, live avatar swap event, live mount readout & ESC close
+                hud.CharacterSheet.BindSources(trade, space, surface, arena);
+                hud.CharacterSheet.SetPilotContext("Captain Vance", "Ceres Freeport", "Phoenix", TacSim.Core.TacSimActiveStage.ShipHelmSeated);
+                hud.CharacterSheet.SetOpen(true);
+                Assert.IsTrue(hud.CharacterSheet.IsOpen);
+                Assert.IsTrue(hud.IsModalOpen, "Open CharacterSheet must report IsModalOpen=true");
+                StringAssert.Contains("Captain Vance", hud.CharacterSheet.PilotSummarySnapshot);
+
+                TacSim.Core.PlayerAvatarPreset? swapped = null;
+                hud.CharacterSheet.OnAvatarPresetSelected += p => swapped = p;
+                hud.CharacterSheet.ApplyAvatarChoice(TacSim.Core.PlayerAvatarPreset.CyberpunkStreetFighterMale, notify: true);
+                Assert.AreEqual(TacSim.Core.PlayerAvatarPreset.CyberpunkStreetFighterMale, swapped);
+
+                hud.CharacterSheet.SelectTab(TacSim.UI.CharacterSheetTab.SpaceFit);
+                Assert.AreEqual(TacSim.UI.CharacterSheetTab.SpaceFit, hud.CharacterSheet.ActiveTab);
+                StringAssert.Contains("L1", hud.CharacterSheet.SpaceMountsSnapshot);
+                StringAssert.Contains("READY", hud.CharacterSheet.SpaceMountsSnapshot);
+
+                Assert.IsTrue(hud.TryCloseTopmostModal(), "ESC must close CharacterSheet modal");
+                Assert.IsFalse(hud.CharacterSheet.IsOpen);
+
+                // 3. 3D Tactical Brackets & Schematics across Station, Space, Surface, and Arena stages
+                hud.TacticalBrackets.BindControllers(space, surface, arena);
+
+                hud.TacticalBrackets.SyncBrackets(TacSim.Core.TacSimActiveStage.StationWalk, cam);
+                Assert.AreEqual(0, hud.TacticalBrackets.ActiveBracketCount);
+                Assert.IsFalse(hud.TacticalBrackets.IsArenaArmorSchematicVisible);
+                Assert.IsFalse(hud.TacticalBrackets.IsSurfaceCompassVisible);
+
+                hud.TacticalBrackets.SyncBrackets(TacSim.Core.TacSimActiveStage.ShipHelmSeated, cam);
+                Assert.GreaterOrEqual(hud.TacticalBrackets.ActiveBracketCount, 1, "Orbital space stage must project contact/rock brackets");
+
+                hud.TacticalBrackets.SyncBrackets(TacSim.Core.TacSimActiveStage.PlanetarySurface, cam);
+                Assert.IsTrue(hud.TacticalBrackets.IsSurfaceCompassVisible, "Planetary surface stage must show rover compass strip");
+                StringAssert.Contains("HDG", hud.TacticalBrackets.SurfaceCompassSnapshot);
+
+                hud.TacticalBrackets.SyncBrackets(TacSim.Core.TacSimActiveStage.SimulatorArena, cam);
+                Assert.IsTrue(hud.TacticalBrackets.IsArenaArmorSchematicVisible, "Simulator arena stage must show 4-quadrant directional armor schematic");
+                Assert.GreaterOrEqual(hud.TacticalBrackets.ActiveBracketCount, 1, "Simulator arena stage must project enemy unit brackets");
+                StringAssert.Contains("LOCK B1", hud.TacticalBrackets.ArenaArmorSummarySnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
