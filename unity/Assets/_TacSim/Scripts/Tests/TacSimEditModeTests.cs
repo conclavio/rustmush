@@ -5209,5 +5209,103 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void Wayfinder3DAndOpsDirectory_PlotsMultiDeckRibbonDirectoryPresenceAndArrival()
+        {
+            // 1. Pure-math 3D ribbon vertex chain builder
+            var pts = TacSim.World.TacSimWayfinder3D.BuildRouteWorldPoints(
+                new UnityEngine.Vector3(0f, 6f, 0f),
+                new List<UnityEngine.Vector3> { new UnityEngine.Vector3(10f, 6f, 0f), new UnityEngine.Vector3(10f, 0f, 12f) },
+                floorLiftM: 0.3f);
+            Assert.AreEqual(3, pts.Count);
+            Assert.AreEqual(6.3f, pts[0].y, 0.01f);
+            Assert.AreEqual(0.3f, pts[2].y, 0.01f);
+
+            var rootGo = new UnityEngine.GameObject("WayfinderAndOpsDirTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                Assert.IsNotNull(hud.OpsDirectory, "BuildHud must wire [N] Ops Directory & Wayfinder Banner");
+
+                var stGo = new UnityEngine.GameObject("StationWf");
+                stGo.transform.SetParent(rootGo.transform, false);
+                var station = stGo.AddComponent<TacSim.World.StationWorldController>();
+                station.BuildStation(null, "neighborhood.ceres_freeport");
+
+                var shipGo = new UnityEngine.GameObject("ShipWf");
+                shipGo.transform.SetParent(rootGo.transform, false);
+                var ship = shipGo.AddComponent<TacSim.World.ShipInteriorController>();
+                ship.BuildInterior(null);
+
+                var wfGo = new UnityEngine.GameObject("WayfinderWf");
+                wfGo.transform.SetParent(rootGo.transform, false);
+                var wf = wfGo.AddComponent<TacSim.World.TacSimWayfinder3D>();
+                wf.EnsureVisuals();
+
+                var trade = new TacSim.World.TacSimTradeAndShipState();
+                hud.OpsDirectory.BindSources(station, ship, wf, trade, null, null, null);
+
+                // 2. Plot 3D station wayfinder trail from arrivals to exchange
+                string startRoom = station.ActiveRoomEntryId;
+                string targetRoom = null;
+                foreach (var r in station.Pack.Rooms.Values)
+                {
+                    if (!string.Equals(r.EntryId, startRoom, System.StringComparison.OrdinalIgnoreCase) &&
+                        station.FindExitPath(startRoom, r.EntryId).Count > 0)
+                    {
+                        targetRoom = r.EntryId;
+                        break;
+                    }
+                }
+                Assert.IsNotNull(targetRoom, "Ceres Freeport pack must have a reachable target room");
+                Assert.IsTrue(wf.PlotStationRoute(station, startRoom, targetRoom, station.GetRoomSpawnPosition(startRoom)));
+                Assert.IsTrue(wf.HasActiveRoute);
+                Assert.GreaterOrEqual(wf.RenderedPointCount, 2);
+                Assert.Greater(wf.DistanceMeters, 0.5f);
+
+                // 3. Top-center Wayfinder Compass Banner reflects active trail & hides in Arena
+                hud.OpsDirectory.SyncWayfinderBanner(TacSim.Core.TacSimActiveStage.StationWalk);
+                Assert.IsTrue(hud.OpsDirectory.IsWayfinderBannerVisible);
+                StringAssert.Contains("HOP", hud.OpsDirectory.WayfinderBannerText);
+
+                hud.OpsDirectory.SyncWayfinderBanner(TacSim.Core.TacSimActiveStage.SimulatorArena);
+                Assert.IsFalse(hud.OpsDirectory.IsWayfinderBannerVisible, "Wayfinder banner must yield to Arena scoreboard");
+
+                // 4. [N] Directory modal populates rooms, room presence cast, and Active Ops summary, and closes on ESC
+                var rv = new MushRoomView { Name = "Arrivals" };
+                rv.Contents.Add(new MushObjRef { Id = "#10", Name = "Dockmaster Voss" });
+                rv.NpcIds.Add("#10");
+                rv.Contents.Add(new MushObjRef { Id = "#20", Name = "Pilot Kira" });
+                rv.PlayerIds.Add("#20");
+                hud.OpsDirectory.UpdateLiveRoom(rv, TacSim.Core.TacSimActiveStage.StationWalk);
+                hud.OpsDirectory.SetOpen(true);
+                Assert.IsTrue(hud.OpsDirectory.IsOpen);
+                Assert.IsTrue(hud.IsModalOpen);
+                Assert.GreaterOrEqual(hud.OpsDirectory.VisibleDirectoryRowCount, 2);
+
+                hud.OpsDirectory.SelectTab(TacSim.UI.OpsDirectoryTab.RoomPresence);
+                Assert.AreEqual(2, hud.OpsDirectory.VisiblePresenceRowCount);
+
+                hud.OpsDirectory.SelectTab(TacSim.UI.OpsDirectoryTab.ActiveOps);
+                StringAssert.Contains(wf.TargetDisplayName, hud.OpsDirectory.OpsSummarySnapshot);
+
+                Assert.IsTrue(hud.TryCloseTopmostModal(), "ESC must close OpsDirectory modal");
+                Assert.IsFalse(hud.OpsDirectory.IsOpen);
+
+                // 5. Arrival auto-clears the 3D wayfinder ribbon and fires OnArrivedAtDestination
+                string arrivedName = null;
+                wf.OnArrivedAtDestination += n => arrivedName = n;
+                station.HighlightActiveRoom(targetRoom);
+                wf.SyncProgress(TacSim.Core.TacSimActiveStage.StationWalk, station, ship, station.GetRoomSpawnPosition(targetRoom), 0.016f);
+                Assert.IsFalse(wf.HasActiveRoute, "Arriving in destination room must auto-clear active wayfinder trail");
+                Assert.IsNotNull(arrivedName);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
