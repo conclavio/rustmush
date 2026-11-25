@@ -8,8 +8,11 @@ then use `+sortie/launch` at a surface berth with a ramp and vehicle bay.
 To hire an NPC, meet them at a port and use `+sortie/crew`. It lists the available
 people in your room, their agreed duties, whether they can command a detachment,
 and the wage they are paid.
-Use the exact `+sortie/hire #<NPC>=<terms>` command printed beside their terms.
-If the terms change or the NPC leaves, inspect the current list again.
+Accept with the `+sortie/hire #<NPC>` command printed beside their terms; the
+NPC's name works too. It accepts exactly the terms `+sortie/crew` last showed
+you: if they have changed since, the hire is refused until you read the list
+again, and after a server restart you read it once more before hiring.
+Scripts may name the terms outright as `+sortie/hire #<NPC>=<terms hash>`.
 `+sortie/contract #<NPC>` shows your accepted agreement, even after leaving port.
 Only the employer and the hired character can inspect that contract.
 
@@ -78,7 +81,7 @@ Several plans may refer to the same unit without reserving it.
 | Command | Purpose |
 |---|---|
 | `+sortie/crew` | Inspect NPCs currently available for hire in this port room |
-| `+sortie/hire #<NPC>=<printed terms>` | Accept the displayed employment terms |
+| `+sortie/hire #<NPC>` | Accept the employment terms `+sortie/crew` last showed you |
 | `+sortie/contract #<NPC>` | Inspect your recorded crew agreement |
 | `+sortie/board <npc>` | Arrange boarding for an NPC you hired, using the ship's real berth |
 | `+sortie/discharge #<NPC>` | End a hire of yours from a port's station and settle its final wage |

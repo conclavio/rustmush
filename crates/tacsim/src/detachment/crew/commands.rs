@@ -1,5 +1,8 @@
 //! Thin sortie adapters: inspect terms, then submit their exact acceptance.
-use super::{CrewHandles, HireTerms, NpcMissionScope, offers, runtime::check_contract};
+use super::{
+    CrewHandles, HireTerms, NpcMissionScope, offers,
+    runtime::{ShownOffers, check_contract},
+};
 use mush_core::{CanonicalHash, CmdError, Ctx, IdempotencyKeyText, ObjId, PerceivedRef};
 use serde_json::json;
 
@@ -19,6 +22,12 @@ pub(crate) fn handles(ctx: &Ctx<'_>) -> bool {
 fn unavailable() -> CmdError {
     CmdError::msg("Crew or contract unavailable. Use +sortie/crew for current hiring terms.")
 }
+/// The short hire with no listing behind it (none read, or read before a restart).
+pub(crate) const NOT_READ: &str =
+    "Read +sortie/crew first: +sortie/hire accepts the terms it last showed you.";
+/// The short hire whose offer has changed since this viewer read it.
+pub(crate) const CHANGED: &str =
+    "Those hiring terms have changed since you read them. Read +sortie/crew again.";
 fn npc(raw: &str) -> Result<ObjId, CmdError> {
     let raw = raw.trim().strip_prefix('#').unwrap_or(raw.trim());
     if raw.is_empty() || !raw.bytes().all(|b| b.is_ascii_digit()) {
@@ -101,6 +110,11 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         if rows.is_empty() {
             line(ctx, "No NPC crew available for hire in this port room.");
         }
+        // The terms read here are the terms the short `+sortie/hire #<npc>` accepts.
+        let actor = ctx.actor;
+        if let Some(shown) = ctx.state_mut::<ShownOffers>() {
+            shown.show(actor, rows.iter().map(|o| (o.npc, o.terms_hash)));
+        }
         for offer in rows {
             let name = ctx
                 .w
@@ -117,14 +131,7 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
                     super::wages::offer_clause(ctx.w, &offer.terms)
                 ),
             );
-            line(
-                ctx,
-                format!(
-                    "Accept: +sortie/hire #{}={}",
-                    offer.npc.0,
-                    offer.terms_hash.to_hex()
-                ),
-            );
+            line(ctx, format!("Accept: +sortie/hire #{}", offer.npc.0));
         }
         let wages = super::wages::offers_footer(ctx.w);
         line(ctx, wages);
@@ -177,13 +184,21 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
         }
         return Ok(());
     }
-    let (object, terms) = raw.split_once('=').ok_or_else(unavailable)?;
-    let npc = npc(object)?;
-    let terms = terms.trim();
-    if terms.len() != 64
-        || !terms
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    // `#<npc>=<64-hex terms>` names the terms outright (scripts); the short `#<npc>` (or the
+    // NPC's name) accepts the terms `+sortie/crew` last showed this viewer, and is refused when
+    // the offer has changed since, so a player still accepts exactly what they read.
+    let (object, typed) = match raw.split_once('=') {
+        Some((object, terms)) => (object, Some(terms.trim())),
+        None => (raw.as_str(), None),
+    };
+    let npc = npc(object).or_else(|_| {
+        mush_core::match_object(ctx.w, ctx.actor, object.trim()).map_err(|_| unavailable())
+    })?;
+    if let Some(terms) = typed
+        && (terms.len() != 64
+            || !terms
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
     {
         return Err(unavailable());
     }
@@ -195,16 +210,33 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), CmdError> {
             "An authoritative request is already pending.",
         ));
     }
-    // HIGH-69: fail fast at a waged port when the employer lacks an active
-    // non-delinquent credit account or has standing unpaid crew wages.
-    if let Ok(rows) = offers(ctx.w, ctx.actor, |id| {
+    let current = offers(ctx.w, ctx.actor, |id| {
         check_contract(
             id,
             ctx.action_state(&handles.contracts, &id)
                 .map_err(|e| e.to_string())?,
         )
-    }) && let Some(offer) = rows.iter().find(|row| row.npc == npc)
-    {
+    })
+    .ok()
+    .and_then(|rows| rows.into_iter().find(|row| row.npc == npc));
+    let terms = match typed {
+        Some(terms) => terms.to_owned(),
+        None => {
+            let shown = ctx
+                .w
+                .module_state::<ShownOffers>()
+                .and_then(|s| s.shown(ctx.actor, npc))
+                .ok_or_else(|| CmdError::msg(NOT_READ))?;
+            let current = current.as_ref().ok_or_else(unavailable)?;
+            if current.terms_hash != shown {
+                return Err(CmdError::msg(CHANGED));
+            }
+            shown.to_hex()
+        }
+    };
+    // HIGH-69: fail fast at a waged port when the employer lacks an active
+    // non-delinquent credit account or has standing unpaid crew wages.
+    if let Some(offer) = &current {
         super::wages::hiring_allowed(ctx.w, ctx.actor, &offer.terms).map_err(CmdError::msg)?;
     }
     let digest = CanonicalHash::for_canonical_value(

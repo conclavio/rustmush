@@ -129,6 +129,12 @@ fn hire(npc: ObjId, terms: &HireTerms) -> TestResult<String> {
         terms.digest()?.to_hex()
     ))
 }
+/// Whether `listed` offers `npc` by the short accept line, with no terms hash to copy (the hash
+/// form `hire` builds still works for scripts).
+fn shows_short_accept(listed: &str, npc: ObjId) -> bool {
+    let accept = format!("Accept: +sortie/hire #{}", npc.0);
+    listed.lines().any(|line| line.trim() == accept) && !listed.contains(&format!("{accept}="))
+}
 fn text(world: &mut TestWorld, actor: ObjId, line: &str) -> String {
     world
         .run(actor, line)
@@ -167,7 +173,7 @@ async fn hiring_survives_lost_ack_and_restart_without_boarding_or_financial_writ
     let npc = rig.npc;
     let listed = text(&mut rig.world, employer, "+sortie/crew");
     assert!(listed.contains("Crew mining operator"), "{listed}");
-    assert!(listed.contains(&hire(npc, &terms()?)?));
+    assert!(shows_short_accept(&listed, npc), "{listed}");
     let request = submit(&mut rig.world, employer, &hire(npc, &terms()?)?)?;
     let ingress = stage(&mut rig.world, &store, &request).await?;
     let (bundle, installation) = rig
@@ -1198,7 +1204,7 @@ async fn shipped_port_crew_can_be_hired_without_staff_offers_and_keep_identity_a
         listed.contains("Ilya Mendes") && listed.contains("Sana Okonkwo"),
         "{listed}"
     );
-    assert!(listed.contains(&hire(npc, &terms)?));
+    assert!(shows_short_accept(&listed, npc), "{listed}");
     commit_line(&mut rig, &store, employer, &hire(npc, &terms)?).await?;
     let saved = contract(&rig)?.ok_or("actual accepted contract")?;
     // Ordinary movement changes current contents; boot must not restock a crew.
@@ -1238,6 +1244,20 @@ async fn shipped_port_crew_can_be_hired_without_staff_offers_and_keep_identity_a
             .count(),
         1
     );
+    // What the last world showed is not kept over a restart: the short accept asks for a read.
+    let okonkwo = rig
+        .world
+        .world()
+        .iter()
+        .find(|o| o.name == "Sana Okonkwo")
+        .map(|o| o.id)
+        .ok_or("Sana Okonkwo")?;
+    let unread = text(
+        &mut rig.world,
+        employer,
+        &format!("+sortie/hire #{}", okonkwo.0),
+    );
+    assert!(unread.contains("Read +sortie/crew first"), "{unread}");
     let listed = text(&mut rig.world, employer, "+sortie/crew");
     assert!(
         !listed.contains("Ilya Mendes"),

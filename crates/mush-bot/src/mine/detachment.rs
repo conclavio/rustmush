@@ -802,10 +802,14 @@ pub fn in_vocabulary(line: &str) -> bool {
     }
     for verb in ["hire", "contract", "board", "unseat"] {
         if let Some(rest) = line.strip_prefix(&format!("+sortie/{verb} #")) {
+            // `+sortie/crew` prints the short `+sortie/hire #<npc>`; the hash form is the script's.
             return if verb == "hire" {
-                rest.split_once('=').is_some_and(|(id, hash)| {
-                    digits(id) && hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit())
-                })
+                digits(rest)
+                    || rest.split_once('=').is_some_and(|(id, hash)| {
+                        digits(id)
+                            && hash.len() == 64
+                            && hash.bytes().all(|b| b.is_ascii_hexdigit())
+                    })
             } else {
                 digits(rest)
             };
@@ -868,6 +872,22 @@ mod tests {
             "@unitgrant/issue #1=#2 operate_crew parent=3"
         ));
         assert!(in_vocabulary("ORDER DT:1:2:3 1 MINE metals"));
+    }
+    #[test]
+    fn the_printed_short_hire_and_the_scripted_hash_hire_are_both_in_vocabulary() {
+        assert!(in_vocabulary("+sortie/hire #803"));
+        assert!(in_vocabulary(&format!(
+            "+sortie/hire #803={}",
+            "a".repeat(64)
+        )));
+        for bad in [
+            "+sortie/hire #",
+            "+sortie/hire #803=short",
+            "+sortie/hire #803;@destroy #1",
+            "+sortie/hire Ilya Mendes",
+        ] {
+            assert!(!in_vocabulary(bad), "{bad}");
+        }
     }
     #[test]
     fn queued_order_is_never_an_arrived_response_and_both_flights_must_return() {
