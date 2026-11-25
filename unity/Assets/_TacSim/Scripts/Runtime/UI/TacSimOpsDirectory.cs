@@ -242,7 +242,7 @@ namespace TacSim.UI
             var hdr = CreateText(body.transform, "LIVE ROOM PRESENCE — CLICK TO TARGET, EXAMINE, OR OPEN DIRECT COMMS", 12, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.55f, 0.92f, 0.82f));
             SetRect(hdr.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(12f, -30f), new Vector2(-124f, -4f));
 
-            var whoBtn = CreateButton(body.transform, "GLOBAL +WHO", new Color(0.16f, 0.34f, 0.48f), () => OnCommandRequested?.Invoke("+who"));
+            var whoBtn = CreateButton(body.transform, "Who Online", new Color(0.16f, 0.34f, 0.48f), () => OnCommandRequested?.Invoke("WHO"));
             SetRect(whoBtn.GetComponent<RectTransform>(), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-118f, -30f), new Vector2(-10f, -4f));
 
             var scrollContent = CreateScrollList(body.transform, "PresenceScroll", new Vector2(10f, 10f), new Vector2(-10f, -36f));
@@ -312,10 +312,10 @@ namespace TacSim.UI
             hlg.childForceExpandWidth = true;
 
             CreateButton(actRow.transform, "JOBS (+jobs)", new Color(0.16f, 0.42f, 0.54f), () => OnCommandRequested?.Invoke("+jobs"));
-            CreateButton(actRow.transform, "ESCORTS (+escort/list)", new Color(0.24f, 0.38f, 0.54f), () => OnCommandRequested?.Invoke("+escort/list"));
-            CreateButton(actRow.transform, "SHIP ORDERS", new Color(0.16f, 0.46f, 0.40f), () => OnCommandRequested?.Invoke("+ship/orders"));
-            CreateButton(actRow.transform, "CO-OP LEDGER", new Color(0.42f, 0.32f, 0.14f), () => OnCommandRequested?.Invoke("+coop/statement"));
-            CreateButton(actRow.transform, "WHO ONLINE", new Color(0.22f, 0.30f, 0.44f), () => OnCommandRequested?.Invoke("+who"));
+            CreateButton(actRow.transform, "Escorts (+escort)", new Color(0.24f, 0.38f, 0.54f), () => OnCommandRequested?.Invoke("+escort"));
+            CreateButton(actRow.transform, "Ship Orders", new Color(0.16f, 0.46f, 0.40f), () => OnCommandRequested?.Invoke("+ship/orders"));
+            CreateButton(actRow.transform, "Co-op Ledger", new Color(0.42f, 0.32f, 0.14f), () => OnCommandRequested?.Invoke("+coop/statement"));
+            CreateButton(actRow.transform, "Who Online", new Color(0.22f, 0.30f, 0.44f), () => OnCommandRequested?.Invoke("WHO"));
         }
 
         public void BindSources(
