@@ -49,6 +49,12 @@
 //!
 //! The same gate counts a story file's reads of the wall clock.
 //!
+//! Added by unit FL.6, for an in-process rig on tokio's paused clock:
+//!
+//! - [`idle`]: the barrier for "every other task on the runtime has parked",
+//!   in place of a sleep or a count of yields that let the world take what was
+//!   sent to it. An absence is asserted after it.
+//!
 //! **Dev-only.** This crate is a `[dev-dependencies]` entry and nothing else:
 //! its helpers panic by design, as a failed assertion does. The panic budget's
 //! `no_production_crate_links_an_excluded_crate` test refuses a normal or a
@@ -70,6 +76,7 @@ mod barrier;
 mod budget;
 mod figures;
 mod odds;
+mod paused;
 mod phase;
 mod scratch;
 mod wait;
@@ -82,6 +89,7 @@ pub use barrier::{
 pub use budget::{NEXTEST_TERMINATE, StoryBudget, TERMINATE_MARGIN};
 pub use figures::{Figures, Mount, story_seed};
 pub use odds::{Odds, PULL_REQUEST_BAR};
+pub use paused::{IDLE_STEP, idle};
 pub use phase::{
     BEFORE_DAY_TURN, BEFORE_MONTH_TURN_DAYS, Calendar, IC_DAY, IC_HOUR, IC_MONTH, PHASE_TESTS,
     PHASE_VAR, Phase, STORY_EPOCH,

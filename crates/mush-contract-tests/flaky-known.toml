@@ -55,15 +55,6 @@ expires = "2026-12-07"
 note = "open; a stall now fails inside the 18-minute story budget with both bots' last lines"
 
 [[flaky]]
-binary = "mush-server::split_boundary"
-test = "boot_parity::stop_ledger_archive_joins_the_pass_rather_than_detaching_it"
-class = "clock"
-row = 10
-listed = "2026-11-23"
-expires = "2026-12-07"
-note = "on watch; a bare 20 ms sleep before an assertion on a spawned task"
-
-[[flaky]]
 binary = "mush-gateway::split_halves"
 test = "restart_survival::restart_mid_scene_resumes_in_current_room"
 class = "process"
@@ -132,9 +123,10 @@ note = "on watch; the class is doc 51's likely reading, the cause is not known"
 
 # --- Carried over from the `load-sensitive` retry: no failure on record -----
 #
-# The eighteen entries of the old filter that match no row of the record.
-# Two are narrowed to the one test a cut note names; the rest keep the scope
-# the filter gave them.
+# The entries of the old filter that match no row of the record: eighteen at
+# FL.2, fifteen since doc 51 unit FL.6 closed mush-server's three. Two are
+# narrowed to the one test a cut note names; the rest keep the scope the
+# filter gave them.
 
 [[flaky]]
 binary = "mushd::world_journeys"
@@ -225,22 +217,6 @@ listed = "2026-11-23"
 expires = "2026-12-07"
 
 [[flaky]]
-binary = "mush-server::split_boundary"
-module = "ipc_authoritative_action"
-class = "unclassed"
-carried = "the load-sensitive retry of cut T.1 (16b's list)"
-listed = "2026-11-23"
-expires = "2026-12-07"
-
-[[flaky]]
-binary = "mush-server::split_boundary"
-module = "ipc_window"
-class = "unclassed"
-carried = "the load-sensitive retry of cut T.1 (16b's list)"
-listed = "2026-11-23"
-expires = "2026-12-07"
-
-[[flaky]]
 binary = "mush-worldgen::plan"
 whole_binary = true
 class = "unclassed"
@@ -285,13 +261,5 @@ binary = "mush-sim"
 test = "journey::tests::e7c6_b2_the_wire_re_runs_max_legs_and_every_invariant"
 class = "unclassed"
 carried = "the load-sensitive retry of cut T.1, written there as test(~e7c6_b2)"
-listed = "2026-11-23"
-expires = "2026-12-07"
-
-[[flaky]]
-binary = "mush-server"
-test = "world_task::tests::what_still_waits_when_the_loop_ends_is_answered_not_dropped"
-class = "unclassed"
-carried = "the load-sensitive retry of cut T.1, written there as test(~what_still_waits); an unbiased select!, which doc 51 §4.3 says will want a real row"
 listed = "2026-11-23"
 expires = "2026-12-07"
