@@ -75,6 +75,7 @@ namespace TacSim.UI
         public TacSimMissionOverlays Overlays { get; private set; }
         public TacSimEconomyPanels EconomyPanels { get; private set; }
         public TacSimDisplayOptions DisplayOptions { get; private set; }
+        public TacSimSolarSystemMap SolarMap { get; private set; }
         public TradeTerminalTab ActiveTradeTab { get; private set; } = TradeTerminalTab.Exchange;
         public string ActiveHullRef => _activeHullRef;
         public string ActivePortHint => _activePortHint;
@@ -433,6 +434,7 @@ namespace TacSim.UI
 
             EconomyPanels?.ResetSessionState();
             Overlays?.ResetSessionState();
+            SolarMap?.ResetSessionState();
             ResolveActiveMindTerminal()?.ResetSessionState();
         }
 
@@ -484,6 +486,9 @@ namespace TacSim.UI
             Overlays = gameObject.GetComponent<TacSimMissionOverlays>() ?? gameObject.AddComponent<TacSimMissionOverlays>();
             Overlays.BuildOverlays(_hudRoot.transform, _uiFont);
 
+            SolarMap = gameObject.GetComponent<TacSimSolarSystemMap>() ?? gameObject.AddComponent<TacSimSolarSystemMap>();
+            SolarMap.BuildModal(_hudRoot.transform, _uiFont);
+
             DisplayOptions = gameObject.GetComponent<TacSimDisplayOptions>() ?? gameObject.AddComponent<TacSimDisplayOptions>();
             DisplayOptions.BuildModal(canvasGo.transform, _uiFont);
             DisplayOptions.ApplyStartupPreferences();
@@ -519,8 +524,11 @@ namespace TacSim.UI
             SetRect(_netBadgeText.rectTransform, new Vector2(0.50f, 0f), new Vector2(0.61f, 1f), Vector2.zero, Vector2.zero);
 
             _shipAndClockText = CreateText(topBar.transform, "IC 08:00 UTC | HULL: UNCHARTERED | RMB: Orbit Camera", 15, FontStyle.Normal, TextAnchor.MiddleRight, new Color(0.62f, 0.84f, 0.96f));
-            // Reserve 324px at the far right of TopStrip for `OPTIONS` (`-316..-212`) + `[F10] MINDS & SEALING` (`-204..-6`).
-            SetRect(_shipAndClockText.rectTransform, new Vector2(0.56f, 0f), new Vector2(1f, 1f), Vector2.zero, new Vector2(-324f, 0f));
+            // Reserve 436px at the far right of TopStrip for `[M] CHART` (`-428..-324`), `OPTIONS` (`-316..-212`), and `[F10] MINDS & SEALING` (`-204..-6`).
+            SetRect(_shipAndClockText.rectTransform, new Vector2(0.50f, 0f), new Vector2(1f, 1f), Vector2.zero, new Vector2(-436f, 0f));
+
+            var chartTopBtn = CreateButton(topBar.transform, "[M] CHART", new Color(0.16f, 0.34f, 0.48f), () => SolarMap?.SetOpen(!(SolarMap != null && SolarMap.IsOpen)));
+            SetRect(chartTopBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-428f, 6f), new Vector2(-324f, -6f));
 
             var optionsTopBtn = CreateButton(topBar.transform, "OPTIONS", new Color(0.14f, 0.26f, 0.38f), () => DisplayOptions?.SetOpen(true));
             SetRect(optionsTopBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-316f, 6f), new Vector2(-212f, -6f));
@@ -1070,6 +1078,11 @@ namespace TacSim.UI
                 DisplayOptions.SetOpen(false);
                 return true;
             }
+            if (SolarMap != null && SolarMap.IsOpen)
+            {
+                SolarMap.SetOpen(false);
+                return true;
+            }
             var term = ResolveActiveMindTerminal();
             if (term != null && term.IsTerminalOpen)
             {
@@ -1110,6 +1123,13 @@ namespace TacSim.UI
             if (Input.GetKeyDown(KeyCode.F11) && !IsTextInputFocused)
             {
                 DisplayOptions?.ToggleBorderlessFullscreen();
+            }
+
+            if (Input.GetKeyDown(KeyCode.M) && !IsTextInputFocused &&
+                !Input.GetKey(KeyCode.LeftControl) && !Input.GetKey(KeyCode.RightControl) &&
+                (_loginPanel == null || !_loginPanel.activeSelf))
+            {
+                SolarMap?.SetOpen(!(SolarMap != null && SolarMap.IsOpen));
             }
 
             if (Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter))
