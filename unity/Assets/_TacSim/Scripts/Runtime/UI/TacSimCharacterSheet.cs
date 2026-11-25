@@ -217,7 +217,7 @@ namespace TacSim.UI
 
             CreateButton(actRow.transform, "SHIP STATUS (+ship)", new Color(0.16f, 0.42f, 0.54f), () => OnCommandRequested?.Invoke("+ship"));
             CreateButton(actRow.transform, "CARGO HOLD (+ship/hold)", new Color(0.18f, 0.44f, 0.42f), () => OnCommandRequested?.Invoke("+ship/hold"));
-            CreateButton(actRow.transform, "TANKS & STORES", new Color(0.46f, 0.32f, 0.14f), () => OnCommandRequested?.Invoke("+ship/tank"));
+            CreateButton(actRow.transform, "SAILING ORDERS", new Color(0.46f, 0.32f, 0.14f), () => OnCommandRequested?.Invoke("+ship/orders"));
             CreateButton(actRow.transform, "SAILING PLANNER", new Color(0.18f, 0.36f, 0.58f), () =>
             {
                 SetOpen(false);

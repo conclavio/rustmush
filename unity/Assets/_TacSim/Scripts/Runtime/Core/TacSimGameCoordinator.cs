@@ -874,8 +874,8 @@ namespace TacSim.Core
                             1.0f,
                             $"LOCKED ({lk.Facet.ToUpperInvariant()})",
                             new Color(0.88f, 0.32f, 0.24f, 0.95f),
-                            "FIRE",
-                            () => ExecutePlayerCommand("+tac/fire"),
+                            "BEAM",
+                            () => ExecutePlayerCommand("+tac/beam"),
                             "SCAN",
                             () => ExecutePlayerCommand("+tac/scan"));
                     }
@@ -892,8 +892,8 @@ namespace TacSim.Core
                             new Color(0.86f, 0.66f, 0.22f, 0.95f),
                             "MATCH VEL",
                             () => ExecutePlayerCommand($"+helm/match {rk}"),
-                            "DRILL",
-                            () => ExecutePlayerCommand("mine:drill"));
+                            "LASER",
+                            () => ExecutePlayerCommand("space:mine_laser"));
                     }
                     else
                     {
