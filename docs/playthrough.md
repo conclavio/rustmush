@@ -88,7 +88,7 @@ steps in this order: the conversion needs an empty hold.
 
    ```
    > +license/buy
-   … +license/buy go buys it.
+   … To buy it, type: +license/buy go
    > +license/buy go
    > +license
    … in force until …
@@ -103,7 +103,7 @@ steps in this order: the conversion needs an empty hold.
    > concourse
    > exchange
    > +tv/lease
-   … +tv/lease go signs it.
+   … To sign it, type: +tv/lease go
    > +tv/lease go
    Occator Water & Propellant leases you OWP-TV-… into the …'s bay as rig 1 …
    > +tv
@@ -119,22 +119,28 @@ steps in this order: the conversion needs an empty hold.
    Plan for … burn … t … crew-days … (and the leg home)
    ```
 
-5. Buy fuel and provisions at the chandlery: a little more than the plan says, for both legs. Each
-   purchase is a quote then an accept.
+5. Buy fuel and provisions: a little more than the plan says, for both legs. At Ceres, Occator
+   Water & Propellant sells reaction mass (fuel) and the Belt Carriers' Cooperative sells voyage
+   provisions; both are on the port's board, which every public room of the Freeport trades on.
+   The chandlery is the natural place to stand. Buy each by name, then confirm it.
 
    ```
    > chandlery
    > +market/list
-   (numbered list of what is for sale)
-   > +market/quote 3=12
-   Quote #41 …
-   > +market/accept 41
+   (numbered list of what is for sale; its last line says how to buy)
+   > +market/buy reaction mass <tonnes>
+   Occator Water & Propellant sells you <tonnes> reaction mass at 40.00cr each: … To buy it, type: +market/buy go
+   > +market/buy go
    Agreed. …
+   > +market/buy voyage provisions <crew-days>
+   > +market/buy go
    ```
 
-   The numbers are examples: use the list number for reaction mass and the tonnes your plan needs,
-   then the quote number the game gives you. Repeat for provisions. "That quote no longer stands"
-   means quote again.
+   `<tonnes>` and `<crew-days>` are your plan's figures; prices move, so read the one the game
+   quotes. Nothing is paid until you type `+market/buy go`. "That quote no longer stands" means
+   buy again. The same sale by number is `+market/quote <list number>=<tonnes>` and then
+   `+market/accept <quote number>`; a line marked "wanted" is a bid, which buys and does not
+   sell.
 
 ### Fly down to the site
 

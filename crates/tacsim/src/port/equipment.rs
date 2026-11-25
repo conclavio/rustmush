@@ -602,7 +602,7 @@ pub(crate) fn command(ctx: &mut Ctx<'_>) -> Result<(), String> {
     super::coop::say(
         ctx,
         format!(
-            "Occator offers rig {} operational loans while this exact lease is active: operate/crew and command with onward delegation; deploy and recover/load without it. No title or refit right and no additional charge. +tv/{}/permissions go requests the agreement.",
+            "Occator offers rig {} operational loans while this exact lease is active: operate/crew and command with onward delegation; deploy and recover/load without it. No title or refit right and no additional charge. To request the agreement, type: +tv/{}/permissions go",
             rental.slot, rental.slot
         ),
     );

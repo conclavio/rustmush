@@ -1,9 +1,9 @@
 {
   "manifest": {
     "id": "tacsim.quests.leila_followup",
-    "version": 1,
+    "version": 2,
     "kind": "campaign_seed",
-    "digest": "522dbb14ea7d8580178c90267d988f62ee3e80c9537743086ab3a23931838e72",
+    "digest": "11ebc86cf02e4276474755824fd2acb62dbf62948152263226dc3c6e5baba4ac",
     "requires": [
       { "id": "tacsim.passengers.stickney", "version": 2 },
       { "id": "neighborhood.ceres_freeport", "version": 4 },
@@ -54,7 +54,7 @@
             "room_pack": "neighborhood.ceres_freeport",
             "room_entry": "room.c07_exchange",
             "objective": { "kind": "survey", "mode": "scan" },
-            "instructions": "After accepting, use help mining for any license, refit or rig lease you need. Choose a real site with +chart/ground and plan the outward and home legs. +tv/1 scan previews the operation; +tv/1 scan go submits it. Complete a sounding on the same trip if you wish. Back at the Exchange Hall, where Rosalind Qureshi-Mbeki works, use +quest/check Leila=tacsim.quests.leila_followup/quest.leila_survey to acknowledge the scan. No paid commission or chart disclosure is required."
+            "instructions": "After accepting, use help mining for any license, refit or rig lease you need. Choose a real site with +chart/ground and plan the outward and home legs. +tv/1 scan previews the operation; to submit it, type +tv/1 scan go and press Enter. Complete a sounding on the same trip if you wish. Back at the Exchange Hall, where Rosalind Qureshi-Mbeki works, use +quest/check Leila=tacsim.quests.leila_followup/quest.leila_survey to acknowledge the scan. No paid commission or chart disclosure is required."
           },
           {
             "id": "sound",

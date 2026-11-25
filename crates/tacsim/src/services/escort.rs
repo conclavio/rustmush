@@ -140,7 +140,7 @@ pub const ESCORT_HELP: &str = "+escort                                your escor
 A fee over 10,000 cr asks the escort for a bond of a fifth of it.";
 /// The post's preview (`{name}`, `{journey}`, `{fee}`, `{days}`).
 pub const POST_PREVIEW: &str = "Post an escort of {name} on {journey} for {fee}; whoever takes it has \
-{days} IC days. +escort/post ... go posts it.";
+{days} IC days. To post it, type the same +escort/post line again with go at the end.";
 /// The post's line (`{job}`, `{name}`, `{journey}`, `{fee}`).
 pub const POSTED: &str = "Escort {job} posted: {name} on {journey}, {fee} escrowed and paid when she \
 is seen through.";
@@ -1571,7 +1571,8 @@ fn withdraw_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, Strin
         .ok_or_else(|| NOT_WITHDRAWABLE.to_owned())?;
     if !go {
         return Ok(format!(
-            "{} +escort/withdraw {} go withdraws it.",
+            "Escort {} is {}. To withdraw it, type: +escort/withdraw {} go",
+            job.job(),
             EscortStage::Posted.word(),
             job.job()
         ));

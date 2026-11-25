@@ -99,7 +99,7 @@ A lease past its term is re-debited at your next +tv/lease, or the deposit is fo
 +tv/<n> posture [return|guard|hold]  read, or set, the posture rig n holds when nobody is at its controls: at once from aboard the carrier or the rig's cab, as an order over the relay from elsewhere on the site, never from an OOC room (help field).
 +tv/forget <site>|<body> [go]  strike your readings of a site, or of every site on a body, from your chart.
 From the bay, a scan, a sounding or a drive goes down the ramp first. Mining is help mining.
-Each act shows what it would do and commits nothing; go commits it. Without a number it addresses the rig you named last, or your only rig.";
+Each act shows what it would do and commits nothing; add go to the end of the same command to commit it. Without a number it addresses the rig you named last, or your only rig.";
 
 /// A hull with no bay: `{name}`, `{office}`, `{port}`.
 pub const NO_BAY: &str =
@@ -121,7 +121,7 @@ pub const NO_RIG_FREE: &str = "Occator has no rig free to lease.";
 pub const LEASE_NO_DESIGN: &str =
     "Occator leases no {word}: +tv/lease for a prospecting rig, or {designs}.";
 /// **Doc 32 cut CF.6c**: the return's preview of a wreck out of the bay: `{n}`, `{mark}`.
-pub const WRITE_OFF_PREVIEW: &str = "Rig {n} ({mark}) is a wreck and will not come back: Occator writes it off, keeps your deposit and leaves it where it fell. +tv/{n} lease return go signs it.";
+pub const WRITE_OFF_PREVIEW: &str = "Rig {n} ({mark}) is a wreck and will not come back: Occator writes it off, keeps your deposit and leaves it where it fell. To sign it, type: +tv/{n} lease return go";
 /// **Doc 32 cut CF.6c**: a wreck written off, at its return or its charter's end: `{mark}`.
 pub const WRITTEN_OFF: &str =
     "Occator writes {mark} off where it fell; the deposit is Occator's, and the lease is ended.";
@@ -148,7 +148,7 @@ pub const LEASE_FUNDS: &str = "The lease needs {total} available: {fee} for the 
 /// The take's preview: `{mark}`, `{name}`, `{n}`, `{fee}`, `{days}`, `{deposit}`, and `{go}` the
 /// command that signs it ([`lease_go`]: `+tv/lease go`, or `+tv/lease escort go` for a design
 /// leased by its word, doc 32 §17).
-pub const LEASE_PREVIEW: &str = "Occator leases you {mark} into the {name}'s bay as rig {n}: {fee} now for {days} IC days, and {deposit} held on your account as a deposit. {go} signs it.";
+pub const LEASE_PREVIEW: &str = "Occator leases you {mark} into the {name}'s bay as rig {n}: {fee} now for {days} IC days, and {deposit} held on your account as a deposit. To sign it, type: {go}";
 
 /// **The command that signs a lease preview** (doc 32 §17): `+tv/lease go` for the lane's own
 /// design, `+tv/lease <word> go` for a design leased by its word (doc 32 cut CF.6c).
@@ -171,9 +171,9 @@ pub const RIG_OUT: &str =
 /// The hopper is not empty: `{n}`.
 pub const HOPPER_FULL: &str = "Rig {n}'s hopper is not empty; it goes back to Occator empty.";
 /// The return's preview: `{mark}`, `{deposit}`, `{n}`.
-pub const RETURN_PREVIEW: &str = "You hand {mark} back to Occator; your {deposit} deposit is released. +tv/{n} lease return go signs it.";
+pub const RETURN_PREVIEW: &str = "You hand {mark} back to Occator; your {deposit} deposit is released. To sign it, type: +tv/{n} lease return go";
 /// The return's preview, the deposit forfeit: `{mark}`, `{n}`.
-pub const RETURN_PREVIEW_FORFEIT: &str = "You hand {mark} back to Occator; its deposit was forfeit, so nothing is released. +tv/{n} lease return go signs it.";
+pub const RETURN_PREVIEW_FORFEIT: &str = "You hand {mark} back to Occator; its deposit was forfeit, so nothing is released. To sign it, type: +tv/{n} lease return go";
 /// The return: `{mark}`, `{deposit}`.
 pub const RETURNED: &str =
     "You hand {mark} back across Occator's counter; your {deposit} deposit is released.";
@@ -183,7 +183,7 @@ pub const RETURNED_FORFEIT: &str =
 /// **Doc 36 cut GC.9** (Q-36-34): the return's preview of a damaged rig, its restoration taken
 /// from the deposit: `{mark}`, `{lines}` ([`CHARGE_LINE`]s), `{total}`, `{settle}`
 /// ([`CHARGE_PART`] or [`CHARGE_WHOLE`]), `{n}`.
-pub const RETURN_PREVIEW_CHARGED: &str = "You hand {mark} back to Occator, who restores it before it is leased again: {lines}, {total} in all; {settle} +tv/{n} lease return go signs it.";
+pub const RETURN_PREVIEW_CHARGED: &str = "You hand {mark} back to Occator, who restores it before it is leased again: {lines}, {total} in all; {settle} To sign it, type: +tv/{n} lease return go";
 /// The return of a damaged rig (GC.9): `{mark}`, `{lines}`, `{total}`, `{settle}`.
 pub const RETURNED_CHARGED: &str = "You hand {mark} back across Occator's counter, and Occator restores it before it is leased again: {lines}, {total} in all; {settle}";
 /// One section's part of the restoration (GC.9): `{section}`, `{cost}`.
@@ -208,7 +208,7 @@ pub const REPOSSESSED_LEFT: &str = "Occator repossessed {mark} where it lies on 
      charter ended, and has posted its retrieval.";
 /// The return's preview of a rig past repair (GC.9: the tariff quotes no restoration of an
 /// irrecoverable hull, so the charge is the whole deposit): `{mark}`, `{deposit}`, `{n}`.
-pub const RETURN_PREVIEW_PAST_REPAIR: &str = "You hand {mark} back to Occator; it is past repair, so Occator rebuilds it before it is leased again and keeps all of your {deposit} deposit. +tv/{n} lease return go signs it.";
+pub const RETURN_PREVIEW_PAST_REPAIR: &str = "You hand {mark} back to Occator; it is past repair, so Occator rebuilds it before it is leased again and keeps all of your {deposit} deposit. To sign it, type: +tv/{n} lease return go";
 /// The return of a rig past repair (GC.9): `{mark}`, `{deposit}`.
 pub const RETURNED_PAST_REPAIR: &str = "You hand {mark} back across Occator's counter; it is past repair, so Occator rebuilds it before it is leased again and keeps all of your {deposit} deposit.";
 /// The section word for a component installed at unit level (GC.9's breakdown).
@@ -282,7 +282,7 @@ pub const LAUNCH_FORFEIT: &str = "Rig {n}'s deposit is forfeit; it stays in the 
 pub const LAUNCH_ENDED: &str = "Rig {n}'s lease from Occator has ended; it stays in the bay until it goes back to the {counter} in {port}.";
 /// The launch's preview: `{n}`, `{mark}`, `{ramp}`, `{site}`, `{secs}`, `{real}`, `{now}`,
 /// `{after}`.
-pub const LAUNCH_PREVIEW: &str = "Rig {n} ({mark}) would go down the {ramp} onto {site}: {secs} IC s{real}; charge {now} → {after} %. +tv/{n} launch go sends it.";
+pub const LAUNCH_PREVIEW: &str = "Rig {n} ({mark}) would go down the {ramp} onto {site}: {secs} IC s{real}; charge {now} → {after} %. To send it, type: +tv/{n} launch go";
 /// The launch, filed: `{n}`, `{ramp}`, `{when}`.
 pub const LAUNCH_FILED: &str = "Rig {n} starts down the {ramp}: on the ground {when}.";
 /// The launch, done: `{n}`, `{ramp}`, `{site}`.
@@ -304,12 +304,12 @@ pub const RECOVER_FAR: &str =
 /// The recover's preview: `{n}`, `{mark}`, `{ramp}`, `{name}`, `{secs}`, `{real}`, `{now}`,
 /// `{after}`, `{hopper}`, `{then}` (doc 20 cut SM.8: the unload that follows, [`RECOVER_THEN`],
 /// [`RECOVER_THEN_PART`] or [`RECOVER_THEN_NONE`], empty for an empty hopper).
-pub const RECOVER_PREVIEW: &str = "Rig {n} ({mark}) would climb the {ramp} into the {name}'s bay: {secs} IC s{real}; charge {now} → {after} %; hopper {hopper}{then}. +tv/{n} recover go brings it in.";
+pub const RECOVER_PREVIEW: &str = "Rig {n} ({mark}) would climb the {ramp} into the {name}'s bay: {secs} IC s{real}; charge {now} → {after} %; hopper {hopper}{then}. To bring it in, type: +tv/{n} recover go";
 /// The recover's preview when the rig's battery row cannot be read (§4.1 "a TV cannot be
 /// stranded by its battery": a recover spends nothing, so it never needs the battery — the
 /// fixer round's item 3): `{n}`, `{mark}`, `{ramp}`, `{name}`, `{secs}`, `{real}`, `{hopper}`,
 /// `{then}` (doc 20 cut SM.8: the unload that follows, [`RECOVER_THEN`], or empty).
-pub const RECOVER_PREVIEW_UNREAD: &str = "Rig {n} ({mark}) would climb the {ramp} into the {name}'s bay: {secs} IC s{real}; its charge cannot be read; hopper {hopper}{then}. +tv/{n} recover go brings it in.";
+pub const RECOVER_PREVIEW_UNREAD: &str = "Rig {n} ({mark}) would climb the {ramp} into the {name}'s bay: {secs} IC s{real}; its charge cannot be read; hopper {hopper}{then}. To bring it in, type: +tv/{n} recover go";
 /// The recover, filed: `{n}`, `{ramp}`, `{when}`.
 pub const RECOVER_FILED: &str = "Rig {n} starts up the {ramp}: in the bay {when}.";
 /// The recover, done: `{n}`, `{name}`.
@@ -322,7 +322,7 @@ pub const DUMP_NO_SPOIL: &str = "{site} has no spoil heap laid out; nothing is d
 /// An empty hopper: `{n}`.
 pub const DUMP_EMPTY: &str = "Rig {n}'s hopper is empty.";
 /// The dump's preview: `{n}`, `{mark}`, `{load}`, `{site}`.
-pub const DUMP_PREVIEW: &str = "Rig {n} ({mark}) would dump {load} onto the spoil at {site}; it cannot be taken back. +tv/{n} dump go dumps it.";
+pub const DUMP_PREVIEW: &str = "Rig {n} ({mark}) would dump {load} onto the spoil at {site}; it cannot be taken back. To dump it, type: +tv/{n} dump go";
 /// The dump, filed: `{n}`.
 pub const DUMP_FILED: &str = "Rig {n} opens its hopper over the spoil.";
 /// The dump, done: `{n}`, `{load}`, `{site}`.
@@ -364,7 +364,7 @@ pub const CAP_OPERATOR: &str =
 /// The site's cap: `{site}`, `{cap}`.
 pub const CAP_SITE: &str = "{site} has {cap} rigs out already; no more go down until one comes in.";
 /// **Doc 32 cut CF.5 (Q-CF-18)**: `+tv/{n} recover` without `go` while the rig is in a field.
-pub const FIELD_RECOVER_PREVIEW: &str = "Rig {n} is in a field: it comes in only from beside the ramp, under its own power, and leaves the field as it does. +tv/{n} recover go brings it in.";
+pub const FIELD_RECOVER_PREVIEW: &str = "Rig {n} is in a field: it comes in only from beside the ramp, under its own power, and leaves the field as it does. To bring it in, type: +tv/{n} recover go";
 /// The world's cap: `{cap}`.
 pub const CAP_WORLD: &str =
     "The Registry has {cap} rigs out across the sites; no more go down until one comes in.";
@@ -395,10 +395,10 @@ pub const ACT_LINE: &str = "  {doing}: done {when}.";
 
 /// The scan's preview: `{n}`, `{mark}`, `{launch}`, `{count}`, `{field}`, `{footing}`,
 /// `{hidden}`, `{time}`, `{real}`, `{now}`, `{after}`.
-pub const SCAN_PREVIEW: &str = "Rig {n} ({mark}) would {launch}scan the {count} fields around {field} {footing}{hidden}: {time}{real}; charge {now} → {after} %. +tv/{n} scan go starts it.";
+pub const SCAN_PREVIEW: &str = "Rig {n} ({mark}) would {launch}scan the {count} fields around {field} {footing}{hidden}: {time}{real}; charge {now} → {after} %. To start it, type: +tv/{n} scan go";
 /// The sounding's preview: `{n}`, `{mark}`, `{launch}`, `{count}`, `{addr}`, `{heard}`,
 /// `{time}`, `{real}`, `{now}`, `{after}`, `{quiet}`.
-pub const SOUND_PREVIEW: &str = "Rig {n} ({mark}) would {launch}sound the {count} pockets around {addr}{heard}: {time}{real}; charge {now} → {after} %. +tv/{n} sound{quiet} go starts it.";
+pub const SOUND_PREVIEW: &str = "Rig {n} ({mark}) would {launch}sound the {count} pockets around {addr}{heard}: {time}{real}; charge {now} → {after} %. To start it, type: +tv/{n} sound{quiet} go";
 /// `{launch}` when the act implies the launch: `{ramp}`, `{site}`.
 pub const IMPLIED_LAUNCH: &str = "go down the {ramp} onto {site}, then ";
 /// `{time}` when the act implies the launch: `{down}`, `{secs}`.
@@ -493,7 +493,7 @@ pub const WHY_MOVED: &str = "it was moved before it finished";
 /// A refusal's reason (doc 32 cut CF.2): the site promoted while the act ran.
 pub const WHY_FIELD_OPENED: &str = "the field opened on the site; it stopped where it stood";
 /// The forget's preview: `{what}`, `{fields}`, `{pockets}`, `{arg}`.
-pub const FORGET_PREVIEW: &str = "You would strike {what} from your chart: {fields} fields scanned and {pockets} pockets sounded. It cannot be undone. +tv/forget {arg} go strikes it.";
+pub const FORGET_PREVIEW: &str = "You would strike {what} from your chart: {fields} fields scanned and {pockets} pockets sounded. It cannot be undone. To strike it, type: +tv/forget {arg} go";
 /// The forget, done: `{what}`.
 pub const FORGOTTEN: &str = "You strike {what} from your chart.";
 /// Nothing to forget: `{what}`.
@@ -521,7 +521,7 @@ pub const QUIET_OFF: &str = "You will hear other rigs' soundings again.";
 
 /// The drive's preview: `{n}`, `{mark}`, `{launch}`, `{m}`, `{target}`, `{time}`, `{real}`,
 /// `{now}`, `{after}` (after the drive), `{home}` (after the trip home), `{arg}`.
-pub const DRIVE_PREVIEW: &str = "Rig {n} ({mark}) would {launch}drive {m} m to {target}: {time}{real}; charge {now} → {after} %, {home} % after the trip home. +tv/{n} drive {arg} go sends it.";
+pub const DRIVE_PREVIEW: &str = "Rig {n} ({mark}) would {launch}drive {m} m to {target}: {time}{real}; charge {now} → {after} %, {home} % after the trip home. To send it, type: +tv/{n} drive {arg} go";
 /// The drive, filed: `{n}`, `{target}`, `{when}`.
 pub const DRIVE_FILED: &str = "Rig {n} drives for {target}: there {when}.";
 /// The drive, filed from the bay: `{n}`, `{ramp}`, `{target}`, `{when}`.
@@ -552,10 +552,10 @@ pub const DRIVE_MOVED: &str = "That rig has moved since the drive was planned; p
 /// The recover's preview from farther than beside the ramp: `{n}`, `{mark}`, `{m}`, `{ramp}`,
 /// `{name}`, `{drive}`, `{climb}`, `{real}`, `{now}`, `{after}`, `{hopper}`, `{then}` (doc 20 cut
 /// SM.8).
-pub const RECOVER_DRIVE_PREVIEW: &str = "Rig {n} ({mark}) would drive {m} m to the {ramp} and climb into the {name}'s bay: {drive} IC s, then {climb} IC s{real}; charge {now} → {after} %; hopper {hopper}{then}. +tv/{n} recover go brings it in.";
+pub const RECOVER_DRIVE_PREVIEW: &str = "Rig {n} ({mark}) would drive {m} m to the {ramp} and climb into the {name}'s bay: {drive} IC s, then {climb} IC s{real}; charge {now} → {after} %; hopper {hopper}{then}. To bring it in, type: +tv/{n} recover go";
 /// The same with the rig's battery row unreadable: `{n}`, `{mark}`, `{m}`, `{ramp}`, `{name}`,
 /// `{drive}`, `{climb}`, `{real}`, `{hopper}`, `{then}`.
-pub const RECOVER_DRIVE_PREVIEW_UNREAD: &str = "Rig {n} ({mark}) would drive {m} m to the {ramp} and climb into the {name}'s bay: {drive} IC s, then {climb} IC s{real}; its charge cannot be read; hopper {hopper}{then}. +tv/{n} recover go brings it in.";
+pub const RECOVER_DRIVE_PREVIEW_UNREAD: &str = "Rig {n} ({mark}) would drive {m} m to the {ramp} and climb into the {name}'s bay: {drive} IC s, then {climb} IC s{real}; its charge cannot be read; hopper {hopper}{then}. To bring it in, type: +tv/{n} recover go";
 /// The recover with a leg, filed: `{n}`, `{ramp}`, `{when}`.
 pub const RECOVER_DRIVE_FILED: &str = "Rig {n} drives to the {ramp}: in the bay {when}.";
 /// The rig cannot afford its own leg home (lead ruling 5): `{n}`, `{now}`, `{need}`, `{ramp}`.
@@ -594,7 +594,7 @@ pub const MAP_FAMILY_UNKNOWN: &str =
 /// **The mining preview from the operator's own reading** (§6; §1 beat 8): `{n}`, `{mark}`,
 /// `{addr}`, `{class}`, `{ore}`, `{cycles}`, `{yields}`, `{total}`, `{secs}`, `{real}`, `{hop0}`,
 /// `{hop1}`, `{cap}`, `{room}`, `{now}`, `{after}`, `{home}`, `{also}`, `{arg}`.
-pub const MINE_PREVIEW: &str = "Rig {n} ({mark}) would mine {addr} {class} {ore}: {cycles}, {yields} = {total} t, {secs} IC s{real}; hopper {hop0} → {hop1} of {cap} t; hold room after: {room} t; charge {now} → {after} % ({home} % after the trip home).{also} +tv/{n} mine{arg} go starts it.";
+pub const MINE_PREVIEW: &str = "Rig {n} ({mark}) would mine {addr} {class} {ore}: {cycles}, {yields} = {total} t, {secs} IC s{real}; hopper {hop0} → {hop1} of {cap} t; hold room after: {room} t; charge {now} → {after} % ({home} % after the trip home).{also} To start it, type: +tv/{n} mine{arg} go";
 /// `{cycles}` for one cycle.
 pub const ONE_CYCLE: &str = "1 cycle";
 /// `{cycles}` for more: `{c}`.
@@ -604,7 +604,7 @@ pub const MINE_ALSO: &str = " Also {class} {ore} here: +tv/{n} mine {word}.";
 /// **The blind preview** (§6, verbatim: "No reading here: the first cycle will tell." and "3 t of
 /// room needed to core an unread pocket"): `{n}`, `{mark}`, `{addr}`, `{ore}`, `{secs}`, `{real}`,
 /// `{room}`, `{now}`, `{after}`, `{home}`, `{pit}`, `{arg}`.
-pub const MINE_PREVIEW_BLIND: &str = "No reading here: the first cycle will tell. Rig {n} ({mark}) would core {addr} for {ore}: 1 cycle, {secs} IC s{real}; {room} t of room needed to core an unread pocket; charge {now} → {after} % ({home} % after the trip home).{pit} +tv/{n} mine{arg} go starts it.";
+pub const MINE_PREVIEW_BLIND: &str = "No reading here: the first cycle will tell. Rig {n} ({mark}) would core {addr} for {ore}: 1 cycle, {secs} IC s{real}; {room} t of room needed to core an unread pocket; charge {now} → {after} % ({home} % after the trip home).{pit} To start it, type: +tv/{n} mine{arg} go";
 /// `{pit}` over a worked pocket (a public fact, the same for every asker).
 pub const PIT_WORKED: &str = " Every map shows a pit here: someone has mined this pocket.";
 /// `{pit}` over a pocket every map shows worked out.
@@ -730,7 +730,7 @@ pub const RECOVER_THEN_NONE: &str =
 /// **The unload's preview** (§7.1 "previewed per good"): `{n}`, `{mark}`, `{load}`, `{name}`,
 /// `{secs}`, `{real}`, `{hop0}`, `{hop1}`, `{cap}`, `{room}`, `{stays}` ([`UNLOAD_STAYS`] for a
 /// whole unload that leaves some, else empty), `{arg}`.
-pub const UNLOAD_PREVIEW: &str = "Rig {n} ({mark}) would unload {load} into the {name}'s hold: {secs} IC s{real}; hopper {hop0} → {hop1} of {cap} t; hold room after: {room} t.{stays} +tv/{n} unload{arg} go moves it.";
+pub const UNLOAD_PREVIEW: &str = "Rig {n} ({mark}) would unload {load} into the {name}'s hold: {secs} IC s{real}; hopper {hop0} → {hop1} of {cap} t; hold room after: {room} t.{stays} To move it, type: +tv/{n} unload{arg} go";
 /// What an unload leaves in the hopper: `{stays}`.
 pub const UNLOAD_STAYS: &str = " {stays} stays in the hopper: the hold has no room for it.";
 /// The unload, filed: `{n}`, `{when}`.
@@ -810,7 +810,7 @@ pub const PLAN_STEP_HOURS: &str = ", about {h} IC h";
 pub const PLAN_PREVIEW_FAR: &str = " ({k} of its pockets you read lie beyond what a full charge can work and bring home; the plan passes over them)";
 /// The preview's tail: `{name}`, `{room}`, `{shared}` ([`PLAN_SHARED`] per other rig), `{hours}`,
 /// `{n}`, `{list}`.
-pub const PLAN_PREVIEW_TAIL: &str = "Between them it drives, recovers and unloads at every full hopper, and parks when no cycle fits the {name}'s hold ({room} t unreserved{shared}) or the list is worked out: at least {hours} IC h of work. +tv/{n} plan {list} go files it.";
+pub const PLAN_PREVIEW_TAIL: &str = "Between them it drives, recovers and unloads at every full hopper, and parks when no cycle fits the {name}'s hold ({room} t unreserved{shared}) or the list is worked out: at least {hours} IC h of work. To file it, type: +tv/{n} plan {list} go";
 /// Another rig's live plan draws on the hold: `{m}`.
 pub const PLAN_SHARED: &str = "; rig {m}'s plan draws on it too";
 /// Filed: `{n}`, `{no}`, `{when}`.
@@ -6666,7 +6666,7 @@ mod tests {
             assert!(!text.contains('{'), "{text}");
         }
         // §1 beat 9's shape: "…; hopper 12 of 12 t; then it unloads 12 t of Metal ore into the
-        // hold, 62 t of room after. +tv/1 recover go brings it in."
+        // hold, 62 t of room after. To bring it in, type: +tv/1 recover go"
         let then = RECOVER_THEN
             .replace("{load}", "12 t of Metal ore")
             .replace("{room}", "62");
@@ -6684,13 +6684,13 @@ mod tests {
         assert!(
             preview.ends_with(
                 "; hopper 12 of 12 t; then it unloads 12 t of Metal ore into the hold, 62 t of \
-                 room after. +tv/1 recover go brings it in."
+                 room after. To bring it in, type: +tv/1 recover go"
             ),
             "{preview}"
         );
         let empty = RECOVER_PREVIEW.replace("{then}", "");
         assert!(
-            empty.ends_with("; hopper {hopper}. +tv/{n} recover go brings it in."),
+            empty.ends_with("; hopper {hopper}. To bring it in, type: +tv/{n} recover go"),
             "an empty hopper's preview is SM.4b's"
         );
         assert!(crate::port::voyage::HOPPER_LOADED.contains("+tv/{n} unload moves it"));

@@ -159,20 +159,20 @@ pub const REFITTED: &str = "as a Dray-P";
 /// Dray-P."): a hull a recall freed, chartered again (doc 41 cut RS.9c).
 pub const REFIT_ALREADY: &str = "is already a Dray-P.";
 /// `tacsim::port::licence::LICENCE_PREVIEW`'s tail (`licence.rs:138`).
-pub const LICENCE_PREVIEWED: &str = "+license/buy go buys it.";
+pub const LICENCE_PREVIEWED: &str = "To buy it, type: +license/buy go";
 /// `licence::LICENCE_IN_FORCE` (`licence.rs:112`).
 pub const LICENCE_IN_FORCE: &str = "in force until";
 /// `licence::LICENCE_NONE` (`licence.rs:109`).
 pub const LICENCE_NONE: &str = "You hold no prospecting license";
-/// `tacsim::port::tv::LEASE_PREVIEW`'s tail after its `{go}` (doc 32 §17): the preview names the
+/// `tacsim::port::tv::LEASE_PREVIEW`'s tail before its `{go}` (doc 32 §17): the preview names the
 /// command that signs it, `+tv/lease go` or `+tv/lease escort go` ([`lease_previewed`]).
-pub const LEASE_PREVIEWED: &str = " signs it.";
+pub const LEASE_PREVIEWED: &str = "To sign it, type: ";
 
-/// **The lease preview's tail for the signing command `go`** (`tv::lease_go`): `+tv/lease go
-/// signs it.` for the prospector, `+tv/lease escort go signs it.` for the escort.
+/// **The lease preview's tail for the signing command `go`** (`tv::lease_go`): `To sign it, type:
+/// +tv/lease go` for the prospector, `To sign it, type: +tv/lease escort go` for the escort.
 #[must_use]
 pub fn lease_previewed(go: &str) -> String {
-    format!("{go}{LEASE_PREVIEWED}")
+    format!("{LEASE_PREVIEWED}{go}")
 }
 /// **A rig's launch, with the mind sealed aboard** (doc 23 cut S.4b-1; Q-38-29: the bot types the
 /// player's half): `+tv/<n> launch mind=<word> go`, or the stock `+tv/<n> launch go` with no
@@ -231,7 +231,7 @@ pub const ASHORE: &str = "You cycle the lock out into the ";
 /// `tv::GROUND_COLD` (`tv.rs:391`): the site's ground is not warm yet.
 pub const COLD: &str = "is still being mapped";
 /// `tv::SCAN_PREVIEW`'s tail for rig 1 (`tv.rs:307`).
-pub const SCAN_PREVIEWED: &str = "+tv/1 scan go starts it.";
+pub const SCAN_PREVIEWED: &str = "To start it, type: +tv/1 scan go";
 /// `site_map::SITE_LEGEND`'s head as printed (`site_map.rs:79`; raw, two spaces).
 pub const LEGEND_HEAD: &str = "@ you  H hull";
 /// `tv::LAUNCHED` for rig 1 (`tv.rs:209`).
@@ -294,7 +294,7 @@ pub const NO_ROOM: &str = " has no room for another cycle";
 /// `tv::MINE_HOLD_FULL` (`tv.rs:570`).
 pub const NO_HOLD_ROOM: &str = "has no unreserved room for another cycle";
 /// `tv::RECOVER_PREVIEW`'s tail for rig 1 (`tv.rs:222`).
-pub const RECOVER_PREVIEWED: &str = "+tv/1 recover go brings it in.";
+pub const RECOVER_PREVIEWED: &str = "To bring it in, type: +tv/1 recover go";
 /// `tv::RECOVERED_UNLOADING` (`tv.rs:656`).
 pub const BACK_IN_BAY: &str = "it unloads its hopper into the hold next";
 /// `tv::UNLOADED` for rig 1 (`tv.rs:647`).

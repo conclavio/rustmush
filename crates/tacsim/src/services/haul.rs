@@ -133,7 +133,7 @@ pub const HAUL_HELP: &str = "+haul                                  your hauls, 
 Goods not delivered in time go back to the shipper at your next port, and the bond is theirs.";
 /// The post's preview (`{qty}`, `{good}`, `{origin}`, `{port}`, `{fee}`, `{value}`, `{bond}`).
 pub const POST_PREVIEW: &str = "Post a haul of {qty} {good} from {origin} to {port} for {fee}, \
-declared at {value} (a hauler bonds {bond}). +haul/post ... go posts it.";
+declared at {value} (a hauler bonds {bond}). To post it, type the same +haul/post line again with go at the end.";
 /// The post's line (`{job}`, `{qty}`, `{good}`, `{port}`, `{fee}`).
 pub const POSTED: &str =
     "Haul {job} posted: {qty} {good} to {port}, {fee} escrowed and paid on delivery.";
@@ -190,7 +190,7 @@ pub const TOO_LATE: &str = "The haul's term has ended; the goods go back to the 
 pub const NOT_ABOARD: &str = "You carry no goods for haul {job}.";
 /// The delivery's preview (`{qty}`, `{good}`, `{port}`).
 pub const DELIVER_PREVIEW: &str =
-    "Hand over {qty} {good} at {port}. +haul/deliver <job> go hands them over.";
+    "Hand over {qty} {good} at {port}. To hand them over, type: +haul/deliver <job> go";
 /// The delivery's line (`{job}`).
 pub const DELIVERING: &str =
     "The goods of haul {job} are handed over; the fee and your bond follow.";
@@ -1078,7 +1078,8 @@ fn withdraw_cmd(ctx: &mut Ctx<'_>, rest: &str, go: bool) -> Result<String, Strin
         .ok_or_else(|| NOT_WITHDRAWABLE.to_owned())?;
     if !go {
         return Ok(format!(
-            "{} +haul/withdraw {} go withdraws it.",
+            "Haul {} is {}. To withdraw it, type: +haul/withdraw {} go",
+            job.job(),
             HaulStage::Posted.word(),
             job.job()
         ));

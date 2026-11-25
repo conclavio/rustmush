@@ -46,6 +46,19 @@ when the houses move them, and stock and intake are finite. Read them where you
 stand with `+market/list`; `+market/depth <catalog>:<code>` gives the public
 picture of one good.
 
+## Buying
+
+`+market/buy <good> <amount>` buys by name: `+market/buy reaction mass 12`
+finds the cheapest seller in the port with that much, and answers with the
+price, the total and the one line that buys it, `+market/buy go`. Nothing is
+paid until you type that. The two-step way is the same sale by number:
+`+market/quote <listing>=<amount>` gives a quote number, and
+`+market/accept <quote>` takes it up.
+
+A line marked "wanted" is a bid: that house buys the good and sells none.
+Quoting one says who does sell the good here. Sell into a bid with
+`+market/sell <listing>`.
+
 ## A worked two legs
 
 Every figure below is one you read off the game, not one to remember.
@@ -56,8 +69,9 @@ Every figure below is one you read off the game, not one to remember.
   until the plan reads the hold full by mass and by volume.
 
   At the chandlery: `+ship/plan stickney` again. Buy reaction mass to its burn
-  and provisions to its crew-days; plan once more, since what you bunkered weighs
-  too, and top up if the figures moved.
+  and provisions to its crew-days by name, for example `+market/buy reaction
+  mass <tonnes>` and then `+market/buy go`; plan once more, since what you
+  bunkered weighs too, and top up if the figures moved.
 
   Board in the berth gallery and `+ship/undock stickney`, or file the day as a
   sailing plan and log off.

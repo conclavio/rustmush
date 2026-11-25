@@ -62,7 +62,8 @@ pub(crate) fn lease_escort(rig: &mut Rig, pilot: ObjId) {
     );
     // Doc 32 §17: the preview names the command that signs it, never the prospector's.
     assert!(
-        preview.contains("+tv/lease escort go signs it.") && !preview.contains("+tv/lease go"),
+        preview.contains("To sign it, type: +tv/lease escort go")
+            && !preview.contains("+tv/lease go"),
         "the escort's preview names its own signature: {preview}"
     );
     let nothing = run(&mut rig.tw, pilot, "+tv/lease tank");

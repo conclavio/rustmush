@@ -670,7 +670,7 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
                 requires,
                 vec![
                     (CERES_PACK.into(), 4),
-                    ("tacsim.quests.first_steps".into(), 1)
+                    ("tacsim.quests.first_steps".into(), 2)
                 ]
             ),
             // Doc 20 cut SM.2: the site regions require nothing; each site
@@ -724,11 +724,11 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
     }
     assert!(out.contains(" tacsim.passengers.stickney@2 ("), "{out}");
     assert!(out.contains(" tacsim.passengers.ceres@1 ("), "{out}");
-    assert!(out.contains(" tacsim.quests.first_steps@1 ("), "{out}");
-    assert!(out.contains(" tacsim.quests.leila_followup@1 ("), "{out}");
+    assert!(out.contains(" tacsim.quests.first_steps@2 ("), "{out}");
+    assert!(out.contains(" tacsim.quests.leila_followup@2 ("), "{out}");
     assert!(out.contains(" tacsim.quests.port_connections@1 ("), "{out}");
     assert!(out.contains(" tacsim.quests.safe_passage@1 ("), "{out}");
-    assert!(out.contains(" tacsim.quests.survey_work@1 ("), "{out}");
+    assert!(out.contains(" tacsim.quests.survey_work@2 ("), "{out}");
     // Doc 18 cut IC2: and the lane after them (at version 3 since cut IC8).
     assert!(
         out.contains(&format!(" {LANE_PACK}@{LANE_VERSION} (")),
@@ -1501,13 +1501,18 @@ fn ic1_a_kept_world_takes_the_stations_at_its_next_boot() {
     assert_eq!(after.get("tacsim.crew.ceres").map(|l| l.0), Some(2));
     for name in [
         "tacsim.passengers.ceres",
-        "tacsim.quests.first_steps",
-        "tacsim.quests.leila_followup",
         "tacsim.quests.port_connections",
         "tacsim.quests.safe_passage",
-        "tacsim.quests.survey_work",
     ] {
         assert_eq!(after.get(name).map(|l| l.0), Some(1), "{name}");
+    }
+    // The 2026-11-24 playtest's "To <verb> it, type:" wording moved these three to 2.
+    for name in [
+        "tacsim.quests.first_steps",
+        "tacsim.quests.leila_followup",
+        "tacsim.quests.survey_work",
+    ] {
+        assert_eq!(after.get(name).map(|l| l.0), Some(2), "{name}");
     }
     assert_eq!(
         location(&tw, walker),

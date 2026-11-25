@@ -3185,3 +3185,36 @@ fn crit9_pooled_listing_release_reserve_and_reconcile_hardening() {
         "reconcile_lot_holds must withdraw a pooled listing whose reservation is no longer Held"
     );
 }
+
+// ---- the 2026-11-24 playtest: buying by name in one step ----------------------------
+
+/// **`+market/buy <good> <amount>` then `+market/buy go`** at the gate's counter: one quote of
+/// the named good, then the newest open quote taken up and delivered into the gate's hold, as
+/// `+market/accept <quote>` delivers it; afterwards nothing waits.
+#[test]
+fn buy_by_name_then_go_delivers_into_the_gate_hold() {
+    let mut r = rig();
+    let listing = r.listing.expect("listed");
+    let quoted = ok(&mut r.tw, r.pat, "+market/buy iron 5");
+    assert!(
+        quoted.starts_with("Ares sells you 5 Iron, graded at "),
+        "{quoted}"
+    );
+    assert!(
+        quoted.ends_with(" To buy it, type: +market/buy go"),
+        "{quoted}"
+    );
+    let q = market_of(&r.tw)
+        .quotes_of_buyer(&PrincipalId::Object(r.pat))
+        .max_by_key(|q| q.id)
+        .cloned()
+        .expect("the quote");
+    assert_eq!((q.listing, q.quantity), (listing, 5));
+    let agreed = ok(&mut r.tw, r.pat, "+market/buy go");
+    assert!(agreed.contains("Agreed. Contract #"), "{agreed}");
+    land(&mut r.tw, 0x51).expect("the draw lands");
+    assert_eq!(pool(&mut r.tw, &r.families, r.pat_hold), (5, 5));
+    let again = err(&mut r.tw, r.pat, "+market/buy go");
+    assert_eq!(again, mush_market::BUY_NOTHING_WAITING);
+    no_settlement_pages(&r.tw);
+}
