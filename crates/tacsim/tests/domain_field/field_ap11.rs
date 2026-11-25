@@ -861,7 +861,17 @@ async fn ap11_an_absent_players_outfit_through_a_raid_and_their_return() {
         s.exchange()
     );
 
-    // (5) The return. What the game queued for the owner while he was away, in order.
+    // (5) The return. What the game queued for the owner while he was away, in order. The
+    // prospector's line is queued on the recover's next retry pass after it landed (about ten
+    // seconds), so it is waited for rather than assumed: step (4)'s raid can end sooner than
+    // that (it did when the 2026-11-24 Ceres v4 edit renumbered the world).
+    let put_aboard = PUT_ABOARD.replace("{unit}", &homer.0.to_string());
+    let told = s
+        .wait(30, |rig, _| {
+            pending_notices(rig.tw.world(), owner).contains(&put_aboard)
+        })
+        .await;
+    assert!(told, "the owner is told the prospector is aboard");
     assert!(task(&s.rig).is_some(), "the field still runs");
     let queued = pending_notices(s.rig.tw.world(), owner);
     let opened = FIELD_OPENED
@@ -871,7 +881,6 @@ async fn ap11_an_absent_players_outfit_through_a_raid_and_their_return() {
         .replace("{unit}", &guard.0.to_string())
         .replace("{posture}", Posture::Guard.label());
     let homing = UNATTENDED.replace("{unit}", &homer.0.to_string());
-    let put_aboard = PUT_ABOARD.replace("{unit}", &homer.0.to_string());
     // Doc 47 CO.11b (D3): the field's own line first, then each rig's, both queued at
     // admission. Then (D4) that the prospector is aboard, queued when the host's recover put
     // it there, not left for the close. Nothing else is queued: no line for his carrier, which

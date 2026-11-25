@@ -205,8 +205,7 @@
       "def": {
         "from": "limbo",
         "names": [
-          "Ceres Freeport <C>;c;ceres",
-          "Limbo <X>;x;limbo;ooc"
+          "Ceres Freeport <C>;c;ceres"
         ],
         "portal": {
           "mode": "open"
@@ -1260,7 +1259,7 @@
     }
   },
   "manifest": {
-    "digest": "495f770ed75ec697dd190ea3702ff400450d51e22f3d670fc0c5748445441521",
+    "digest": "4c82f80a84452b7259b5fa0201f91a707ff92c8bf73f6048e036d8dce4b75f62",
     "id": "neighborhood.ceres_freeport",
     "kind": "neighborhood",
     "requires": [

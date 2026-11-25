@@ -20,6 +20,12 @@
         ["in Luna gray", "in Luna grey"],
         ["the harbormaster at", "the harbourmaster at"]
       ]
+    },
+    {
+      "why": "the owner's 2026-11-24 playtest: no IC exit leads into Limbo, so the Limbo door is one way (+ooc is the way out); the removed return name is put back after its surviving neighbor",
+      "pairs": [
+        ["\"Ceres Freeport <C>;c;ceres\"]", "\"Ceres Freeport <C>;c;ceres\",\"Limbo <X>;x;limbo;ooc\"]"]
+      ]
     }
   ]
 }

@@ -1468,7 +1468,7 @@ fn ic6_the_stamp_follows_leave_and_the_ceres_door() {
         (false, true),
         "a port-to-port move stamps nothing"
     );
-    let _ = run(&mut rig.tw, who, "x");
+    let _ = run(&mut rig.tw, who, "+ooc");
     assert_eq!(location(&rig.tw, who), Some(LIMBO));
     assert_eq!(marks(&rig.tw), (true, false), "the door pass stamped Ceres");
     teleport(&mut rig.tw, who, stickney_gallery);
@@ -1496,7 +1496,7 @@ fn ic6_the_stamp_follows_leave_and_the_ceres_door() {
     assert_eq!(marks(&rig.tw), (false, true));
     let arrivals = c03(&rig.tw);
     teleport(&mut rig.tw, who, arrivals);
-    let _ = run(&mut rig.tw, who, "x");
+    let _ = run(&mut rig.tw, who, "+ooc");
     assert_eq!(location(&rig.tw, who), Some(LIMBO));
     assert_eq!(marks(&rig.tw), (true, false), "the door pass stamped Ceres");
 }
