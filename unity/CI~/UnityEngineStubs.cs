@@ -651,6 +651,15 @@ namespace UnityEngine
         public Rect rect => new Rect(0f, 0f, sizeDelta.x, sizeDelta.y);
     }
 
+    public static class RectTransformUtility
+    {
+        public static bool ScreenPointToLocalPointInRectangle(RectTransform rect, Vector2 screenPoint, Camera cam, out Vector2 localPoint)
+        {
+            localPoint = screenPoint;
+            return rect != null;
+        }
+    }
+
     public sealed class GameObject : Object
     {
         private readonly List<Component> _components = new List<Component>();
@@ -1126,7 +1135,16 @@ namespace UnityEngine
         }
         public class BaseInputModule : UIBehaviour { }
         public class StandaloneInputModule : BaseInputModule { }
-        public interface IPointerClickHandler { }
+        public class PointerEventData
+        {
+            public Vector2 position { get; set; }
+            public Vector2 delta { get; set; }
+            public Vector2 scrollDelta { get; set; }
+            public Camera pressEventCamera { get; set; }
+        }
+        public interface IPointerClickHandler { void OnPointerClick(PointerEventData eventData); }
+        public interface IDragHandler { void OnDrag(PointerEventData eventData); }
+        public interface IScrollHandler { void OnScroll(PointerEventData eventData); }
     }
 
     namespace UI
