@@ -103,9 +103,7 @@ test-group = 'load-sensitive'
 #   FLAKY_KNOWN_BLESS=1 cargo test -p mush-contract-tests --test ci_policy flaky_known::
 [[profile.default.overrides]]
 filter = '''
-    (binary_id(mush-bot::mining_cohort) & test(=a_bot_hires_launches_mines_recovers_and_sells_with_a_detachment))
-  | (binary_id(mush-bot::mining_cohort) & test(=a_captain_and_its_escort_fight_the_raider_in_an_ic_field))
-  | (binary_id(mush-gateway::split_halves) & test(/^arena_story_split::/))
+    (binary_id(mush-gateway::split_halves) & test(/^arena_story_split::/))
   | (binary_id(mush-gateway::split_halves) & test(/^gateway_generations_unit::/))
   | (binary_id(mush-gateway::split_halves) & test(/^server_panic_relaunch::/))
   | (binary_id(mush-gateway::split_halves) & test(/^two_gateways::/))

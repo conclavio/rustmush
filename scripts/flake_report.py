@@ -219,7 +219,9 @@ class Github:
             if done.returncode == 0:
                 break
             why = done.stderr.decode(errors="replace").strip()
-            transient = any(mark in why for mark in ("HTTP 5", "timeout", "connection", "EOF"))
+            transient = any(
+                mark in why for mark in ("HTTP 5", "timeout", "connection", "EOF", "stream error")
+            )
             if wait is None or not transient:
                 raise RuntimeError(f"gh api {path}: {why}")
             time.sleep(wait)

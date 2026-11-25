@@ -362,10 +362,13 @@ pub(crate) fn id_after(text: &str, after: &str) -> u64 {
 /// **A player's credit account and balance, minor units**, off their own `@account/list` (a
 /// read; the float's precedent).
 pub(crate) async fn credit_of(client: &mut arena::Client) -> (u64, i64) {
-    let listed = client.say("@account/list", " tacsim.credit = ").await;
+    // The list read whole (doc 51 rule S): a needle inside the row could end
+    // the read with the balance cut short.
+    let listed = client.ask_whole("@account/list").await;
     let row = listed
-        .lines()
-        .find(|line| line.trim_start().starts_with('#') && line.contains(" tacsim.credit = "))
+        .rows("#")
+        .into_iter()
+        .find(|line| line.contains(" tacsim.credit = "))
         .unwrap_or_else(|| panic!("no tacsim.credit account:\n{listed}"));
     let id = id_after(row, "#");
     let amount: String = row

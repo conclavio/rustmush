@@ -37,24 +37,6 @@
 # --- Rows of docs/flaky-tests.md that are open, covered or on watch ---------
 
 [[flaky]]
-binary = "mush-bot::mining_cohort"
-test = "a_bot_hires_launches_mines_recovers_and_sells_with_a_detachment"
-class = "unknown"
-row = 5
-listed = "2026-11-23"
-expires = "2026-12-07"
-note = "the row's busy-answer cause is fixed (#764); listed for its second failure, \"no buying metal ore bid\", seen once and on watch"
-
-[[flaky]]
-binary = "mush-bot::mining_cohort"
-test = "a_captain_and_its_escort_fight_the_raider_in_an_ic_field"
-class = "unknown"
-row = 6
-listed = "2026-11-23"
-expires = "2026-12-07"
-note = "open; a stall now fails inside the 18-minute story budget with both bots' last lines"
-
-[[flaky]]
 binary = "mush-server::split_boundary"
 test = "boot_parity::stop_ledger_archive_joins_the_pass_rather_than_detaching_it"
 class = "clock"

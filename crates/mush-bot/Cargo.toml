@@ -60,6 +60,9 @@ mush-org.workspace = true
 # Doc 44 MW.5: the renewal service's player sentences (`mind_renewal::player`), which the
 # bot's sentence table (`src/mine/minds.rs`) tests its needles against (contract tests only).
 mush-market.workspace = true
+# Doc 51 unit FL.5: the story kit (one busy table, the whole-reply read, the
+# story budget, `Figures` and `Odds`); a test helper, never in the runtime graph.
+mush-storykit.workspace = true
 
 [lints]
 workspace = true
