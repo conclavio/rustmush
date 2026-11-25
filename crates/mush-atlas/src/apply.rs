@@ -49,9 +49,9 @@ use crate::record::{
     HookRec, HydrationPolicy, KIND_CHECKPOINT, KIND_CONNECTION, KIND_FEATURE, KIND_HOOK,
     KIND_LOCALITY, KIND_NEIGHBORHOOD, KIND_PORTAL, KIND_REGION, KIND_SECRET, KIND_SITE,
     KIND_STRUCTURE, KIND_TILE, LegDef, LocalityRec, MAX_NAME_BYTES, MAX_TEXT_BYTES,
-    NeighborhoodRec, PortalGeometry, PortalRec, RecordKey, RegionKind, RegionRec, ReviewState,
-    RoomGeo, SecretRec, SiteOrigin, SiteRec, StructureRec, SurfaceRef, TileOwner, TileRec,
-    TimePolicy, check_optional_text, check_text, record_key, roomgeo_key,
+    NeighborhoodRec, PortalGeometry, PortalMode, PortalRec, RecordKey, RegionKind, RegionRec,
+    ReviewState, RoomGeo, SecretRec, SiteOrigin, SiteRec, StructureRec, SurfaceRef, TileOwner,
+    TileRec, TimePolicy, check_optional_text, check_text, record_key, roomgeo_key,
 };
 
 /// The entry kinds this crate owns, with their phases.
@@ -1641,10 +1641,20 @@ fn create_exit(
     let forward_spec = def.names.first().cloned().unwrap_or_default();
     let forward = open_exit(ctx, from, &forward_spec, to).map_err(|e| format!("{id}: {e}"))?;
     exits.push(forward);
-    if let Some(expr) = lock
-        && let Some(o) = ctx.w.get_mut(forward)
-    {
-        o.locks.insert(mush_core::lock::LockType::Basic, expr);
+    if let Some(expr) = lock {
+        if let Some(o) = ctx.w.get_mut(forward) {
+            o.locks.insert(mush_core::lock::LockType::Basic, expr);
+        }
+        // The 2026-11-24 playtest: a locked exit says it is locked, never the
+        // "You can't go that way." of an exit that is not there.
+        let staff = def.lock.as_deref().map(str::trim) == Some("staff");
+        ctx.w
+            .set_attr(
+                forward,
+                "fail",
+                Attr::text(locked_refusal(def.portal.mode, staff).as_str(), GOD),
+            )
+            .map_err(|e| e.to_string())?;
     }
     if let Some(back_spec) = def.names.get(1) {
         let back = open_exit(ctx, to, back_spec, from).map_err(|e| format!("{id}: {e}"))?;
@@ -1675,6 +1685,26 @@ fn create_exit(
     put_doc(ctx, record_key(KIND_PORTAL, &key), &rec);
     state.records.portals.insert(key, rec);
     Ok(forward)
+}
+
+/// What a mover refused by an atlas exit's lock reads (provisional wording): the
+/// way named by its portal mode, and "staff only" for the `staff` lock.
+#[must_use]
+pub fn locked_refusal(mode: PortalMode, staff: bool) -> String {
+    let way = match mode {
+        PortalMode::Open => "That way",
+        PortalMode::Door => "The door",
+        PortalMode::Gate => "The gate",
+        PortalMode::Stair => "The stair",
+        PortalMode::Ramp => "The ramp",
+        PortalMode::Ladder => "The ladder",
+        PortalMode::Hatch => "The hatch",
+    };
+    if staff {
+        format!("{way} is locked: staff only.")
+    } else {
+        format!("{way} is locked.")
+    }
 }
 
 // ---------------------------------------------------------------------------

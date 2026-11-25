@@ -23,7 +23,7 @@ const PINNED: [(&str, &str); 3] = [
     ),
     (
         STAFF_LOBBY_PACK,
-        "dacbc7af257e6eececdbd28218945ede03a9114d2274a7031f5ecabcdc938adf",
+        "491e6bde1c827b2e9d043b9b5607180a0394657bdf737a6f0e2829723328fd74",
     ),
 ];
 
