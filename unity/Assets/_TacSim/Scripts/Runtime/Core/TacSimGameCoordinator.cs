@@ -705,7 +705,7 @@ namespace TacSim.Core
                 return;
             if (SpaceStage.ActiveLock != null && !string.IsNullOrEmpty(SpaceStage.ActiveLock.ShipId))
             {
-                ExecutePlayerCommand("+tac/fire");
+                ExecutePlayerCommand("+tac/beam");
                 Hud?.FloatingCallouts?.ShowCallout("WEAPONS FREE — FIRING", new Color(1f, 0.44f, 0.28f, 1f));
             }
         }
