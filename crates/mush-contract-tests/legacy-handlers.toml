@@ -190,7 +190,7 @@ note = "doc 17h cut M8a (section 2.5; doc 23 section 7, section 10; doc 17 secti
 name = "+ic"
 category = "legacy-post-image"
 family = "tacsim.ic_return"
-note = "doc 18 cut IC1 (section 4.5, D-18-3): the IC-return rule's verb. It writes NO document: it moves the actor to the arrival room of the port their unregistered tacsim.last_port.<port> object marker names (Ceres when none), through the kernel's non-exit move path (the MoveAttempt chain, then the Moved observers), and refuses in a port room. The stamp is written by a tacsim Moved observer on a move out of a port room to a room outside every port, never by this verb; the door it pairs with is a MoveAttempt hook on exit.limbo_arrivals. No authority, no prepared mechanic. Future family: the last-port stamp as a typed per-character record."
+note = "REFRESHED by 2026-11-24 playtest (paired with +ooc): returns to the exact port room recorded in the unregistered tacsim.ooc_room.<room entry> marker when still open, falling back to the stamped port's arrival room; still writes NO document and shares the tacsim.ic_return family. Earlier: doc 18 cut IC1 (section 4.5, D-18-3): the IC-return rule's verb. It writes NO document: it moves the actor to the arrival room of the port their unregistered tacsim.last_port.<port> object marker names (Ceres when none), through the kernel's non-exit move path (the MoveAttempt chain, then the Moved observers), and refuses in a port room. The stamp is written by a tacsim Moved observer on a move out of a port room to a room outside every port, never by this verb; the door it pairs with is a MoveAttempt hook on exit.limbo_arrivals. No authority, no prepared mechanic. Future family: the last-port stamp as a typed per-character record."
 
 [[handler]]
 name = "+intel"
@@ -281,6 +281,12 @@ note = "Own character notes listing (+notes): renders visible notes on the actin
 name = "+npc"
 category = "read-only"
 note = "Personal trust and guarded lore: +npc/lore reads an exact authored topic from a present, enabled NPC. The connected player must currently share its room and mutual perception; guarded entries require the player's earned personal trust, and secret entries are never disclosed. The reply goes only to the asker. No relationship, memory, lore, standing, or other durable state is written; no authoritative action is submitted."
+
+[[handler]]
+name = "+ooc"
+category = "legacy-post-image"
+family = "tacsim.ic_return"
+note = "2026-11-24 playtest (paired with +ic): steps a character out of character from any port room into Limbo through the kernel's non-exit move path (the MoveAttempt chain, then the Moved observers). It writes NO document: it records the exact port room left as one unregistered tacsim.ooc_room.<room entry> object marker alongside the port stamp so +ic can put them back there, and refuses in a simulator pod, in a running field, outside every port, or wherever MoveAttempt refuses an exit-less move. No authority, no prepared mechanic. Future family: the last-port and remembered-room stamps as a typed per-character record."
 
 [[handler]]
 name = "+operation"
