@@ -109,6 +109,10 @@ impl<S> Drop for LiveGuard<S> {
     }
 }
 
+/// How long [`Drain::close_all`] lets the closes it queued reach the wire
+/// before it cuts what is left.
+pub(crate) const CLOSE_FLUSH: Duration = Duration::from_millis(500);
+
 impl<S> Drain<S> {
     /// A serving generation.
     #[must_use]
@@ -251,16 +255,23 @@ impl<S: Session> Drain<S> {
         let _ =
             tokio::time::timeout(Duration::from_secs(5), futures::future::join_all(closes)).await;
         // Give the closes a moment to flush, then end what is left.
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(CLOSE_FLUSH).await;
         self.abort_all();
     }
 
     /// Run a drain to completion: warnings on schedule, then close everything
-    /// at the deadline. Returns early if the generation empties first.
+    /// at the deadline. Returns early if the generation empties before the
+    /// deadline.
+    ///
+    /// Once the close has begun it runs to its end, flush window included,
+    /// even though the generation empties on the way: a session leaves the
+    /// live set when its close is queued, not when the close has reached the
+    /// wire, so ending on "empty" there cut the closes it was flushing (doc 51
+    /// unit FL.7: the close reason never reached the player).
     pub async fn run(&self, deadline: Duration, warnings: &[Warning], message: &str) {
         let start = tokio::time::Instant::now();
         let schedule = schedule(deadline, warnings);
-        let work = async {
+        let warn = async {
             for (at, label) in schedule {
                 tokio::time::sleep_until(start + at).await;
                 let line = message.replace("{remaining}", &label);
@@ -268,13 +279,13 @@ impl<S: Session> Drain<S> {
                 self.broadcast(&line).await;
             }
             tokio::time::sleep_until(start + deadline).await;
-            tracing::warn!(sessions = self.live(), "drain deadline reached; closing");
-            self.close_all().await;
         };
         tokio::select! {
-            () = work => {}
-            () = self.wait_empty() => {}
+            () = warn => {}
+            () = self.wait_empty() => return,
         }
+        tracing::warn!(sessions = self.live(), "drain deadline reached; closing");
+        self.close_all().await;
     }
 
     /// `SIGTERM`: one warning with `grace` remaining, then close everything.
