@@ -384,10 +384,44 @@ namespace UnityEngine
         public static bool visible { get; set; } = true;
     }
 
+    public enum FullScreenMode
+    {
+        ExclusiveFullScreen = 0,
+        FullScreenWindow = 1,
+        MaximizedWindow = 2,
+        Windowed = 3
+    }
+
+    public struct Resolution
+    {
+        public int width { get; set; }
+        public int height { get; set; }
+    }
+
+    public sealed class Display
+    {
+        public static Display main { get; } = new Display();
+        public int systemWidth { get; set; } = 1920;
+        public int systemHeight { get; set; } = 1080;
+    }
+
     public static class Screen
     {
-        public static int width => 1920;
-        public static int height => 1080;
+        public static int width { get; set; } = 1920;
+        public static int height { get; set; } = 1080;
+        public static float dpi { get; set; } = 96f;
+        public static FullScreenMode fullScreenMode { get; set; } = FullScreenMode.Windowed;
+        public static Resolution[] resolutions { get; set; } = new[]
+        {
+            new Resolution { width = 1920, height = 1080 },
+            new Resolution { width = 1600, height = 900 }
+        };
+        public static void SetResolution(int w, int h, FullScreenMode mode)
+        {
+            width = w;
+            height = h;
+            fullScreenMode = mode;
+        }
     }
 
     public static class Time
@@ -421,6 +455,10 @@ namespace UnityEngine
     {
         public static int vSyncCount { get; set; }
         public static Rendering.RenderPipelineAsset renderPipeline { get; set; }
+        public static string[] names { get; set; } = new[] { "Low", "Medium", "High", "Ultra" };
+        private static int _qualityLevel = 2;
+        public static int GetQualityLevel() => _qualityLevel;
+        public static void SetQualityLevel(int index, bool applyExpensiveChanges = true) => _qualityLevel = index;
     }
 
     public static class RenderSettings
@@ -571,6 +609,7 @@ namespace UnityEngine
         public Vector3 right { get => Vector3.right; set { } }
         public Vector3 up { get => Vector3.up; set { } }
         public int childCount => _children.Count;
+        public void SetAsLastSibling() { }
 
         public void SetParent(Transform p, bool worldPositionStays = true)
         {
