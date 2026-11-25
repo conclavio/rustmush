@@ -164,11 +164,11 @@ const HELP_LINES = [
   "  /help           — this card",
   "  /minds          — open the mind workshop (also F10)",
   "Keys while nothing has focus: 1-9 and 0 screens, Enter opens the box,",
-  '  " : ; \\ open it with that trigger, / the palette, ? the key help,',
+  '  " : ; \\ + / open it with that character typed, ? the key help,',
   "  a letter runs the screen's own command (the chips at the bottom),",
   "  n/e/s/w/u/d/o walk the room's exits on the scene screen.",
   "Inside the box: Alt+key is the nav key, Esc leaves keeping the draft,",
-  "  Ctrl+K the palette. Everything else is sent to the game as typed.",
+  "  Ctrl+K the palette (from anywhere). Everything else is sent as typed.",
 ];
 
 /** What the composer offers the shell (registered by `Game.svelte`). */

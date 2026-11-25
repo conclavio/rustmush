@@ -1,6 +1,6 @@
 # 02 — Interface programme (I): implementation plan
 
-**Draft 1.4 — 2026-09-07** (the changelog in §10 carries every draft).
+**Draft 1.5 — 2026-11-24** (the changelog in §10 carries every draft).
 Scoped from [01-assessment.md](01-assessment.md)
 against the tree at `a0142e3` (working tree; E7 in flight on main). Every
 symbol named here was opened in that tree; line numbers are deliberately not
@@ -2286,6 +2286,18 @@ Six standing rules:
   modal shell can honour; `?` and `/` become real keys; one Enter per line
   keeps conversation cheap; the trigger keys keep the MUSH reflex; Alt+key
   means switching modes is never required to reach a hotkey.
+  **Amended 2026-11-24 (owner, after the dev1 playtest):** "in the same way
+  that " and : automatically activate the chat box, + and / should as
+  well". `+` and `/` now enter input mode with themselves typed, like the
+  speech triggers, in both clients; `/` no longer opens the palette (nor
+  does a `/` typed into an empty box), and the palette is `^K` (Ctrl/⌘+K on
+  the web) alone. `+` joins the global keys a screen table may not rebind;
+  two overlays keep their own `+` because an overlay's keys outrank the
+  shell's: the mind workshop's card page (`+` adds a rule) and the
+  pictures that zoom on `+`/`=` (the TUI's cockpit and station walk, the
+  web's cockpit, space cameras and replay 2.5D). Every other view passes
+  `+` to the box. This supersedes the `/`-opens-the-palette parts of §3.2,
+  §3.4 and Draft 0.2.
 - **D-I-18** **A bare key never sends a mutating command, with one
   carve-out.** Bindings are `Local`, `Prefill` or `Run`; `Run` is confined
   to a checked-in read-only verb list and a probe enforces it in both
@@ -2445,8 +2457,7 @@ Six standing rules:
 |---|---|---|
 | `1`–`9` | switch screen | insert |
 | `Enter` | enter input mode, prefilled from the focused row if any | submit and stay; on an empty box, leave to nav |
-| `"` `:` `;` `\` | enter input mode with the trigger typed | insert |
-| `/` | enter input mode with `/` typed and the palette open | insert; on an empty box, open the palette |
+| `"` `:` `;` `\` `+` `/` | enter input mode with the key typed (`+` and `/` since 2026-11-24, D-I-17's amendment) | insert |
 | `Esc` | close overlay | leave to nav, keep the draft (close the palette first if open) |
 | `Tab` / `Shift-Tab` (TUI) | pane focus forward / back | completion |
 | `↑` `↓` | scroll the focused pane | history |
@@ -2456,7 +2467,7 @@ Six standing rules:
 | Alt+key | the key's nav action | **the key's nav action** (`Alt+1` = screen 1, `Alt+t` = target, `Alt+?` = help) |
 | `F1`–`F9` (TUI) | switch screen | switch screen |
 | `^N` / `^O` / `^R` (TUI) | IC pane / OOC pane / roll-line prefill | the same |
-| `^K` | toggle the palette | toggle the palette |
+| `^K` | toggle the palette (the only way to it since 2026-11-24) | toggle the palette (on an empty box it types the `/`) |
 | `^P` | cycle the sticky mode | cycle the sticky mode |
 | `^]` | detach (TUI) | detach (TUI) |
 | one-letter exit (scene screen only) | walk that exit | insert (Alt+letter walks) |
@@ -2566,6 +2577,14 @@ call, not a default).
 ---
 
 ## 10. Changelog
+
+- **Draft 1.5 — 2026-11-24.** Owner, after playtesting dev1: "in the same
+  way that " and : automatically activate the chat box, + and / should as
+  well". D-I-17 amended and the §7 key table changed: `+` and `/` open the
+  box with themselves typed in both clients, `/` (from nav or on an empty
+  box) no longer opens the palette, `^K` is the palette's only key, and `+`
+  is a global key that the workshop's card page and the zooming pictures
+  keep as their own.
 
 - **Draft 1.4 — 2026-09-07.** The **I1–I13 look-back**
   ([05-look-back.md](05-look-back.md), Draft 0.1, grounded at `673db4c`):

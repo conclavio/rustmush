@@ -348,8 +348,8 @@
         <dl>
           <dt>0–9</dt><dd>switch screens (Alt+digit from the box); 0 is the cockpit</dd>
           <dt>Enter</dt><dd>open the box; sends and stays; empty Enter closes it</dd>
-          <dt>" : ; \</dt><dd>open the box with that speech trigger typed</dd>
-          <dt>/</dt><dd>the command palette (^K from anywhere)</dd>
+          <dt>" : ; \ + /</dt><dd>open the box with that character typed</dd>
+          <dt>^K</dt><dd>the command palette, from anywhere</dd>
           <dt>Esc</dt><dd>leave the box, keeping the draft</dd>
           <dt>Alt+key</dt><dd>the key's nav action from inside the box</dd>
           {#each activeKeys as b (b.key)}

@@ -815,7 +815,7 @@ While the picture is showing (the bottom line names the keys):
   p              the text cockpit, and back
   Enter          open the chat line
 
-The digits, `"` `:` `;` `\` `/` `?` and Esc do what they do on every screen
+The digits, `"` `:` `;` `\` `/` `?`, Ctrl-K and Esc do what they do on every screen
 (the palette and the help show over the text cockpit, and the picture comes
 back when they close); every other key does nothing while you are at the
 controls. Every key above that sends a line sends it exactly as if you had

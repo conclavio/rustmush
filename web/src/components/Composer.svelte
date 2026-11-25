@@ -5,7 +5,7 @@
   // Focus is input mode (D-I-17): while it has focus the shell only takes
   // Alt+key and ^K; Enter sends and keeps focus, Enter on an empty box and
   // Esc blur it (Esc keeps the draft), Shift+Enter is a newline collapsed
-  // to a space on send, `/` on an empty box opens the palette, ↑/↓ browse
+  // to a space on send, `/` is only a `/` (^K is the palette), ↑/↓ browse
   // history, Tab completes a command name. The Say / Pose / Emit / OOC
   // segmented control is the client-side sticky mode (D-I-8) with a
   // "renders as" preview; an explicit trigger or a channel alias verb
@@ -131,11 +131,6 @@
         return;
       }
       blur();
-      return;
-    }
-    if (ev.key === "/" && value.length === 0) {
-      // Let the slash land, then open the palette behind the caret.
-      queueMicrotask(() => app.openPalette());
       return;
     }
     if (app.screens.paletteOpen) {
