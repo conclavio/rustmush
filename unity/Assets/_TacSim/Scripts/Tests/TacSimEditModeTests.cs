@@ -5712,5 +5712,108 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void TacticalOverviewAndSurfaceScanner_RangeSortedContactsOreDriveToAndHoverHalo()
+        {
+            var rootGo = new UnityEngine.GameObject("TacticalOverviewAndSurfaceTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                Assert.IsNotNull(hud.TacticalOverview, "BuildHud must wire [T] Tactical Overview drawer");
+
+                var spaceGo = new UnityEngine.GameObject("SpaceOvTest");
+                spaceGo.transform.SetParent(rootGo.transform, false);
+                var space = spaceGo.AddComponent<TacSim.Space.SpaceFlightController>();
+                space.BuildSpaceStage(null);
+                space.ApplyHolotankFeed(JsonNode.Parse(@"{
+                    ""own"": { ""id"": ""own"", ""x_km"": 0, ""y_km"": 0, ""z_km"": 0 },
+                    ""contacts"": [
+                        { ""id"": ""FAR"", ""label"": ""Far Freighter"", ""x_km"": 80, ""y_km"": 0, ""z_km"": 0, ""iff"": ""neutral"" },
+                        { ""id"": ""NEAR"", ""label"": ""Near Raider"", ""x_km"": 12, ""y_km"": 0, ""z_km"": 0, ""iff"": ""hostile"", ""locked"": true }
+                    ],
+                    ""rocks"": [{ ""id"": ""A"", ""x_km"": 5, ""y_km"": 0, ""z_km"": 0 }]
+                }"));
+
+                var surfGo = new UnityEngine.GameObject("SurfOvTest");
+                surfGo.transform.SetParent(rootGo.transform, false);
+                var surf = surfGo.AddComponent<TacSim.Surface.SurfaceMiningController>();
+                surf.BuildSurfaceStage(null, "occator_rim");
+                surf.EnterSurfaceMode();
+                Assert.IsTrue(surf.HasHoverDriveCursor, "Surface stage must create 3D terrain hover drive cursor ring");
+                surf.ApplySiteMapFrame(JsonNode.Parse(@"{
+                    ""width"": 8, ""height"": 8,
+                    ""site"": {
+                        ""site"": ""Occator Rim"",
+                        ""grid"": { ""x0"": 0, ""y0"": 0, ""span"": 1, ""cell_cm"": 1000 },
+                        ""rigs"": [{ ""slot"": 1, ""cell"": [1, 1] }],
+                        ""readings"": [
+                            { ""cell"": [6, 6], ""text"": ""Trace silicates"" },
+                            { ""cell"": [2, 2], ""text"": ""Rich volatiles vein"" }
+                        ]
+                    },
+                    ""rows"": [""........"",""........"",""........"",""........"",""........"",""........"",""........"",""........""],
+                    ""you"": [1, 1]
+                }"));
+                Assert.AreEqual(2, surf.ActiveBeaconHaloCount, "Scanned ore pockets must spawn 3D beacon pillars with ground yield halo rings");
+
+                var arenaGo = new UnityEngine.GameObject("ArenaOvTest");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(null, null);
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""seated"": true, ""match"": 7, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""contacts"": [
+                        { ""designator"": ""B2"", ""party"": ""B"", ""relation"": ""hostile"", ""cell"": [22, 22], ""range_m"": 420 },
+                        { ""designator"": ""B1"", ""party"": ""B"", ""relation"": ""hostile"", ""cell"": [14, 14], ""range_m"": 180 }
+                    ]
+                }"));
+
+                hud.TacticalOverview.BindControllers(space, surf, arena);
+
+                // 1. Hidden in Station walk; visible & range-sorted in Space
+                hud.TacticalOverview.SyncOverview(TacSim.Core.TacSimActiveStage.StationWalk, forceImmediate: true);
+                Assert.IsFalse(hud.TacticalOverview.IsVisible);
+
+                hud.TacticalOverview.SyncOverview(TacSim.Core.TacSimActiveStage.ShipHelmSeated, forceImmediate: true);
+                Assert.IsTrue(hud.TacticalOverview.IsVisible);
+                Assert.AreEqual(3, hud.TacticalOverview.VisibleRowCount);
+                Assert.AreEqual("A", hud.TacticalOverview.FirstRowId, "Nearest rock (5 km) must sort first in All filter");
+
+                hud.TacticalOverview.SetFilter(TacSim.UI.TacticalOverviewFilter.Primary); // Ships only
+                Assert.AreEqual(2, hud.TacticalOverview.VisibleRowCount);
+                Assert.AreEqual("NEAR", hud.TacticalOverview.FirstRowId, "Nearest ship (12 km) must sort first in Ships filter");
+
+                string clickedSpaceId = null;
+                hud.TacticalOverview.OnSpaceRowClicked += (id, _) => clickedSpaceId = id;
+                Assert.IsTrue(hud.TacticalOverview.ClickRowByIndex(0));
+                Assert.AreEqual("NEAR", clickedSpaceId);
+
+                // 2. Surface stage lists scanned ore readings & dispatches rover drive coordinates
+                hud.TacticalOverview.SetFilter(TacSim.UI.TacticalOverviewFilter.All);
+                hud.TacticalOverview.SyncOverview(TacSim.Core.TacSimActiveStage.PlanetarySurface, forceImmediate: true);
+                Assert.IsTrue(hud.TacticalOverview.IsVisible);
+                Assert.AreEqual(2, hud.TacticalOverview.VisibleRowCount);
+                int driveX = -1, driveY = -1;
+                hud.TacticalOverview.OnSurfaceBeaconDriveClicked += (x, y) => { driveX = x; driveY = y; };
+                Assert.IsTrue(hud.TacticalOverview.ClickRowByIndex(0));
+                Assert.AreEqual(2, driveX);
+                Assert.AreEqual(2, driveY);
+
+                // 3. Arena stage sorts nearest hostile first & dispatches lock
+                hud.TacticalOverview.SyncOverview(TacSim.Core.TacSimActiveStage.SimulatorArena, forceImmediate: true);
+                Assert.AreEqual(2, hud.TacticalOverview.VisibleRowCount);
+                Assert.AreEqual("B1", hud.TacticalOverview.FirstRowId, "Nearest arena target (180m) must sort first");
+                string lockedArena = null;
+                hud.TacticalOverview.OnArenaContactLockClicked += d => lockedArena = d;
+                Assert.IsTrue(hud.TacticalOverview.ClickRowByIndex(0));
+                Assert.AreEqual("B1", lockedArena);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

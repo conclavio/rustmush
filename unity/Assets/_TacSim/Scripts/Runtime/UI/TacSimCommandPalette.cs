@@ -260,6 +260,7 @@ namespace TacSim.UI
             _allEntries.Add(new PaletteEntry("UI", "Open Display & Graphics Options", "Window size, fullscreen & UI scale", () => OnUiActionRequested?.Invoke("ui:options")));
             _allEntries.Add(new PaletteEntry("UI", "Cycle Orbital / Vehicle Camera [V]", "Switch Bridge / Chase / Tactical High-Orbit", () => OnUiActionRequested?.Invoke("ui:cycle_cam")));
             _allEntries.Add(new PaletteEntry("UI", "Cycle 3D Bridge Holo-Table Mode", "Toggle Auto / Solar System / Local Tactical Bubble", () => OnUiActionRequested?.Invoke("ui:cycle_holo")));
+            _allEntries.Add(new PaletteEntry("UI", "Toggle Tactical Overview Drawer [T]", "Live range-sorted space contacts, surface ore pockets & arena targets", () => OnUiActionRequested?.Invoke("ui:toggle_overview")));
             _allEntries.Add(new PaletteEntry("UI", "Clear 3D Wayfinder Trail", "Hide active holographic floor ribbon", () => OnUiActionRequested?.Invoke("ui:clear_wayfinder")));
 
             // 2. Live 3D Station Rooms & Ship Compartments (Wayfinder Fast-Trail)
