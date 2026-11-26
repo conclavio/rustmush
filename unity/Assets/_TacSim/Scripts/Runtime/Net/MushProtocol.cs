@@ -1013,6 +1013,46 @@ namespace TacSim.Net
         }
 
         /// <summary>
+        /// Builds canonical ClientCommand::Req with Query::Commands (`commands.list` panel keyframe):
+        /// {"t":"req","d":{"id":1,"q":{"t":"commands"}}}
+        /// </summary>
+        public static string BuildCommandsQueryCommand(ulong id)
+        {
+            var obj = JsonNode.NewObject();
+            obj["t"] = JsonNode.FromString("req");
+            var d = JsonNode.NewObject();
+            d["id"] = JsonNode.FromULong(id);
+            var q = JsonNode.NewObject();
+            q["t"] = JsonNode.FromString("commands");
+            d["q"] = q;
+            obj["d"] = d;
+            return obj.ToJson();
+        }
+
+        /// <summary>
+        /// Builds canonical ClientCommand::Req with Query::ChannelBacklog (`comsys` panel delta with `backlog`):
+        /// {"t":"req","d":{"id":1,"q":{"t":"channel_backlog","d":{"channel":"Public","before_seq":null,"limit":40}}}}
+        /// </summary>
+        public static string BuildChannelBacklogQueryCommand(ulong id, string channel, ulong? beforeSeq = null, int limit = 40)
+        {
+            var obj = JsonNode.NewObject();
+            obj["t"] = JsonNode.FromString("req");
+            var d = JsonNode.NewObject();
+            d["id"] = JsonNode.FromULong(id);
+            var q = JsonNode.NewObject();
+            q["t"] = JsonNode.FromString("channel_backlog");
+            var qd = JsonNode.NewObject();
+            qd["channel"] = JsonNode.FromString((channel ?? string.Empty).Trim());
+            if (beforeSeq.HasValue)
+                qd["before_seq"] = JsonNode.FromULong(beforeSeq.Value);
+            qd["limit"] = JsonNode.FromLong(Math.Max(1, Math.Min(200, limit)));
+            q["d"] = qd;
+            d["q"] = q;
+            obj["d"] = d;
+            return obj.ToJson();
+        }
+
+        /// <summary>
         /// Builds canonical ClientCommand::Req with Query::PanelSubscribe:
         /// {"t":"req","d":{"id":1,"q":{"t":"panel_subscribe","d":{"feed":"space.cockpit"}}}}
         /// </summary>

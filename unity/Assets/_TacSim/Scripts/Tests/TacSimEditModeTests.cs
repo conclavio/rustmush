@@ -6244,5 +6244,151 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void LivePaletteCommandsNpcThinkingAndComsysBacklog_HydrateAndRouteAuthoritatively()
+        {
+            // 1. Canonical Query::Commands & Query::ChannelBacklog wire frames
+            string cmdsReq = MushProtocol.BuildCommandsQueryCommand(12UL);
+            StringAssert.Contains("\"t\":\"commands\"", cmdsReq);
+            string backlogReq = MushProtocol.BuildChannelBacklogQueryCommand(13UL, "Public", beforeSeq: 50UL, limit: 25);
+            StringAssert.Contains("\"t\":\"channel_backlog\"", backlogReq);
+            StringAssert.Contains("\"channel\":\"Public\"", backlogReq);
+            StringAssert.Contains("\"before_seq\":50", backlogReq);
+            StringAssert.Contains("\"limit\":25", backlogReq);
+
+            // 2. Argument detection heuristic for live server commands
+            Assert.IsTrue(TacSim.UI.TacSimCommandPalette.CommandTakesArguments("addcom <alias>=<channel>", "addcom"));
+            Assert.IsTrue(TacSim.UI.TacSimCommandPalette.CommandTakesArguments("+helm/approach <rock>", "+helm/approach"));
+            Assert.IsFalse(TacSim.UI.TacSimCommandPalette.CommandTakesArguments("inventory", "inventory"));
+
+            var rootGo = new UnityEngine.GameObject("Wave3PR5_LiveHydrationTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                // 3. Live `commands.list` palette hydration + smart prefill vs direct execution
+                string sentCmd = null;
+                string prefilledCmd = null;
+                hud.CommandPalette.OnCommandRequested += c => sentCmd = c;
+                hud.CommandPalette.OnPrefillCommandRequested += p => prefilledCmd = p;
+
+                hud.CommandPalette.ApplyServerCommandsList(JsonNode.Parse(@"{
+                    ""commands"": [
+                        { ""name"": ""+ship"", ""aliases"": [], ""switches"": [""hold""], ""usage"": ""+ship"", ""summary"": ""Already curated"", ""module"": ""tacsim"" },
+                        { ""name"": ""inventory"", ""aliases"": [""inv""], ""switches"": [], ""usage"": ""inventory"", ""summary"": ""List carried items"", ""module"": ""core"" },
+                        { ""name"": ""addcom"", ""aliases"": [], ""switches"": [], ""usage"": ""addcom <alias>=<channel>"", ""summary"": ""Join a comsys channel"", ""module"": ""comsys"" }
+                    ],
+                    ""truncated"": false
+                }"));
+                Assert.AreEqual(3, hud.CommandPalette.ServerCommandCount);
+
+                hud.CommandPalette.SetOpen(true);
+                hud.CommandPalette.SetQuery("inv");
+                Assert.GreaterOrEqual(hud.CommandPalette.FilteredMatchCount, 1, "Alias 'inv' should match live 'inventory' server command");
+                Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
+                Assert.AreEqual("inventory", sentCmd, "Zero-arg live server command must dispatch immediately");
+
+                hud.CommandPalette.SetOpen(true);
+                hud.CommandPalette.SetQuery("addcom");
+                Assert.GreaterOrEqual(hud.CommandPalette.FilteredMatchCount, 1);
+                Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
+                Assert.AreEqual("addcom ", prefilledCmd, "Argument-taking server command must pre-fill chat input");
+
+                // 4. Comsys keyframe + delta backlog passthrough via MushWsClient
+                using (var ws = new MushWsClient())
+                {
+                    var backlogRequested = new List<string>();
+                    hud.SocialModal.OnChannelBacklogRequested += ch => backlogRequested.Add(ch);
+                    ws.OnPanelUpdated += (feed, data) =>
+                    {
+                        if (feed == "comsys")
+                            hud.SocialModal.ApplyComsysPanel(data);
+                    };
+
+                    // Keyframe hydrates channels & triggers backlog request for logged default channel
+                    ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{
+                        ""seq"": 1, ""ts"": 1000, ""t"": ""panel"",
+                        ""d"": {
+                            ""feed"": ""comsys"", ""kind"": ""keyframe"",
+                            ""data"": {
+                                ""channels"": [
+                                    { ""name"": ""Public"", ""alias"": ""pub"", ""title"": """", ""gagged"": false, ""logged"": true, ""ic"": false, ""seq"": 12, ""last_read"": 9, ""unread"": 3 },
+                                    { ""name"": ""Trade"", ""alias"": ""trd"", ""title"": """", ""gagged"": false, ""logged"": true, ""ic"": true, ""seq"": 4, ""last_read"": 4, ""unread"": 0 }
+                                ]
+                            }
+                        }
+                    }"));
+                    ws.PumpMainThread();
+
+                    Assert.AreEqual(2, hud.SocialModal.ChannelCount);
+                    Assert.AreEqual(1, backlogRequested.Count, "Auto-selected logged channel must trigger channel_backlog request");
+                    Assert.AreEqual("Public", backlogRequested[0]);
+
+                    // Delta frame carrying `backlog` (newest-first) must pass through MushWsClient & populate chronological transcript
+                    ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{
+                        ""seq"": 2, ""ts"": 1010, ""t"": ""panel"",
+                        ""d"": {
+                            ""feed"": ""comsys"", ""kind"": ""delta"",
+                            ""data"": {
+                                ""backlog"": {
+                                    ""channel"": ""Public"",
+                                    ""before_seq"": null,
+                                    ""messages"": [
+                                        { ""seq"": 12, ""actor"": { ""id"": ""#22"", ""name"": ""Voss"" }, ""title"": ""Pilot"", ""kind"": ""say"", ""text"": { ""spans"": [ { ""text"": ""Berth 4 clear."" } ] }, ""ts"": 1005 },
+                                        { ""seq"": 11, ""actor"": { ""id"": ""#21"", ""name"": ""Kestrel"" }, ""title"": null, ""kind"": ""pose"", ""text"": { ""spans"": [ { ""text"": ""checks the cargo manifest."" } ] }, ""ts"": 1002 }
+                                    ]
+                                }
+                            }
+                        }
+                    }"));
+                    ws.PumpMainThread();
+
+                    Assert.AreEqual(2, hud.SocialModal.GetChannelLineCount("Public"), "Comsys delta backlog slice must populate channel transcript");
+                    hud.SocialModal.SelectChannel("Trade");
+                    Assert.AreEqual(2, backlogRequested.Count, "Selecting a second logged channel must fetch its backlog");
+                    Assert.AreEqual("Trade", backlogRequested[1]);
+                }
+
+                // 5. Live 3D NPC thinking bubble on StationWorldController & open NPC dialog modal
+                var catalog = TacSimAssetCatalog.LoadOrDefault();
+                var stationGo = new UnityEngine.GameObject("ThinkingTestStation");
+                stationGo.transform.SetParent(rootGo.transform);
+                var station = stationGo.AddComponent<StationWorldController>();
+                station.BuildStation(catalog, "ceres_freeport");
+                var rv = MushProtocol.ParseRoomView(JsonNode.Parse(@"{
+                    ""id"": ""#10"", ""name"": ""Arrivals"", ""desc"": ""Concourse"",
+                    ""atlas"": { ""pack"": ""ceres_freeport"", ""entry"": ""room.c03_arrivals"", ""surface"": ""station"" },
+                    ""contents"": [
+                        { ""id"": ""#77"", ""name"": ""Harbor Clerk"", ""kind"": ""thing"" }
+                    ]
+                }"));
+                station.ApplyRoomView(rv, "#1");
+
+                station.SetActorThinking("#77", "Harbor Clerk", true);
+                Assert.AreEqual("thinking...", station.GetActorSpeechText("#77"), "Active npc.thinking must display 3D thinking bubble above NPC");
+
+                hud.ShowDetailModal("HARBOR CLERK", "Welcome to Ceres.", npcName: "Harbor Clerk");
+                hud.SetNpcModalThinking("Harbor Clerk", true);
+                Assert.IsTrue(hud.IsNpcModalThinking, "Open NPC modal must reflect live npc.thinking active state");
+
+                // Speech arriving clears modal thinking & replaces 3D bubble; subsequent thinking=false must NOT wipe spoken line!
+                station.ShowActorSpeech("#77", "Harbor Clerk", "Berth four is open.");
+                station.SetActorThinking("#77", "Harbor Clerk", false);
+                Assert.AreEqual("Berth four is open.", station.GetActorSpeechText("#77"), "Clearing npc.thinking must never erase the NPC's actual spoken line");
+
+                hud.AppendModalResponseLine("<b>Harbor Clerk</b> says, \"Berth four is open.\"");
+                Assert.IsFalse(hud.IsNpcModalThinking, "NPC speech arriving in open dialog modal must clear thinking indicator");
+
+                // Session reset clears server command table cleanly
+                hud.ResetSessionState();
+                Assert.AreEqual(0, hud.CommandPalette.ServerCommandCount);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

@@ -512,6 +512,22 @@ namespace TacSim.Net
             return id;
         }
 
+        public ulong SendCommandsQuery()
+        {
+            ulong id = _nextQueryId++;
+            EnqueueRaw(MushProtocol.BuildCommandsQueryCommand(id));
+            return id;
+        }
+
+        public ulong SendChannelBacklogQuery(string channel, ulong? beforeSeq = null, int limit = 40)
+        {
+            if (string.IsNullOrWhiteSpace(channel) || MushProtocol.ContainsControlChars(channel))
+                return 0;
+            ulong id = _nextQueryId++;
+            EnqueueRaw(MushProtocol.BuildChannelBacklogQueryCommand(id, channel, beforeSeq, limit));
+            return id;
+        }
+
         public ulong SendMindMarketListings(string afterCode = null)
         {
             ulong id = _nextQueryId++;
@@ -914,6 +930,14 @@ namespace TacSim.Net
 
             if (kind == "delta")
             {
+                // `Query::ChannelBacklog` answers as `Panel { feed: "comsys", kind: "delta", data: { backlog: { ... } } }`.
+                // Forward backlog slices directly to panel subscribers without overwriting the cached `comsys` keyframe.
+                if (feed == "comsys" && payload != null && payload.IsObject && payload["backlog"].IsObject)
+                {
+                    OnPanelUpdated?.Invoke(feed, payload.Clone());
+                    return;
+                }
+
                 // Pulled TacSim panels emit full keyframes; if a feed signals a delta invalidation,
                 // request a fresh keyframe rather than applying an invented shallow object merge.
                 if (_advertisedPanels.Contains(feed))
