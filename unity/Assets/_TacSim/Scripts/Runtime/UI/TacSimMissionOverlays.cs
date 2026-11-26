@@ -75,6 +75,10 @@ namespace TacSim.UI
         private Text _arenaBannerText;
         private Text _arenaOwnArmorText;
         private Text _arenaWeaponText;
+        private RawImage _arenaArmorDollImg;
+        private Texture2D _arenaArmorDollTex;
+        private Color32[] _arenaArmorDollPixels;
+        private string _lastArmorDollSignature = string.Empty;
         private Text _fireBtnLabel;
         private Button _emconBtn;
         private Text _emconBtnLabel;
@@ -126,6 +130,9 @@ namespace TacSim.UI
         public bool IsDetachmentBarVisible => _detachmentBar != null && _detachmentBar.activeSelf;
         public bool IsDetachmentOrderBannerVisible => _detachmentOrderRow != null && _detachmentOrderRow.activeSelf;
         public string DetachmentOrderText => _detachmentOrderText != null ? _detachmentOrderText.text : string.Empty;
+        public bool IsArmorDollVisible => _arenaArmorDollImg != null && _arenaArmorDollImg.gameObject.activeSelf && _arenaArmorDollTex != null;
+        public string ActiveArmorDollUnitType { get; private set; } = string.Empty;
+        public Texture2D ArmorDollTexture => _arenaArmorDollTex;
         public int VisibleDetachmentSlotButtonCount
         {
             get
@@ -218,6 +225,12 @@ namespace TacSim.UI
             _surface = null;
             _arena = null;
             _space = null;
+            if (_arenaArmorDollTex != null)
+            {
+                if (Application.isPlaying) Destroy(_arenaArmorDollTex);
+                else DestroyImmediate(_arenaArmorDollTex);
+                _arenaArmorDollTex = null;
+            }
         }
 
         public void ResetSessionState()
@@ -225,6 +238,8 @@ namespace TacSim.UI
             _seatedAtHelm = false;
             _selectedAdvanceSpot = null;
             _lastKeySpotsSignature = string.Empty;
+            _lastArmorDollSignature = string.Empty;
+            ActiveArmorDollUnitType = string.Empty;
             if (_orbitalOpsBar != null) _orbitalOpsBar.SetActive(false);
             if (_spaceFireCard != null) _spaceFireCard.SetActive(false);
             if (_surfaceHudRoot != null) _surfaceHudRoot.SetActive(false);
@@ -907,13 +922,22 @@ namespace TacSim.UI
             }
 
             var hullCard = CreatePanel(_arenaBattleHudRoot.transform, "OwnPlatformCard", new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-430f, 18f), new Vector2(-16f, 276f), new Color(0.03f, 0.07f, 0.12f, 0.93f));
-            _arenaOwnArmorText = CreateTxt(hullCard.transform, "", 12, FontStyle.Normal, TextAnchor.UpperLeft, Color.white);
+            _arenaOwnArmorText = CreateTxt(hullCard.transform, "", 11, FontStyle.Normal, TextAnchor.UpperLeft, Color.white);
             _arenaOwnArmorText.supportRichText = true;
-            SetRect(_arenaOwnArmorText.rectTransform, new Vector2(0f, 0.56f), new Vector2(1f, 1f), new Vector2(12f, 0f), new Vector2(-12f, -8f));
+            SetRect(_arenaOwnArmorText.rectTransform, new Vector2(0f, 0.54f), new Vector2(0.68f, 1f), new Vector2(10f, 0f), new Vector2(-4f, -8f));
+
+            var dollFrame = CreatePanel(hullCard.transform, "ArmorPaperDollFrame", new Vector2(0.69f, 0.54f), new Vector2(1f, 1f), new Vector2(0f, 4f), new Vector2(-10f, -8f), new Color(0.02f, 0.04f, 0.08f, 0.96f));
+            var dollGo = new GameObject("ArmorPaperDollImg", typeof(RectTransform), typeof(RawImage));
+            dollGo.transform.SetParent(dollFrame.transform, false);
+            _arenaArmorDollImg = dollGo.GetComponent<RawImage>();
+            _arenaArmorDollImg.color = Color.white;
+            _arenaArmorDollImg.raycastTarget = false;
+            SetRect(_arenaArmorDollImg.rectTransform, Vector2.zero, Vector2.one, new Vector2(6f, 6f), new Vector2(-6f, -6f));
+            dollGo.SetActive(false);
 
             _arenaWeaponText = CreateTxt(hullCard.transform, "", 11, FontStyle.Bold, TextAnchor.UpperLeft, new Color(0.65f, 0.95f, 0.80f));
             _arenaWeaponText.supportRichText = true;
-            SetRect(_arenaWeaponText.rectTransform, new Vector2(0f, 0.23f), new Vector2(1f, 0.56f), new Vector2(12f, 0f), new Vector2(-12f, 0f));
+            SetRect(_arenaWeaponText.rectTransform, new Vector2(0f, 0.23f), new Vector2(1f, 0.54f), new Vector2(10f, 0f), new Vector2(-10f, 0f));
 
             var fireBtn = CreateBtn(hullCard.transform, "FIRE MAIN WEAPON [SPACE]", new Color(0.72f, 0.18f, 0.16f), () => OnArenaCockpitVerbRequested?.Invoke("fire"));
             SetRect(fireBtn.GetComponent<RectTransform>(), new Vector2(0f, 0f), new Vector2(0.64f, 0.22f), new Vector2(12f, 8f), new Vector2(-4f, -2f));
@@ -1071,7 +1095,48 @@ namespace TacSim.UI
             RebuildKeySpotButtonsIfChanged();
             UpdateAdvanceButtonVisual();
             UpdateDetachmentCommandDeck(s);
+            UpdateArmorPaperDoll(s);
             UpdatePooledContactRows(s);
+        }
+
+        private void UpdateArmorPaperDoll(ArenaCockpitState s)
+        {
+            if (_arenaArmorDollImg == null || s == null) return;
+            var doll = TacSimArmorPaperDoll.FindForUnitType(s.UnitType);
+            if (doll == null)
+            {
+                if (_arenaArmorDollImg.gameObject.activeSelf) _arenaArmorDollImg.gameObject.SetActive(false);
+                return;
+            }
+
+            var sigSb = new StringBuilder(160);
+            sigSb.Append(s.UnitType ?? string.Empty).Append('|').Append(s.IsWreck ? 'W' : 'A').Append('|');
+            if (s.Sections.Count > 0)
+            {
+                for (int i = 0; i < s.Sections.Count; i++)
+                {
+                    var sec = s.Sections[i];
+                    sigSb.Append(sec.Id).Append(':').Append(sec.Condition).Append(':').Append(sec.Internals).Append('/').Append(sec.InternalsMax);
+                    for (int f = 0; f < sec.Facets.Count; f++)
+                        sigSb.Append(',').Append(sec.Facets[f].Id).Append('=').Append(sec.Facets[f].Armor).Append('/').Append(sec.Facets[f].ArmorMax);
+                    sigSb.Append(';');
+                }
+            }
+            else
+            {
+                sigSb.Append(s.ArmorFrontPct).Append(',').Append(s.ArmorLeftPct).Append(',').Append(s.ArmorRightPct).Append(',').Append(s.ArmorRearPct).Append(',').Append(s.InternalsPct);
+            }
+
+            string sig = sigSb.ToString();
+            if (!string.Equals(sig, _lastArmorDollSignature, StringComparison.Ordinal) || _arenaArmorDollTex == null)
+            {
+                _lastArmorDollSignature = sig;
+                ActiveArmorDollUnitType = s.UnitType ?? string.Empty;
+                _arenaArmorDollTex = TacSimArmorPaperDoll.RenderToTexture(doll, s.Sections, s, _arenaArmorDollTex, ref _arenaArmorDollPixels);
+                _arenaArmorDollImg.texture = _arenaArmorDollTex;
+            }
+            if (!_arenaArmorDollImg.gameObject.activeSelf)
+                _arenaArmorDollImg.gameObject.SetActive(true);
         }
 
         private void UpdateDetachmentCommandDeck(ArenaCockpitState s)

@@ -7168,5 +7168,70 @@ namespace TacSim.Tests
             thr.Set(-99, 2_000);
             CollectionAssert.AreEqual(new[] { "SPEED -20 QUIET" }, thr.TakeOrders());
         }
+
+        [Test]
+        public void ArenaArmorPaperDoll_RendersAllShippedChassisWithTwoToneSeamsAndLiveDamage()
+        {
+            // 1. All shipped chassis resolve cleanly & compute 2-tone neighbor shading
+            var tank = TacSim.Arena.TacSimArmorPaperDoll.FindForUnitType("tacsim.unit.line_tank");
+            var biped = TacSim.Arena.TacSimArmorPaperDoll.FindForUnitType("tacsim.unit.biped_mk1");
+            var scout = TacSim.Arena.TacSimArmorPaperDoll.FindForUnitType("tacsim.unit.scout_mk1");
+            var drone = TacSim.Arena.TacSimArmorPaperDoll.FindForUnitType("tacsim.unit.drone_mk1");
+            var wrecker = TacSim.Arena.TacSimArmorPaperDoll.FindForUnitType("tacsim.unit.tv_wrecker");
+            Assert.AreEqual("top", tank.View);
+            Assert.AreEqual("upright", biped.View);
+            Assert.AreEqual(24, tank.Width);
+            Assert.AreEqual(16, tank.Height);
+            Assert.AreEqual(24, scout.Width);
+            Assert.AreEqual(10, drone.Width);
+            Assert.AreEqual(16, wrecker.Width);
+
+            // Exact condition color ramp parity with web/src/lib/look.ts
+            Assert.AreEqual(0x46, TacSim.Arena.TacSimArmorPaperDoll.ConditionColor(100, 100, 0).r);
+            Assert.AreEqual(0xbe, TacSim.Arena.TacSimArmorPaperDoll.ConditionColor(100, 100, 0).g);
+            Assert.AreEqual(0xe6, TacSim.Arena.TacSimArmorPaperDoll.ConditionColor(50, 100, 0).r);
+            Assert.AreEqual(0xdc, TacSim.Arena.TacSimArmorPaperDoll.ConditionColor(10, 100, 0).r);
+            Assert.AreEqual(0x4a, TacSim.Arena.TacSimArmorPaperDoll.ConditionColor(0, 100, 0).r);
+
+            // 2. Live Arena cockpit hydrates full Sections[] and paints the RawImage Armor Paper-Doll
+            var rootGo = new UnityEngine.GameObject("Wave4PR6_ArmorDollTest");
+            try
+            {
+                var catalog = TacSimAssetCatalog.LoadOrDefault();
+                var arenaGo = new UnityEngine.GameObject("Arena");
+                arenaGo.transform.SetParent(rootGo.transform);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(catalog, TacSimTerrainDecoder.LoadStaticArena("proving_ground"));
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.Overlays.BindControllers(null, arena, null);
+
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 88, ""seated"": true, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.biped_mk2"", ""mode"": ""skirmish"", ""power"": ""online"",
+                    ""sections"": [
+                        { ""id"": ""head"", ""condition"": ""intact"", ""internals"": 30, ""internals_max"": 30, ""facets"": [] },
+                        { ""id"": ""torso"", ""condition"": ""scarred"", ""internals"": 45, ""internals_max"": 100, ""facets"": [] },
+                        { ""id"": ""left_arm"", ""condition"": ""destroyed"", ""internals"": 0, ""internals_max"": 40, ""facets"": [] },
+                        { ""id"": ""right_arm"", ""condition"": ""intact"", ""internals"": 40, ""internals_max"": 40, ""facets"": [] },
+                        { ""id"": ""left_leg"", ""condition"": ""crippled"", ""internals"": 12, ""internals_max"": 60, ""facets"": [] },
+                        { ""id"": ""right_leg"", ""condition"": ""intact"", ""internals"": 60, ""internals_max"": 60, ""facets"": [] }
+                    ],
+                    ""weapons"": [], ""contacts"": []
+                }"));
+
+                Assert.AreEqual(6, arena.State.Sections.Count, "All 6 mech sections must be preserved for per-part paper-doll rendering");
+                Assert.IsTrue(hud.Overlays.IsArmorDollVisible, "Arena cockpit OwnPlatformCard must render live armor paper-doll schematic");
+                Assert.AreEqual("tacsim.unit.biped_mk2", hud.Overlays.ActiveArmorDollUnitType);
+                Assert.IsNotNull(hud.Overlays.ArmorDollTexture);
+                Assert.AreEqual(24 * TacSim.Arena.TacSimArmorPaperDoll.CellScalePx + 2, hud.Overlays.ArmorDollTexture.width);
+                Assert.AreEqual(16 * TacSim.Arena.TacSimArmorPaperDoll.CellScalePx + 2, hud.Overlays.ArmorDollTexture.height);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
