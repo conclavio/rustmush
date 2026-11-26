@@ -181,6 +181,11 @@ namespace TacSim.UI
         private readonly List<Text> _combatFeedLines = new List<Text>(MaxCombatFeedLines);
         private const int MaxCombatFeedLines = 5;
 
+        // OOC Arena Wrecked / Match Debrief Card (appears cleanly in center-screen when hull wrecked)
+        private GameObject _arenaDebriefCard;
+        private Text _arenaDebriefText;
+        private ulong _dismissedDebriefMatchId;
+
         public bool IsLobbyModalOpen => _arenaLobbyModal != null && _arenaLobbyModal.activeSelf;
         public bool IsSpaceFireCardVisible => _spaceFireCard != null && _spaceFireCard.activeSelf;
         public bool IsDetachmentBarVisible => _detachmentBar != null && _detachmentBar.activeSelf;
@@ -190,6 +195,8 @@ namespace TacSim.UI
         public bool IsMindStripVisible => _mindStrip != null && _mindStrip.activeSelf;
         public string MindStripHeaderSnapshot => _mindHeaderText != null ? _mindHeaderText.text : string.Empty;
         public bool IsCombatFeedVisible => _combatFeedPanel != null && _combatFeedPanel.activeSelf;
+        public bool IsDebriefCardVisible => _arenaDebriefCard != null && _arenaDebriefCard.activeSelf;
+        public string DebriefSummarySnapshot => _arenaDebriefText != null ? _arenaDebriefText.text : string.Empty;
         public int VisibleCombatFeedEntryCount
         {
             get
@@ -360,6 +367,7 @@ namespace TacSim.UI
             _lastArmorDollSignature = string.Empty;
             _lastTargetDollSignature = string.Empty;
             ActiveArmorDollUnitType = string.Empty;
+            _dismissedDebriefMatchId = 0;
             if (_orbitalOpsBar != null) _orbitalOpsBar.SetActive(false);
             if (_spaceFireCard != null) _spaceFireCard.SetActive(false);
             if (_surfaceHudRoot != null) _surfaceHudRoot.SetActive(false);
@@ -369,6 +377,7 @@ namespace TacSim.UI
             if (_targetInspectCard != null) _targetInspectCard.SetActive(false);
             if (_mindStrip != null) _mindStrip.SetActive(false);
             if (_combatFeedPanel != null) _combatFeedPanel.SetActive(false);
+            if (_arenaDebriefCard != null) _arenaDebriefCard.SetActive(false);
             if (_arenaLobbyLiveRosterText != null) _arenaLobbyLiveRosterText.text = DefaultLobbyRosterHint;
         }
 
@@ -1260,6 +1269,21 @@ namespace TacSim.UI
             }
             _combatFeedPanel.SetActive(false);
 
+            // Wrecked / Post-Match Debrief Card (appears cleanly center-screen when hull wrecked)
+            _arenaDebriefCard = CreatePanel(_arenaBattleHudRoot.transform, "ArenaDebriefCard", new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-240f, -72f), new Vector2(240f, 92f), new Color(0.05f, 0.06f, 0.11f, 0.96f));
+            CreatePanel(_arenaDebriefCard.transform, "DebriefAccent", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -3f), Vector2.zero, new Color(0.95f, 0.26f, 0.22f, 0.95f));
+            _arenaDebriefText = CreateTxt(_arenaDebriefCard.transform, string.Empty, 12, FontStyle.Normal, TextAnchor.UpperCenter, Color.white);
+            _arenaDebriefText.supportRichText = true;
+            SetRect(_arenaDebriefText.rectTransform, new Vector2(0f, 0.34f), new Vector2(1f, 1f), new Vector2(14f, 4f), new Vector2(-14f, -12f));
+
+            var debriefBtns = CreatePanel(_arenaDebriefCard.transform, "DebriefActionsRow", new Vector2(0f, 0f), new Vector2(1f, 0.34f), new Vector2(12f, 10f), new Vector2(-12f, -4f), Color.clear);
+            var dbHlg = debriefBtns.AddComponent<HorizontalLayoutGroup>();
+            dbHlg.spacing = 8f; dbHlg.childControlWidth = true; dbHlg.childControlHeight = true; dbHlg.childForceExpandWidth = true;
+            CreateBtn(debriefBtns.transform, "EXIT POD (exit)", new Color(0.62f, 0.18f, 0.18f), HandleDebriefExitClick);
+            CreateBtn(debriefBtns.transform, "MATCH HISTORY", new Color(0.18f, 0.34f, 0.48f), () => OnCommandRequested?.Invoke("sim history"));
+            CreateBtn(debriefBtns.transform, "KEEP WATCHING", new Color(0.22f, 0.26f, 0.34f), HandleDebriefDismissClick);
+            _arenaDebriefCard.SetActive(false);
+
             _arenaBattleHudRoot.SetActive(false);
         }
 
@@ -1337,7 +1361,41 @@ namespace TacSim.UI
             UpdateArmorPaperDoll(s);
             UpdateTargetInspectionCard(s);
             UpdateCombatFeed(s);
+            UpdateDebriefCard(s);
             UpdatePooledContactRows(s);
+        }
+
+        public void ClickDebriefExitForTests() => HandleDebriefExitClick();
+        public void ClickDebriefDismissForTests() => HandleDebriefDismissClick();
+
+        private void HandleDebriefExitClick()
+        {
+            if (_arenaDebriefCard != null) _arenaDebriefCard.SetActive(false);
+            OnArenaCockpitVerbRequested?.Invoke("exit");
+        }
+
+        private void HandleDebriefDismissClick()
+        {
+            if (_arena?.State != null)
+                _dismissedDebriefMatchId = _arena.State.MatchId;
+            if (_arenaDebriefCard != null) _arenaDebriefCard.SetActive(false);
+        }
+
+        private void UpdateDebriefCard(ArenaCockpitState s)
+        {
+            if (_arenaDebriefCard == null) return;
+            bool shouldShow = s != null && s.IsWreck && (s.MatchId == 0 || _dismissedDebriefMatchId != s.MatchId);
+            if (_arenaDebriefCard.activeSelf != shouldShow)
+                _arenaDebriefCard.SetActive(shouldShow);
+            if (!shouldShow || _arenaDebriefText == null) return;
+
+            int shots = s.MatchHits + s.MatchMisses;
+            int accPct = shots > 0 ? Mathf.RoundToInt((s.MatchHits * 100f) / shots) : 0;
+            string accStr = shots > 0 ? $"{s.MatchHits}/{shots} ({accPct}%)" : "0/0";
+            _arenaDebriefText.text =
+                $"<color=#FF6655><b>VEHICLE DESTROYED — MATCH #{s.MatchId} DEBRIEF</b></color>\n" +
+                $"KILLS: <b>{s.MatchKills}</b>   |   HITS: <b>{accStr}</b>   |   MODE: <b>{MushProtocol.EscapeUnityRichText((s.Mode ?? "skirmish").ToUpperInvariant())}</b>\n" +
+                $"<color=#FF7766>RED ALIVE: {s.RedAliveCount}</color>   vs   <color=#66BBFF>BLUE ALIVE: {s.BlueAliveCount}</color>   |   HEAT: {s.Heat}/{s.HeatMax}";
         }
 
         private void UpdateCombatFeed(ArenaCockpitState s)

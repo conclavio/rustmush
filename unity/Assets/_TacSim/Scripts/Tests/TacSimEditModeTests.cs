@@ -8001,5 +8001,121 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ArenaGunneryBallisticsObjectiveBracketAndDebriefCard_DecodesRangeBandsProjectsObjectiveAndShowsWreckDebrief()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave7PR2_GunneryAndDebriefTest");
+            try
+            {
+                var catalog = TacSimAssetCatalog.LoadOrDefault();
+                var arenaGo = new UnityEngine.GameObject("Arena");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(catalog, TacSimTerrainDecoder.LoadStaticArena("proving_ground"));
+
+                var camGo = new UnityEngine.GameObject("Cam", typeof(UnityEngine.Camera));
+                camGo.transform.SetParent(rootGo.transform, false);
+                var cam = camGo.GetComponent<UnityEngine.Camera>();
+                cam.transform.position = TacSim.Arena.OocArenaController.ArenaStageOrigin + new UnityEngine.Vector3(100f, 35f, 80f);
+                cam.transform.LookAt(TacSim.Arena.OocArenaController.ArenaStageOrigin + new UnityEngine.Vector3(150f, 0f, 100f));
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.Overlays.BindControllers(null, arena, null);
+                hud.TacticalBrackets.BindControllers(null, null, arena);
+
+                var emitted = new List<string>();
+                arena.OnLiveCockpitVerbRequested += emitted.Add;
+                hud.Overlays.OnArenaCockpitVerbRequested += v => arena.ExecuteCockpitAction(v);
+
+                // 1. Live frame with weapon range_band, bands_cm, odds_floor_permille, blocked=true, dynamic objective, and rear-exposed contact
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 115, ""seated"": true, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""mode"": ""hold"", ""power"": ""online"",
+                    ""x_cm"": 10000, ""y_cm"": 10000, ""heading_deg"": 90, ""speed_kph"": 0,
+                    ""blocked"": true, ""odds_floor_permille"": 150, ""wreck"": false,
+                    ""objective"": { ""cell"": [150, 100], ""letter"": ""B"", ""radius_cells"": 4 },
+                    ""lock_designator"": ""B1"", ""lock_range_m"": 160, ""lock_percent"": 82,
+                    ""weapons"": [
+                        {
+                            ""id"": ""main_gun"", ""ready"": true, ""ready_in_ms"": 0, ""rounds"": 10, ""rounds_max"": 12, ""percent"": 82,
+                            ""range_band"": { ""index"": 1, ""of"": 3, ""max_range_cm"": 45000, ""dispersion_mrad"": 12 },
+                            ""bands_cm"": [15000, 30000, 45000]
+                        }
+                    ],
+                    ""contacts"": [
+                        {
+                            ""designator"": ""B1"", ""class"": ""line_tank"", ""unit_type"": ""tacsim.unit.line_tank"",
+                            ""party"": ""B"", ""friendly"": false, ""cell"": [116, 100], ""range_m"": 160,
+                            ""bearing_deg"": 90, ""facing"": ""rear"", ""aspect"": ""rear"", ""band"": ""close"", ""moving"": true,
+                            ""health"": ""scarred"", ""odds"": [{ ""weapon"": ""main_gun"", ""percent"": 82 }]
+                        }
+                    ],
+                    ""notices"": [
+                        { ""kind"": ""hit"", ""weapon"": ""main_gun"", ""designator"": ""B1"", ""section"": ""hull"", ""text"": ""Hit B1."" },
+                        { ""kind"": ""kill"", ""designator"": ""B1"", ""text"": ""B1 destroyed!"" }
+                    ]
+                }"));
+                hud.Overlays.RefreshArenaHud();
+                hud.TacticalBrackets.SyncBrackets(TacSimActiveStage.SimulatorArena, cam, hideForOverlay: false);
+
+                // Weapon range_band & blocked decoding
+                Assert.IsTrue(arena.State.MovementBlocked);
+                Assert.AreEqual(15, arena.State.OddsFloorPercent);
+                Assert.IsTrue(arena.TryGetPrimaryWeaponGunnery(out var primary));
+                Assert.AreEqual(1, primary.RangeBandIndex);
+                Assert.AreEqual(3, primary.RangeBandTotal);
+                Assert.AreEqual(450f, primary.MaxRangeM, 0.5f);
+                Assert.AreEqual(12, primary.DispersionMrad);
+
+                // Gunnery strip & 3D Objective + Aspect-Enriched Contact Brackets
+                StringAssert.Contains("BAND 1/3", hud.TacticalBrackets.ArenaGunnerySnapshot);
+                StringAssert.Contains("450m", hud.TacticalBrackets.ArenaGunnerySnapshot);
+                StringAssert.Contains("12mr", hud.TacticalBrackets.ArenaGunnerySnapshot);
+                StringAssert.Contains("BLOCKED", hud.TacticalBrackets.ArenaGunnerySnapshot);
+                Assert.IsTrue(hud.TacticalBrackets.ArenaObjectiveBracketActive, "Active hold objective must project as a 3D viewport bracket");
+
+                bool sawObjectiveTag = false;
+                bool sawAspectTag = false;
+                for (int b = 0; b < hud.TacticalBrackets.ActiveBracketCount; b++)
+                {
+                    string tag = hud.TacticalBrackets.GetActiveBracketTagSnapshot(b);
+                    if (tag.Contains("HOLD ZONE") || tag.Contains("[B]")) sawObjectiveTag = true;
+                    if (tag.Contains("B1") && tag.Contains("REAR")) sawAspectTag = true;
+                }
+                Assert.IsTrue(sawObjectiveTag, "Projected objective bracket must display [B] HOLD ZONE");
+                Assert.IsTrue(sawAspectTag, "Locked contact bracket must display exposed REAR aspect");
+
+                // Debrief card hidden while alive
+                Assert.IsFalse(hud.Overlays.IsDebriefCardVisible);
+
+                // 2. Wrecked transition reveals Wrecked / Match Debrief Card with live gunnery accuracy, kills, EXIT & DISMISS
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 115, ""seated"": true, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""mode"": ""hold"", ""power"": ""off"",
+                    ""wreck"": true,
+                    ""weapons"": [],
+                    ""contacts"": []
+                }"));
+                hud.Overlays.RefreshArenaHud();
+
+                Assert.IsTrue(hud.Overlays.IsDebriefCardVisible, "Wrecked hull must open Match Debrief card");
+                StringAssert.Contains("MATCH #115", hud.Overlays.DebriefSummarySnapshot);
+                StringAssert.Contains("KILLS: <b>1</b>", hud.Overlays.DebriefSummarySnapshot);
+                StringAssert.Contains("100%", hud.Overlays.DebriefSummarySnapshot);
+
+                emitted.Clear();
+                hud.Overlays.ClickDebriefExitForTests();
+                CollectionAssert.AreEqual(new[] { "exit" }, emitted);
+
+                hud.Overlays.ClickDebriefDismissForTests();
+                Assert.IsFalse(hud.Overlays.IsDebriefCardVisible, "Dismissing debrief card must hide it for the current match");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

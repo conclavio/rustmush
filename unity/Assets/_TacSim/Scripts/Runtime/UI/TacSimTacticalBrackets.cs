@@ -68,6 +68,7 @@ namespace TacSim.UI
         private Image _arenaHeatFill;
         private Text _arenaHeatLabel;
         private Text _arenaDriveStrip;
+        private Text _arenaGunneryStrip;
 
         // Arena Top-Center 360-deg Scrolling Compass Tape & Tactical Telemetry Strip
         private const float ArenaCompassWidthPx = 420f;
@@ -144,6 +145,12 @@ namespace TacSim.UI
         public bool DockingReticleAllGreen { get; private set; }
         public string SurfaceCompassSnapshot => _surfaceCompassText != null ? _surfaceCompassText.text : string.Empty;
         public string ArenaArmorSummarySnapshot => _arenaDriveStrip != null ? _arenaDriveStrip.text : string.Empty;
+        public string ArenaGunnerySnapshot => _arenaGunneryStrip != null ? _arenaGunneryStrip.text : string.Empty;
+        public bool ArenaObjectiveBracketActive { get; private set; }
+        public string GetActiveBracketTagSnapshot(int index) =>
+            (index >= 0 && index < ActiveBracketCount && index < _pool.Count && _pool[index].TagLabel != null)
+                ? (_pool[index].TagLabel.text ?? string.Empty)
+                : string.Empty;
         public bool IsHitmarkerVisible => _arenaHitmarkerRoot != null && _arenaHitmarkerRoot.activeSelf && _hitmarkerRemainSec > 0f;
         public ArenaHitmarkerKind ActiveHitmarkerKind => _activeHitmarkerKind;
         public bool IsCriticalStatusBannerVisible => _arenaCritBannerRoot != null && _arenaCritBannerRoot.activeSelf;
@@ -629,9 +636,36 @@ namespace TacSim.UI
                 _arenaDriveStrip.text = $"HDG {hdg:000}° | {st.SpeedKph:0} kph{lockTag}";
             }
 
+            if (_arenaGunneryStrip != null)
+            {
+                string gunTxt;
+                if (_arena.TryGetPrimaryWeaponGunnery(out var primary) && primary.RangeBandTotal > 0)
+                {
+                    gunTxt = $"BAND {primary.RangeBandIndex}/{primary.RangeBandTotal} · {primary.MaxRangeM:0}m · {primary.DispersionMrad}mr";
+                }
+                else if (_arena.TryGetPrimaryWeaponGunnery(out var primaryRange) && primaryRange.MaxRangeM > 1f)
+                {
+                    gunTxt = $"REACH {primaryRange.MaxRangeM:0}m";
+                }
+                else
+                {
+                    gunTxt = "GUNNERY READY";
+                }
+                int shots = st.MatchHits + st.MatchMisses;
+                if (shots > 0 || st.MatchKills > 0)
+                    gunTxt += $" · {st.MatchKills}K {st.MatchHits}/{shots}H";
+                if (st.MovementBlocked)
+                    gunTxt += " · [BLOCKED]";
+                _arenaGunneryStrip.text = gunTxt;
+                _arenaGunneryStrip.color = st.MovementBlocked
+                    ? new Color(1.0f, 0.56f, 0.24f)
+                    : new Color(0.68f, 0.90f, 0.96f);
+            }
+
             SyncArenaCompassTape();
             SyncArenaCriticalBanner();
 
+            ArenaObjectiveBracketActive = false;
             if (cam == null)
             {
                 HideAllBrackets();
@@ -639,6 +673,32 @@ namespace TacSim.UI
             }
 
             int used = 0;
+
+            // Project 3D Hold Objective / Dynamic Objective world bracket (gold, edge-clamped so always visible)
+            if (_arena.TryGetActiveObjectiveWorldPos(out Vector3 objWorldPos, out string objLetter) && used < MaxBrackets)
+            {
+                Vector3 osp = cam.WorldToScreenPoint(objWorldPos);
+                ComputeCanvasPositionFromScreenPoint(osp, sw, sh, canvasSize, 52f, out Vector2 objPos, out _, out bool objClamped);
+                float objDistM = _arena.PlayerVehicleTransform != null
+                    ? Vector3.Distance(_arena.PlayerVehicleTransform.position, objWorldPos)
+                    : 0f;
+                string objPrefix = objClamped ? "» " : string.Empty;
+                string objTag = $"{objPrefix}[{objLetter}] HOLD ZONE";
+                ConfigureBracket(
+                    _pool[used],
+                    objPos,
+                    58f,
+                    new Color(1.0f, 0.82f, 0.24f, 0.94f),
+                    objTag,
+                    $"{objDistM:0} m",
+                    string.Empty,
+                    isRock: false,
+                    isArena: true,
+                    interactive: false);
+                ArenaObjectiveBracketActive = true;
+                used++;
+            }
+
             for (int i = 0; i < st.Contacts.Count && used < MaxBrackets; i++)
             {
                 var ct = st.Contacts[i];
@@ -659,10 +719,17 @@ namespace TacSim.UI
                         : new Color(1.0f, 0.56f, 0.24f, 0.92f));
 
                 string prefix = clamped ? "» " : string.Empty;
+                string aspectSuffix = !string.IsNullOrEmpty(ct.Aspect) && !string.Equals(ct.Aspect, "front", StringComparison.OrdinalIgnoreCase)
+                    ? $" · {ct.Aspect.ToUpperInvariant()}"
+                    : string.Empty;
                 string tag = isLocked
-                    ? $"{prefix}[{ct.Designator}] HIT {st.LockHitPercent}%"
-                    : $"{prefix}[{ct.Designator}] {(string.IsNullOrEmpty(ct.ClassLabel) ? ct.Party : ct.ClassLabel)}";
-                string sub = $"{ct.RangeM:0} m";
+                    ? $"{prefix}[{ct.Designator}] HIT {st.LockHitPercent}%{aspectSuffix}"
+                    : (!ct.Friendly && ct.HitOddsPct > 0
+                        ? $"{prefix}[{ct.Designator}] {ct.HitOddsPct}%{aspectSuffix}"
+                        : $"{prefix}[{ct.Designator}] {(string.IsNullOrEmpty(ct.ClassLabel) ? ct.Party : ct.ClassLabel)}");
+                string bandPart = !string.IsNullOrEmpty(ct.Band) ? $" {ct.Band.ToUpperInvariant()}" : string.Empty;
+                string movePart = ct.Moving ? " · MOV" : string.Empty;
+                string sub = $"{ct.RangeM:0}m{bandPart}{movePart}";
 
                 ConfigureBracket(_pool[used], pos, isLocked ? 74f : 54f, col, tag, sub, ct.Designator, isRock: false, isArena: true, interactive: !ct.Friendly);
                 used++;
@@ -914,8 +981,8 @@ namespace TacSim.UI
                 "ArenaArmorSchematic",
                 new Vector2(0.5f, 0f),
                 new Vector2(0.5f, 0f),
-                new Vector2(-118f, 18f),
-                new Vector2(118f, 174f),
+                new Vector2(-128f, 18f),
+                new Vector2(128f, 190f),
                 new Color(0.03f, 0.06f, 0.11f, 0.92f));
 
             var hdr = CreateText(_arenaArmorWidget.transform, "ARMOR INTEGRITY & HEAT", 10, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(0.62f, 0.88f, 1f));
@@ -929,14 +996,17 @@ namespace TacSim.UI
             BuildArmorPlate(_arenaArmorWidget.transform, "RearPlate", new Vector2(0.5f, 1f), new Vector2(-42f, -110f), new Vector2(42f, -88f), out _armorRearImg, out _armorRearTxt);
 
             // Heat bar
-            var heatBg = CreatePanel(_arenaArmorWidget.transform, "HeatBarBg", new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(12f, 24f), new Vector2(-12f, 40f), new Color(0.10f, 0.14f, 0.20f, 1f));
+            var heatBg = CreatePanel(_arenaArmorWidget.transform, "HeatBarBg", new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(12f, 40f), new Vector2(-12f, 56f), new Color(0.10f, 0.14f, 0.20f, 1f));
             var heatFill = CreatePanel(heatBg.transform, "HeatBarFill", Vector2.zero, new Vector2(0.05f, 1f), Vector2.zero, Vector2.zero, new Color(0.24f, 0.76f, 0.95f, 0.95f));
             _arenaHeatFill = heatFill.GetComponent<Image>();
             _arenaHeatLabel = CreateText(heatBg.transform, "HEAT 0/1000", 10, FontStyle.Bold, TextAnchor.MiddleCenter, Color.white);
             SetRect(_arenaHeatLabel.rectTransform, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero);
 
             _arenaDriveStrip = CreateText(_arenaArmorWidget.transform, "HDG 090° | 0 kph | TAB: LOCK", 10, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(0.84f, 0.94f, 1f));
-            SetRect(_arenaDriveStrip.rectTransform, new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(6f, 4f), new Vector2(-6f, 21f));
+            SetRect(_arenaDriveStrip.rectTransform, new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(6f, 20f), new Vector2(-6f, 37f));
+
+            _arenaGunneryStrip = CreateText(_arenaArmorWidget.transform, "GUNNERY READY", 9, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(0.68f, 0.90f, 0.96f));
+            SetRect(_arenaGunneryStrip.rectTransform, new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(6f, 3f), new Vector2(-6f, 19f));
 
             _arenaArmorWidget.SetActive(false);
         }

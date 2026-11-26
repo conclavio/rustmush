@@ -22,6 +22,10 @@ namespace TacSim.Arena
         public int ArmedMinPercent;
         public int ArmedKeeps;
         public string ArmedTarget = string.Empty;
+        public int RangeBandIndex;
+        public int RangeBandTotal;
+        public float MaxRangeM;
+        public int DispersionMrad;
     }
 
     public sealed class ArenaContactState
@@ -271,6 +275,8 @@ namespace TacSim.Arena
         public string Power = "online";
         public bool IsWreck;
         public bool Immobile;
+        public bool MovementBlocked;
+        public int OddsFloorPercent;
         public bool HasEcm;
         public bool EmconSilent;
         public bool WeaponsFree = true;
@@ -603,6 +609,42 @@ namespace TacSim.Arena
                 {
                     bearingDeg = ((State.Contacts[i].BearingDeg % 360f) + 360f) % 360f;
                     return true;
+                }
+            }
+            return false;
+        }
+
+        public bool TryGetPrimaryWeaponGunnery(out ArenaWeaponSlotState primary)
+        {
+            primary = null;
+            if (State?.Weapons == null || State.Weapons.Count == 0) return false;
+            primary = State.Weapons[0];
+            return primary != null;
+        }
+
+        public bool TryGetActiveObjectiveWorldPos(out Vector3 worldPos, out string label)
+        {
+            worldPos = Vector3.zero;
+            label = string.Empty;
+            if (TerrainGrid == null || State == null) return false;
+
+            if (State.HasDynamicObjective)
+            {
+                worldPos = ArenaStageOrigin + TerrainGrid.SiteCellToLocalPos(State.ObjectiveCellX, State.ObjectiveCellY, 6f);
+                label = !string.IsNullOrEmpty(State.ObjectiveLetter) ? State.ObjectiveLetter : "OBJ";
+                return true;
+            }
+            if (!string.IsNullOrWhiteSpace(TerrainGrid.HoldSpotLetter) && TerrainGrid.KeySpots != null)
+            {
+                for (int i = 0; i < TerrainGrid.KeySpots.Count; i++)
+                {
+                    var sp = TerrainGrid.KeySpots[i];
+                    if (string.Equals(sp.Letter, TerrainGrid.HoldSpotLetter, StringComparison.OrdinalIgnoreCase))
+                    {
+                        worldPos = ArenaStageOrigin + TerrainGrid.SiteCellToLocalPos(sp.CellX, sp.CellY, 6f);
+                        label = sp.Letter;
+                        return true;
+                    }
                 }
             }
             return false;
@@ -1549,6 +1591,9 @@ namespace TacSim.Arena
             State.Power = d.Str("power", "online");
             State.IsWreck = d.Bool("wreck", false);
             State.Immobile = d.Bool("immobile", false);
+            State.MovementBlocked = d.Bool("blocked", false);
+            if (d["odds_floor_permille"].Kind == JsonKind.Int || d["odds_floor_permille"].Kind == JsonKind.Float)
+                State.OddsFloorPercent = Mathf.Clamp(d.Int("odds_floor_permille", 0) / 10, 0, 100);
             if (d["sight_m"].Kind == JsonKind.Int || d["sight_m"].Kind == JsonKind.Float)
                 State.SightMeters = Mathf.Clamp(d.Float("sight_m", 120f), 20f, 1200f);
             string rawScope = d.Str("scope", string.Empty);
@@ -1747,6 +1792,15 @@ namespace TacSim.Arena
                     var w = wArr[i];
                     var armedObj = w["armed"];
                     bool hasArmed = armedObj.IsObject;
+                    var rbObj = w["range_band"];
+                    bool hasRb = rbObj != null && rbObj.IsObject;
+                    float maxRangeM = hasRb ? rbObj.Int("max_range_cm", 0) * 0.01f : 0f;
+                    if (maxRangeM <= 0.1f)
+                    {
+                        var bandsArr = w["bands_cm"].AsArray();
+                        if (bandsArr != null && bandsArr.Count > 0)
+                            maxRangeM = bandsArr[bandsArr.Count - 1].AsInt(0) * 0.01f;
+                    }
                     State.Weapons.Add(new ArenaWeaponSlotState
                     {
                         Id = w.Str("id", $"wpn_{i + 1}"),
@@ -1759,7 +1813,11 @@ namespace TacSim.Arena
                         ArmedSlot = hasArmed ? armedObj.Int("slot", 1) : 0,
                         ArmedMinPercent = hasArmed ? armedObj.Int("percent", 0) : 0,
                         ArmedKeeps = hasArmed ? armedObj.Int("keeps", 0) : 0,
-                        ArmedTarget = hasArmed ? armedObj.Str("target", string.Empty) : string.Empty
+                        ArmedTarget = hasArmed ? armedObj.Str("target", string.Empty) : string.Empty,
+                        RangeBandIndex = hasRb ? rbObj.Int("index", 0) : 0,
+                        RangeBandTotal = hasRb ? rbObj.Int("of", 0) : 0,
+                        MaxRangeM = maxRangeM,
+                        DispersionMrad = hasRb ? rbObj.Int("dispersion_mrad", 0) : 0
                     });
                 }
             }
