@@ -6195,5 +6195,54 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void StationExitSignageTrafficAndOrbitalVelocityScanner_SpawnsAndAnimates3DVisuals()
+        {
+            var rootGo = new UnityEngine.GameObject("StationSignageAndSpaceVectorsTest");
+            try
+            {
+                // 1. Station 3D Illuminated Doorway Destination Lintels & Animated Exterior Port Traffic Shuttles
+                var stGo = new UnityEngine.GameObject("StationSignageTest");
+                stGo.transform.SetParent(rootGo.transform, false);
+                var station = stGo.AddComponent<TacSim.World.StationWorldController>();
+                station.BuildStation(null, "neighborhood.ceres_freeport");
+
+                Assert.GreaterOrEqual(station.DoorwaySignCount, 12, "Ceres Freeport doorways must spawn illuminated overhead destination lintel signs");
+                Assert.AreEqual(3, station.ExteriorTrafficShuttleCount, "Berth Gallery exterior orbital lane must spawn 3 animated port traffic shuttles");
+
+                // 2. Orbital Space 3D Newtonian Velocity Vector & Asteroid Spectral Scanner Halo Ring
+                var spGo = new UnityEngine.GameObject("SpaceVectorsTest");
+                spGo.transform.SetParent(rootGo.transform, false);
+                var space = spGo.AddComponent<TacSim.Space.SpaceFlightController>();
+                space.BuildSpaceStage(null);
+
+                Assert.IsFalse(space.IsVelocityVectorVisible, "Velocity vector should stay hidden at zero velocity");
+                Assert.IsFalse(space.IsRockScannerRingVisible, "Rock scanner ring should stay hidden when no asteroid is targeted");
+
+                space.ApplyHolotankFeed(JsonNode.Parse(@"{
+                    ""range_km"": 200,
+                    ""contacts"": [
+                        { ""id"": ""own"", ""you"": true, ""x_km"": 0, ""y_km"": 0, ""z_km"": 0, ""vx_kms"": 0.12, ""vy_kms"": 0.04, ""vz_kms"": 0.0 }
+                    ],
+                    ""rocks"": [
+                        { ""id"": ""A"", ""x_km"": 4, ""y_km"": 1, ""z_km"": 0, ""spectral"": ""C-type volatiles"" }
+                    ]
+                }"));
+
+                Assert.IsTrue(space.IsVelocityVectorVisible, "Non-zero ownship velocity must project 3D Newtonian velocity vector");
+                Assert.Greater(space.OwnVelocityUnityMps.magnitude, 100f);
+                Assert.IsTrue(space.IsRockScannerRingVisible, "Selected asteroid rock must project 3D spectral scanner halo ring");
+
+                // Reset clears velocity vector & scanner halo cleanly
+                space.ResetSessionState();
+                Assert.IsFalse(space.IsVelocityVectorVisible);
+                Assert.IsFalse(space.IsRockScannerRingVisible);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

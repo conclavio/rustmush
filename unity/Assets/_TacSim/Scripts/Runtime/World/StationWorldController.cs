@@ -37,13 +37,28 @@ namespace TacSim.World
         private bool _hasAuthoritativeBerthHulls;
         private string _spawnedActorsRoomEntry;
 
+        private sealed class ExteriorPortShuttle
+        {
+            public Transform Root;
+            public float StartX;
+            public float EndX;
+            public float BaseY;
+            public float BaseZ;
+            public float SpeedMps;
+            public float PhaseOffset;
+        }
+
         private Transform _actorsContainer;
         private Transform _dockedShipVisual;
         private readonly List<(Transform tr, float baseY)> _berthDrones = new List<(Transform, float)>();
+        private readonly List<ExteriorPortShuttle> _exteriorTraffic = new List<ExteriorPortShuttle>();
         private readonly List<TextMeshPro> _cradleHullSigns = new List<TextMeshPro>();
         private readonly List<GameObject> _cradleHullObjects = new List<GameObject>();
         private WorldInteractable _airlockBoardInteractable;
         private string _builtGeometrySignature;
+
+        public int DoorwaySignCount { get; private set; }
+        public int ExteriorTrafficShuttleCount => _exteriorTraffic.Count;
 
         public const int MaxViewportMullions = 64;
         public const int MaxViewingStanchions = 64;
@@ -184,6 +199,8 @@ namespace TacSim.World
             _actorBillboards.Clear();
             _spawnedActorsRoomEntry = null;
             _berthDrones.Clear();
+            _exteriorTraffic.Clear();
+            DoorwaySignCount = 0;
             _cradleHullSigns.Clear();
             _cradleHullObjects.Clear();
             _airlockBoardInteractable = null;
@@ -1092,6 +1109,52 @@ namespace TacSim.World
                 {
                     SpawnAlignedDoorwayPrefab(Catalog.stationDoorFrame, go.transform, "HeavyPortalArch", floorCenter, horizontal, 3.35f, 5.4f, keepColliders: false);
                 }
+
+                SpawnDoorwayDestinationLintels(go.transform, ex, pos, boxSize, axisAToB, horizontal);
+            }
+        }
+
+        private void SpawnDoorwayDestinationLintels(Transform portalRoot, AtlasExitDef ex, Vector3 pos, Vector3 boxSize, Vector3 axisAToB, bool horizontal)
+        {
+            if (Pack == null || ex == null) return;
+            float lintelY = pos.y + boxSize.y * 0.5f + 0.34f;
+            Vector3 normal = axisAToB.sqrMagnitude > 0.01f
+                ? new Vector3(axisAToB.x, 0f, axisAToB.z).normalized
+                : (horizontal ? Vector3.forward : Vector3.right);
+            float backingWidth = horizontal ? 3.2f : 0.14f;
+            float backingDepth = horizontal ? 0.14f : 3.2f;
+            Material backingMat = UrpMaterialFactory.GetOpaque("DoorLintelBacking", new Color(0.05f, 0.08f, 0.12f), 0.25f, 0.45f);
+
+            if (ex.Locked)
+            {
+                Color redCol = new Color(1.0f, 0.36f, 0.30f);
+                Quaternion rotA = Quaternion.LookRotation(normal, Vector3.up);
+                Quaternion rotB = Quaternion.LookRotation(-normal, Vector3.up);
+                CreateBox(portalRoot, "LockedLintelStrip", new Vector3(pos.x, lintelY, pos.z), new Vector3(backingWidth, 0.42f, backingDepth), backingMat, false);
+                CreateWorldSign(portalRoot, "RESTRICTED — SEALED", new Vector3(pos.x, lintelY, pos.z) - normal * 0.24f, rotA, 1.35f, redCol);
+                CreateWorldSign(portalRoot, "RESTRICTED — SEALED", new Vector3(pos.x, lintelY, pos.z) + normal * 0.24f, rotB, 1.35f, redCol);
+                DoorwaySignCount += 2;
+                return;
+            }
+
+            string nameB = Pack.Rooms.TryGetValue(ex.ToRoom, out var roomB) && !string.IsNullOrWhiteSpace(roomB.Name) ? roomB.Name : ex.ForwardLabel;
+            string nameA = Pack.Rooms.TryGetValue(ex.FromRoom, out var roomA) && !string.IsNullOrWhiteSpace(roomA.Name) ? roomA.Name : ex.ReverseLabel;
+            Color signCol = new Color(0.45f, 0.94f, 1.0f);
+
+            CreateBox(portalRoot, "DoorLintelBacking", new Vector3(pos.x, lintelY, pos.z), new Vector3(backingWidth, 0.42f, backingDepth), backingMat, false);
+
+            // Side facing Room A points toward Room B; side facing Room B points toward Room A
+            if (!string.IsNullOrWhiteSpace(nameB))
+            {
+                Quaternion rotFaceA = Quaternion.LookRotation(normal, Vector3.up);
+                CreateWorldSign(portalRoot, $"-> {nameB.ToUpperInvariant()}", new Vector3(pos.x, lintelY, pos.z) - normal * 0.24f, rotFaceA, 1.45f, signCol);
+                DoorwaySignCount++;
+            }
+            if (!string.IsNullOrWhiteSpace(nameA))
+            {
+                Quaternion rotFaceB = Quaternion.LookRotation(-normal, Vector3.up);
+                CreateWorldSign(portalRoot, $"-> {nameA.ToUpperInvariant()}", new Vector3(pos.x, lintelY, pos.z) + normal * 0.24f, rotFaceB, 1.45f, signCol);
+                DoorwaySignCount++;
             }
         }
 
@@ -1484,6 +1547,56 @@ namespace TacSim.World
                     CreateBox(berthsRoot, $"UnlitTrussArch_{u}", darkPos + new Vector3(0f, 2.5f, 4f), new Vector3(9.5f, 0.45f, 0.45f), darkCradleMat, false);
                 }
             }
+
+            // Animated 3D Exterior Port Traffic Shuttles / Dockyard Tugs transiting the deep-space orbital lane beyond the cradles
+            BuildExteriorPortTrafficShuttles(berthsRoot, galleryMinX, galleryMaxX, galleryMinY, galleryElev);
+        }
+
+        private void BuildExteriorPortTrafficShuttles(Transform berthsRoot, float galleryMinX, float galleryMaxX, float galleryMinY, float galleryElev)
+        {
+            var trafficRoot = new GameObject("ExteriorPortTraffic").transform;
+            trafficRoot.SetParent(berthsRoot, false);
+
+            Material shuttleHull = UrpMaterialFactory.GetOpaque("PortShuttleHull", new Color(0.56f, 0.60f, 0.66f), 0.45f, 0.60f);
+            Material shuttleTrim = UrpMaterialFactory.GetOpaque("PortShuttleTrim", new Color(0.22f, 0.26f, 0.32f), 0.50f, 0.70f);
+            Material driveGlow = UrpMaterialFactory.GetEmissive("PortShuttlePlume", new Color(0.32f, 0.88f, 1.0f), new Color(0.40f, 0.96f, 1.0f) * 2.4f);
+            Material portRed = UrpMaterialFactory.GetEmissive("PortShuttleNavRed", new Color(1f, 0.22f, 0.18f), new Color(1f, 0.3f, 0.22f) * 2.2f);
+            Material stbdGreen = UrpMaterialFactory.GetEmissive("PortShuttleNavGrn", new Color(0.20f, 1f, 0.42f), new Color(0.28f, 1f, 0.50f) * 2.2f);
+
+            float laneMinX = galleryMinX - 55f;
+            float laneMaxX = galleryMaxX + 55f;
+            for (int i = 0; i < 3; i++)
+            {
+                bool eastbound = (i % 2) == 0;
+                float startX = eastbound ? laneMinX : laneMaxX;
+                float endX = eastbound ? laneMaxX : laneMinX;
+                float baseY = galleryElev + 3.2f + i * 3.8f;
+                float baseZ = galleryMinY - 38f - i * 8.5f;
+
+                var root = new GameObject($"PortTrafficShuttle_{i + 1}").transform;
+                root.SetParent(trafficRoot, false);
+                Vector3 initPos = AtlasToUnity(Mathf.Lerp(startX, endX, i * 0.33f), baseY, baseZ);
+                root.position = initPos;
+                root.rotation = Quaternion.identity;
+
+                float tailSign = eastbound ? -1f : 1f;
+                CreateBox(root, "HullCore", initPos, new Vector3(4.6f, 1.0f, 1.5f), shuttleHull, false);
+                CreateBox(root, "WingPods", initPos, new Vector3(1.8f, 0.42f, 3.4f), shuttleTrim, false);
+                CreateBox(root, "DrivePlume", initPos + new Vector3(tailSign * 2.8f, 0f, 0f), new Vector3(1.4f, 0.52f, 0.62f), driveGlow, false);
+                CreateBox(root, "NavLight_Port", initPos + new Vector3(0f, 0.2f, eastbound ? 1.8f : -1.8f), Vector3.one * 0.22f, portRed, false);
+                CreateBox(root, "NavLight_Stbd", initPos + new Vector3(0f, 0.2f, eastbound ? -1.8f : 1.8f), Vector3.one * 0.22f, stbdGreen, false);
+
+                _exteriorTraffic.Add(new ExteriorPortShuttle
+                {
+                    Root = root,
+                    StartX = startX,
+                    EndX = endX,
+                    BaseY = baseY,
+                    BaseZ = baseZ,
+                    SpeedMps = 6.5f + i * 2.4f,
+                    PhaseOffset = i * 0.33f
+                });
+            }
         }
 
         private void Update()
@@ -1495,6 +1608,17 @@ namespace TacSim.World
                 Vector3 p = entry.tr.position;
                 p.y = entry.baseY + Mathf.Sin(Time.time * 1.35f + i * 2.1f) * 0.14f;
                 entry.tr.position = p;
+            }
+
+            for (int i = 0; i < _exteriorTraffic.Count; i++)
+            {
+                var sh = _exteriorTraffic[i];
+                if (sh?.Root == null) continue;
+                float span = Mathf.Max(20f, Mathf.Abs(sh.EndX - sh.StartX));
+                float u = Mathf.Repeat(sh.PhaseOffset + (Time.time * sh.SpeedMps) / span, 1f);
+                float curX = Mathf.Lerp(sh.StartX, sh.EndX, u);
+                float curY = sh.BaseY + Mathf.Sin(Time.time * 0.65f + i * 1.9f) * 0.65f;
+                sh.Root.position = AtlasToUnity(curX, curY, sh.BaseZ);
             }
 
             float dt = Mathf.Max(0.001f, Time.deltaTime);
