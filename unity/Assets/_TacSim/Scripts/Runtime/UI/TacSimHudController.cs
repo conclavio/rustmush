@@ -98,6 +98,7 @@ namespace TacSim.UI
         public TacSimKeybindHelp KeybindHelp { get; private set; }
         public TacSimSocialAndMailModal SocialModal { get; private set; }
         public TacSimQuestJournal QuestJournal { get; private set; }
+        public TacSimTacticalOverview TacticalOverview { get; private set; }
         public ChatLogTab ActiveChatTab { get; private set; } = ChatLogTab.All;
         public int QuickActionSlotCount => _quickSlotActions.Count;
         public bool IsDockingHudVisible => _dockingPanel != null && _dockingPanel.activeSelf;
@@ -495,6 +496,7 @@ namespace TacSim.UI
             KeybindHelp?.ResetSessionState();
             SocialModal?.ResetSessionState();
             QuestJournal?.ResetSessionState();
+            TacticalOverview?.ResetSessionState();
             TacticalBrackets?.ResetSessionState();
             FloatingCallouts?.ResetSessionState();
             UnitFrames?.ResetSessionState();
@@ -557,6 +559,9 @@ namespace TacSim.UI
 
             Minimap = gameObject.GetComponent<TacSimTacticalMinimap>() ?? gameObject.AddComponent<TacSimTacticalMinimap>();
             Minimap.BuildMinimap(_hudRoot.transform, _uiFont);
+
+            TacticalOverview = gameObject.GetComponent<TacSimTacticalOverview>() ?? gameObject.AddComponent<TacSimTacticalOverview>();
+            TacticalOverview.BuildDrawer(_hudRoot.transform, _uiFont);
 
             SolarMap = gameObject.GetComponent<TacSimSolarSystemMap>() ?? gameObject.AddComponent<TacSimSolarSystemMap>();
             SolarMap.BuildModal(_hudRoot.transform, _uiFont);
@@ -1408,6 +1413,10 @@ namespace TacSim.UI
                 else if (Input.GetKeyDown(KeyCode.V))
                 {
                     OnCycleOrbitalCameraRequested?.Invoke();
+                }
+                else if (Input.GetKeyDown(KeyCode.T))
+                {
+                    TacticalOverview?.ToggleVisible();
                 }
                 else if (Input.GetKeyDown(KeyCode.Space))
                 {

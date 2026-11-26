@@ -68,12 +68,15 @@ namespace TacSim.Surface
         private Transform _drillSparksGlow;
         private LineRenderer _roverRouteLine;
         private Transform _roverWaypointRing;
+        private Transform _hoverCursorRing;
         private float _pulseScale = -1f;
         private Color _pulseColor = Color.cyan;
         private float _drillActiveUntil;
 
         public bool IsRouteSplineVisible => _roverRouteLine != null && _roverRouteLine.enabled;
         public int RouteSplinePointCount => _roverRouteLine != null ? _roverRouteLine.positionCount : 0;
+        public bool HasHoverDriveCursor => _hoverCursorRing != null;
+        public int ActiveBeaconHaloCount => _markersRoot != null ? _markersRoot.childCount : 0;
 
         private bool _hasCachedHullSiteCell;
         private int _cachedHullSiteX;
@@ -128,11 +131,15 @@ namespace TacSim.Surface
             public readonly Vector3 WorldPos;
             public readonly string Label;
             public readonly bool IsRich;
-            public SurfaceOreBeaconPoint(Vector3 worldPos, string label, bool isRich)
+            public readonly int SiteCellX;
+            public readonly int SiteCellY;
+            public SurfaceOreBeaconPoint(Vector3 worldPos, string label, bool isRich, int siteCellX = -1, int siteCellY = -1)
             {
                 WorldPos = worldPos;
                 Label = label;
                 IsRich = isRich;
+                SiteCellX = siteCellX;
+                SiteCellY = siteCellY;
             }
         }
 
@@ -360,6 +367,17 @@ namespace TacSim.Surface
                 UrpMaterialFactory.GetHologramUnlit("RoverWpRingMat", new Color(0.28f, 0.96f, 0.86f, 0.65f));
             _roverWaypointRing = wpRing.transform;
             _roverWaypointRing.gameObject.SetActive(false);
+
+            var hoverRing = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            hoverRing.name = "SurfaceHoverDriveCursor";
+            hoverRing.transform.SetParent(transform, false);
+            hoverRing.transform.localScale = new Vector3(3.4f, 0.08f, 3.4f);
+            var hrc = hoverRing.GetComponent<Collider>();
+            if (hrc != null) { if (Application.isPlaying) Destroy(hrc); else DestroyImmediate(hrc); }
+            hoverRing.GetComponent<MeshRenderer>().sharedMaterial =
+                UrpMaterialFactory.GetHologramUnlit("SurfaceHoverCursorMat", new Color(1.0f, 0.84f, 0.32f, 0.55f));
+            _hoverCursorRing = hoverRing.transform;
+            _hoverCursorRing.gameObject.SetActive(false);
         }
 
         public void SyncRoverRouteSpline()
@@ -970,8 +988,8 @@ namespace TacSim.Surface
                 string txt = r.Str("text", "Ore Reading");
                 bool isRich = txt.IndexOf("rich", StringComparison.OrdinalIgnoreCase) >= 0;
                 Vector3 wp = SurfaceStageOrigin + TerrainGrid.SiteCellToLocalPos(siteCx, siteCy, 2.2f);
-                _oreBeacons.Add(new SurfaceOreBeaconPoint(wp, txt, isRich));
-                SpawnBeaconPillarAtSiteCell(siteCx, siteCy, txt, isRich ? new Color(0.2f, 1f, 0.58f) : new Color(0.32f, 0.85f, 1f));
+                _oreBeacons.Add(new SurfaceOreBeaconPoint(wp, txt, isRich, siteCx, siteCy));
+                SpawnBeaconPillarAtSiteCell(siteCx, siteCy, txt, isRich ? new Color(0.2f, 1f, 0.58f) : new Color(0.32f, 0.85f, 1f), isRich);
                 spawned++;
             }
         }
@@ -1026,12 +1044,23 @@ namespace TacSim.Surface
             }
         }
 
-        private void SpawnBeaconPillarAtSiteCell(int siteCx, int siteCy, string label, Color color)
+        private void SpawnBeaconPillarAtSiteCell(int siteCx, int siteCy, string label, Color color, bool isRich = false)
         {
             Vector3 wp = SurfaceStageOrigin + TerrainGrid.SiteCellToLocalPos(siteCx, siteCy, 0f);
             var root = new GameObject($"PocketBeacon_{siteCx}_{siteCy}");
             root.transform.SetParent(_markersRoot, false);
             root.transform.position = wp;
+
+            var halo = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            halo.name = "OreYieldHaloRing";
+            halo.transform.SetParent(root.transform, false);
+            halo.transform.localPosition = new Vector3(0f, 0.14f, 0f);
+            float haloDia = isRich ? 7.8f : 4.8f;
+            halo.transform.localScale = new Vector3(haloDia, 0.08f, haloDia);
+            var hc = halo.GetComponent<Collider>();
+            if (hc != null) { if (Application.isPlaying) Destroy(hc); else DestroyImmediate(hc); }
+            halo.GetComponent<MeshRenderer>().sharedMaterial =
+                UrpMaterialFactory.GetHologramUnlit($"BeaconHalo_{isRich}", new Color(color.r, color.g, color.b, isRich ? 0.42f : 0.26f));
 
             var beam = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
             beam.transform.SetParent(root.transform, false);
@@ -1118,20 +1147,34 @@ namespace TacSim.Surface
                 }
             }
 
-            if (!overUi && Input.GetMouseButtonDown(0))
+            if (!overUi)
             {
                 Camera cam = Camera.main;
+                bool hitTerrain = false;
                 if (cam != null && Vector3.Distance(cam.transform.position, ActiveRoverRig.Root.transform.position) < 340f)
                 {
                     Ray ray = cam.ScreenPointToRay(Input.mousePosition);
                     if (Physics.Raycast(ray, out RaycastHit hit, 600f))
                     {
+                        hitTerrain = true;
                         Vector3 hitLocal = hit.point - SurfaceStageOrigin;
                         int siteX = TerrainGrid.LocalPosToSiteCellX(hitLocal.x);
                         int siteY = TerrainGrid.LocalPosToSiteCellY(hitLocal.z);
-                        OnTerrainCellDriveClicked?.Invoke(siteX, siteY);
+                        if (_hoverCursorRing != null)
+                        {
+                            _hoverCursorRing.gameObject.SetActive(true);
+                            _hoverCursorRing.position = hit.point + Vector3.up * 0.16f;
+                        }
+                        if (Input.GetMouseButtonDown(0))
+                            OnTerrainCellDriveClicked?.Invoke(siteX, siteY);
                     }
                 }
+                if (!hitTerrain && _hoverCursorRing != null && _hoverCursorRing.gameObject.activeSelf)
+                    _hoverCursorRing.gameObject.SetActive(false);
+            }
+            else if (_hoverCursorRing != null && _hoverCursorRing.gameObject.activeSelf)
+            {
+                _hoverCursorRing.gameObject.SetActive(false);
             }
 
             // Follow authoritative `{x_cm, y_cm, at_s}` leg waypoints on the IC clock when present,

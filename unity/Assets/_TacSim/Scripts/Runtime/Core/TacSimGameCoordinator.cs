@@ -224,6 +224,8 @@ namespace TacSim.Core
                 Hud.CharacterSheet.BindSources(TradeState, SpaceStage, SurfaceStage, ArenaStage);
             if (Hud.TacticalBrackets != null)
                 Hud.TacticalBrackets.BindControllers(SpaceStage, SurfaceStage, ArenaStage);
+            if (Hud.TacticalOverview != null)
+                Hud.TacticalOverview.BindControllers(SpaceStage, SurfaceStage, ArenaStage);
 
             if (Wayfinder == null)
             {
@@ -496,6 +498,46 @@ namespace TacSim.Core
                 };
             }
 
+            if (Hud.TacticalOverview != null)
+            {
+                Hud.TacticalOverview.OnSpaceRowClicked += (id, isRock) =>
+                {
+                    if (!MushProtocol.TryValidateSafeCommandToken(id, out string safeId)) return;
+                    if (Audio != null) Audio.PlayRadarScanPing();
+                    if (isRock)
+                    {
+                        SpaceStage?.NotifyApproachOrdered(safeId);
+                        ExecutePlayerCommand($"+helm/approach {safeId}");
+                    }
+                    else
+                    {
+                        ExecutePlayerCommand($"+tac/lock {safeId}");
+                    }
+                };
+                Hud.TacticalOverview.OnSpaceRowSecondaryAct += (id, isRock) =>
+                {
+                    if (!MushProtocol.TryValidateSafeCommandToken(id, out string safeId)) return;
+                    if (isRock)
+                        ExecutePlayerCommand($"+helm/match {safeId}");
+                    else
+                        ExecutePlayerCommand("+tac/beam");
+                };
+                Hud.TacticalOverview.OnSurfaceBeaconDriveClicked += (sx, sy) =>
+                {
+                    if (SurfaceStage != null && _ws != null && _ws.IsConnected)
+                    {
+                        Audio?.PlayUiClick();
+                        Hud?.FloatingCallouts?.ShowCallout($"ROVER DRIVE -> ({sx},{sy})", new Color(0.32f, 0.96f, 1f, 1f), 1.5f);
+                        _ws.SendLine($"+tv/{SurfaceStage.AddressedRigSlot} drive {sx},{sy} go");
+                    }
+                };
+                Hud.TacticalOverview.OnArenaContactLockClicked += desig =>
+                {
+                    if (!MushProtocol.TryValidateSafeCommandToken(desig, out string safeDesig)) return;
+                    HandleArenaCockpitVerb($"lock {safeDesig}");
+                };
+            }
+
             if (Wayfinder != null)
             {
                 Wayfinder.OnArrivedAtDestination += destName =>
@@ -557,6 +599,7 @@ namespace TacSim.Core
                         case "ui:options": Hud.DisplayOptions?.SetOpen(true); break;
                         case "ui:cycle_cam": HandleCycleOrbitalCamera(); break;
                         case "ui:cycle_holo": CycleBridgeHoloTableMode(); break;
+                        case "ui:toggle_overview": Hud.TacticalOverview?.ToggleVisible(); break;
                         case "ui:clear_wayfinder":
                             Wayfinder?.ClearRoute();
                             Hud.OpsDirectory?.SyncWayfinderBanner(ActiveStage);
@@ -906,6 +949,7 @@ namespace TacSim.Core
                     (Hud.SolarMap != null && Hud.SolarMap.IsOpen) ||
                     (Hud.DisplayOptions != null && Hud.DisplayOptions.IsOpen);
                 Hud.TacticalBrackets.SyncBrackets(stage, activeCam, hideBrackets);
+                Hud.TacticalOverview?.SyncOverview(stage, hideBrackets);
             }
 
             if (Hud.UnitFrames == null) return;
