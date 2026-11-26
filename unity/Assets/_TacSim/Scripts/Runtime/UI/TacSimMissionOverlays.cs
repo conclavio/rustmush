@@ -158,12 +158,42 @@ namespace TacSim.UI
         private Color32[] _targetArmorDollPixels;
         private string _lastTargetDollSignature = string.Empty;
 
+        // OOC Arena Sealed Mind Profile & Hull Posture Deck (`arena.cockpit.mind` + `posture`)
+        private GameObject _mindStrip;
+        private RectTransform _mindStripRect;
+        private Text _mindHeaderText;
+        private readonly List<PooledMindProfileButton> _mindProfilePool = new List<PooledMindProfileButton>(MaxPooledMindProfiles);
+        private readonly Dictionary<string, (Button btn, Image bg)> _postureButtons = new Dictionary<string, (Button, Image)>(StringComparer.OrdinalIgnoreCase);
+
+        private sealed class PooledMindProfileButton
+        {
+            public GameObject Root;
+            public Button Button;
+            public Image Background;
+            public Text Label;
+            public string BoundProfileName;
+        }
+
+        private const int MaxPooledMindProfiles = 4;
+
         public bool IsLobbyModalOpen => _arenaLobbyModal != null && _arenaLobbyModal.activeSelf;
         public bool IsSpaceFireCardVisible => _spaceFireCard != null && _spaceFireCard.activeSelf;
         public bool IsDetachmentBarVisible => _detachmentBar != null && _detachmentBar.activeSelf;
         public bool IsTargetInspectCardVisible => _targetInspectCard != null && _targetInspectCard.activeSelf;
         public string TargetInspectSummarySnapshot => _targetInspectText != null ? _targetInspectText.text : string.Empty;
         public Texture2D TargetArmorDollTexture => _targetArmorDollTex;
+        public bool IsMindStripVisible => _mindStrip != null && _mindStrip.activeSelf;
+        public string MindStripHeaderSnapshot => _mindHeaderText != null ? _mindHeaderText.text : string.Empty;
+        public int VisibleMindProfileButtonCount
+        {
+            get
+            {
+                int n = 0;
+                for (int i = 0; i < _mindProfilePool.Count; i++)
+                    if (_mindProfilePool[i].Root != null && _mindProfilePool[i].Root.activeSelf) n++;
+                return n;
+            }
+        }
         public bool IsAutoLockArmedUi => _arena != null && _arena.HasAutoLockRule;
         public bool IsAutoFireArmedUi => _arena != null && _arena.HasAutoFireRule;
         public int AutoFireOddsThresholdPct => _autoFireOddsPct;
@@ -228,6 +258,9 @@ namespace TacSim.UI
             _contactRowPool.Clear();
             _spaceMountRowPool.Clear();
             _detachmentSlotPool.Clear();
+            _weaponSlotPool.Clear();
+            _mindProfilePool.Clear();
+            _postureButtons.Clear();
 
             if (gameplayHudRoot == null) return;
 
@@ -303,6 +336,7 @@ namespace TacSim.UI
             if (_arenaBattleHudRoot != null) _arenaBattleHudRoot.SetActive(false);
             if (_detachmentBar != null) _detachmentBar.SetActive(false);
             if (_targetInspectCard != null) _targetInspectCard.SetActive(false);
+            if (_mindStrip != null) _mindStrip.SetActive(false);
             if (_arenaLobbyLiveRosterText != null) _arenaLobbyLiveRosterText.text = DefaultLobbyRosterHint;
         }
 
@@ -1138,6 +1172,45 @@ namespace TacSim.UI
             }
             _detachmentBar.SetActive(false);
 
+            // Sealed Mind Profile Switcher & Hull Posture Deck (dynamically stacks above SquadOrderBar or DetachmentBar)
+            _mindStrip = CreatePanel(_arenaBattleHudRoot.transform, "ArenaMindStrip", new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(452f, 114f), new Vector2(-446f, 150f), new Color(0.03f, 0.08f, 0.13f, 0.94f));
+            _mindStripRect = _mindStrip.GetComponent<RectTransform>();
+
+            _mindHeaderText = CreateTxt(_mindStrip.transform, "MIND", 11, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.56f, 0.92f, 1f));
+            _mindHeaderText.supportRichText = true;
+            SetRect(_mindHeaderText.rectTransform, new Vector2(0f, 0f), new Vector2(0.32f, 1f), new Vector2(10f, 2f), new Vector2(-4f, -2f));
+
+            var mindProfRow = CreatePanel(_mindStrip.transform, "MindProfilesRow", new Vector2(0.32f, 0f), new Vector2(0.72f, 1f), new Vector2(4f, 4f), new Vector2(-4f, -4f), Color.clear);
+            var mpHlg = mindProfRow.AddComponent<HorizontalLayoutGroup>();
+            mpHlg.spacing = 4f; mpHlg.childControlWidth = true; mpHlg.childControlHeight = true; mpHlg.childForceExpandWidth = true;
+            for (int p = 0; p < MaxPooledMindProfiles; p++)
+            {
+                int capturedP = p;
+                var mpBtn = new PooledMindProfileButton();
+                var btn = CreateBtn(mindProfRow.transform, string.Empty, new Color(0.14f, 0.30f, 0.42f), () => HandleMindProfileClick(capturedP));
+                mpBtn.Root = btn.gameObject;
+                mpBtn.Button = btn;
+                mpBtn.Background = btn.GetComponent<Image>();
+                mpBtn.Label = btn.GetComponentInChildren<Text>();
+                if (mpBtn.Label != null) mpBtn.Label.fontSize = 10;
+                mpBtn.Root.SetActive(false);
+                _mindProfilePool.Add(mpBtn);
+            }
+
+            var postureRow = CreatePanel(_mindStrip.transform, "MindPostureRow", new Vector2(0.73f, 0f), new Vector2(1f, 1f), new Vector2(4f, 4f), new Vector2(-8f, -4f), Color.clear);
+            var posHlg = postureRow.AddComponent<HorizontalLayoutGroup>();
+            posHlg.spacing = 4f; posHlg.childControlWidth = true; posHlg.childControlHeight = true; posHlg.childForceExpandWidth = true;
+            string[] postureWords = { "return", "guard", "hold" };
+            for (int i = 0; i < postureWords.Length; i++)
+            {
+                string pw = postureWords[i];
+                var pBtn = CreateBtn(postureRow.transform, pw.ToUpperInvariant(), new Color(0.16f, 0.24f, 0.34f), () => HandleMindPostureClick(pw));
+                var lbl = pBtn.GetComponentInChildren<Text>();
+                if (lbl != null) lbl.fontSize = 10;
+                _postureButtons[pw] = (pBtn, pBtn.GetComponent<Image>());
+            }
+            _mindStrip.SetActive(false);
+
             _arenaBattleHudRoot.SetActive(false);
         }
 
@@ -1210,6 +1283,7 @@ namespace TacSim.UI
             RebuildKeySpotButtonsIfChanged();
             UpdateAdvanceButtonVisual();
             UpdateDetachmentCommandDeck(s);
+            UpdateMindStrip(s);
             UpdateStandingRulesAndWeaponDeck(s);
             UpdateArmorPaperDoll(s);
             UpdateTargetInspectionCard(s);
@@ -1221,6 +1295,87 @@ namespace TacSim.UI
         public void CycleAutoFireOddsForTests() => CycleAutoFireOddsPreset();
         public void ClickWeaponSlotButtonForTests(int index) => FireWeaponSlotAt(index);
         public void ClickScanLockedTargetForTests() => HandleScanLockedTargetClick();
+        public void ClickMindProfileForTests(int index) => HandleMindProfileClick(index);
+        public void ClickMindPostureForTests(string postureWord) => HandleMindPostureClick(postureWord);
+
+        private void HandleMindProfileClick(int index)
+        {
+            if (_arena == null || index < 0 || index >= _mindProfilePool.Count) return;
+            string prof = _mindProfilePool[index].BoundProfileName;
+            if (!string.IsNullOrEmpty(prof))
+                _arena.SwitchMindProfile(prof);
+        }
+
+        private void HandleMindPostureClick(string postureWord)
+        {
+            _arena?.SetHullPosture(postureWord);
+        }
+
+        private void UpdateMindStrip(ArenaCockpitState s)
+        {
+            if (_mindStrip == null) return;
+            var mind = s?.Mind;
+            if (mind == null)
+            {
+                if (_mindStrip.activeSelf) _mindStrip.SetActive(false);
+                return;
+            }
+
+            // Dynamically stack cleanly above DetachmentBar when present, else directly above SquadOrderBar
+            if (_mindStripRect != null)
+            {
+                bool detVisible = _detachmentBar != null && _detachmentBar.activeSelf;
+                float yBot = detVisible ? 190f : 114f;
+                SetRect(_mindStripRect, new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(452f, yBot), new Vector2(-446f, yBot + 36f));
+            }
+
+            if (!_mindStrip.activeSelf) _mindStrip.SetActive(true);
+
+            if (_mindHeaderText != null)
+            {
+                string safeName = string.IsNullOrEmpty(mind.Name)
+                    ? "OWN MIND"
+                    : MushProtocol.EscapeUnityRichText(mind.Name.ToUpperInvariant());
+                string classBadge = !string.IsNullOrEmpty(mind.ClassWord)
+                    ? $" [{MushProtocol.EscapeUnityRichText(mind.ClassWord)}/{MushProtocol.EscapeUnityRichText(string.IsNullOrEmpty(mind.CoreWord) ? "-" : mind.CoreWord)}]"
+                    : string.Empty;
+                string stateTag = mind.IsOff ? " <color=#FF9966>[ROM]</color>" : string.Empty;
+                _mindHeaderText.text = $"MIND: <b>{safeName}</b>{classBadge}{stateTag}";
+            }
+
+            int shown = Mathf.Min(mind.Profiles.Count, _mindProfilePool.Count);
+            for (int i = 0; i < shown; i++)
+            {
+                var slot = _mindProfilePool[i];
+                string pName = mind.Profiles[i];
+                bool isActive = i == mind.ActiveIndex;
+                slot.BoundProfileName = pName;
+                if (slot.Label != null)
+                    slot.Label.text = isActive ? $"● {pName.ToUpperInvariant()}" : pName.ToUpperInvariant();
+                if (slot.Background != null)
+                    slot.Background.color = isActive ? new Color(0.14f, 0.52f, 0.34f) : new Color(0.14f, 0.28f, 0.42f);
+                if (slot.Button != null)
+                    slot.Button.interactable = !isActive;
+                if (slot.Root != null && !slot.Root.activeSelf)
+                    slot.Root.SetActive(true);
+            }
+            for (int i = shown; i < _mindProfilePool.Count; i++)
+            {
+                _mindProfilePool[i].BoundProfileName = string.Empty;
+                if (_mindProfilePool[i].Root != null && _mindProfilePool[i].Root.activeSelf)
+                    _mindProfilePool[i].Root.SetActive(false);
+            }
+
+            string curPosture = (s.Posture ?? "return").Trim().ToLowerInvariant();
+            foreach (var kv in _postureButtons)
+            {
+                bool isCur = string.Equals(kv.Key, curPosture, StringComparison.OrdinalIgnoreCase);
+                if (kv.Value.bg != null)
+                    kv.Value.bg.color = isCur ? new Color(0.48f, 0.36f, 0.14f) : new Color(0.14f, 0.22f, 0.32f);
+                if (kv.Value.btn != null)
+                    kv.Value.btn.interactable = !isCur;
+            }
+        }
 
         private void HandleScanLockedTargetClick()
         {

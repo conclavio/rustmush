@@ -28,6 +28,8 @@ namespace TacSim.UI
         public event Action<string> OnShipCompartmentClicked;
         public event Action<string, bool> OnOrbitalBlipClicked;
         public event Action<int, int> OnSurfaceCellClicked;
+        public event Action<string> OnArenaMinimapContactClicked;
+        public event Action<int, int> OnArenaMinimapCellClicked;
         public event Action OnOpenSolarChartRequested;
 
         public bool IsCollapsed { get; private set; }
@@ -36,6 +38,17 @@ namespace TacSim.UI
         public TacSimActiveStage ActiveStage { get; private set; } = TacSimActiveStage.StationWalk;
         public int InspectedStationFloor { get; private set; }
         public string HeaderText => _headerText != null ? _headerText.text : string.Empty;
+        public int LastArenaMinimapContactBlipCount => _arenaContactHits.Count;
+        public bool LastArenaMinimapHasSensorRing { get; private set; }
+        public bool LastArenaMinimapHasObjective { get; private set; }
+        public bool LastArenaMinimapHasWaypoint { get; private set; }
+        public Texture2D MinimapTexture => _mapTex;
+        public Color32 SampleMinimapPixelForTests(int x, int y)
+        {
+            if (_pixels == null || (uint)x >= MapTexSize || (uint)y >= MapTexSize)
+                return default;
+            return _pixels[y * MapTexSize + x];
+        }
 
         public void SetHiddenByHudPreset(bool hidden)
         {
@@ -70,6 +83,11 @@ namespace TacSim.UI
         private readonly List<(Rect uvRect, string id)> _stationRoomHitRects = new List<(Rect, string)>();
         private readonly List<(Rect uvRect, string id)> _shipCompHitRects = new List<(Rect, string)>();
         private readonly List<(Vector2 uv, string id, bool isRock)> _orbitalBlipHits = new List<(Vector2, string, bool)>();
+        private readonly List<(Vector2 uv, string designator, bool canLock)> _arenaContactHits = new List<(Vector2, string, bool)>();
+        private float _arenaMinCellX;
+        private float _arenaMinCellY;
+        private float _arenaSpanCellsX = 64f;
+        private float _arenaSpanCellsY = 64f;
         private int _surfaceOriginX;
         private int _surfaceOriginY;
         private int _surfaceSpanCells = 32;
@@ -297,6 +315,36 @@ namespace TacSim.UI
                 int cx = _surfaceOriginX + Mathf.RoundToInt(uv.x * _surfaceSpanCells);
                 int cy = _surfaceOriginY + Mathf.RoundToInt(uv.y * _surfaceSpanCells);
                 OnSurfaceCellClicked?.Invoke(cx, cy);
+                return true;
+            }
+            else if (ActiveStage == TacSimActiveStage.SimulatorArena && _arena?.TerrainGrid != null)
+            {
+                string bestDesig = null;
+                float bestSq = 0.075f * 0.075f;
+                for (int i = 0; i < _arenaContactHits.Count; i++)
+                {
+                    float dx = _arenaContactHits[i].uv.x - uv.x;
+                    float dy = _arenaContactHits[i].uv.y - uv.y;
+                    float sq = dx * dx + dy * dy;
+                    if (sq < bestSq && (_arenaContactHits[i].canLock || bestDesig == null))
+                    {
+                        bestSq = sq;
+                        bestDesig = _arenaContactHits[i].designator;
+                    }
+                }
+                if (!string.IsNullOrEmpty(bestDesig))
+                {
+                    OnArenaMinimapContactClicked?.Invoke(bestDesig);
+                    return true;
+                }
+
+                var grid = _arena.TerrainGrid;
+                int span = Math.Max(1, grid.SpanCells);
+                int maxCellX = grid.OriginCellX + Math.Max(1, grid.Width * span) - 1;
+                int maxCellY = grid.OriginCellY + Math.Max(1, grid.Height * span) - 1;
+                int cx = Mathf.Clamp(Mathf.FloorToInt(_arenaMinCellX + uv.x * _arenaSpanCellsX), grid.OriginCellX, maxCellX);
+                int cy = Mathf.Clamp(Mathf.FloorToInt(_arenaMinCellY + uv.y * _arenaSpanCellsY), grid.OriginCellY, maxCellY);
+                OnArenaMinimapCellClicked?.Invoke(cx, cy);
                 return true;
             }
             return false;
@@ -543,9 +591,66 @@ namespace TacSim.UI
             return (uint)idx < (uint)grid.ElevMeters.Length ? grid.ElevMeters[idx] : 0f;
         }
 
+        private static Color32 ClassifyArenaTerrainColor(TerrainCellClass cellClass, float elevM)
+        {
+            float relief = Mathf.Clamp(elevM * 0.045f, -0.20f, 0.35f);
+            float mul = 1f + relief;
+            Color32 baseCol;
+            switch (cellClass)
+            {
+                case TerrainCellClass.WoodsLight:
+                    baseCol = new Color32(34, 88, 48, 255);
+                    break;
+                case TerrainCellClass.WoodsHeavy:
+                    baseCol = new Color32(22, 68, 34, 255);
+                    break;
+                case TerrainCellClass.Water:
+                    baseCol = new Color32(22, 62, 108, 255);
+                    break;
+                case TerrainCellClass.WaterDeep:
+                    baseCol = new Color32(14, 42, 82, 255);
+                    break;
+                case TerrainCellClass.Road:
+                case TerrainCellClass.Paved:
+                    baseCol = new Color32(84, 78, 66, 255);
+                    break;
+                case TerrainCellClass.Wall:
+                case TerrainCellClass.Door:
+                case TerrainCellClass.Platform:
+                    baseCol = new Color32(114, 120, 132, 255);
+                    break;
+                case TerrainCellClass.Rock:
+                case TerrainCellClass.Rubble:
+                    baseCol = new Color32(78, 72, 62, 255);
+                    break;
+                case TerrainCellClass.Sand:
+                    baseCol = new Color32(96, 86, 62, 255);
+                    break;
+                case TerrainCellClass.Ice:
+                    baseCol = new Color32(86, 118, 134, 255);
+                    break;
+                case TerrainCellClass.Grass:
+                    baseCol = new Color32(34, 58, 44, 255);
+                    break;
+                default:
+                    baseCol = new Color32(30, 42, 56, 255);
+                    break;
+            }
+            return new Color32(
+                (byte)Mathf.Clamp(Mathf.RoundToInt(baseCol.r * mul), 8, 210),
+                (byte)Mathf.Clamp(Mathf.RoundToInt(baseCol.g * mul), 8, 220),
+                (byte)Mathf.Clamp(Mathf.RoundToInt(baseCol.b * mul), 8, 230),
+                255);
+        }
+
         private void DrawArenaMinimap()
         {
             ClearPixels(new Color32(10, 14, 22, 255));
+            _arenaContactHits.Clear();
+            LastArenaMinimapHasSensorRing = false;
+            LastArenaMinimapHasObjective = false;
+            LastArenaMinimapHasWaypoint = false;
+
             var st = _arena?.State;
             if (_headerText != null)
                 _headerText.text = st != null ? $"ARENA — {st.Callsign} ({st.Mode.ToUpperInvariant()})" : "ARENA RADAR";
@@ -553,28 +658,132 @@ namespace TacSim.UI
             var grid = _arena?.TerrainGrid;
             int gw = grid != null && grid.Width > 0 ? grid.Width : 64;
             int gh = grid != null && grid.Height > 0 ? grid.Height : 64;
+            int span = grid != null ? Math.Max(1, grid.SpanCells) : 1;
+            int originX = grid != null ? grid.OriginCellX : 0;
+            int originY = grid != null ? grid.OriginCellY : 0;
+            float cellSizeM = grid != null && grid.CellSizeM > 0.1f ? grid.CellSizeM : 10f;
+            float siteCellM = cellSizeM / span;
+            float totalCellsX = gw * span;
+            float totalCellsY = gh * span;
+
+            float ownCellX = originX + totalCellsX * 0.5f;
+            float ownCellY = originY + totalCellsY * 0.5f;
+            if (st != null && siteCellM > 0.01f)
+            {
+                ownCellX = st.Xm / siteCellM;
+                ownCellY = st.Zm / siteCellM;
+            }
+
+            float zoomClamped = Mathf.Clamp(_zoom, 1.0f, 2.5f);
+            float winCellsX = totalCellsX / zoomClamped;
+            float winCellsY = totalCellsY / zoomClamped;
+            float minCellX = originX;
+            float minCellY = originY;
+            if (zoomClamped > 1.01f)
+            {
+                minCellX = Mathf.Clamp(ownCellX - winCellsX * 0.5f, originX, originX + Math.Max(0f, totalCellsX - winCellsX));
+                minCellY = Mathf.Clamp(ownCellY - winCellsY * 0.5f, originY, originY + Math.Max(0f, totalCellsY - winCellsY));
+            }
+            _arenaMinCellX = minCellX;
+            _arenaMinCellY = minCellY;
+            _arenaSpanCellsX = Mathf.Max(1f, winCellsX);
+            _arenaSpanCellsY = Mathf.Max(1f, winCellsY);
+
+            Vector2 CellToUv(float cx, float cy) => new Vector2(
+                (cx - _arenaMinCellX) / _arenaSpanCellsX,
+                (cy - _arenaMinCellY) / _arenaSpanCellsY);
 
             if (grid != null && grid.Width > 0 && grid.Height > 0)
             {
                 for (int py = 0; py < MapTexSize; py += 2)
                 {
-                    int gy = Mathf.Clamp((py * gh) / MapTexSize, 0, gh - 1);
+                    float cellY = _arenaMinCellY + ((py + 0.5f) / MapTexSize) * _arenaSpanCellsY;
+                    int gy = Mathf.Clamp(Mathf.FloorToInt((cellY - originY) / span), 0, gh - 1);
                     for (int px = 0; px < MapTexSize; px += 2)
                     {
-                        int gx = Mathf.Clamp((px * gw) / MapTexSize, 0, gw - 1);
-                        byte s = (byte)Mathf.Clamp(Mathf.RoundToInt(22 + SampleGridElev(grid, gx, gy) * 14f), 16, 110);
-                        Color32 c = new Color32((byte)(s * 0.8f), (byte)(s * 0.9f), s, 255);
+                        float cellX = _arenaMinCellX + ((px + 0.5f) / MapTexSize) * _arenaSpanCellsX;
+                        int gx = Mathf.Clamp(Mathf.FloorToInt((cellX - originX) / span), 0, gw - 1);
+                        int idx = gy * gw + gx;
+                        TerrainCellClass cls = (grid.Classes != null && (uint)idx < (uint)grid.Classes.Length)
+                            ? grid.Classes[idx]
+                            : TerrainCellClass.Ground;
+                        float elev = SampleGridElev(grid, gx, gy);
+                        Color32 c = ClassifyArenaTerrainColor(cls, elev);
                         Plot(px, py, c); Plot(px + 1, py, c); Plot(px, py + 1, c); Plot(px + 1, py + 1, c);
+                    }
+                }
+
+                // Draw surveyed KeySpots
+                if (grid.KeySpots != null)
+                {
+                    for (int i = 0; i < grid.KeySpots.Count; i++)
+                    {
+                        var sp = grid.KeySpots[i];
+                        Vector2 spUv = CellToUv(sp.CellX + 0.5f, sp.CellY + 0.5f);
+                        if (spUv.x < 0f || spUv.x > 1f || spUv.y < 0f || spUv.y > 1f) continue;
+                        bool isHold = string.Equals(sp.Letter, grid.HoldSpotLetter, StringComparison.OrdinalIgnoreCase);
+                        Color32 spCol = isHold ? new Color32(255, 212, 72, 255) : new Color32(92, 224, 248, 255);
+                        Vector2 spPx = UvToPx(spUv);
+                        DrawFilledCircle(spPx, 2.5f, spCol);
+                        if (isHold && (st == null || !st.HasDynamicObjective))
+                        {
+                            float holdRadPx = Mathf.Clamp((grid.HoldRadiusCells * span / _arenaSpanCellsX) * MapTexSize, 6f, MapTexSize * 0.4f);
+                            DrawCircleOutline(spPx, holdRadPx, new Color32(240, 194, 62, 255));
+                            LastArenaMinimapHasObjective = true;
+                        }
                     }
                 }
             }
 
             if (st != null)
             {
+                Vector2 ownUv = new Vector2(Mathf.Clamp01(CellToUv(ownCellX, ownCellY).x), Mathf.Clamp01(CellToUv(ownCellX, ownCellY).y));
+                Vector2 ownPx = UvToPx(ownUv);
+
+                // Dynamic Hold Objective perimeter
+                if (st.HasDynamicObjective)
+                {
+                    Vector2 objUv = CellToUv(st.ObjectiveCellX + 0.5f, st.ObjectiveCellY + 0.5f);
+                    if (objUv.x >= -0.1f && objUv.x <= 1.1f && objUv.y >= -0.1f && objUv.y <= 1.1f)
+                    {
+                        Vector2 objPx = UvToPx(objUv);
+                        float radPx = Mathf.Clamp((st.ObjectiveRadiusCells * span / _arenaSpanCellsX) * MapTexSize, 7f, MapTexSize * 0.42f);
+                        DrawCircleOutline(objPx, radPx, new Color32(255, 214, 66, 255));
+                        DrawFilledCircle(objPx, 2.5f, new Color32(255, 230, 108, 255));
+                        LastArenaMinimapHasObjective = true;
+                    }
+                }
+
+                // Active Autopilot Drive Waypoint + Route Line
+                if (st.HasDriveWaypoint && !st.IsWreck)
+                {
+                    Vector2 wpUv = CellToUv(st.DriveWaypointCellX + 0.5f, st.DriveWaypointCellY + 0.5f);
+                    Vector2 wpPx = UvToPx(new Vector2(Mathf.Clamp01(wpUv.x), Mathf.Clamp01(wpUv.y)));
+                    DrawLine(ownPx, wpPx, new Color32(72, 230, 255, 255));
+                    DrawCircleOutline(wpPx, 4.5f, new Color32(96, 245, 255, 255));
+                    LastArenaMinimapHasWaypoint = true;
+                }
+
+                // Own SightMeters Sensor Ring colored by Scope
+                if (!st.IsWreck && st.SightMeters > 5f && siteCellM > 0.01f)
+                {
+                    float sightCells = st.SightMeters / siteCellM;
+                    float sightPx = Mathf.Clamp((sightCells / _arenaSpanCellsX) * MapTexSize, 8f, MapTexSize * 0.48f);
+                    Color32 ringCol = string.Equals(st.Scope, "hostile", StringComparison.OrdinalIgnoreCase)
+                        ? new Color32(220, 86, 72, 255)
+                        : (string.Equals(st.Scope, "unidentified", StringComparison.OrdinalIgnoreCase)
+                            ? new Color32(228, 184, 64, 255)
+                            : new Color32(58, 174, 206, 255));
+                    DrawCircleOutline(ownPx, sightPx, ringCol);
+                    LastArenaMinimapHasSensorRing = true;
+                }
+
+                // Contacts + click-to-lock hit table
                 for (int i = 0; i < st.Contacts.Count; i++)
                 {
                     var ct = st.Contacts[i];
-                    Vector2 uv = new Vector2(Mathf.Clamp01(ct.CellX / (float)Math.Max(1, gw)), Mathf.Clamp01(ct.CellY / (float)Math.Max(1, gh)));
+                    Vector2 uv = CellToUv(ct.CellX + 0.5f, ct.CellY + 0.5f);
+                    if (uv.x < 0f || uv.x > 1f || uv.y < 0f || uv.y > 1f) continue;
                     Color32 col = ct.IsWreck
                         ? new Color32(110, 110, 115, 255)
                         : (ct.Friendly ? new Color32(82, 184, 255, 255) : new Color32(255, 84, 78, 255));
@@ -582,11 +791,12 @@ namespace TacSim.UI
                     DrawFilledCircle(p, 3.5f, col);
                     if (string.Equals(ct.Designator, st.LockedDesignator, StringComparison.OrdinalIgnoreCase))
                         DrawCircleOutline(p, 6.5f, new Color32(255, 224, 96, 255));
+                    if (!string.IsNullOrEmpty(ct.Designator))
+                        _arenaContactHits.Add((uv, ct.Designator, !ct.Friendly && !ct.IsWreck));
                 }
 
-                float pxNorm = Mathf.Clamp01((st.Xm / 40f) / Math.Max(1, gw));
-                float pzNorm = Mathf.Clamp01((st.Zm / 40f) / Math.Max(1, gh));
-                DrawHeadingArrowUv(new Vector2(pxNorm, pzNorm), st.HeadingDeg, new Color32(110, 255, 180, 255));
+                float shownHeading = _arena != null ? _arena.PredictedHeadingDeg : st.HeadingDeg;
+                DrawHeadingArrowUv(ownUv, shownHeading, new Color32(110, 255, 180, 255));
             }
         }
 
