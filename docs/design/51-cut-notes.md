@@ -928,3 +928,191 @@ summed minutes more a run, and the `rest-server` cell six minutes more of wall c
 - **A cell of its own for the suite.** The `rest-server` cell is now within a minute of the slowest cell of a
   pull request's run (27 against 28). Giving `commerce_composition` its own cell, as #244 gave `split_boundary`
   one, is a `ci.yml` change and the owner's call. It is asked in the pull request.
+
+## FL.5
+
+The bot's stories. Built 2026-11-25 on `0e3a26804` (main with FL.1 to FL.4 merged), beside FL.6 and
+FL.7. It adds two modules to `mush-storykit` (`busy`, `reply`), moves the bot's rig onto the kit, and
+fixes one new flake that the soak of 2026-11-25 found. It changes no product code. Both mush-bot rows
+leave `flaky-known.toml`.
+
+**The suite's soak rate.** The bot's three soaked binaries (`arena_e2e`, `arena_contract`,
+`mining_cohort`), six cells of four cores, nextest's `soak` profile, no retry:
+
+| | Passes | Failed passes | Tests that failed | A pass, summed test time |
+|---|---:|---:|---|---:|
+| Before: the nightly soaks of main, 2026-11-24 (`9de381e74`) and 2026-11-25 (`0ae636469`) | 72 | 1 | `the_opening_reads_the_ground_at_the_muster`, once | 1,664 s |
+| After: this unit, on conclav.dev by hand (below) | 24 | 0 | none | 1,713 s |
+
+The "after" soak is the bot's three binaries alone, by a script of this unit's that runs each cell
+from one nextest archive, at `0e3a26804` with this unit's patch, on cores 0 to 23 from 23:10 UTC.
+`scripts/soak.sh` was not used (Not built). Before, 72 passes of 39 tests; after, 24 of 40 (the new
+contract test).
+
+**Survey.**
+
+- **Six private busy lists, none complete.** The rig's `TRANSIENTS` (four needles), the kit's
+  `BUSY` (two), the bot's own `mine::lines::ENGINE_BUSY` and `TRANSIENT_TAILS`, the arena reader's
+  `transient`, and `@newchar`'s one sentence in `Client::create_character`. The rig's list lacked
+  the engine's three back-pressure sentences, which are row 5's class: a `Client::say` that met
+  `An authoritative request is already pending.` took it for an answer. Nothing checked any list
+  against the sentences the server writes; none of them is a product constant (each is a literal
+  in its module, `mush-core/src/engine.rs`, `mush-server/src/world_task/mode.rs`, five tacsim and
+  mush-sim modules).
+- **The rig's step limit was 20 s of its own.** Doc 51 §3.7 asks for the kit's.
+- **`mining_cohort`'s three stories a pull request runs had three budgets.** The canary ran under a
+  20-minute timeout (the terminate itself) with a 19-minute drive bound; row 5's story under 22
+  minutes, past the terminate, so a stall in its last two minutes printed nothing; row 6's under the
+  18-minute budget #764 built by hand. The fifteen `#[ignore]`d stories run by name under their own
+  terminates (`ci-bot`'s 100 minutes for `fr7_round`, none locally) and keep their limits.
+- **Row 18's reader** (`arena_contract`'s `Live::ask_whole`) was its own loop: type the line and
+  its sentinel, wait for the first `Huh?`, and type both again on a busy answer. After a busy
+  refusal of the line, the `Huh?` it then waited for was the sentinel's, so nothing was owed; but a
+  busy refusal of the sentinel itself left no `Huh?` to come and failed at the step limit. The kit's
+  `ask_whole` (FL.3) had the hazard FL.3's note names: it ended a try at the first answer, and after
+  a busy refusal of the line the sentinel's `Huh?` was still owed and ended the next try early.
+- **Needle reads that were parsed.** Of the 45 `say`, `answer` and `expect` results bound in the
+  bot's tests, four were parsed past their needle: `@account/list`'s credit row in the float and in
+  `rs9_story_b` (the needle is inside the row it parses, so the balance could arrive cut short),
+  `arena_mind_author_story`'s report and bench reads (one asserts an absence on a read that stopped
+  at a needle), and the wingman's `SIM STATUS` board. The readiness wait reads `@tacsim/port status`
+  to its last line (`Ready: …` or `Not ready: …`), so it already knew where the reply ended.
+- **The soak of 2026-11-25 failed one unlisted test**, `the_opening_reads_the_ground_at_the_muster`,
+  once in 36 passes: `stepped off the road: … step from (267.0, 975.0), now (315, 994)`.
+  `scripts/flake_report.py --run 45566917887` could not download the run's artifact on this box
+  (`gh api …/zip` failed); `--junit` over the artifact fetched with `gh run download` gave the
+  table: the one test, 1 in 36, not listed.
+
+**The muster story (row 20).** 144 runs of it on main at `0e3a26804`, in six 4-core cells with four
+copies at a time each, kept every transcript. None failed. Where the tank stood at the hold, north of
+where its step began:
+
+| Held at, m out | 21 | 22 | 26 | 30 to 34 | 36 to 40 |
+|---|---:|---:|---:|---:|---:|
+| Runs | 3 | 103 | 1 | 13 | 24 |
+
+Every step was 35 m. The test held 20 m, a number written by hand, against a tank that most runs
+stopped 22 m out: the soak's run stopped at 19. The pilot ends the step `OPENING_ARRIVE_M` (10 m)
+short of its aim on a dead-reckoned position (`Picture::own_pos_at`: the last read position carried
+along the current heading at the current speed), which runs ahead of the tank while it is still
+turning off the road at the end of the move in. **Class: figure.**
+
+**Built.**
+
+- **`mush_storykit::busy`** (`src/busy.rs`): `BUSY_SENTENCES`, nine rows, each a sentence a server
+  refuses a typed line with for a moment and the product files that write it. The kit's test reads
+  each file and fails when its sentence is gone, so a reworded refusal fails in one place. `is_busy`
+  (a line ends with one, a closing `.` aside, and does not open with `[`), `holds_busy`,
+  `BUSY_NEEDLES` and `busy_needles`. The kit's own `BUSY` (two needles) is gone; `settled`,
+  `ask_whole` and the status reads take the table.
+- **`mush_storykit::reply`** (`src/reply.rs`): `Reply`, a whole reply with its echoes left out, and
+  `row`, `rows`, `section`, `number_after` and `contains`; and `ask(term, line) -> Reply`, whose
+  try is over only when both of its answers are in. A refusal first: done. A busy answer after the
+  line's own answer: the sentinel was refused, done. A busy answer with nothing before it but the
+  echoes: the line was refused, so the try waits for the sentinel's answer and types the line again.
+  It is for a line whose answer prints something and that is safe to type twice, which every read
+  is. Four of its tests script each case.
+- **The bot's rig** (`tests/support/arena.rs`): `STEP_TIMEOUT` is the kit's (60 s, from 20);
+  `TRANSIENTS` is the kit's `BUSY_NEEDLES`; `Client` implements the kit's `Session`, and
+  `Client::ask_whole` is the kit's `ask`.
+- **`the_bots_busy_sentences_are_the_story_kits`** (`arena_contract.rs`): every sentence of the
+  bot's `ENGINE_BUSY` and `TRANSIENT_TAILS` is in the kit's table, and every sentence of the table
+  is typed again by the bot's arena reader and, but for the two that are the arena's alone, by its
+  mining lane. `@newchar`'s refusal is staff's and is left out.
+- **`mining_cohort`**: the canary, row 5's story and row 6's story each run inside one
+  `StoryBudget` of 18 minutes (`STORY_MINUTES`), and every wait in them draws from it. Row 5's
+  half-second enrollment poll is `wait_for`, whose failure prints the transcript's tail.
+- **`arena_e2e`**: every story opens its matches on a fresh seed, printed (`seeded()`), so a failure
+  names the seed that replays its rolls. The solo flight's figures (`Solo`): the match holds the
+  least number of the cannon's own pulls at which bad luck at the rules' ceiling meets the
+  pull-request bar (five, so 75 s of cycles), plus `after_one_round` for the way to the first shot
+  (56 s at the rig's tempo), so 131 s; the bot's run limit is the boarding window, the match and
+  one step, 251 s. One run by hand printed `8 shot(s), 7 hit(s)`, the least chance offered 33 per
+  cent, and a miss throughout by bad luck alone at those odds 0.04 of the time. "The pilot hit" states
+  its odds: a match with no hit fails only when the cockpit's least offered chance, over the
+  shots the pilot fired, makes a miss throughout rarer than the bar, and the odds are printed either
+  way. The muster story's bound is the pilot's own geometry: `opening_step` makes a step the hiding
+  run's start, its allowance and `OPENING_COVER_M` long, so the hiding ground begins no farther out
+  than the step less `OPENING_COVER_M` (15 m on a 35 m step). The test reads the step's length from
+  the pilot's own note.
+- **The parsed needle reads** are whole reads: `@account/list` (twice), the mind report and the
+  three bench reads, and the wingman's board.
+- **`arena_contract`'s `Live::ask_whole`** is the kit's read; its own sentinel is kept only for the
+  echo replay test.
+- **`flaky-known.toml`**: rows 5 and 6 are deleted (29 rows left); the generated retry block follows,
+  and `docs/flaky-observed.md` is refreshed. Its 14-day table now shows both tests **NOT LISTED**,
+  because their CI failures (the last on 2026-11-21) are still inside the window. `--check` in the
+  soak and the nightly reads only that night's reports, so neither goes red; the rows age out of the
+  table by 2026-12-05.
+- **`scripts/flake_report.py`**: GitHub's `stream error … CANCEL` is retried as a transient. Two of
+  this unit's three runs of `--ci-days 14 --write` died on it. `--run <id>` also failed here, on the
+  soak artifact's `gh api …/zip`; it was not mended. `docs/flaky-tests.md`: rows 2, 5, 6 and 18 say what
+  this unit did, and row 20 is new.
+- **`wait_budget`** re-blessed down: `arena_contract.rs` 5 to 4, `mining_cohort.rs` 25 to 21.
+
+**Tests.**
+
+- `mush-storykit`: 65 unit tests and 4 doc tests, nine of them new (the busy table against its sources, a busy line, the needles; the four tries of `ask`, a section, a number).
+- `the_bots_busy_sentences_are_the_story_kits`, and the echo replay, on Windows and conclav.dev.
+- The after-soak above: 24 passes of the three binaries' 40 tests, 960 runs, none failed. Per pass, against the nightly soaks' 72: the solo flight 60 to 139 s (it was 57 to 68), the muster story 38 s (38 to 43), the canary 332 to 365 s (332 to 365), row 5's story 487 to 499 s (487 to 500), row 6's 570 to 596 s (566 to 595). The solo flight is the whole of the summed time's rise.
+- `mush-contract-tests`: `ci_policy`'s `feature_matrix_inventory`, `panic_budget`, `restriction_lints`, `wait_budget` and `flaky_known`, 41 tests; `engine_contracts`' `us_spelling`, 5.
+- `cargo fmt --check`; clippy with `-D warnings` over `mush-storykit` and mush-bot's tests; rustdoc
+  over the kit; the census, the panic budget, the lints and the help lint.
+
+**Divergences.**
+
+1. **Row 2's range is the fixture's, not derived.** Doc 51 §3.2 sketches `fig.chance(...)` for the
+   odds. The kit has the table's bounds and the dice, not the chance of a shot: that is the whole
+   resolution (the error cone's five terms, the target's facet presented, the curve), and a copy in
+   the kit would restate the arena's arithmetic. What is derived is the match's length, from the
+   cannon's cycle and the bar at the rules' ceiling, and the odds are the cockpit's own figure,
+   which `Odds` allows. The tanks stand 200 m apart as #764 posed them.
+2. **"The pilot hit" is asserted only when the odds make a miss a fault.** Rule D: the assertion
+   does not depend on a draw. With a moving tank no seed makes the hit certain, and the least
+   chance the cockpit offered (33 per cent in the run measured) does not meet the bar over eight
+   shots. A match with no hit at such odds passes and prints them. The longer match makes that
+   rare; the record of the 72 soak passes before had no match with none.
+3. **The solo flight costs about a minute more a pass**: a 131 s match where it was 60 s, and
+   about 140 s a run where it was 68.
+4. **The busy table is checked against source files, not product constants.** None of the
+   sentences is a constant the kit could import, and making them constants is a product change in
+   five crates. The kit's test reads the files instead; a sentence that moves to another file is a
+   one-line edit of its row.
+5. **The kit's FL.3 `ask_whole` is kept** for mushd, unchanged but for the table: FL.8 moves
+   mushd's readers. `reply::ask` is the counted read; `ask_whole` returns its whole scrollback, and
+   mushd's callers may lean on that.
+6. **The rig's step limit grew from 20 s to the kit's 60 s.** No wait was failing on it. A story
+   that asserts a refusal comes fast (`a_refused_pose_answers_at_once`, a quarter of the limit)
+   now allows 15 s, not 5.
+7. **Row 6 is closed on the soak's record, not on a cause.** 72 of 72 passes since #764, and the
+   story now fails inside its budget with both bots' last lines. Its cause is not known.
+8. **The muster flake is fixed in the test, and the pilot's own claim is left short.**
+   `OPENING_COVER_M`'s comment says the tank "then stands at least 10 m past the run's true
+   start". On its reckoning it stands 6 to 7 m past it in most runs, and 4 in the soak's. Q-FL5-1.
+
+**Not built.**
+
+- **The fifteen `#[ignore]`d `mining_cohort` stories' limits.** They run by name under terminates
+  of their own (30 to 100 minutes), past what `StoryBudget::new` allows. A budget under another
+  terminate is a kit change, `StoryBudget::under(terminate, minutes)`, for the unit that soaks them.
+- **The other needle reads.** About forty bound `say` and `answer` results wait and are not
+  parsed, and the field and salvage stories parse several lines read by the bot's own lane. They
+  are left.
+- **`one_reader` for mush-bot.** The bot's rig has no private `Term`, `ask_whole` or `strip_ansi`
+  left but `Live`'s wrapper, which delegates; turning the gate on is FL.10's sweep.
+- **`scripts/soak.sh` for the after-soak.** conclav.dev's root was at 98 per cent when this unit
+  began its runs and reached 100 at 23:00 UTC, with other sessions' targets on it; this unit deleted
+  its own, told the lead session, and rebuilt only the bot. By 23:23 the disk was at 48 per cent.
+  The after-soak's script ran the cells from one archive with one remapped workspace, so the cells'
+  JUnit files overwrote each other; its figures are from nextest's own output, a log a pass.
+
+**For the owner.**
+
+- **Q-FL5-1.** The pilot ends its step off the road on a dead-reckoned position, and stops 3 to 6 m
+  short of what `OPENING_COVER_M`'s comment promises: on the hiding ground, but nearer its edge.
+  Reading the step's end off the last position the cockpit printed, rather than a reckoned one,
+  would keep the promise and make the step a second or so longer. Default: no change in this
+  program; the test holds the tank to the hiding ground, which it reaches in every run seen.
+- **Q-FL5-2.** "The pilot hit" now passes on a miss throughout when the odds allow one (Divergence
+  2). The other way is a longer match still: about fifteen of the cannon's pulls, near four minutes,
+  would meet the bar at a chance of 60 per cent. Default: keep the stated odds.

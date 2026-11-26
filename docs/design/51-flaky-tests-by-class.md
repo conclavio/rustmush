@@ -689,6 +689,12 @@ are in `mush-storykit`; and `ArenaConfig::seed` is the one product change.
 **FL.4 is cut and built** (2026-11-23): the owner started its session. Its row below is as it
 was sketched; [the cut note](51-cut-notes.md) says where the build differs.
 
+**FL.5 is cut and built** (2026-11-25, with FL.6 to FL.10 on the owner's "Yes, cut them"). What
+it built and where it differs from its row below is in [the cut note](51-cut-notes.md), under FL.5.
+In short: one busy-sentence table and a counted whole-reply read in the kit, the bot's rig on both,
+`StoryBudget` in `mining_cohort`'s stories, the solo flight's match derived and its hit stated as
+odds; rows 5 and 6 leave `flaky-known.toml`, and the soak's new flake (row 20) is fixed.
+
 One pull request each. S is under a day's session, M one to two, L more. "Runs" is §2.4's count
 for the suite. FL.0 is this document and its script, merged as #771.
 
