@@ -28,7 +28,12 @@ crates/mush-contract-tests/tests/ci_policy/wait_budget.rs): in story files only,
 outside any `start_paused` test, the raw waits above (`wait`) and the wall-clock
 reads unix_now_s(, unix_now_ms( and SystemTime::now( (`clock`). One row a file
 and counter, `<counter> <count> <crate>/<path>`, then the totals by crate. The
-gate's budget files must hold the same counts.
+gate's budget files must hold the same counts. For the crates of the gate's
+`src` scope (SRC_SCOPE below, doc 51 cut FL.6) it also counts the test code under
+src/ by the gate's exact rule, which is narrower than --src's: a file in a
+`tests` directory, named tests.rs or *_tests.rs, or fenced by a leading
+#![cfg(test)] is test code whole; in any other file only the #[cfg(test)] items
+count, brace-counted from the attribute to its close.
 
 Shape, mechanical:
   fixed    a sleep outside any loop: the test waits a span and goes on
@@ -407,6 +412,70 @@ def main():
         print(f"  {cls:9} {k:4}  {rule}")
 
 
+# The crates whose test code under src/ the wait_budget gate counts (its SRC_SCOPE).
+SRC_SCOPE = ("mush-server",)
+CFG_TEST = "#[cfg(test)]"
+
+
+def cfg_test_lines(code):
+    """The 1-based line ranges of a blanked file's #[cfg(test)] items, as the
+    gate's scan::blank_cfg_test_items finds them: from the attribute to the close
+    of the item's first brace, or nothing when a `;` comes first."""
+    spans, search = [], 0
+    while True:
+        at = code.find(CFG_TEST, search)
+        if at < 0:
+            return spans
+        cursor = at + len(CFG_TEST)
+        while cursor < len(code) and code[cursor] not in "{;":
+            cursor += 1
+        if cursor >= len(code) or code[cursor] == ";":
+            search = at + len(CFG_TEST)
+            continue
+        depth, end = 0, cursor
+        while end < len(code):
+            if code[end] == "{":
+                depth += 1
+            elif code[end] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            end += 1
+        spans.append((code.count("\n", 0, at) + 1, code.count("\n", 0, end) + 1))
+        search = end + 1
+
+
+def src_whole(rel, code):
+    """Whether a src/ file is test code whole, by the gate's rule."""
+    parts = rel.split("/")
+    name = parts[-1]
+    if "tests" in parts[3:-1] or name == "tests.rs" or name.endswith("_tests.rs"):
+        return True
+    head = code.lstrip()
+    return head.startswith("#![cfg(test)]")
+
+
+def src_budget_files():
+    """(crate, rel, source, line filter) for the src/ files of SRC_SCOPE."""
+    for crate in SRC_SCOPE:
+        top = os.path.join(ROOT, "crates", crate, "src")
+        for dirpath, _dirs, files in os.walk(top):
+            for f in sorted(files):
+                if not f.endswith(".rs"):
+                    continue
+                full = os.path.join(dirpath, f)
+                rel = os.path.relpath(full, ROOT).replace("\\", "/")
+                with open(full, encoding="utf-8", errors="replace") as fh:
+                    source = fh.read()
+                code = blank(source)
+                if src_whole(rel, code):
+                    yield crate, rel, source, None
+                else:
+                    spans = cfg_test_lines(code)
+                    if spans:
+                        yield crate, rel, source, spans
+
+
 def budget():
     """The wait_budget gate's counts: story files, outside paused tests."""
     rows = Counter()
@@ -416,6 +485,13 @@ def budget():
         path = rel.split("/", 2)[2]
         for counter, pattern in (("wait", NEEDLE), ("clock", CLOCK)):
             n = sum(1 for s in scan_file(crate, rel, source, start, scope, pattern) if not s.paused)
+            if n:
+                rows[(crate, path, counter)] = n
+    for crate, rel, source, spans in src_budget_files():
+        path = rel.split("/", 2)[2]
+        inside = lambda line: spans is None or any(a <= line <= b for a, b in spans)
+        for counter, pattern in (("wait", NEEDLE), ("clock", CLOCK)):
+            n = sum(1 for s in scan_file(crate, rel, source, 0, "src", pattern) if not s.paused and inside(s.line))
             if n:
                 rows[(crate, path, counter)] = n
     order = {"wait": 0, "clock": 1}

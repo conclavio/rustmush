@@ -1233,7 +1233,14 @@ async fn a_digest_mismatched_pack_fails_the_split_boot() {
 /// tokio task, so the observable is simply whether the task is still doing work
 /// afterwards: this stands in a ticking task for the pass and requires it to
 /// have STOPPED when `stop_ledger_archive` returns.
-#[tokio::test]
+///
+/// On tokio's paused clock (doc 51 unit FL.6, row 10 of
+/// `docs/flaky-tests.md`). It once slept 20 ms of real time and asserted that
+/// the stand-in had ticked, which a loaded runner did not always allow. Here
+/// the stand-in's sleeps are virtual, the test waits for its first tick by
+/// the kit's `idle` barrier, and the 50 ms after the stop are fifty of the
+/// stand-in's periods that a live task could not sit through without ticking.
+#[tokio::test(start_paused = true)]
 async fn stop_ledger_archive_joins_the_pass_rather_than_detaching_it() {
     let ticks = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&ticks);
@@ -1244,11 +1251,14 @@ async fn stop_ledger_archive_joins_the_pass_rather_than_detaching_it() {
             counter.fetch_add(1, Ordering::SeqCst);
         }
     });
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    assert!(
-        ticks.load(Ordering::SeqCst) > 0,
-        "the stand-in pass never ran, so this case would prove nothing"
-    );
+    let start = tokio::time::Instant::now();
+    while ticks.load(Ordering::SeqCst) == 0 {
+        assert!(
+            start.elapsed() < Duration::from_millis(20),
+            "the stand-in pass never ran, so this case would prove nothing"
+        );
+        mush_storykit::idle().await;
+    }
 
     boot::stop_ledger_archive(Some(job)).await;
     let after_stop = ticks.load(Ordering::SeqCst);

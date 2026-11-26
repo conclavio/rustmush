@@ -39,8 +39,9 @@ use mush_ipc::{
 };
 use mush_store::{InMemoryStore, ObjectStore};
 
-/// One step of the proof must complete within this.
-const STEP: Duration = Duration::from_secs(60);
+/// One step of the proof must complete within this: the kit's one limit for
+/// an event (doc 51 §3.7, unit FL.6), which was this file's own 60 s.
+const STEP: Duration = mush_storykit::STEP_TIMEOUT;
 
 fn scratch_dir(tag: &str) -> PathBuf {
     let dir =

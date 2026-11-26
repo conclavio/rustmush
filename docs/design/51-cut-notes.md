@@ -928,3 +928,162 @@ summed minutes more a run, and the `rest-server` cell six minutes more of wall c
 - **A cell of its own for the suite.** The `rest-server` cell is now within a minute of the slowest cell of a
   pull request's run (27 against 28). Giving `commerce_composition` its own cell, as #244 gave `split_boundary`
   one, is a `ci.yml` change and the owner's call. It is asked in the pull request.
+
+## FL.6
+
+mush-server's lib and boundary. Built 2026-11-25 on `0e3a26804` (main with #797 merged). It adds one module to
+`mush-storykit`, moves the in-process tests it fits onto tokio's paused clock, replaces two absence windows with the
+world's barrier, gives the IPC proofs the kit's one step limit, and widens `wait_budget` to mush-server's test code
+under `src/`. It closes every mush-server row of `flaky-known.toml` (four). It changes no product code.
+
+Every measurement below is from conclav.dev, by hand as `ghrunner`, in a throwaway clone with its own target
+directory, between 22:34 and 23:10 UTC, before the soak's hours.
+
+**Survey.**
+
+- **mush-server's rows of `flaky-known.toml` were four**: row 10 (`boot_parity::stop_ledger_archive_…`, class
+  `clock`), and three carried from cut T.1's `load-sensitive` filter with no failure on record: the whole modules
+  `ipc_authoritative_action` and `ipc_window` of `split_boundary`, and the lib test
+  `world_task::tests::what_still_waits_when_the_loop_ends_is_answered_not_dropped`. In the 14 days of CI that
+  `docs/flaky-observed.md` reads and the soak's nights, only row 10 failed (once, run 44713758290).
+- **Row 10's cause is plain from the code.** The test spawned a task that ticks every 1 ms, slept 20 ms of real time,
+  and asserted the task had ticked. On a runner that did not schedule the task inside those 20 ms it failed with
+  its own message. The class is `clock`: a sleep standing in for "the task has run".
+- **`what_still_waits` had already been mended once, by a count.** Doc 18 cut IC14 found the world's unbiased
+  `select!` took the receipt before the inbound's close about one run in fifteen, and gave the world sixteen
+  `yield_now`s before the receipt was sent. Sixteen is a guess at how many turns the world needs; nothing checks it.
+- **The two IPC modules are event waits on a real socket**, not clock waits. Every wait reads frames under a
+  `timeout` and returns when its frame comes; the sleeps are the pace of a busy retry (25 ms) and of the gateway's
+  replay (250 ms), which are what the proofs model, not waits for the server. What was wrong by doc 51's rule §3.7
+  was the limits: 10, 15, 20 and 30 s chosen at each call, and 60 s in `ipc_window`. They cannot run on the paused
+  clock: the server is another runtime on its own thread, and doc 43c §3.3 keeps that off it.
+- **The `--src` census** (`python scripts/wait_audit.py --src`) counted 162 wait sites in mush-server's `src/`, but
+  its rule (a file is test code from its first `#[cfg(test)]` to its end) took in production code: the store
+  writer's retry sleeps in `persist.rs` (ten sites) and others. The gate needs an exact rule (Built).
+- **Which in-`src` waits are row 8's kind.** Row 8's cause was equality over a drain window. The in-`src` tests
+  hold three shapes of window: an absence asserted after a fixed sleep (`tests.rs`' hard-mode gate, 20 ms and
+  10 ms; the decision tests, 400 to 1,100 ms; `player_market_typed`, two of 200 ms), a "quiet for a second" drain
+  (`player_market_story::settle`), and polls under a bound. Only the first is a window in row 8's sense; the polls
+  wait for an event.
+
+**Built.**
+
+- **`mush_storykit::idle`** (`src/paused.rs`) and `IDLE_STEP`: on a paused clock, a sleep of tokio's least step,
+  which returns only once every task on the runtime has parked. It is the barrier for "the world has taken
+  everything ready for it", and an absence is asserted after it. Its doc says what it does not cover: I/O the
+  runtime does not own, and a task woken by a timer due inside the step. Three unit tests on the paused clock.
+- **Row 10** runs on the paused clock. The stand-in's sleeps are virtual, the test waits for its first tick with
+  `idle` (failing if 20 ms of virtual time pass first), and the 50 ms after the stop are fifty of the stand-in's
+  periods.
+- **`what_still_waits`** runs on the paused clock with `TimeSource::tokio_at(STORY_EPOCH × 1000)`
+  (`held_receipt_rig_on`, a new constructor beside `held_receipt_rig`), and waits for the world to park with `idle`
+  in place of the sixteen yields.
+- **The live hard-mode gate** (`live_hard_modes_block_every_mutating_execution_seam`, row 10's neighbor in the lib)
+  runs on the paused clock with the Tokio time source. Its two absences, after a 20 ms and a 10 ms sleep, are
+  asserted after `idle`, and its world is set from the time source instead of `unix_now_s()`.
+- **`split_boundary`'s other in-process neighbors**: `production_worker_recovers_and_stops_with_world_lifetime`
+  (memory store, a worker whose retry is its poll interval) runs on the paused clock, so its 4 s and 1 s bounds are
+  virtual; `spawn_ledger_archive_schedules_when_enabled` waits for its gauge through the kit's `wait_until` under
+  `STEP_TIMEOUT`, not 200 polls of 5 ms. That one stays on the real clock, because its archive tier reads files.
+- **`player_market_typed`'s two absence windows** are asserted after the rig's barrier: `Running::settled`, a name
+  for the rig's `barrier_retried`, which the world answers once everything sent before it is answered and any
+  commit's output released.
+- **The IPC proofs' limits** are `mush_storykit::STEP_TIMEOUT` (60 s): fourteen literals in
+  `ipc_authoritative_action`, one constant in `ipc_window`. The 90 s bound of the re-arm proof is kept; it covers
+  several bounded preflight rounds, and it is the one wait in the file longer than a step.
+- **`wait_budget`'s `src` scope** (`SRC_SCOPE = ["mush-server"]`). Test code under `src/` is a file under a
+  `tests` directory, a file named `tests.rs` or `*_tests.rs`, a file fenced by a leading `#![cfg(test)]`, and in any
+  other file each `#[cfg(test)]` item, brace-counted (the same `scan::blank_cfg_test_items` the panic budget uses).
+  The rows read `src/<path>`. A crate enters the scope by a baseline: its first bless writes the `src/` counts as
+  their own low-water marks and the line `# scope src`, and after that a `src/` row rises only with a reason. Two
+  new tests: the rule counts test code and never production code, and the baseline happens once.
+  `scripts/wait_audit.py --budget` prints the same rows by the same rule.
+- **The four rows closed.** `flaky-known.toml` holds 27 rows (31 before), the generated retry block follows, and
+  `docs/flaky-tests.md` has row 10's cause and its fix and `what_still_waits`' note. `docs/flaky-observed.md` is
+  refreshed.
+
+**Tests.**
+
+**The changed tests, before and after.** "Before" is main `0e3a26804`, "after" this unit. A cell is failed runs over
+runs; a run is one test in its own process, as nextest runs it (`--stress-count`, no retry).
+
+| Test | Quiet box, before | Quiet box, after | Contended, before | Contended, after |
+|---|---|---|---|---|
+| `boot_parity::stop_ledger_archive_…` (row 10) | 0 of 400 | 0 of 400 | **2 of 1,000** | 0 of 1,000 |
+| `world_task::tests::what_still_waits_…` | 0 of 200 | 0 of 200 | 0 of 1,000 | 0 of 1,000 |
+| `world_task::tests::live_hard_modes_…` | 0 of 200 | 0 of 200 | 0 of 1,000 | 0 of 1,000 |
+| `ipc_authoritative_action::*` and `ipc_window::*` (12 tests) | 0 of 288 | 0 of 288 | not run | not run |
+
+"Quiet" is eight busy loops beside one stress run. "Contended" is 32 busy loops, one on every core, with four
+stress runs of each test side by side. The two contended failures of row 10 are CI's own text, at the old line:
+`the stand-in pass never ran, so this case would prove nothing` (`boot_parity.rs:1248`). The paused tests are also
+faster: row 10 from 82 ms to 9 ms a run, the hard-mode gate from 115 ms to 13 ms, `what_still_waits` from 24 ms to
+16 ms.
+
+**The barrier, proven load-bearing.** In the clone, with the one `idle` line taken out of `what_still_waits` (so the
+receipt is sent with no wait at all, as before IC14's yields): 24 of 200 runs fail, at the test's own
+`a queued barrier hears that the world is gone` and its neighbors, which is IC14's race. With the line: 0 of 1,200
+above.
+
+**The neighbors.** `production_worker_recovers_…` (now paused) and `spawn_ledger_archive_schedules_…` (now on
+`wait_until`): 0 of 200 each. `player_market_typed`'s two converted tests: 0 of 24 each.
+
+**The rest.**
+
+- mush-server's lib, `split_boundary` and `world_task` binaries whole on the final tree: 651 passed, 6 skipped,
+  157 s. The lib and `split_boundary` alone on the first patch: 619 passed.
+- `mush-storykit`: 59 tests, three of them new.
+- `mush-contract-tests`: `ci_policy` 100 passed and 8 ignored (two `wait_budget` tests new), `engine_contracts` 92,
+  the lib 35. `flaky_known::` after the bless: 11 passed.
+- `python scripts/wait_audit.py --budget` and the budget files agree row for row (142 rows, compared with `diff`).
+- `cargo fmt --check` on the three crates; clippy with `-D warnings` over `mush-storykit`, `mush-server` and
+  `mush-contract-tests` on every target; rustdoc with `-D warnings` over the kit in both modes.
+
+**`wait_budget`**, mush-server, by the gate's rule (`python scripts/wait_audit.py --budget`, the same counts):
+
+| | Main | This unit |
+|---|---:|---:|
+| Raw waits in story files (`tests/`) | 68 | 61 |
+| Wall-clock reads in story files | 6 | 6 |
+| Raw waits in test code under `src/` | 149 (not gated) | 144 |
+| Wall-clock reads in test code under `src/` | 32 (not gated) | 31 |
+| Raw waits in story files, the tree | 513 | 506 |
+
+The seven `tests/` sites that left: three in row 10 (now paused), three in the durable-outbox worker test (now
+paused), one in `boot_store`. The `src/` sites: three in `world_task/tests.rs` (the hard-mode gate's two sleeps and
+`what_still_waits`' bound, now paused), two in `player_market_typed`; the clock read is the hard-mode gate's.
+
+**Divergences.** Where this differs from doc 51, or from the brief the unit was cut with:
+
+1. **"Row 10 and its neighbors onto the paused clock" is four tests, not a suite.** The paused clock fits a test
+   whose every wait the runtime owns. In `split_boundary` most tests boot the server on a runtime of its own over a
+   socket, which doc 43c §3.3 keeps off the paused clock; what was left in process is row 10, the durable-outbox
+   worker, and (in the lib) the hard-mode gate and `what_still_waits`.
+2. **The IPC modules were not converted to barriers; their limits were.** Their waits are already for an event,
+   so the class fix is rule §3.7's one limit. Their rows go on the record's evidence, none failed, and on the runs
+   below.
+3. **The `src` scope's rule is narrower than `wait_audit.py --src`'s.** The census script's `--src` takes a file
+   from its first `#[cfg(test)]` to its end and so counts production retry loops. The gate counts `#[cfg(test)]`
+   items only. `--budget` follows the gate; `--src` is left as the census it was, so doc 51 §2's numbers still
+   reproduce.
+4. **A scope enters by a baseline**, a mechanism doc 51 §3.9 does not have: without it, the first bless would have
+   needed a written raise for every one of the 144 sites.
+5. **Not every in-`src` window moved.** See Not built.
+6. **`idle` is in the kit, which mush-server's lib tests now use** as a dev-dependency they already had.
+
+**Not built.**
+
+- **The decision tests' absence windows** in `world_task/tests.rs` (`worker_saturation_…` 500 ms,
+  `malformed_provider_…` and `provider_outage_…` 400 ms, `expired_decision_lease_…` 1,100 ms). The decision
+  runtime's leases are on the OS clock, not `TimeSource`, so those tests cannot go on the paused clock until the
+  decision runtime reads its time from the provider. That is a product change (doc 43c's TS line), not this unit's.
+- **`player_market_story::settle`**, the "quiet for a whole second" drain, and the market stories' fixed waits (31 s
+  and 20 s in `part_two` and `part_three`). Those stories are the M7 nightly's, `#[ignore]`d on a pull request, and
+  wait for the renewal service's own schedule; a barrier for "the service has nothing more to say" does not exist
+  yet.
+- **The polls under a bound** across the in-`src` tests (about a hundred sites): each waits for an event and is
+  sound by §3.7; moving them to `wait_until` would change no outcome. They are held by the new `src` rows.
+- **A `src` scope for any other crate.** `SRC_SCOPE` names mush-server alone; a crate joins with one word and a
+  bless.
+- **The soak's rate for the suites.** The soak reads this tree from the night it merges; the rates above are
+  by-hand runs, as FL.4's were.
