@@ -32,9 +32,16 @@ namespace TacSim.UI
 
         public bool IsCollapsed { get; private set; }
         public bool IsDockedMidLeft { get; private set; }
+        public bool IsVisible => _root != null && _root.activeSelf;
         public TacSimActiveStage ActiveStage { get; private set; } = TacSimActiveStage.StationWalk;
         public int InspectedStationFloor { get; private set; }
         public string HeaderText => _headerText != null ? _headerText.text : string.Empty;
+
+        public void SetHiddenByHudPreset(bool hidden)
+        {
+            if (_root != null && _root.activeSelf == hidden)
+                _root.SetActive(!hidden);
+        }
 
         private const int MapTexSize = 196;
 

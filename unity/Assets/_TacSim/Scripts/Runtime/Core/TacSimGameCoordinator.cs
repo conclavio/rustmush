@@ -228,6 +228,8 @@ namespace TacSim.Core
                 Hud.TacticalBrackets.BindControllers(SpaceStage, SurfaceStage, ArenaStage);
             if (Hud.TacticalOverview != null)
                 Hud.TacticalOverview.BindControllers(SpaceStage, SurfaceStage, ArenaStage);
+            if (Hud.DisplayOptions != null)
+                Hud.DisplayOptions.BindSubsystems(Audio, CameraRig);
 
             if (Wayfinder == null)
             {
@@ -319,7 +321,7 @@ namespace TacSim.Core
             {
                 if (alert == ShipAlertLevel.RedAlert)
                 {
-                    Audio?.PlayRadarScanPing();
+                    Audio?.PlayRedAlertKlaxon();
                     Hud?.FloatingCallouts?.ShowCallout("RED ALERT — TORPEDO INBOUND!", new Color(1.0f, 0.24f, 0.18f, 1f), 2.4f);
                 }
                 else if (alert == ShipAlertLevel.Caution)
@@ -640,6 +642,7 @@ namespace TacSim.Core
                         case "ui:journal": Hud.QuestJournal?.SetOpen(true); break;
                         case "ui:keybinds": Hud.KeybindHelp?.SetOpen(true); break;
                         case "ui:options": Hud.DisplayOptions?.SetOpen(true); break;
+                        case "ui:toggle_cinematic_hud": Hud.DisplayOptions?.ToggleCinematicHudMode(); break;
                         case "ui:cycle_cam": HandleCycleOrbitalCamera(); break;
                         case "ui:cycle_holo": CycleBridgeHoloTableMode(); break;
                         case "ui:toggle_overview": Hud.TacticalOverview?.ToggleVisible(); break;
@@ -972,14 +975,17 @@ namespace TacSim.Core
                 else if (stage == TacSimActiveStage.PlanetarySurface && SurfaceStage?.RoverTransform != null)
                     yaw = SurfaceStage.RoverTransform.eulerAngles.y;
 
+                bool cinematicHud = TacSimDisplayOptions.CurrentHudDensity == TacSimHudDensityPreset.Cinematic;
+                bool compactHud = TacSimDisplayOptions.CurrentHudDensity == TacSimHudDensityPreset.Compact;
                 bool rightCornerBusy =
+                    cinematicHud ||
                     Hud.IsDockingHudVisible ||
                     (Hud.Overlays != null && Hud.Overlays.IsSpaceFireCardVisible) ||
                     stage == TacSimActiveStage.PlanetarySurface ||
                     stage == TacSimActiveStage.SimulatorArena;
 
                 Hud.Minimap.SyncMinimap(stage, pos, yaw, rightCornerBusy);
-                Hud.QuestJournal?.SyncTrackerVisibility(stage, rightCornerBusy);
+                Hud.QuestJournal?.SyncTrackerVisibility(stage, rightCornerBusy || compactHud);
             }
 
             // Update 3D Holographic Wayfinder ribbon & compass banner every frame
@@ -995,11 +1001,12 @@ namespace TacSim.Core
             {
                 Camera activeCam = CameraRig != null && CameraRig.ControlledCamera != null ? CameraRig.ControlledCamera : Camera.main;
                 bool hideBrackets = Hud.IsLoginOverlayVisible || Hud.IsModalOpen ||
+                    TacSimDisplayOptions.CurrentHudDensity == TacSimHudDensityPreset.Cinematic ||
                     (ArenaStage != null && ArenaStage.IsSpectatorTheaterActive) ||
                     (Hud.SolarMap != null && Hud.SolarMap.IsOpen) ||
                     (Hud.DisplayOptions != null && Hud.DisplayOptions.IsOpen);
                 Hud.TacticalBrackets.SyncBrackets(stage, activeCam, hideBrackets);
-                Hud.TacticalOverview?.SyncOverview(stage, hideBrackets);
+                Hud.TacticalOverview?.SyncOverview(stage, hideBrackets || TacSimDisplayOptions.CurrentHudDensity == TacSimHudDensityPreset.Compact);
             }
 
             if (Hud.UnitFrames == null) return;

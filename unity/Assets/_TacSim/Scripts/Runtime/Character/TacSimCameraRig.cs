@@ -33,6 +33,11 @@ namespace TacSim.Character
         public Transform GroundVehicleTarget;
         public Transform GroundCupolaAnchor;
 
+        public const string PrefCamSensPct = "TacSim.CamSensPct";
+        public const string PrefCamZoomPct = "TacSim.CamZoomPct";
+        public const string PrefCamInvertY = "TacSim.CamInvertY";
+        public const string PrefCamFovDeg = "TacSim.CamFovDeg";
+
         [Header("3rd Person Orbit")]
         public Vector3 shoulderOffset = new Vector3(0.42f, 1.58f, 0f);
         public float walkDistance = 3.6f;
@@ -43,6 +48,10 @@ namespace TacSim.Character
         public float vehicleDistance = 18f;
         public float mouseSensitivity = 2.8f;
 
+        public int OrbitSensitivityPct { get; private set; } = 100;
+        public int ZoomSpeedPct { get; private set; } = 100;
+        public bool InvertY { get; private set; }
+        public int FieldOfViewDeg { get; private set; } = 62;
         public CameraRigMode Mode { get; private set; } = CameraRigMode.ThirdPersonWalk;
         public bool OrbitInputEnabled { get; set; } = true;
 
@@ -76,6 +85,37 @@ namespace TacSim.Character
         {
             if (ControlledCamera == null)
                 ControlledCamera = GetComponentInChildren<Camera>();
+            LoadCameraPreferences();
+        }
+
+        public void LoadCameraPreferences()
+        {
+            int sens = Application.isPlaying ? PlayerPrefs.GetInt(PrefCamSensPct, 100) : 100;
+            int zoom = Application.isPlaying ? PlayerPrefs.GetInt(PrefCamZoomPct, 100) : 100;
+            bool invY = Application.isPlaying && PlayerPrefs.GetInt(PrefCamInvertY, 0) == 1;
+            int fov = Application.isPlaying ? PlayerPrefs.GetInt(PrefCamFovDeg, 62) : 62;
+            ApplyCameraPreferences(sens, zoom, invY, fov, savePrefs: false);
+        }
+
+        public void ApplyCameraPreferences(int sensPct, int zoomPct, bool invertY, int fovDeg, bool savePrefs = true)
+        {
+            OrbitSensitivityPct = Mathf.Clamp(sensPct, 50, 200);
+            ZoomSpeedPct = Mathf.Clamp(zoomPct, 50, 200);
+            InvertY = invertY;
+            FieldOfViewDeg = Mathf.Clamp(fovDeg, 50, 90);
+            mouseSensitivity = 2.8f * (OrbitSensitivityPct / 100f);
+
+            if (ControlledCamera != null && Mode != CameraRigMode.BowDockingCollar)
+                ControlledCamera.fieldOfView = FieldOfViewDeg;
+
+            if (savePrefs && Application.isPlaying)
+            {
+                PlayerPrefs.SetInt(PrefCamSensPct, OrbitSensitivityPct);
+                PlayerPrefs.SetInt(PrefCamZoomPct, ZoomSpeedPct);
+                PlayerPrefs.SetInt(PrefCamInvertY, InvertY ? 1 : 0);
+                PlayerPrefs.SetInt(PrefCamFovDeg, FieldOfViewDeg);
+                PlayerPrefs.Save();
+            }
         }
 
         public void SetMode(CameraRigMode mode)
@@ -85,7 +125,7 @@ namespace TacSim.Character
             {
                 ControlledCamera.nearClipPlane = mode == CameraRigMode.BowDockingCollar ? 0.05f : 0.15f;
                 ControlledCamera.farClipPlane = (mode == CameraRigMode.OrbitalExterior || mode == CameraRigMode.OrbitalTacticalHigh || mode == CameraRigMode.GroundVehicleChase || mode == CameraRigMode.GroundVehicleCupola) ? 8000f : 1500f;
-                ControlledCamera.fieldOfView = mode == CameraRigMode.BowDockingCollar ? 66f : 62f;
+                ControlledCamera.fieldOfView = mode == CameraRigMode.BowDockingCollar ? 66f : FieldOfViewDeg;
             }
         }
 
@@ -162,14 +202,16 @@ namespace TacSim.Character
             {
                 if (UpdateRmbOrbitDragState(overUi))
                 {
+                    float ySign = InvertY ? 1f : -1f;
                     _yawDeg += Input.GetAxis("Mouse X") * mouseSensitivity * 1.6f;
-                    _pitchDeg = Mathf.Clamp(_pitchDeg - Input.GetAxis("Mouse Y") * mouseSensitivity * 1.3f, -22f, 68f);
+                    _pitchDeg = Mathf.Clamp(_pitchDeg + ySign * Input.GetAxis("Mouse Y") * mouseSensitivity * 1.3f, -22f, 68f);
                 }
 
                 float scroll = Input.mouseScrollDelta.y;
                 if (!overUi && Mathf.Abs(scroll) > 0.01f)
                 {
-                    walkDistance = Mathf.Clamp(walkDistance - scroll * 0.45f, minWalkDistance, maxWalkDistance);
+                    float zoomScale = ZoomSpeedPct / 100f;
+                    walkDistance = Mathf.Clamp(walkDistance - scroll * 0.45f * zoomScale, minWalkDistance, maxWalkDistance);
                 }
             }
             else
@@ -227,13 +269,15 @@ namespace TacSim.Character
             {
                 if (UpdateRmbOrbitDragState(overUi))
                 {
+                    float ySign = InvertY ? 1f : -1f;
                     _orbitalYawDeg += Input.GetAxis("Mouse X") * mouseSensitivity * 1.8f;
-                    _orbitalPitchDeg = Mathf.Clamp(_orbitalPitchDeg - Input.GetAxis("Mouse Y") * mouseSensitivity * 1.4f, -55f, 75f);
+                    _orbitalPitchDeg = Mathf.Clamp(_orbitalPitchDeg + ySign * Input.GetAxis("Mouse Y") * mouseSensitivity * 1.4f, -55f, 75f);
                 }
                 float scroll = Input.mouseScrollDelta.y;
                 if (!overUi && Mathf.Abs(scroll) > 0.01f)
                 {
-                    orbitalDistance = Mathf.Clamp(orbitalDistance - scroll * 2.5f, 10f, 110f);
+                    float zoomScale = ZoomSpeedPct / 100f;
+                    orbitalDistance = Mathf.Clamp(orbitalDistance - scroll * 2.5f * zoomScale, 10f, 110f);
                 }
             }
             else
@@ -258,13 +302,15 @@ namespace TacSim.Character
             {
                 if (UpdateRmbOrbitDragState(overUi))
                 {
+                    float ySign = InvertY ? 1f : -1f;
                     _tacticalYawDeg += Input.GetAxis("Mouse X") * mouseSensitivity * 1.6f;
-                    _tacticalPitchDeg = Mathf.Clamp(_tacticalPitchDeg - Input.GetAxis("Mouse Y") * mouseSensitivity * 1.2f, 18f, 82f);
+                    _tacticalPitchDeg = Mathf.Clamp(_tacticalPitchDeg + ySign * Input.GetAxis("Mouse Y") * mouseSensitivity * 1.2f, 18f, 82f);
                 }
                 float scroll = Input.mouseScrollDelta.y;
                 if (!overUi && Mathf.Abs(scroll) > 0.01f)
                 {
-                    orbitalTacticalDistance = Mathf.Clamp(orbitalTacticalDistance - scroll * 8.5f, 52f, 260f);
+                    float zoomScale = ZoomSpeedPct / 100f;
+                    orbitalTacticalDistance = Mathf.Clamp(orbitalTacticalDistance - scroll * 8.5f * zoomScale, 52f, 260f);
                 }
             }
             else
@@ -289,13 +335,15 @@ namespace TacSim.Character
             {
                 if (UpdateRmbOrbitDragState(overUi))
                 {
+                    float ySign = InvertY ? 1f : -1f;
                     _vehicleYawOffsetDeg += Input.GetAxis("Mouse X") * mouseSensitivity * 1.8f;
-                    _vehiclePitchDeg = Mathf.Clamp(_vehiclePitchDeg - Input.GetAxis("Mouse Y") * mouseSensitivity * 1.3f, 5f, 72f);
+                    _vehiclePitchDeg = Mathf.Clamp(_vehiclePitchDeg + ySign * Input.GetAxis("Mouse Y") * mouseSensitivity * 1.3f, 5f, 72f);
                 }
                 float scroll = Input.mouseScrollDelta.y;
                 if (!overUi && Mathf.Abs(scroll) > 0.01f)
                 {
-                    vehicleDistance = Mathf.Clamp(vehicleDistance - scroll * 2.2f, 6.5f, 85f);
+                    float zoomScale = ZoomSpeedPct / 100f;
+                    vehicleDistance = Mathf.Clamp(vehicleDistance - scroll * 2.2f * zoomScale, 6.5f, 85f);
                 }
             }
             else
