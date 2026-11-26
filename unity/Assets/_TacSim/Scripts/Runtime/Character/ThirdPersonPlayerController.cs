@@ -30,8 +30,16 @@ namespace TacSim.Character
         public float VerticalVelocity => _verticalVelocity;
         public float CurrentPlanarSpeed => _currentPlanarSpeed;
 
+        public const float TargetClickMaxDistanceM = 28f;
+        public const float TargetDoubleClickWindowSec = 0.45f;
+
         public WorldInteractable FocusedInteractable { get; private set; }
+        public WorldInteractable SelectedTarget { get; private set; }
+        public WorldInteractable EffectiveTarget =>
+            (SelectedTarget != null && SelectedTarget.isActiveAndEnabled) ? SelectedTarget : FocusedInteractable;
+
         public event Action<WorldInteractable> OnFocusedInteractableChanged;
+        public event Action<WorldInteractable> OnSelectedTargetChanged;
 
         private CharacterController _cc;
         private float _verticalVelocity;
@@ -42,7 +50,52 @@ namespace TacSim.Character
         private bool _hasSavedWalkPose;
         private Vector3 _lastGroundedPosition;
         private bool _hasLastGroundedPosition;
+        private float _lastTargetClickTime = -10f;
         private readonly Collider[] _overlapBuffer = new Collider[64];
+
+        public void SelectTarget(WorldInteractable target)
+        {
+            if (target != null && !target.isActiveAndEnabled)
+                target = null;
+            if (SelectedTarget == target)
+                return;
+            SelectedTarget = target;
+            OnSelectedTargetChanged?.Invoke(target);
+        }
+
+        public void ClearSelectedTarget()
+        {
+            SelectTarget(null);
+        }
+
+        /// <summary>
+        /// WoW/EQ left-click semantics: single-click selects any avatar/NPC/console up to 28m
+        /// into the Target Unit Frame + 3D ground ring; double-clicking an already-selected
+        /// target within reach triggers interaction directly.
+        /// </summary>
+        public bool HandleLeftClickOnInteractable(WorldInteractable clicked, float nowUnscaledSec)
+        {
+            if (clicked == null || !clicked.isActiveAndEnabled)
+            {
+                ClearSelectedTarget();
+                return false;
+            }
+
+            bool isSameTarget = SelectedTarget == clicked;
+            bool isDoubleClick = isSameTarget && (nowUnscaledSec - _lastTargetClickTime) <= TargetDoubleClickWindowSec;
+            _lastTargetClickTime = nowUnscaledSec;
+
+            if (!isSameTarget)
+                SelectTarget(clicked);
+
+            float reach = Mathf.Max(8f, clicked.maxInteractDistance);
+            if (isDoubleClick && Vector3.Distance(transform.position, clicked.transform.position) <= reach)
+            {
+                clicked.TriggerInteraction();
+                return true;
+            }
+            return false;
+        }
 
         private void Awake()
         {
@@ -110,6 +163,11 @@ namespace TacSim.Character
                     FocusedInteractable = null;
                     OnFocusedInteractableChanged?.Invoke(null);
                 }
+                if (SelectedTarget != null)
+                {
+                    SelectedTarget = null;
+                    OnSelectedTargetChanged?.Invoke(null);
+                }
             }
             else
             {
@@ -133,6 +191,11 @@ namespace TacSim.Character
         {
             if (PhysicsSuspended)
                 return;
+            if (SelectedTarget != null &&
+                (!SelectedTarget.isActiveAndEnabled || Vector3.Distance(transform.position, SelectedTarget.transform.position) > 42f))
+            {
+                ClearSelectedTarget();
+            }
             if (IsSeatedAtHelm)
             {
                 if (VisualSpawner != null)
@@ -225,9 +288,18 @@ namespace TacSim.Character
 
             if (!InputSuspended)
             {
-                if (Input.GetKeyDown(KeyCode.E) && FocusedInteractable != null)
+                if (Input.GetKeyDown(KeyCode.E))
                 {
-                    FocusedInteractable.TriggerInteraction();
+                    if (FocusedInteractable != null)
+                    {
+                        FocusedInteractable.TriggerInteraction();
+                    }
+                    else if (SelectedTarget != null &&
+                             SelectedTarget.isActiveAndEnabled &&
+                             Vector3.Distance(transform.position, SelectedTarget.transform.position) <= SelectedTarget.maxInteractDistance)
+                    {
+                        SelectedTarget.TriggerInteraction();
+                    }
                 }
                 else if (Input.GetMouseButtonDown(0) && !IsPointerOverUi() && CameraTransform != null)
                 {
@@ -235,13 +307,21 @@ namespace TacSim.Character
                     if (cam != null)
                     {
                         Ray ray = cam.ScreenPointToRay(Input.mousePosition);
-                        if (Physics.Raycast(ray, out RaycastHit hit, 14f))
+                        if (Physics.Raycast(ray, out RaycastHit hit, TargetClickMaxDistanceM))
                         {
                             var interactable = hit.collider.GetComponentInParent<WorldInteractable>();
-                            if (interactable != null && Vector3.Distance(transform.position, interactable.transform.position) <= 8f)
+                            if (interactable != null)
                             {
-                                interactable.TriggerInteraction();
+                                HandleLeftClickOnInteractable(interactable, Time.unscaledTime);
                             }
+                            else
+                            {
+                                ClearSelectedTarget();
+                            }
+                        }
+                        else
+                        {
+                            ClearSelectedTarget();
                         }
                     }
                 }

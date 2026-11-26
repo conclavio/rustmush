@@ -2114,6 +2114,8 @@ namespace TacSim.World
 
                 var wi = npcGo.AddComponent<WorldInteractable>();
                 wi.kind = InteractableKind.NpcActor;
+                wi.isRemotePlayer = !isNpc;
+                wi.actorId = item.Id ?? string.Empty;
                 wi.promptTitle = $"Talk to {MushProtocol.EscapeUnityRichText(item.Name)}";
                 wi.promptSubtitle = isNpc
                     ? (!string.IsNullOrEmpty(seedNpc?.ShortDesc) ? seedNpc.ShortDesc : "Speak in-character or ask about the port")
@@ -2158,6 +2160,35 @@ namespace TacSim.World
             {
                 ApplyCradleLabels(mooredLabelsForCradles);
             }
+        }
+
+        /// <summary>
+        /// Returns all active targetable interactables in the current station room (live NPCs &amp; remote pilots first,
+        /// followed by room terminals/plaques) for WoW/EQ [Tab] target cycling.
+        /// </summary>
+        public List<WorldInteractable> GetActiveRoomTargetables()
+        {
+            var result = new List<WorldInteractable>();
+            var seen = new HashSet<WorldInteractable>();
+
+            foreach (var kv in _spawnedActors)
+            {
+                if (kv.Value == null || !kv.Value.activeInHierarchy) continue;
+                var wi = kv.Value.GetComponent<WorldInteractable>();
+                if (wi != null && wi.isActiveAndEnabled && seen.Add(wi))
+                    result.Add(wi);
+            }
+
+            if (!string.IsNullOrEmpty(ActiveRoomEntryId) && _roomRoots.TryGetValue(ActiveRoomEntryId, out var roomRoot) && roomRoot != null)
+            {
+                var roomItems = roomRoot.GetComponentsInChildren<WorldInteractable>(false);
+                for (int i = 0; i < roomItems.Length; i++)
+                {
+                    if (roomItems[i] != null && roomItems[i].isActiveAndEnabled && seen.Add(roomItems[i]))
+                        result.Add(roomItems[i]);
+                }
+            }
+            return result;
         }
 
         private static HashSet<string> ExtractBerthBoardHullNames(MushRoomView rv)

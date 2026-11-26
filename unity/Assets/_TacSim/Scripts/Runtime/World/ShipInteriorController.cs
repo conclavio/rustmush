@@ -1295,6 +1295,8 @@ namespace TacSim.World
 
                 var wi = actorGo.AddComponent<WorldInteractable>();
                 wi.kind = InteractableKind.NpcActor;
+                wi.isRemotePlayer = !isNpc;
+                wi.actorId = item.Id ?? string.Empty;
                 wi.promptTitle = $"Talk to {safeActorName}";
                 wi.promptSubtitle = isNpc ? "Speak with crew member" : "Speak with co-op shipmate";
                 wi.commandOrKey = MushProtocol.TryValidateSafeKeywordOrName(item.Name, out string safeCrewName) ? safeCrewName : string.Empty;
@@ -1330,6 +1332,39 @@ namespace TacSim.World
                     _crewBillboards.Remove(depId);
                 }
             }
+        }
+
+        /// <summary>
+        /// Returns all active targetable interactables in the current ship compartment (crew/pilots first,
+        /// then helm/consoles/airlock) for WoW/EQ [Tab] target cycling aboard ship.
+        /// </summary>
+        public List<WorldInteractable> GetActiveCompartmentTargetables()
+        {
+            var result = new List<WorldInteractable>();
+            var seen = new HashSet<WorldInteractable>();
+
+            foreach (var kv in _crewActors)
+            {
+                if (kv.Value == null || !kv.Value.activeInHierarchy) continue;
+                var wi = kv.Value.GetComponent<WorldInteractable>();
+                if (wi != null && wi.isActiveAndEnabled && seen.Add(wi))
+                    result.Add(wi);
+            }
+
+            var allItems = GetComponentsInChildren<WorldInteractable>(false);
+            if (TryGetCompartmentDef(ActiveCompartmentId, out var comp))
+            {
+                Vector3 center = ShipInteriorWorldOrigin + comp.LocalCenter;
+                float radius = Mathf.Max(comp.LocalSize.x, comp.LocalSize.z) * 0.65f + 2.5f;
+                for (int i = 0; i < allItems.Length; i++)
+                {
+                    var wi = allItems[i];
+                    if (wi == null || !wi.isActiveAndEnabled || !seen.Add(wi)) continue;
+                    if (Vector3.Distance(wi.transform.position, center) <= radius)
+                        result.Add(wi);
+                }
+            }
+            return result;
         }
 
         private static Vector3 ComputeCrewStandSpot(ShipCompartmentDef comp, int idx)

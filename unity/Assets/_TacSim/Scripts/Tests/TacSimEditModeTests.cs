@@ -6845,5 +6845,109 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void StationAndShip3DAvatarTargeting_SelectsWithRingCyclesTabAndDispatchesActions()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave4PR3_AvatarTargetingTest");
+            try
+            {
+                var coord = rootGo.AddComponent<TacSim.Core.TacSimGameCoordinator>();
+                coord.EnsureSubsystems();
+
+                Assert.IsNotNull(coord.TargetRing, "Coordinator must initialize TacSimTargetRing3D");
+                Assert.IsFalse(coord.TargetRing.IsRingVisible, "Selection ring must stay hidden until a target is focused/selected");
+
+                // 1. Spawn a station NPC + a remote player pilot in the active room via RoomView
+                var rv = new MushRoomView
+                {
+                    Id = "#10",
+                    Name = "Arrivals Hall",
+                    Atlas = new AtlasRoomAmbient { Pack = "neighborhood.ceres_freeport", Entry = "room.c03_arrivals" }
+                };
+                rv.Contents.Add(new MushObjRef { Id = "#101", Name = "Vance" });
+                rv.Contents.Add(new MushObjRef { Id = "#102", Name = "PilotAria" });
+                rv.NpcIds.Add("#101");
+                rv.PlayerIds.Add("#102");
+
+                coord.StationWorld.ApplyRoomView(rv, "#999");
+
+                var targets = coord.StationWorld.GetActiveRoomTargetables();
+                Assert.GreaterOrEqual(targets.Count, 2, "Station room must expose spawned NPC & pilot targetables");
+
+                WorldInteractable npcWi = null;
+                WorldInteractable pilotWi = null;
+                for (int i = 0; i < targets.Count; i++)
+                {
+                    if (targets[i].actorId == "#101") npcWi = targets[i];
+                    else if (targets[i].actorId == "#102") pilotWi = targets[i];
+                }
+                Assert.IsNotNull(npcWi);
+                Assert.IsNotNull(pilotWi);
+                Assert.IsFalse(npcWi.isRemotePlayer);
+                Assert.IsTrue(pilotWi.isRemotePlayer);
+
+                // 2. Single LMB click selects remote pilot from across the room (> 10m) WITHOUT triggering interaction modal
+                coord.Player.TeleportTo(pilotWi.transform.position + new UnityEngine.Vector3(0f, 0f, -12f), 0f);
+                bool triggered = coord.Player.HandleLeftClickOnInteractable(pilotWi, 10.0f);
+                Assert.IsFalse(triggered, "Single click from across room must select target rather than firing modal");
+                Assert.AreSame(pilotWi, coord.Player.SelectedTarget);
+                Assert.IsTrue(coord.TargetRing.IsRingVisible, "Selecting a remote pilot must illuminate the 3D ground ring");
+                Assert.AreSame(pilotWi.transform, coord.TargetRing.CurrentTargetTransform);
+                Assert.AreEqual(TacSim.World.TacSimTargetRing3D.ColorForAffinity(TacSim.World.TargetRingAffinity.RemotePilot), coord.TargetRing.RingColor);
+
+                // Target Unit Frame shows Pilot crest + PAGE / LOOK / MAIL action pills!
+                Assert.IsTrue(coord.Hud.UnitFrames.IsTargetVisible);
+                Assert.AreEqual("PAGE", coord.Hud.UnitFrames.TargetAction1Label);
+                Assert.AreEqual("LOOK", coord.Hud.UnitFrames.TargetAction2Label);
+                Assert.AreEqual("MAIL", coord.Hud.UnitFrames.TargetAction3Label);
+
+                // Clicking MAIL opens Social & Mail modal addressed to PilotAria
+                coord.Hud.UnitFrames.TriggerTargetAction(2);
+                Assert.IsTrue(coord.Hud.SocialModal.IsOpen);
+                Assert.AreEqual(TacSim.UI.SocialModalTab.Mail, coord.Hud.SocialModal.ActiveTab);
+                coord.Hud.SocialModal.SetOpen(false);
+
+                // 3. Selecting an NPC switches ground ring to emerald and populates TALK / LOOK / SAY
+                coord.Player.SelectTarget(npcWi);
+                Assert.AreSame(npcWi.transform, coord.TargetRing.CurrentTargetTransform);
+                Assert.AreEqual(TacSim.World.TacSimTargetRing3D.ColorForAffinity(TacSim.World.TargetRingAffinity.Npc), coord.TargetRing.RingColor);
+                Assert.AreEqual("TALK", coord.Hud.UnitFrames.TargetAction1Label);
+                Assert.AreEqual("LOOK", coord.Hud.UnitFrames.TargetAction2Label);
+                Assert.AreEqual("SAY", coord.Hud.UnitFrames.TargetAction3Label);
+
+                // 4. Double-click within reach triggers interaction directly
+                coord.Player.TeleportTo(npcWi.transform.position + new UnityEngine.Vector3(0f, 0f, -2.5f), 0f);
+                bool interactedOnNpc = false;
+                var prevHandler = npcWi.OnInteracted;
+                npcWi.OnInteracted = _ => interactedOnNpc = true;
+                try
+                {
+                    // First click updates click timer; second click within 0.45s triggers!
+                    coord.Player.HandleLeftClickOnInteractable(npcWi, 20.0f);
+                    bool dbl = coord.Player.HandleLeftClickOnInteractable(npcWi, 20.2f);
+                    Assert.IsTrue(dbl && interactedOnNpc, "Double-click on selected target within reach must trigger interaction");
+                }
+                finally
+                {
+                    npcWi.OnInteracted = prevHandler;
+                }
+
+                // 5. [Tab] cycling advances cleanly between room targets
+                var beforeTab = coord.Player.SelectedTarget;
+                coord.CycleWalkTargetForTest();
+                Assert.IsNotNull(coord.Player.SelectedTarget);
+                Assert.AreNotSame(beforeTab, coord.Player.SelectedTarget, "[Tab] in station walk must cycle to the next room targetable");
+
+                // 6. Clearing target hides both the 3D ground ring and Target Unit Frame
+                coord.Player.ClearSelectedTarget();
+                Assert.IsFalse(coord.TargetRing.IsRingVisible);
+                Assert.IsFalse(coord.Hud.UnitFrames.IsTargetVisible);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
