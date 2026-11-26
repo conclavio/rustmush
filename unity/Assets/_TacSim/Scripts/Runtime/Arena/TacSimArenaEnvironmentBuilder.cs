@@ -14,6 +14,30 @@ namespace TacSim.Arena
         public int WaterCellCount;
     }
 
+    public struct ArenaBiomeLightingProfile
+    {
+        public string BiomeKey;
+        public Color SunColor;
+        public float SunIntensity;
+        public Color AmbientColor;
+        public Color FogColor;
+        public float FogDensity;
+        public bool EnableFog;
+    }
+
+    public struct ArenaTerrainTacticalSample
+    {
+        public TerrainCellClass OwnCellClass;
+        public string CoverLabel;           // "HEAVY WOODS" | "WOODS COVER" | "WALL COVER" | "ROCK COVER" | "ROAD" | "WATER" | "OPEN"
+        public bool HasCover;
+        public float OwnElevationM;
+        public bool HasTargetSample;
+        public float ElevationDeltaM;       // ownElev - targetElev (+ = high ground)
+        public string ElevationAdvantage;   // "HIGH GROUND" | "LOW GROUND" | "LEVEL"
+        public bool IsLineOfSightObstructed;
+        public string LineOfSightStatus;    // "CLEAR" | "RIDGE" | "WOODS" | "WALL"
+    }
+
     /// <summary>
     /// Builds ultra-fast batched 3D battlefield cover geometry (pine/canopy woods, craggy rock
     /// boulders, ferrocrete bunker walls, and translucent water surfaces) directly from the
@@ -113,6 +137,173 @@ namespace TacSim.Arena
             uint h = (uint)(x * 374761393 + y * 668265263 + salt * 1442695041);
             h = (h ^ (h >> 13)) * 1274126177u;
             return ((h ^ (h >> 16)) & 0xFFFFu) / 65535f;
+        }
+
+        public static ArenaBiomeLightingProfile ResolveBiomeLighting(string biome)
+        {
+            string b = (biome ?? "temperate").Trim().ToLowerInvariant();
+            if (b.Contains("desert") || b.Contains("mars"))
+            {
+                return new ArenaBiomeLightingProfile
+                {
+                    BiomeKey = "desert",
+                    SunColor = new Color(1.0f, 0.88f, 0.72f),
+                    SunIntensity = 2.4f,
+                    AmbientColor = new Color(0.46f, 0.36f, 0.28f),
+                    FogColor = new Color(0.56f, 0.43f, 0.30f),
+                    FogDensity = 0.00055f,
+                    EnableFog = true
+                };
+            }
+            if (b.Contains("arctic") || b.Contains("winter") || b.Contains("ice"))
+            {
+                return new ArenaBiomeLightingProfile
+                {
+                    BiomeKey = "arctic",
+                    SunColor = new Color(0.86f, 0.94f, 1.0f),
+                    SunIntensity = 2.3f,
+                    AmbientColor = new Color(0.36f, 0.44f, 0.54f),
+                    FogColor = new Color(0.58f, 0.68f, 0.78f),
+                    FogDensity = 0.00065f,
+                    EnableFog = true
+                };
+            }
+            if (b.Contains("regolith") || b.Contains("ceres") || b.Contains("vesta") || b.Contains("lunar"))
+            {
+                return new ArenaBiomeLightingProfile
+                {
+                    BiomeKey = "regolith",
+                    SunColor = new Color(0.98f, 0.98f, 1.0f),
+                    SunIntensity = 2.6f,
+                    AmbientColor = new Color(0.18f, 0.20f, 0.24f),
+                    FogColor = new Color(0.05f, 0.06f, 0.09f),
+                    FogDensity = 0.00015f,
+                    EnableFog = false
+                };
+            }
+            return new ArenaBiomeLightingProfile
+            {
+                BiomeKey = "temperate",
+                SunColor = new Color(0.94f, 0.97f, 1.0f),
+                SunIntensity = 2.2f,
+                AmbientColor = new Color(0.32f, 0.38f, 0.42f),
+                FogColor = new Color(0.42f, 0.52f, 0.60f),
+                FogDensity = 0.00042f,
+                EnableFog = true
+            };
+        }
+
+        public static ArenaTerrainTacticalSample EvaluateUnitTerrainContext(
+            DecodedTerrainGrid grid,
+            float ownLocalX,
+            float ownLocalZ,
+            float sensorHeightM,
+            bool hasTarget,
+            float targetLocalX,
+            float targetLocalZ)
+        {
+            var res = new ArenaTerrainTacticalSample
+            {
+                OwnCellClass = TerrainCellClass.Ground,
+                CoverLabel = "OPEN",
+                ElevationAdvantage = "LEVEL",
+                LineOfSightStatus = "CLEAR"
+            };
+            if (grid == null || grid.Width <= 0 || grid.Height <= 0)
+                return res;
+
+            float cellSize = Mathf.Max(0.5f, grid.CellSizeM);
+            int gx = Mathf.Clamp(Mathf.FloorToInt(ownLocalX / cellSize), 0, grid.Width - 1);
+            int gy = Mathf.Clamp(Mathf.FloorToInt(ownLocalZ / cellSize), 0, grid.Height - 1);
+            TerrainCellClass cls = grid.GetCellClass(gx, gy);
+            res.OwnCellClass = cls;
+            res.OwnElevationM = grid.SampleElevationMeters(ownLocalX, ownLocalZ);
+
+            switch (cls)
+            {
+                case TerrainCellClass.WoodsHeavy:
+                    res.CoverLabel = "HEAVY WOODS";
+                    res.HasCover = true;
+                    break;
+                case TerrainCellClass.WoodsLight:
+                    res.CoverLabel = "WOODS COVER";
+                    res.HasCover = true;
+                    break;
+                case TerrainCellClass.Wall:
+                case TerrainCellClass.Door:
+                case TerrainCellClass.Platform:
+                    res.CoverLabel = "WALL COVER";
+                    res.HasCover = true;
+                    break;
+                case TerrainCellClass.Rock:
+                case TerrainCellClass.Rubble:
+                    res.CoverLabel = "ROCK COVER";
+                    res.HasCover = true;
+                    break;
+                case TerrainCellClass.Road:
+                case TerrainCellClass.Paved:
+                    res.CoverLabel = "ROAD";
+                    res.HasCover = false;
+                    break;
+                case TerrainCellClass.Water:
+                case TerrainCellClass.WaterDeep:
+                    res.CoverLabel = "WATER";
+                    res.HasCover = false;
+                    break;
+                default:
+                    res.CoverLabel = "OPEN";
+                    res.HasCover = false;
+                    break;
+            }
+
+            if (!hasTarget)
+                return res;
+
+            res.HasTargetSample = true;
+            float tgtElev = grid.SampleElevationMeters(targetLocalX, targetLocalZ);
+            res.ElevationDeltaM = res.OwnElevationM - tgtElev;
+            if (res.ElevationDeltaM >= 3.0f) res.ElevationAdvantage = "HIGH GROUND";
+            else if (res.ElevationDeltaM <= -3.0f) res.ElevationAdvantage = "LOW GROUND";
+            else res.ElevationAdvantage = "LEVEL";
+
+            // 12-step sightline probe from own sensor eye height to target hull center (+2.2m)
+            float startY = res.OwnElevationM + Mathf.Clamp(sensorHeightM, 1.2f, 8.0f);
+            float endY = tgtElev + 2.2f;
+            const int Steps = 12;
+            int heavyWoodsCount = 0;
+            for (int s = 1; s < Steps; s++)
+            {
+                float u = s / (float)Steps;
+                float sx = Mathf.Lerp(ownLocalX, targetLocalX, u);
+                float sz = Mathf.Lerp(ownLocalZ, targetLocalZ, u);
+                float rayY = Mathf.Lerp(startY, endY, u);
+                float groundY = grid.SampleElevationMeters(sx, sz);
+                if (groundY > rayY + 0.6f)
+                {
+                    res.IsLineOfSightObstructed = true;
+                    res.LineOfSightStatus = "RIDGE";
+                    return res;
+                }
+                int cgx = Mathf.Clamp(Mathf.FloorToInt(sx / cellSize), 0, grid.Width - 1);
+                int cgy = Mathf.Clamp(Mathf.FloorToInt(sz / cellSize), 0, grid.Height - 1);
+                TerrainCellClass midCls = grid.GetCellClass(cgx, cgy);
+                if (midCls == TerrainCellClass.Wall && groundY + 2.8f > rayY)
+                {
+                    res.IsLineOfSightObstructed = true;
+                    res.LineOfSightStatus = "WALL";
+                    return res;
+                }
+                if (midCls == TerrainCellClass.WoodsHeavy)
+                    heavyWoodsCount++;
+            }
+
+            if (heavyWoodsCount >= 2)
+            {
+                res.IsLineOfSightObstructed = true;
+                res.LineOfSightStatus = "WOODS";
+            }
+
+            return res;
         }
 
         public static ArenaEnvironmentPropSummary BuildArenaProps(DecodedTerrainGrid grid, Transform propsRoot)

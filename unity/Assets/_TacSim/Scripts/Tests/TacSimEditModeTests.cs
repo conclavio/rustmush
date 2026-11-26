@@ -8337,5 +8337,111 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ArenaTerrainCoverElevationLosAndBiomeAtmosphere_SamplesCoverDetectsRidgeLosAndUpdatesCompassTelemetry()
+        {
+            // 1. Biome lighting profiles differentiate desert, arctic, regolith (vacuum/no fog), and temperate
+            var desert = TacSim.Arena.TacSimArenaEnvironmentBuilder.ResolveBiomeLighting("desert");
+            var arctic = TacSim.Arena.TacSimArenaEnvironmentBuilder.ResolveBiomeLighting("arctic");
+            var regolith = TacSim.Arena.TacSimArenaEnvironmentBuilder.ResolveBiomeLighting("ceres_regolith");
+            Assert.AreEqual("desert", desert.BiomeKey);
+            Assert.Greater(desert.SunColor.r, desert.SunColor.b, "Desert sunlight must be warm golden");
+            Assert.AreEqual("arctic", arctic.BiomeKey);
+            Assert.Greater(arctic.SunColor.b, arctic.SunColor.r, "Arctic sunlight must be crisp cool blue-white");
+            Assert.AreEqual("regolith", regolith.BiomeKey);
+            Assert.IsFalse(regolith.EnableFog, "Lunar/asteroid vacuum regolith must disable atmospheric fog");
+
+            // 2. Deterministic 32x32 terrain with Heavy Woods hilltop at (6,6, elev=14m), valley target at (24,6, elev=2m), and ridge option at (15,6)
+            var grid = new DecodedTerrainGrid
+            {
+                Id = "intel_test",
+                DisplayName = "Intel Ridge",
+                Biome = "arctic",
+                Width = 32,
+                Height = 32,
+                CellSizeM = 10f,
+                OriginCellX = 0,
+                OriginCellY = 0,
+                SpanCells = 1,
+                Classes = new TerrainCellClass[32 * 32],
+                ElevMeters = new float[32 * 32]
+            };
+            for (int y = 0; y < 32; y++)
+            {
+                for (int x = 0; x < 32; x++)
+                {
+                    int idx = y * 32 + x;
+                    grid.Classes[idx] = (x >= 4 && x <= 8 && y >= 4 && y <= 8) ? TerrainCellClass.WoodsHeavy : TerrainCellClass.Ground;
+                    grid.ElevMeters[idx] = (x <= 8) ? 14f : 2f;
+                }
+            }
+
+            // Clear LOS from hilltop heavy woods (65m, 65m) down to valley target (245m, 65m)
+            var clearSample = TacSim.Arena.TacSimArenaEnvironmentBuilder.EvaluateUnitTerrainContext(
+                grid, 65f, 65f, 2.5f, hasTarget: true, targetLocalX: 245f, targetLocalZ: 65f);
+            Assert.AreEqual("HEAVY WOODS", clearSample.CoverLabel);
+            Assert.IsTrue(clearSample.HasCover);
+            Assert.AreEqual("HIGH GROUND", clearSample.ElevationAdvantage);
+            Assert.Greater(clearSample.ElevationDeltaM, 10f);
+            Assert.IsFalse(clearSample.IsLineOfSightObstructed);
+            Assert.AreEqual("CLEAR", clearSample.LineOfSightStatus);
+
+            // Raise an intervening hill ridge at x=14..16 (elev=28m) -> LOS probe must detect RIDGE obstruction!
+            for (int y = 0; y < 32; y++)
+                for (int x = 14; x <= 16; x++)
+                    grid.ElevMeters[y * 32 + x] = 28f;
+
+            var ridgeSample = TacSim.Arena.TacSimArenaEnvironmentBuilder.EvaluateUnitTerrainContext(
+                grid, 65f, 65f, 2.5f, hasTarget: true, targetLocalX: 245f, targetLocalZ: 65f);
+            Assert.IsTrue(ridgeSample.IsLineOfSightObstructed, "Tall intervening hill must flag terrain LOS obstruction");
+            Assert.AreEqual("RIDGE", ridgeSample.LineOfSightStatus);
+
+            // 3. Full live Arena + Compass Telemetry integration
+            var rootGo = new UnityEngine.GameObject("Wave9PR1_TerrainIntelTest");
+            try
+            {
+                var catalog = TacSimAssetCatalog.LoadOrDefault();
+                var arenaGo = new UnityEngine.GameObject("Arena");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(catalog, grid);
+                Assert.AreEqual("arctic", arena.ActiveBiomeLighting.BiomeKey);
+
+                var camGo = new UnityEngine.GameObject("Cam", typeof(UnityEngine.Camera));
+                camGo.transform.SetParent(rootGo.transform, false);
+                var cam = camGo.GetComponent<UnityEngine.Camera>();
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.TacticalBrackets.BindControllers(null, null, arena);
+
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 130, ""seated"": true, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""mode"": ""skirmish"", ""power"": ""online"",
+                    ""x_cm"": 6500, ""y_cm"": 6500, ""heading_deg"": 90, ""speed_kph"": 0,
+                    ""sensor_height_cm"": 320, ""sight_m"": 260, ""scope"": ""hostile"",
+                    ""lock_designator"": ""B1"", ""lock_range_m"": 180, ""lock_percent"": 55,
+                    ""contacts"": [
+                        { ""designator"": ""B1"", ""class"": ""line_tank"", ""party"": ""B"", ""friendly"": false, ""cell"": [24, 6], ""range_m"": 180, ""bearing_deg"": 90, ""facing"": ""front"", ""health"": ""intact"" }
+                    ]
+                }"));
+                hud.TacticalBrackets.SyncBrackets(TacSimActiveStage.SimulatorArena, cam, hideForOverlay: false);
+
+                Assert.AreEqual(3.2f, arena.State.SensorHeightM, 0.05f, "sensor_height_cm must decode to meters");
+                Assert.AreEqual("HEAVY WOODS", arena.CurrentTerrainIntel.CoverLabel);
+                Assert.AreEqual("HIGH GROUND", arena.CurrentTerrainIntel.ElevationAdvantage);
+                Assert.IsTrue(arena.CurrentTerrainIntel.IsLineOfSightObstructed);
+                Assert.AreEqual("RIDGE", arena.CurrentTerrainIntel.LineOfSightStatus);
+                StringAssert.Contains("HEAVY WOODS", hud.TacticalBrackets.ArenaTerrainBadgeSnapshot);
+                StringAssert.Contains("HIGH +", hud.TacticalBrackets.ArenaTerrainBadgeSnapshot);
+                StringAssert.Contains("RIDGE", hud.TacticalBrackets.ArenaTerrainBadgeSnapshot);
+                StringAssert.Contains("HEAVY WOODS", hud.TacticalBrackets.ArenaCompassTelemetrySnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
