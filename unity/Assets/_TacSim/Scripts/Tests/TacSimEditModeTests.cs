@@ -5003,5 +5003,76 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void MmorpgHud_UnitFramesMinimapTabbedChatHistoryAndNumberedHotbar()
+        {
+            // 1. Tabbed chat classification routes Combat / System / Comms / Local cleanly
+            Assert.AreEqual(TacSim.UI.ChatLogTab.Combat, TacSim.UI.TacSimHudController.ClassifyLogCategory("<color=#FFBB55>[TAC]</color> Lock acquired on R2."));
+            Assert.AreEqual(TacSim.UI.ChatLogTab.System, TacSim.UI.TacSimHudController.ClassifyLogCategory("<color=#88CCFF>[NET]</color> Connected."));
+            Assert.AreEqual(TacSim.UI.ChatLogTab.Comms, TacSim.UI.TacSimHudController.ClassifyLogCategory("<color=#66BBFF>[COMMS]</color> Welcome to Ceres Freeport."));
+            Assert.AreEqual(TacSim.UI.ChatLogTab.Local, TacSim.UI.TacSimHudController.ClassifyLogCategory("Dockmaster nods toward Berth 3."));
+
+            var rootGo = new UnityEngine.GameObject("MmorpgHudCoreTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                Assert.IsNotNull(hud.UnitFrames, "BuildHud must wire WoW/EQ Player & Target Unit Frames");
+                Assert.IsNotNull(hud.Minimap, "BuildHud must wire Unified Corner Tactical Minimap");
+
+                // 2. Numbered 1-9 action hotbar records slots and triggers commands cleanly
+                var dispatched = new List<string>();
+                hud.OnCommandSubmitted += dispatched.Add;
+                hud.RefreshContextualQuickActions("room.c07_exchange", isSeatedAtHelm: false);
+                Assert.GreaterOrEqual(hud.QuickActionSlotCount, 3);
+                Assert.IsTrue(hud.TriggerQuickActionSlot(0));
+                Assert.AreEqual("ui:open_exchange", dispatched[0]);
+
+                // 3. Command history recall (Up/Down)
+                hud.RecordCommandHistory("look");
+                hud.RecordCommandHistory("+ship");
+                Assert.AreEqual("+ship", hud.RecallCommandHistory(-1));
+                Assert.AreEqual("look", hud.RecallCommandHistory(-1));
+                Assert.AreEqual("+ship", hud.RecallCommandHistory(+1));
+
+                // 4. Tab switching & log filtering
+                hud.AppendLogLine("[TAC] Fired laser pulse.");
+                hud.AppendLogLine("[NET] Sync complete.");
+                hud.SelectChatLogTab(TacSim.UI.ChatLogTab.Combat);
+                Assert.AreEqual(TacSim.UI.ChatLogTab.Combat, hud.ActiveChatTab);
+
+                // 5. Player & Target unit frames update and clear cleanly
+                hud.UnitFrames.UpdatePlayerFrame(
+                    "STN", UnityEngine.Color.cyan, "Phoenix", "Ceres Freeport",
+                    0.5f, "HOLD 50/100 t", UnityEngine.Color.cyan,
+                    0.75f, "FUEL 60/80 t", UnityEngine.Color.yellow, "CREDITS: 12,000 cr");
+                Assert.AreEqual("Phoenix", hud.UnitFrames.PlayerTitleText);
+                Assert.IsFalse(hud.UnitFrames.IsTargetVisible);
+
+                hud.UnitFrames.SetTarget("NPC", UnityEngine.Color.green, "Dockmaster Voss", "Port Authority", 1f, "IN RANGE", UnityEngine.Color.green);
+                Assert.IsTrue(hud.UnitFrames.IsTargetVisible);
+                Assert.AreEqual("Dockmaster Voss", hud.UnitFrames.TargetTitleText);
+                hud.UnitFrames.ClearTarget();
+                Assert.IsFalse(hud.UnitFrames.IsTargetVisible);
+
+                // 6. Minimap renders Station blueprint, shifts mid-left when tactical panel busy, and handles click-to-navigate
+                var stGo = new UnityEngine.GameObject("MinimapStationTest");
+                stGo.transform.SetParent(rootGo.transform, false);
+                var station = stGo.AddComponent<TacSim.World.StationWorldController>();
+                station.BuildStation(null);
+                hud.Minimap.BindWorldSources(station, null, null, null, null);
+                hud.Minimap.SyncMinimap(TacSim.Core.TacSimActiveStage.StationWalk, UnityEngine.Vector3.zero, 90f, rightCornerOccupied: false, forceRedraw: true);
+                Assert.IsFalse(hud.Minimap.IsDockedMidLeft);
+                Assert.IsTrue(hud.Minimap.HeaderText.Contains("DECK"));
+
+                hud.Minimap.SyncMinimap(TacSim.Core.TacSimActiveStage.ShipHelmSeated, UnityEngine.Vector3.zero, 45f, rightCornerOccupied: true, forceRedraw: true);
+                Assert.IsTrue(hud.Minimap.IsDockedMidLeft, "Minimap must shift cleanly to Mid-Left when top-right combat/docking panel is open");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

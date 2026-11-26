@@ -217,6 +217,8 @@ namespace TacSim.Core
             Hud.BindTradeState(TradeState);
             if (Hud.Overlays != null)
                 Hud.Overlays.BindControllers(SurfaceStage, ArenaStage, SpaceStage);
+            if (Hud.Minimap != null)
+                Hud.Minimap.BindWorldSources(StationWorld, ShipInterior, SpaceStage, SurfaceStage, ArenaStage);
 
             if (_ws == null)
                 _ws = new MushWsClient();
@@ -250,7 +252,14 @@ namespace TacSim.Core
                     ShipInterior.UpdateCargoVisualFill(TradeState.HoldMassTonnes);
             };
 
-            Player.OnFocusedInteractableChanged += wi => { if (Hud != null) Hud.SetFocusedInteractable(wi); };
+            Player.OnFocusedInteractableChanged += wi =>
+            {
+                if (Hud != null)
+                {
+                    Hud.SetFocusedInteractable(wi);
+                    SyncTargetFrameForInteractable(wi);
+                }
+            };
 
             StationWorld.OnInteractableTriggered += HandleWorldInteractable;
             ShipInterior.OnInteractableTriggered += HandleWorldInteractable;
@@ -343,6 +352,48 @@ namespace TacSim.Core
             Hud.OnRequestChoiceSubmitted += (req, choice) => _ws?.SendChoiceResponse(req, choice);
             Hud.OnCameraModeRequested += SetCameraMode;
             Hud.OnStandFromHelmRequested += StandFromHelm;
+            Hud.OnCycleTargetRequested += HandleCycleTarget;
+
+            if (Hud.Minimap != null)
+            {
+                Hud.Minimap.OnStationRoomClicked += targetRoomEntry =>
+                {
+                    if (StationWorld == null || string.IsNullOrEmpty(targetRoomEntry)) return;
+                    if (string.Equals(targetRoomEntry, StationWorld.ActiveRoomEntryId, StringComparison.OrdinalIgnoreCase)) return;
+                    var path = StationWorld.FindExitPath(StationWorld.ActiveRoomEntryId, targetRoomEntry);
+                    if (path != null && path.Count > 0)
+                    {
+                        var first = _navWalker.PlanAndDispatchOne(NavWalkerScope.Station, _serverStationRoomEntry, path, Time.time);
+                        if (first.HasValue)
+                        {
+                            Hud.AppendLogLine($"<color=#66DDFF>[NAV]</color> Plotting walk to <b>{MushProtocol.EscapeUnityRichText(targetRoomEntry)}</b> ({path.Count} hop{(path.Count == 1 ? "" : "s")}).");
+                            DispatchNavHop(first.Value, 0.35f);
+                        }
+                    }
+                };
+                Hud.Minimap.OnShipCompartmentClicked += targetComp =>
+                {
+                    if (ShipInterior == null || string.IsNullOrEmpty(targetComp)) return;
+                    var path = ShipInterior.FindExitPath(ShipInterior.ActiveCompartmentId, targetComp);
+                    if (path != null && path.Count > 0)
+                    {
+                        var first = _navWalker.PlanAndDispatchOne(NavWalkerScope.Ship, _serverShipCompartment, path, Time.time);
+                        if (first.HasValue)
+                            DispatchNavHop(first.Value, 0.35f);
+                    }
+                };
+                Hud.Minimap.OnOrbitalBlipClicked += (id, isRock) =>
+                {
+                    if (!MushProtocol.TryValidateSafeCommandToken(id, out string safeId)) return;
+                    ExecutePlayerCommand(isRock ? $"+helm/approach {safeId}" : $"+tac/lock {safeId}");
+                };
+                Hud.Minimap.OnSurfaceCellClicked += (sx, sy) =>
+                {
+                    if (SurfaceStage != null && _ws != null && _ws.IsConnected)
+                        _ws.SendLine($"+tv/{SurfaceStage.AddressedRigSlot} drive {sx},{sy} go");
+                };
+                Hud.Minimap.OnOpenSolarChartRequested += () => Hud.SolarMap?.SetOpen(true);
+            }
 
             if (Hud.Overlays != null)
             {
@@ -434,6 +485,7 @@ namespace TacSim.Core
 
             if (Hud != null && SpaceStage != null)
             {
+                SyncMmorpgHudFramesAndMinimap();
                 bool pilotDocking = Player != null && Player.IsSeatedAtHelm && SpaceStage.IsDockingActive;
                 Hud.UpdateDockingHud(pilotDocking ? SpaceStage.ActiveDockingSession : null, SpaceStage.GuidanceAssistEnabled);
             }
@@ -442,6 +494,266 @@ namespace TacSim.Core
         private void OnDestroy()
         {
             _ws?.Dispose();
+        }
+
+        private float _nextUnitFrameSyncAt;
+        private int _arenaCycleIdx = -1;
+
+        private void SyncTargetFrameForInteractable(WorldInteractable wi)
+        {
+            if (Hud?.UnitFrames == null) return;
+            if (ActiveStage != TacSimActiveStage.StationWalk && ActiveStage != TacSimActiveStage.ShipInteriorWalk)
+                return;
+            if (wi == null)
+            {
+                Hud.UnitFrames.ClearTarget();
+                return;
+            }
+            string crest = wi.kind == InteractableKind.NpcActor ? "NPC"
+                : (wi.kind == InteractableKind.AirlockBoard || wi.kind == InteractableKind.AirlockDisembark ? "AIRLK"
+                : (wi.kind == InteractableKind.BridgeHelmSeat ? "HELM" : "TERM"));
+            Color crestCol = wi.kind == InteractableKind.NpcActor
+                ? new Color(0.18f, 0.52f, 0.36f, 0.96f)
+                : new Color(0.18f, 0.42f, 0.62f, 0.96f);
+            Hud.UnitFrames.SetTarget(
+                crest,
+                crestCol,
+                wi.promptTitle ?? "Target",
+                wi.promptSubtitle ?? string.Empty,
+                1.0f,
+                "IN RANGE — PRESS [E]",
+                new Color(0.24f, 0.72f, 0.54f, 0.95f),
+                "[E] INTERACT",
+                () => HandleWorldInteractable(wi),
+                "LOOK",
+                () => ExecutePlayerCommand("look"));
+        }
+
+        private void HandleCycleTarget()
+        {
+            if (ActiveStage == TacSimActiveStage.ShipHelmSeated && SpaceStage != null)
+            {
+                if (SpaceStage.TryCycleNextRadarContact(out string id, out bool isRock))
+                {
+                    if (MushProtocol.TryValidateSafeCommandToken(id, out string safeId))
+                    {
+                        if (isRock)
+                        {
+                            SpaceStage.NotifyApproachOrdered(safeId);
+                            ExecutePlayerCommand($"+helm/approach {safeId}");
+                        }
+                        else
+                        {
+                            ExecutePlayerCommand($"+tac/lock {safeId}");
+                        }
+                    }
+                }
+            }
+            else if (ActiveStage == TacSimActiveStage.SimulatorArena && ArenaStage?.State != null)
+            {
+                var contacts = ArenaStage.State.Contacts;
+                if (contacts.Count > 0)
+                {
+                    for (int step = 0; step < contacts.Count; step++)
+                    {
+                        _arenaCycleIdx = (_arenaCycleIdx + 1) % contacts.Count;
+                        var ct = contacts[_arenaCycleIdx];
+                        if (ct.Friendly || ct.IsWreck || string.IsNullOrEmpty(ct.Designator)) continue;
+                        if (MushProtocol.TryValidateSafeCommandToken(ct.Designator, out string safeDes))
+                        {
+                            HandleArenaCockpitVerb($"lock {safeDes}");
+                            break;
+                        }
+                    }
+                }
+            }
+            else
+            {
+                ExecutePlayerCommand("look");
+            }
+        }
+
+        private void SyncMmorpgHudFramesAndMinimap()
+        {
+            if (Hud == null) return;
+            TacSimActiveStage stage = ActiveStage;
+
+            // Update corner tactical minimap (self-throttled inside SyncMinimap)
+            if (Hud.Minimap != null)
+            {
+                Vector3 pos = Player != null ? Player.transform.position : Vector3.zero;
+                float yaw = Player != null ? Player.transform.eulerAngles.y : 0f;
+                if (stage == TacSimActiveStage.ShipHelmSeated && SpaceStage != null)
+                    yaw = SpaceStage.ShipYawDeg;
+                else if (stage == TacSimActiveStage.PlanetarySurface && SurfaceStage?.RoverTransform != null)
+                    yaw = SurfaceStage.RoverTransform.eulerAngles.y;
+
+                bool rightCornerBusy =
+                    Hud.IsDockingHudVisible ||
+                    (Hud.Overlays != null && Hud.Overlays.IsSpaceFireCardVisible) ||
+                    stage == TacSimActiveStage.PlanetarySurface ||
+                    stage == TacSimActiveStage.SimulatorArena;
+
+                Hud.Minimap.SyncMinimap(stage, pos, yaw, rightCornerBusy);
+            }
+
+            if (Hud.UnitFrames == null) return;
+            if (Application.isPlaying && Time.unscaledTime < _nextUnitFrameSyncAt) return;
+            _nextUnitFrameSyncAt = Time.unscaledTime + 0.15f;
+
+            string creditsStr = TradeState != null ? TradeState.CreditsText : "—";
+
+            switch (stage)
+            {
+                case TacSimActiveStage.StationWalk:
+                case TacSimActiveStage.ShipInteriorWalk:
+                {
+                    bool aboard = stage == TacSimActiveStage.ShipInteriorWalk;
+                    int holdMass = TradeState != null ? TradeState.HoldMassTonnes : 0;
+                    int holdCap = TradeState != null ? Mathf.Max(1, TradeState.HoldMassLimitTonnes) : 100;
+                    int tank = TradeState != null ? TradeState.TankTonnes : 0;
+                    int tankCap = TradeState != null ? Mathf.Max(1, TradeState.TankLimitTonnes) : 80;
+                    string title = !string.IsNullOrEmpty(_currentHullBadge) ? _currentHullBadge : (aboard ? "ABOARD HULL" : "PILOT");
+                    string sub = aboard
+                        ? $"Deck: {(ShipInterior?.ActiveCompartmentId ?? "airlock").ToUpperInvariant()}"
+                        : (StationWorld?.Pack?.Name ?? "Ceres Freeport");
+                    Hud.UnitFrames.UpdatePlayerFrame(
+                        aboard ? "SHIP" : "STN",
+                        aboard ? new Color(0.16f, 0.44f, 0.62f, 0.96f) : new Color(0.14f, 0.46f, 0.44f, 0.96f),
+                        title,
+                        sub,
+                        holdMass / (float)holdCap,
+                        $"HOLD {holdMass}/{holdCap} t",
+                        new Color(0.20f, 0.68f, 0.92f, 0.95f),
+                        tank / (float)tankCap,
+                        $"FUEL {tank}/{tankCap} t",
+                        new Color(0.90f, 0.56f, 0.18f, 0.95f),
+                        $"CREDITS: {creditsStr}");
+                    break;
+                }
+                case TacSimActiveStage.ShipHelmSeated:
+                {
+                    float throttleFrac = SpaceStage != null ? Mathf.Clamp01(SpaceStage.ThrottlePermille / 1000f) : 0f;
+                    int tank = TradeState != null ? TradeState.TankTonnes : 0;
+                    int tankCap = TradeState != null ? Mathf.Max(1, TradeState.TankLimitTonnes) : 80;
+                    string emcon = SpaceStage != null ? SpaceStage.EmconPosture.ToUpperInvariant() : "STD";
+                    Hud.UnitFrames.UpdatePlayerFrame(
+                        "ORB",
+                        new Color(0.18f, 0.34f, 0.64f, 0.96f),
+                        !string.IsNullOrEmpty(_currentHullBadge) ? _currentHullBadge : "HELM ACTIVE",
+                        $"EMCON {emcon} | TAB: Cycle Contact",
+                        throttleFrac,
+                        $"TORCH {Mathf.RoundToInt(throttleFrac * 100f)}%",
+                        new Color(0.92f, 0.48f, 0.16f, 0.95f),
+                        tank / (float)tankCap,
+                        $"REACTION {tank}/{tankCap} t",
+                        new Color(0.24f, 0.72f, 0.94f, 0.95f),
+                        $"CONTACTS: {(SpaceStage?.RadarBlips?.Count ?? 0)} | [M] CHART");
+
+                    if (SpaceStage?.ActiveLock != null && !string.IsNullOrEmpty(SpaceStage.ActiveLock.ShipId))
+                    {
+                        var lk = SpaceStage.ActiveLock;
+                        double rangeKm = lk.RangeM / 1000.0;
+                        Hud.UnitFrames.SetTarget(
+                            "LOCK",
+                            new Color(0.72f, 0.22f, 0.18f, 0.96f),
+                            string.IsNullOrEmpty(lk.Label) ? lk.ShipId : lk.Label,
+                            $"{rangeKm:0.0} km | Aspect: {lk.Facet.ToUpperInvariant()}",
+                            1.0f,
+                            $"LOCKED ({lk.Facet.ToUpperInvariant()})",
+                            new Color(0.88f, 0.32f, 0.24f, 0.95f),
+                            "BEAM",
+                            () => ExecutePlayerCommand("+tac/beam"),
+                            "SCAN",
+                            () => ExecutePlayerCommand("+tac/scan"));
+                    }
+                    else if (!string.IsNullOrEmpty(SpaceStage?.SelectedRockId))
+                    {
+                        string rk = SpaceStage.SelectedRockId;
+                        Hud.UnitFrames.SetTarget(
+                            "ROCK",
+                            new Color(0.56f, 0.42f, 0.14f, 0.96f),
+                            $"ASTEROID {rk}",
+                            "Zero-G Ore Pocket",
+                            1f,
+                            "MINING TARGET",
+                            new Color(0.86f, 0.66f, 0.22f, 0.95f),
+                            "MATCH VEL",
+                            () => ExecutePlayerCommand($"+helm/match {rk}"),
+                            "LASER",
+                            () => ExecutePlayerCommand("space:mine_laser"));
+                    }
+                    else
+                    {
+                        Hud.UnitFrames.ClearTarget();
+                    }
+                    break;
+                }
+                case TacSimActiveStage.PlanetarySurface:
+                {
+                    int batt = SurfaceStage != null ? SurfaceStage.BatteryPct : 100;
+                    int hop = SurfaceStage != null ? SurfaceStage.HopperLoadedTonnes : 0;
+                    int hopCap = SurfaceStage != null ? Mathf.Max(1, SurfaceStage.HopperCapacityTonnes) : 6;
+                    Hud.UnitFrames.UpdatePlayerFrame(
+                        "SURF",
+                        new Color(0.48f, 0.34f, 0.14f, 0.96f),
+                        $"ROVER RIG {SurfaceStage?.AddressedRigSlot ?? 1}",
+                        SurfaceStage?.ActiveSiteTitle ?? "Planetary Surface",
+                        batt / 100f,
+                        $"BATTERY {batt}%",
+                        batt > 30 ? new Color(0.24f, 0.78f, 0.44f, 0.95f) : new Color(0.92f, 0.32f, 0.22f, 0.95f),
+                        hop / (float)hopCap,
+                        $"HOPPER {hop}/{hopCap} t",
+                        new Color(0.24f, 0.74f, 0.92f, 0.95f),
+                        $"CELL ({SurfaceStage?.AuthoritativeSiteCellX ?? 0}, {SurfaceStage?.AuthoritativeSiteCellY ?? 0})");
+                    Hud.UnitFrames.ClearTarget();
+                    break;
+                }
+                case TacSimActiveStage.SimulatorArena:
+                {
+                    var st = ArenaStage?.State;
+                    if (st != null)
+                    {
+                        float avgArmor = (st.ArmorFrontPct + st.ArmorLeftPct + st.ArmorRightPct + st.ArmorRearPct) * 0.25f;
+                        float heatFrac = st.HeatMax > 0 ? Mathf.Clamp01(st.Heat / (float)st.HeatMax) : 0f;
+                        bool isRed = string.Equals(st.Party, "R", StringComparison.OrdinalIgnoreCase);
+                        Hud.UnitFrames.UpdatePlayerFrame(
+                            isRed ? "RED" : "BLUE",
+                            isRed ? new Color(0.68f, 0.20f, 0.20f, 0.96f) : new Color(0.18f, 0.38f, 0.72f, 0.96f),
+                            $"{st.Callsign} [{st.Mode.ToUpperInvariant()}]",
+                            $"{st.SpeedKph:0} kph | HDG {st.HeadingDeg:000}°",
+                            avgArmor / 100f,
+                            $"ARMOR {Mathf.RoundToInt(avgArmor)}% (F{st.ArmorFrontPct})",
+                            avgArmor > 45f ? new Color(0.22f, 0.76f, 0.44f, 0.95f) : new Color(0.90f, 0.30f, 0.22f, 0.95f),
+                            heatFrac,
+                            st.Overheated ? "OVERHEATED!" : $"HEAT {Mathf.RoundToInt(heatFrac * 100f)}%",
+                            st.Overheated ? new Color(0.96f, 0.22f, 0.18f, 0.95f) : new Color(0.92f, 0.56f, 0.16f, 0.95f),
+                            $"RED {st.RedAliveCount} vs BLUE {st.BlueAliveCount} | TAB: Lock");
+
+                        if (!string.IsNullOrEmpty(st.LockedDesignator))
+                        {
+                            string des = st.LockedDesignator;
+                            Hud.UnitFrames.SetTarget(
+                                "LOCK",
+                                new Color(0.76f, 0.20f, 0.18f, 0.96f),
+                                $"CONTACT {des}",
+                                $"{st.LockRangeM:0} m | Hit Odds {st.LockHitPercent}%",
+                                st.LockHitPercent / 100f,
+                                $"SOLUTION {st.LockHitPercent}%",
+                                new Color(0.92f, 0.42f, 0.24f, 0.95f),
+                                "FIRE",
+                                () => HandleArenaCockpitVerb("fire"),
+                                "SCAN",
+                                () => HandleArenaCockpitVerb("scan"));
+                        }
+                        else
+                        {
+                            Hud.UnitFrames.ClearTarget();
+                        }
+                    }
+                    break;
+                }
+            }
         }
 
         private void RefreshOrbitalReadout()

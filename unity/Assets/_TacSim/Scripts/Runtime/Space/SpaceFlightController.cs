@@ -36,6 +36,44 @@ namespace TacSim.Space
         public string Facet = "front";       // "front" | "left" | "right" | "rear" | "top"
     }
 
+    public readonly struct OrbitalRadarBlip
+    {
+        public readonly string Id;
+        public readonly string Label;
+        public readonly double OffsetXKm;
+        public readonly double OffsetYKm;
+        public readonly double RangeKm;
+        public readonly bool IsRock;
+        public readonly bool IsHostile;
+        public readonly bool IsFriendly;
+        public readonly bool IsTorpedo;
+        public readonly bool IsLocked;
+
+        public OrbitalRadarBlip(
+            string id,
+            string label,
+            double offsetXKm,
+            double offsetYKm,
+            double rangeKm,
+            bool isRock,
+            bool isHostile,
+            bool isFriendly,
+            bool isTorpedo,
+            bool isLocked)
+        {
+            Id = id;
+            Label = label;
+            OffsetXKm = offsetXKm;
+            OffsetYKm = offsetYKm;
+            RangeKm = rangeKm;
+            IsRock = isRock;
+            IsHostile = isHostile;
+            IsFriendly = isFriendly;
+            IsTorpedo = isTorpedo;
+            IsLocked = isLocked;
+        }
+    }
+
     /// <summary>
     /// Renders authoritative 3D Orbital Space Flight (player ship hull + fusion plume, rotating body,
     /// server-perceived Zero-G Ore Asteroids &amp; Naval Contacts from `space.holotank` / `space.cockpit`,
@@ -70,6 +108,29 @@ namespace TacSim.Space
         public string LockedContactId { get; private set; } = string.Empty;
         public IReadOnlyList<SpaceMountTelemetry> FireMounts => _fireMounts;
         public SpaceLockTelemetry ActiveLock { get; private set; }
+        public IReadOnlyList<OrbitalRadarBlip> RadarBlips => _radarBlips;
+        public double RadarRangeKm { get; private set; } = 1000.0;
+
+        private readonly List<OrbitalRadarBlip> _radarBlips = new List<OrbitalRadarBlip>();
+        private int _cycleBlipIndex = -1;
+
+        public bool TryCycleNextRadarContact(out string id, out bool isRock)
+        {
+            id = null;
+            isRock = false;
+            int count = _radarBlips.Count;
+            if (count == 0) return false;
+            for (int step = 0; step < count; step++)
+            {
+                _cycleBlipIndex = (_cycleBlipIndex + 1) % count;
+                var b = _radarBlips[_cycleBlipIndex];
+                if (b.IsTorpedo || string.IsNullOrEmpty(b.Id)) continue;
+                id = b.Id;
+                isRock = b.IsRock;
+                return true;
+            }
+            return false;
+        }
 
         /// <summary>
         /// Fired when the local 60 Hz integrator reaches a terminal contact (`(tapeCommand, isClampCandidate)`).
@@ -192,6 +253,8 @@ namespace TacSim.Space
             SelectedRockId = string.Empty;
             LockedContactId = string.Empty;
             OwnShipHolotankId = string.Empty;
+            _radarBlips.Clear();
+            RadarRangeKm = 1000.0;
             HasClusterMiningTelemetry = false;
             AuthoritativeMatchedRockId = string.Empty;
             AuthoritativeApproachingRockId = string.Empty;
@@ -425,6 +488,8 @@ namespace TacSim.Space
             SelectedRockId = string.Empty;
             LockedContactId = string.Empty;
             OwnShipHolotankId = string.Empty;
+            _radarBlips.Clear();
+            RadarRangeKm = 1000.0;
             ActiveLock = null;
             _fireMounts.Clear();
             HasClusterMiningTelemetry = false;
@@ -513,6 +578,8 @@ namespace TacSim.Space
             var seenTorpedoes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             _knownRockIds.Clear();
             OwnShipHolotankId = string.Empty;
+            _radarBlips.Clear();
+            RadarRangeKm = Math.Max(1.0, holotank.Double("range_km", 1000.0));
 
             Material rockMat = UrpMaterialFactory.GetOpaque("AsteroidOre", new Color(0.32f, 0.28f, 0.24f), 0.15f, 0.2f);
             Material veinMat = UrpMaterialFactory.GetEmissive("OreVein", new Color(0.22f, 0.72f, 0.85f), new Color(0.25f, 0.95f, 1.0f) * 1.4f);
@@ -563,6 +630,9 @@ namespace TacSim.Space
                     string spectral = rk.Str("spectral", rk.Str("label", "Pocket"));
                     Vector3 offset = ComputeRelativeStageOffset(rk, obsXKm, obsYKm, obsZKm, defaultRadius: 48f, index: r);
                     UpsertOreRockTarget(rId, $"ROCK {rId} [{spectral}]", OrbitalStageOrigin + offset, r, rockMat, veinMat);
+                    double rdx = rk.Double("x_km", 0.0) - obsXKm;
+                    double rdy = rk.Double("y_km", 0.0) - obsYKm;
+                    _radarBlips.Add(new OrbitalRadarBlip(rId, $"ROCK {rId}", rdx, rdy, Math.Sqrt(rdx * rdx + rdy * rdy), isRock: true, isHostile: false, isFriendly: false, isTorpedo: false, isLocked: string.Equals(SelectedRockId, rId, StringComparison.OrdinalIgnoreCase)));
                     seenTargets.Add(rId);
                     rocksSpawned++;
                 }
@@ -590,9 +660,13 @@ namespace TacSim.Space
                         string lbl = c.Str("label", c.Str("name", $"ROCK {rKey}"));
                         Vector3 offset = ComputeRelativeStageOffset(c, obsXKm, obsYKm, obsZKm, defaultRadius: 50f, index: i);
                         UpsertOreRockTarget(rKey, lbl, OrbitalStageOrigin + offset, i, rockMat, veinMat);
+                        double cdx = c.Double("x_km", 0.0) - obsXKm;
+                        double cdy = c.Double("y_km", 0.0) - obsYKm;
+                        bool rkLocked = c.Bool("locked", false);
+                        _radarBlips.Add(new OrbitalRadarBlip(rKey, lbl, cdx, cdy, Math.Sqrt(cdx * cdx + cdy * cdy), isRock: true, isHostile: false, isFriendly: false, isTorpedo: false, isLocked: rkLocked));
                         seenTargets.Add(rKey);
                         contactsSpawned++;
-                        if (c.Bool("locked", false))
+                        if (rkLocked)
                             SelectedRockId = rKey;
                         continue;
                     }
@@ -608,9 +682,13 @@ namespace TacSim.Space
                     Color col = hostile ? new Color(1f, 0.42f, 0.36f)
                               : (friendly ? new Color(0.45f, 1.0f, 0.65f) : new Color(0.45f, 0.82f, 1f));
                     UpsertNavalContact(id, $"{id} — {name}", pos, rot, col, hostile, friendly);
+                    double ndx = c.Double("x_km", 0.0) - obsXKm;
+                    double ndy = c.Double("y_km", 0.0) - obsYKm;
+                    bool ctLocked = c.Bool("locked", false);
+                    _radarBlips.Add(new OrbitalRadarBlip(id, name, ndx, ndy, Math.Sqrt(ndx * ndx + ndy * ndy), isRock: false, isHostile: hostile, isFriendly: friendly, isTorpedo: false, isLocked: ctLocked));
                     seenTargets.Add(id);
                     contactsSpawned++;
-                    if (c.Bool("locked", false))
+                    if (ctLocked)
                         LockedContactId = id;
                 }
             }

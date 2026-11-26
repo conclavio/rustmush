@@ -268,6 +268,10 @@ namespace UnityEngine
         public float yMin { get => y; set { float ymax = yMax; y = value; height = ymax - y; } }
         public float xMax { get => x + width; set => width = value - x; }
         public float yMax { get => y + height; set => height = value - y; }
+        public Vector2 min => new Vector2(xMin, yMin);
+        public Vector2 max => new Vector2(xMax, yMax);
+        public Vector2 center => new Vector2(x + width * 0.5f, y + height * 0.5f);
+        public bool Contains(Vector2 point) => point.x >= xMin && point.x < xMax && point.y >= yMin && point.y < yMax;
     }
 
     public struct Bounds
