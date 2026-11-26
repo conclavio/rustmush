@@ -7903,5 +7903,103 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ArenaHitmarkersDirectionalDamageArcsAndCombatNoticeFeed_RoutesNoticesPulsesArcsAndUpdatesKillFeed()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave7PR1_CombatFeedbackTest");
+            try
+            {
+                var catalog = TacSimAssetCatalog.LoadOrDefault();
+                var arenaGo = new UnityEngine.GameObject("Arena");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(catalog, TacSimTerrainDecoder.LoadStaticArena("proving_ground"));
+
+                var camGo = new UnityEngine.GameObject("Cam", typeof(UnityEngine.Camera));
+                camGo.transform.SetParent(rootGo.transform, false);
+                var cam = camGo.GetComponent<UnityEngine.Camera>();
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.Overlays.BindControllers(null, arena, null);
+                hud.TacticalBrackets.BindControllers(null, null, arena);
+
+                var noticesSeen = new List<TacSim.Arena.ArenaCombatNotice>();
+                arena.OnArenaNoticeReceived += n =>
+                {
+                    noticesSeen.Add(n);
+                    if (n.Kind == "kill") hud.TacticalBrackets.TriggerArenaHitmarker(TacSim.UI.ArenaHitmarkerKind.Kill);
+                    else if (n.Kind == "target_section_lost") hud.TacticalBrackets.TriggerArenaHitmarker(TacSim.UI.ArenaHitmarkerKind.SectionCrit);
+                    else if (n.Kind == "hit") hud.TacticalBrackets.TriggerArenaHitmarker(TacSim.UI.ArenaHitmarkerKind.Hit);
+                    else if (n.Kind == "miss") hud.TacticalBrackets.TriggerArenaHitmarker(TacSim.UI.ArenaHitmarkerKind.Miss);
+                };
+
+                // 1. Activate a drive waypoint first, then push a rich frame containing hit, target_section_lost, kill, miss, slot_fired, and drive_arrived notices
+                arena.ExecuteCockpitAction("drive 120,120");
+                Assert.IsTrue(arena.State.HasDriveWaypoint);
+
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 110, ""seated"": true, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""mode"": ""skirmish"", ""power"": ""online"",
+                    ""x_cm"": 10000, ""y_cm"": 10000, ""heading_deg"": 90, ""speed_kph"": 14,
+                    ""heat"": { ""heat"": 980, ""max"": 1000, ""overheated"": true },
+                    ""lock_designator"": ""B1"",
+                    ""contacts"": [
+                        { ""designator"": ""B1"", ""class"": ""line_tank"", ""unit_type"": ""tacsim.unit.line_tank"", ""party"": ""B"", ""friendly"": false, ""cell"": [115, 100], ""range_m"": 150, ""bearing_deg"": 90, ""facing"": ""front"", ""health"": ""crippled"" }
+                    ],
+                    ""notices"": [
+                        { ""kind"": ""slot_fired"", ""slot"": 2, ""weapon"": ""main_gun"", ""designator"": ""B1"", ""percent"": 84, ""aspect"": ""rear"", ""text"": ""Rule #2 fired main_gun at B1."" },
+                        { ""kind"": ""hit"", ""weapon"": ""main_gun"", ""designator"": ""B1"", ""section"": ""turret"", ""text"": ""Hit B1 turret."" },
+                        { ""kind"": ""target_section_lost"", ""designator"": ""B1"", ""section"": ""turret"", ""text"": ""B1 turret destroyed!"" },
+                        { ""kind"": ""kill"", ""designator"": ""B1"", ""text"": ""B1 destroyed!"" },
+                        { ""kind"": ""miss"", ""weapon"": ""coax_laser"", ""designator"": ""B1"", ""text"": ""coax_laser missed B1."" },
+                        { ""kind"": ""drive_arrived"", ""text"": ""Arrived at destination."" }
+                    ]
+                }"));
+                hud.Overlays.RefreshArenaHud();
+                hud.TacticalBrackets.SyncBrackets(TacSimActiveStage.SimulatorArena, cam, hideForOverlay: false);
+
+                // Structured notice parsing & match gunnery counters
+                Assert.AreEqual(6, noticesSeen.Count);
+                Assert.AreEqual(1, arena.State.MatchHits);
+                Assert.AreEqual(1, arena.State.MatchMisses);
+                Assert.AreEqual(1, arena.State.MatchKills);
+                Assert.IsFalse(arena.State.HasDriveWaypoint, "drive_arrived notice must clear active drive waypoint");
+
+                // Hitmarker triggered and decays cleanly
+                Assert.IsTrue(hud.TacticalBrackets.IsHitmarkerVisible);
+                hud.TacticalBrackets.TriggerArenaHitmarker(TacSim.UI.ArenaHitmarkerKind.Kill);
+                Assert.AreEqual(TacSim.UI.ArenaHitmarkerKind.Kill, hud.TacticalBrackets.ActiveHitmarkerKind);
+                hud.TacticalBrackets.StepCombatFeedbackForTests(0.80f);
+                Assert.IsFalse(hud.TacticalBrackets.IsHitmarkerVisible, "Hitmarker must fade out after duration");
+
+                // 4-Quadrant Directional Damage Arcs (LEFT hit vs full-perimeter internal breach) + decay
+                hud.TacticalBrackets.TriggerDirectionalDamageArc("LEFT", internalBreach: false);
+                Assert.Greater(hud.TacticalBrackets.GetDamageArcAlpha("LEFT"), 0.8f);
+                Assert.AreEqual(0f, hud.TacticalBrackets.GetDamageArcAlpha("RIGHT"), 0.001f);
+
+                hud.TacticalBrackets.TriggerDirectionalDamageArc("INTERNALS", internalBreach: true);
+                Assert.Greater(hud.TacticalBrackets.GetDamageArcAlpha("FRONT"), 0.7f);
+                Assert.Greater(hud.TacticalBrackets.GetDamageArcAlpha("REAR"), 0.7f);
+                Assert.Greater(hud.TacticalBrackets.GetDamageArcAlpha("RIGHT"), 0.7f);
+                hud.TacticalBrackets.StepCombatFeedbackForTests(1.2f);
+                Assert.AreEqual(0f, hud.TacticalBrackets.GetDamageArcAlpha("FRONT"), 0.001f);
+
+                // Thermal overheat banner active because frame set overheated=true
+                Assert.IsTrue(hud.TacticalBrackets.IsCriticalStatusBannerVisible);
+                StringAssert.Contains("OVERHEAT", hud.TacticalBrackets.CriticalStatusBannerText);
+
+                // Live Combat & Kill Feed ticker shows recent structured badges
+                Assert.IsTrue(hud.Overlays.IsCombatFeedVisible);
+                Assert.GreaterOrEqual(hud.Overlays.VisibleCombatFeedEntryCount, 4);
+                StringAssert.Contains("KILL", hud.Overlays.CombatFeedSnapshot);
+                StringAssert.Contains("B1", hud.Overlays.CombatFeedSnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

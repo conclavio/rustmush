@@ -115,11 +115,11 @@ namespace TacSim.UI
                 grid.transform,
                 "PLANETARY ROVER & OOC ARENA COMBAT",
                 new Vector2(0.505f, 0f), new Vector2(1f, 0.49f),
-                "<b>[W A S D]</b> Drive Rover / Tank / Mech\n" +
-                "<b>[LMB Terrain]</b> Drive Rover   <b>[LMB Unit]</b> Lock\n" +
-                "<b>[V]</b> Toggle Chase / Commander Cupola Cam\n" +
-                "<b>[Tab]</b> Cycle Hostile Contacts   <b>[Space]</b> Fire\n" +
-                "<b>[1–4 / 0 / X]</b> Arena Throttle Presets / Stop\n" +
+                "<b>[W A S D]</b> Drive / Helm   <b>[1–4 / 0 / X]</b> Throttle / Stop\n" +
+                "<b>[LMB Unit]</b> Lock   <b>[Shift+LMB / Minimap]</b> Drive Cell\n" +
+                "<b>[Space]</b> Fire   <b>[G]</b> Volley   <b>[F]</b> Hold/Free   <b>[Tab]</b> Cycle\n" +
+                "<b>[N]</b> Scan   <b>[M]</b> EMCON   <b>[L]</b> Auto-Lock   <b>[Z]</b> Startup\n" +
+                "<b>[V]</b> Chase / Cupola / Overhead Cam   <b>[Y]</b> Detachment Wilco\n" +
                 "<b>[F5–F8]</b> Fire Custom User Macros (below)");
 
             // Bottom: 4 Persistent Custom Macros (F5-F8)

@@ -176,6 +176,11 @@ namespace TacSim.UI
 
         private const int MaxPooledMindProfiles = 4;
 
+        // OOC Arena Live Combat & Kill Feed Ticker (docked mid-left cleanly below TacticalMinimap)
+        private GameObject _combatFeedPanel;
+        private readonly List<Text> _combatFeedLines = new List<Text>(MaxCombatFeedLines);
+        private const int MaxCombatFeedLines = 5;
+
         public bool IsLobbyModalOpen => _arenaLobbyModal != null && _arenaLobbyModal.activeSelf;
         public bool IsSpaceFireCardVisible => _spaceFireCard != null && _spaceFireCard.activeSelf;
         public bool IsDetachmentBarVisible => _detachmentBar != null && _detachmentBar.activeSelf;
@@ -184,6 +189,31 @@ namespace TacSim.UI
         public Texture2D TargetArmorDollTexture => _targetArmorDollTex;
         public bool IsMindStripVisible => _mindStrip != null && _mindStrip.activeSelf;
         public string MindStripHeaderSnapshot => _mindHeaderText != null ? _mindHeaderText.text : string.Empty;
+        public bool IsCombatFeedVisible => _combatFeedPanel != null && _combatFeedPanel.activeSelf;
+        public int VisibleCombatFeedEntryCount
+        {
+            get
+            {
+                int n = 0;
+                for (int i = 0; i < _combatFeedLines.Count; i++)
+                    if (_combatFeedLines[i] != null && _combatFeedLines[i].gameObject.activeSelf && !string.IsNullOrEmpty(_combatFeedLines[i].text)) n++;
+                return n;
+            }
+        }
+        public string CombatFeedSnapshot
+        {
+            get
+            {
+                var sb = new StringBuilder(160);
+                for (int i = 0; i < _combatFeedLines.Count; i++)
+                {
+                    if (_combatFeedLines[i] == null || !_combatFeedLines[i].gameObject.activeSelf) continue;
+                    if (sb.Length > 0) sb.Append('\n');
+                    sb.Append(_combatFeedLines[i].text);
+                }
+                return sb.ToString();
+            }
+        }
         public int VisibleMindProfileButtonCount
         {
             get
@@ -261,6 +291,7 @@ namespace TacSim.UI
             _weaponSlotPool.Clear();
             _mindProfilePool.Clear();
             _postureButtons.Clear();
+            _combatFeedLines.Clear();
 
             if (gameplayHudRoot == null) return;
 
@@ -337,6 +368,7 @@ namespace TacSim.UI
             if (_detachmentBar != null) _detachmentBar.SetActive(false);
             if (_targetInspectCard != null) _targetInspectCard.SetActive(false);
             if (_mindStrip != null) _mindStrip.SetActive(false);
+            if (_combatFeedPanel != null) _combatFeedPanel.SetActive(false);
             if (_arenaLobbyLiveRosterText != null) _arenaLobbyLiveRosterText.text = DefaultLobbyRosterHint;
         }
 
@@ -1211,6 +1243,23 @@ namespace TacSim.UI
             }
             _mindStrip.SetActive(false);
 
+            // Live Arena Combat & Kill Feed Ticker (docked cleanly at Mid-Left below TacticalMinimap y=-412, well above CommsDrawer)
+            _combatFeedPanel = CreatePanel(_arenaBattleHudRoot.transform, "ArenaCombatFeedPanel", new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(16f, -542f), new Vector2(346f, -424f), new Color(0.03f, 0.06f, 0.10f, 0.86f));
+            _combatFeedPanel.GetComponent<Image>().raycastTarget = false;
+            var cfHdr = CreateTxt(_combatFeedPanel.transform, "COMBAT FEED", 10, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.54f, 0.88f, 1f));
+            SetRect(cfHdr.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(8f, -18f), new Vector2(-8f, -2f));
+            var cfList = CreatePanel(_combatFeedPanel.transform, "CombatFeedList", new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(8f, 4f), new Vector2(-8f, -20f), Color.clear);
+            var cfVlg = cfList.AddComponent<VerticalLayoutGroup>();
+            cfVlg.spacing = 2f; cfVlg.childControlWidth = true; cfVlg.childControlHeight = true; cfVlg.childForceExpandWidth = true; cfVlg.childForceExpandHeight = true;
+            for (int f = 0; f < MaxCombatFeedLines; f++)
+            {
+                var line = CreateTxt(cfList.transform, string.Empty, 10, FontStyle.Bold, TextAnchor.MiddleLeft, Color.white);
+                line.supportRichText = true;
+                line.gameObject.SetActive(false);
+                _combatFeedLines.Add(line);
+            }
+            _combatFeedPanel.SetActive(false);
+
             _arenaBattleHudRoot.SetActive(false);
         }
 
@@ -1287,7 +1336,86 @@ namespace TacSim.UI
             UpdateStandingRulesAndWeaponDeck(s);
             UpdateArmorPaperDoll(s);
             UpdateTargetInspectionCard(s);
+            UpdateCombatFeed(s);
             UpdatePooledContactRows(s);
+        }
+
+        private void UpdateCombatFeed(ArenaCockpitState s)
+        {
+            if (_combatFeedPanel == null) return;
+            var list = s?.RecentNotices;
+            if (list == null || list.Count == 0)
+            {
+                if (_combatFeedPanel.activeSelf) _combatFeedPanel.SetActive(false);
+                return;
+            }
+
+            if (!_combatFeedPanel.activeSelf) _combatFeedPanel.SetActive(true);
+            int total = list.Count;
+            int shown = Mathf.Min(total, _combatFeedLines.Count);
+            int startIdx = total - shown;
+            for (int i = 0; i < shown; i++)
+            {
+                var line = _combatFeedLines[i];
+                if (line == null) continue;
+                line.text = FormatCombatFeedBadge(list[startIdx + i]);
+                if (!line.gameObject.activeSelf) line.gameObject.SetActive(true);
+            }
+            for (int i = shown; i < _combatFeedLines.Count; i++)
+            {
+                if (_combatFeedLines[i] != null && _combatFeedLines[i].gameObject.activeSelf)
+                    _combatFeedLines[i].gameObject.SetActive(false);
+            }
+        }
+
+        private static string FormatCombatFeedBadge(ArenaCombatNotice n)
+        {
+            if (n == null) return string.Empty;
+            string desig = MushProtocol.EscapeUnityRichText(n.Designator ?? string.Empty);
+            string sec = MushProtocol.EscapeUnityRichText((n.Section ?? string.Empty).Replace("_", " ").ToUpperInvariant());
+            string wpn = MushProtocol.EscapeUnityRichText((n.Weapon ?? string.Empty).Replace("_", " ").ToUpperInvariant());
+            switch (n.Kind)
+            {
+                case "kill":
+                    return $"<color=#FF4444>[KILL]</color> <b>{desig}</b> DESTROYED!";
+                case "target_section_lost":
+                    return $"<color=#FFAA33>[CRIT]</color> <b>{desig}</b> {sec} DESTROYED";
+                case "hit":
+                    return $"<color=#77FFAA>[HIT]</color> <b>{desig}</b> {(string.IsNullOrEmpty(sec) ? wpn : sec)}{(n.Spent ? " (SPENT)" : "")}";
+                case "miss":
+                    return $"<color=#88BBDD>[MISS]</color> {(string.IsNullOrEmpty(wpn) ? "SHOT" : wpn)} -> {desig}";
+                case "slot_fired":
+                    return $"<color=#66DDFF>[AUTO #{n.Slot}]</color> {wpn} -> <b>{desig}</b> ({n.HitPercent}%)";
+                case "struck":
+                case "struck_spent":
+                    return $"<color=#FF8844>[STRUCK]</color> OWN {(string.IsNullOrEmpty(sec) ? "HULL" : sec)} HIT";
+                case "section_lost":
+                    return $"<color=#FF3333>[BREACH]</color> LOST {(string.IsNullOrEmpty(sec) ? "SECTION" : sec)}!";
+                case "destroyed":
+                    return "<color=#FF2222>[WRECK]</color> VEHICLE DESTROYED!";
+                case "disabled":
+                    return "<color=#FF6633>[IMMOB]</color> MOBILITY DISABLED";
+                case "refused":
+                case "blocked":
+                    string why = MushProtocol.EscapeUnityRichText(!string.IsNullOrEmpty(n.Refusal) ? n.Refusal : n.Cause);
+                    return $"<color=#FFAA44>[WARN]</color> {(string.IsNullOrEmpty(why) ? n.Kind : why).ToUpperInvariant()}";
+                case "receiver_degraded":
+                    return "<color=#FFCC44>[ECM]</color> SENSOR REACH DEGRADED";
+                case "receiver_clear":
+                    return "<color=#66EEAA>[ECM]</color> RECEIVER CLEAR";
+                case "drive_arrived":
+                    return "<color=#66EEFF>[NAV]</color> WAYPOINT ARRIVED";
+                case "drive_no_route":
+                    return "<color=#FF9955>[NAV]</color> NO ROUTE TO WAYPOINT";
+                case "locked":
+                    return $"<color=#FFEE66>[LOCK]</color> ACQUIRED <b>{desig}</b>";
+                case "lock_lost":
+                    return $"<color=#AA9988>[LOCK]</color> LOST {desig}";
+                default:
+                    string safeText = MushProtocol.EscapeUnityRichText(n.Text ?? n.Kind ?? string.Empty);
+                    if (safeText.Length > 42) safeText = safeText.Substring(0, 42) + "...";
+                    return $"<color=#AACCDE>[TAC]</color> {safeText}";
+            }
         }
 
         public void ClickAutoLockToggleForTests() => HandleAutoLockRuleClick();

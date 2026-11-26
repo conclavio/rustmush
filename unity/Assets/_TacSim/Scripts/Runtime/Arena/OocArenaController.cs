@@ -225,6 +225,25 @@ namespace TacSim.Arena
     }
 
     /// <summary>
+    /// Structured combat / tactical notice from `arena.cockpit.notices` (`crates/tacsim/src/match_/cockpit/frames.rs`).
+    /// </summary>
+    public sealed class ArenaCombatNotice
+    {
+        public string Kind = string.Empty;       // "hit" | "miss" | "kill" | "target_section_lost" | "struck" | "section_lost" | "destroyed" | "refused" | "slot_fired" | ...
+        public string Designator = string.Empty;
+        public string Section = string.Empty;
+        public string Weapon = string.Empty;
+        public string Cause = string.Empty;
+        public string Refusal = string.Empty;
+        public string Aspect = string.Empty;
+        public string Text = string.Empty;
+        public bool Spent;
+        public bool Friendly;
+        public int Slot;
+        public int HitPercent;
+    }
+
+    /// <summary>
     /// Sealed unit mind metadata projected by `arena.cockpit` (`frames.rs:mind_json`).
     /// </summary>
     public sealed class ArenaMindState
@@ -306,12 +325,16 @@ namespace TacSim.Arena
         public int DriveWaypointCellX;
         public int DriveWaypointCellY;
         public string DriveWaypointLabel = string.Empty;
+        public int MatchKills;
+        public int MatchHits;
+        public int MatchMisses;
 
         public readonly List<ArenaWeaponSlotState> Weapons = new List<ArenaWeaponSlotState>();
         public readonly List<ArenaContactState> Contacts = new List<ArenaContactState>();
         public readonly List<ArenaSectionState> Sections = new List<ArenaSectionState>();
         public readonly List<ArenaStandingRule> Rules = new List<ArenaStandingRule>(6);
         public readonly List<List<string>> ScanTables = new List<List<string>>(4);
+        public readonly List<ArenaCombatNotice> RecentNotices = new List<ArenaCombatNotice>(10);
     }
 
     /// <summary>
@@ -400,6 +423,7 @@ namespace TacSim.Arena
         public event Action OnToggleCameraViewRequested;
         public event Action<bool> OnWeaponShotFired; // (isLaser)
         public event Action<string, int, bool> OnPlayerArmorDamaged; // (facetLabel, deltaPct, internalHit)
+        public event Action<ArenaCombatNotice> OnArenaNoticeReceived;
 
         public int ActiveShotTracerCount => _activeTracers.Count;
         public bool IsMuzzleFlashActive => _playerMuzzleFlash != null && _playerMuzzleFlash.gameObject.activeSelf;
@@ -1495,7 +1519,15 @@ namespace TacSim.Arena
 
             IsArenaActive = true;
 
+            ulong prevMatchId = State.MatchId;
             ulong matchId = (ulong)Math.Max(0L, d.Long("match", 0));
+            if (matchId != 0 && prevMatchId != 0 && matchId != prevMatchId)
+            {
+                State.MatchKills = 0;
+                State.MatchHits = 0;
+                State.MatchMisses = 0;
+                State.RecentNotices.Clear();
+            }
             State.MatchId = matchId;
             if (TerrainGrid == null)
             {
@@ -1907,21 +1939,63 @@ namespace TacSim.Arena
                     var n = notices[i];
                     string txt = n.Str("text", string.Empty);
                     string kind = n.Str("kind", string.Empty).ToLowerInvariant();
+                    string desig = n["designator"].IsNull ? string.Empty : n.Str("designator", string.Empty);
+                    string section = n["section"].IsNull ? string.Empty : n.Str("section", string.Empty);
+                    string weapon = n["weapon"].IsNull ? string.Empty : n.Str("weapon", string.Empty);
+                    string cause = n["cause"].IsNull ? string.Empty : n.Str("cause", string.Empty);
+                    string refusal = n["refusal"].IsNull ? string.Empty : n.Str("refusal", string.Empty);
+                    string aspect = n["aspect"].IsNull ? string.Empty : n.Str("aspect", string.Empty);
+
+                    var parsedNotice = new ArenaCombatNotice
+                    {
+                        Kind = kind,
+                        Designator = desig,
+                        Section = section,
+                        Weapon = weapon,
+                        Cause = cause,
+                        Refusal = refusal,
+                        Aspect = aspect,
+                        Text = txt,
+                        Spent = n.Bool("spent", false),
+                        Friendly = n.Bool("friendly", false),
+                        Slot = n.Int("slot", 0),
+                        HitPercent = n.Int("percent", 0)
+                    };
+
+                    if (State.RecentNotices.Count >= 10)
+                        State.RecentNotices.RemoveAt(0);
+                    State.RecentNotices.Add(parsedNotice);
+
+                    if (kind == "hit") State.MatchHits++;
+                    else if (kind == "miss") State.MatchMisses++;
+                    else if (kind == "kill") State.MatchKills++;
+                    else if (kind == "drive_arrived" || kind == "drive_no_route")
+                    {
+                        State.HasDriveWaypoint = false;
+                        SyncArenaTacticalVisuals();
+                    }
+
                     if (!string.IsNullOrEmpty(txt))
                         OnArenaCombatLog?.Invoke($"<color=#FFCC66>[COCKPIT]</color> {TacSim.Net.MushProtocol.EscapeUnityRichText(txt)}");
 
-                    if (kind.Contains("fire") || kind.Contains("hit") || kind.Contains("shot"))
+                    if (kind == "hit" || kind == "miss" || kind == "kill" || kind == "slot_fired" ||
+                        kind.Contains("fire") || kind.Contains("shot"))
                     {
-                        bool isLaser = n.Str("weapon", "").IndexOf("laser", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        bool isLaser = weapon.IndexOf("laser", StringComparison.OrdinalIgnoreCase) >= 0 ||
                                        txt.IndexOf("laser", StringComparison.OrdinalIgnoreCase) >= 0;
                         OnWeaponShotFired?.Invoke(isLaser);
                         TriggerPlayerMuzzleFlash(isLaser);
-                        string tgtDesig = n.Str("designator", State.LockedDesignator);
+                        string tgtDesig = !string.IsNullOrEmpty(desig) ? desig : State.LockedDesignator;
                         if (_contactRigs.TryGetValue(tgtDesig, out var tgtRig) && PlayerRig?.MuzzlePoint != null && tgtRig?.Root != null)
                         {
-                            SpawnShotTracer(PlayerRig.MuzzlePoint.position, tgtRig.Root.transform.position + Vector3.up * 1.5f, isLaser);
+                            Vector3 tgtPt = tgtRig.Root.transform.position + Vector3.up * 1.5f;
+                            if (kind == "miss")
+                                tgtPt += tgtRig.Root.transform.right * 6.5f;
+                            SpawnShotTracer(PlayerRig.MuzzlePoint.position, tgtPt, isLaser);
                         }
                     }
+
+                    OnArenaNoticeReceived?.Invoke(parsedNotice);
                 }
             }
 
