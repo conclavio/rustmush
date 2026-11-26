@@ -675,8 +675,8 @@ namespace TacSim.UI
 
             BuildHelmFlightDeckBar(_hudRoot.transform);
 
-            // 4. Bottom-Left Tabbed Comms & Combat Log Drawer (WoW/EQ tabs + expand toggle + Up/Down history)
-            var commsPanel = CreatePanel(_hudRoot.transform, "CommsDrawer", new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(14f, 16f), new Vector2(436f, 266f), new Color(0.03f, 0.05f, 0.08f, 0.90f));
+            // 4. Bottom-Left Tabbed Comms & Combat Log Drawer (WoW/EQ tabs + quick-prefix pills + expand toggle + Up/Down history)
+            var commsPanel = CreatePanel(_hudRoot.transform, "CommsDrawer", new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(14f, 16f), new Vector2(436f, 282f), new Color(0.03f, 0.05f, 0.08f, 0.90f));
             _commsPanelRect = commsPanel.GetComponent<RectTransform>();
             _commsExpanded = false;
 
@@ -701,7 +701,7 @@ namespace TacSim.UI
             if (_commsExpandLabel != null) _commsExpandLabel.fontSize = 11;
             RefreshChatTabHighlights();
 
-            var commsViewport = CreatePanel(commsPanel.transform, "CommsViewport", new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(12f, 44f), new Vector2(-12f, -30f), new Color(0f, 0f, 0f, 0.02f));
+            var commsViewport = CreatePanel(commsPanel.transform, "CommsViewport", new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(12f, 64f), new Vector2(-12f, -30f), new Color(0f, 0f, 0f, 0.02f));
             commsViewport.AddComponent<RectMask2D>();
             _commsScrollRect = commsViewport.AddComponent<ScrollRect>();
 
@@ -724,6 +724,19 @@ namespace TacSim.UI
             _commsScrollRect.vertical = true;
             _commsScrollRect.movementType = ScrollRect.MovementType.Clamped;
             _commsScrollRect.scrollSensitivity = 28f;
+
+            // Quick-Comms Prefix Bar (`SAY` | `POSE` | `PAGE` | `WHO` | `CTRL+K`)
+            var prefixBar = CreatePanel(commsPanel.transform, "QuickCommsPrefixBar", new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(10f, 41f), new Vector2(-10f, 60f), Color.clear);
+            var pfHlg = prefixBar.AddComponent<HorizontalLayoutGroup>();
+            pfHlg.spacing = 4f;
+            pfHlg.childControlWidth = true;
+            pfHlg.childControlHeight = true;
+            pfHlg.childForceExpandWidth = true;
+            AddCommsPrefixChip(prefixBar.transform, "SAY", () => PrefillChatInput("say "));
+            AddCommsPrefixChip(prefixBar.transform, "POSE", () => PrefillChatInput(":"));
+            AddCommsPrefixChip(prefixBar.transform, "PAGE", () => PrefillChatInput("page "));
+            AddCommsPrefixChip(prefixBar.transform, "WHO", () => OnCommandSubmitted?.Invoke("WHO"));
+            AddCommsPrefixChip(prefixBar.transform, "CTRL+K", () => CommandPalette?.SetOpen(true));
 
             _chatInput = CreateInputField(commsPanel.transform, "Enter command (+coop, look, say hi)...", new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(10f, 8f), new Vector2(-78f, 38f));
             _chatInput.onSubmit.AddListener(_ => SubmitChatInput());
@@ -1606,9 +1619,16 @@ namespace TacSim.UI
         {
             _commsExpanded = !_commsExpanded;
             if (_commsPanelRect != null)
-                _commsPanelRect.offsetMax = new Vector2(436f, _commsExpanded ? 420f : 266f);
+                _commsPanelRect.offsetMax = new Vector2(436f, _commsExpanded ? 430f : 282f);
             if (_commsExpandLabel != null)
                 _commsExpandLabel.text = _commsExpanded ? "v" : "^";
+        }
+
+        private void AddCommsPrefixChip(Transform parent, string label, Action onClick)
+        {
+            var btn = CreateButton(parent, label, new Color(0.09f, 0.17f, 0.25f, 0.94f), onClick);
+            var txt = btn.GetComponentInChildren<Text>();
+            if (txt != null) txt.fontSize = 10;
         }
 
         private void RefreshChatTabHighlights()

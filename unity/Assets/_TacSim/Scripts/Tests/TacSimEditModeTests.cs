@@ -5815,5 +5815,68 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void BridgeAlertLightingCanopyVistaAndQuickComms_ReactsToThreatsVantageAndPrefixBar()
+        {
+            var rootGo = new UnityEngine.GameObject("BridgeAlertVistaCommsTest");
+            try
+            {
+                // 1. Bridge exterior planetary vista & dynamic alert lighting states
+                var shipGo = new UnityEngine.GameObject("ShipAlertTest");
+                shipGo.transform.SetParent(rootGo.transform, false);
+                var ship = shipGo.AddComponent<TacSim.World.ShipInteriorController>();
+                ship.BuildInterior(null, "dray");
+
+                Assert.IsTrue(ship.HasBridgeExteriorPlanet, "Bridge forward canopy must spawn distant local planetary body");
+                Assert.AreEqual(TacSim.World.ShipAlertLevel.Normal, ship.ActiveAlertLevel);
+
+                var alerts = new List<TacSim.World.ShipAlertLevel>();
+                ship.OnAlertLevelChanged += alerts.Add;
+
+                // Hostile contact triggers Caution (Yellow Alert)
+                ship.PopulateHoloBlips(JsonNode.Parse(@"{
+                    ""range_km"": 100,
+                    ""contacts"": [
+                        { ""id"": ""own"", ""you"": true, ""x_km"": 0, ""y_km"": 0, ""z_km"": 0 },
+                        { ""id"": ""H1"", ""x_km"": 25, ""y_km"": 0, ""z_km"": 0, ""relation"": ""hostile"" }
+                    ]
+                }"));
+                Assert.AreEqual(TacSim.World.ShipAlertLevel.Caution, ship.ActiveAlertLevel);
+
+                // Live torpedo triggers RedAlert
+                ship.PopulateHoloBlips(JsonNode.Parse(@"{
+                    ""range_km"": 100,
+                    ""contacts"": [{ ""id"": ""own"", ""you"": true, ""x_km"": 0, ""y_km"": 0, ""z_km"": 0 }],
+                    ""torpedoes"": [{ ""id"": ""T1"", ""x_km"": 15, ""y_km"": 0, ""z_km"": 0, ""tti_s"": 8 }]
+                }"));
+                Assert.AreEqual(TacSim.World.ShipAlertLevel.RedAlert, ship.ActiveAlertLevel);
+
+                // Clear space returns to Normal
+                ship.PopulateHoloBlips(JsonNode.Parse(@"{ ""range_km"": 100, ""contacts"": [] }"));
+                Assert.AreEqual(TacSim.World.ShipAlertLevel.Normal, ship.ActiveAlertLevel);
+                Assert.AreEqual(3, alerts.Count);
+
+                // Port vantage theme updates exterior planet slug
+                ship.ApplyVistaPortTheme("stickney");
+                Assert.AreEqual("stickney", ship.ActiveVistaPortSlug);
+
+                // 2. Quick-Comms prefix strip exists inside CommsDrawer and pre-fills chat input
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                UnityEngine.Transform prefixBar = null;
+                var allTr = rootGo.GetComponentsInChildren<UnityEngine.Transform>(true);
+                for (int i = 0; i < allTr.Length; i++)
+                {
+                    if (allTr[i].name == "QuickCommsPrefixBar") { prefixBar = allTr[i]; break; }
+                }
+                Assert.IsNotNull(prefixBar, "CommsDrawer must build QuickCommsPrefixBar");
+                Assert.AreEqual(5, prefixBar.childCount, "Expected SAY / POSE / PAGE / WHO / CTRL+K prefix pills");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
