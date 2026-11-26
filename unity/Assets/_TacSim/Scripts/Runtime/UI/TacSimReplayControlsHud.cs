@@ -23,6 +23,7 @@ namespace TacSim.UI
         public event Action OnFocusUnitChanged;
 
         private const int MaxRosterRows = 12;
+        private const int MaxTimelineMarkers = 32;
 
         private sealed class PooledUnitRow
         {
@@ -47,12 +48,16 @@ namespace TacSim.UI
         private Text _speedBtnLabel;
         private Button _prevKfBtn;
         private Button _nextKfBtn;
+        private Button _nextEventBtn;
         private Button _back10Btn;
         private Button _fwd10Btn;
         private Button _speedBtn;
         private Button _closeBtn;
         private Text _closeBtnLabel;
         private readonly List<PooledUnitRow> _rosterPool = new List<PooledUnitRow>(MaxRosterRows);
+        private readonly List<(RectTransform rect, Image img)> _timelineMarkers = new List<(RectTransform, Image)>(MaxTimelineMarkers);
+        private ulong _lastMarkerDocMatchId;
+        private int _lastMarkerEventCount = -1;
 
         private float _nextUiRefreshAt;
         private static readonly float[] SpeedPresets = { 0.5f, 1f, 2f, 4f };
@@ -61,6 +66,22 @@ namespace TacSim.UI
         public string HeaderBannerText => _headerBannerText != null ? _headerBannerText.text : string.Empty;
         public string ProvenanceText => _provenanceLabelText != null ? _provenanceLabelText.text : string.Empty;
         public string ClockText => _clockReadoutText != null ? _clockReadoutText.text : string.Empty;
+        public string ReplayStatsSnapshot => _feedTitleText != null ? _feedTitleText.text : string.Empty;
+        public int VisibleTimelineMarkerCount
+        {
+            get
+            {
+                int n = 0;
+                for (int i = 0; i < _timelineMarkers.Count; i++)
+                    if (_timelineMarkers[i].rect != null && _timelineMarkers[i].rect.gameObject.activeSelf) n++;
+                return n;
+            }
+        }
+        public void ClickNextEventForTests()
+        {
+            _arena?.StepReplayToEvent(+1);
+            RefreshView();
+        }
         public int VisibleRosterRowCount
         {
             get
@@ -78,6 +99,9 @@ namespace TacSim.UI
         {
             _font = sharedFont != null ? sharedFont : Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
             _rosterPool.Clear();
+            _timelineMarkers.Clear();
+            _lastMarkerDocMatchId = 0;
+            _lastMarkerEventCount = -1;
             if (gameplayHudRoot == null) return;
 
             _root = CreatePanel(gameplayHudRoot, "ArenaReplayTheaterHud", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, Color.clear);
@@ -159,6 +183,16 @@ namespace TacSim.UI
             _scrubberFill = fillGo.GetComponent<Image>();
             _scrubberFill.raycastTarget = false;
 
+            // Pooled timeline highlight markers (crimson wrecks + gold hits plotted across scrubber track)
+            for (int m = 0; m < MaxTimelineMarkers; m++)
+            {
+                var mGo = CreatePanel(trackBg.transform, $"TimelineMarker_{m}", new Vector2(0f, 0f), new Vector2(0f, 1f), new Vector2(-1.5f, -2f), new Vector2(1.5f, 2f), new Color(1f, 0.78f, 0.24f, 0.95f));
+                var mImg = mGo.GetComponent<Image>();
+                mImg.raycastTarget = false;
+                mGo.SetActive(false);
+                _timelineMarkers.Add((mGo.GetComponent<RectTransform>(), mImg));
+            }
+
             const int SeekBins = 20;
             for (int b = 0; b < SeekBins; b++)
             {
@@ -209,6 +243,11 @@ namespace TacSim.UI
             _nextKfBtn = CreateBtn(ctrlRow.transform, "KF >>", new Color(0.14f, 0.28f, 0.40f), () =>
             {
                 _arena?.StepReplayKeyframe(+1);
+                RefreshView();
+            });
+            _nextEventBtn = CreateBtn(ctrlRow.transform, "EVENT >>", new Color(0.46f, 0.26f, 0.14f), () =>
+            {
+                _arena?.StepReplayToEvent(+1);
                 RefreshView();
             });
             _speedBtn = CreateBtn(ctrlRow.transform, "1x", new Color(0.32f, 0.28f, 0.16f), CyclePlaybackSpeed);
@@ -340,6 +379,7 @@ namespace TacSim.UI
 
             if (_prevKfBtn != null) _prevKfBtn.interactable = !isLive && doc != null;
             if (_nextKfBtn != null) _nextKfBtn.interactable = !isLive && doc != null;
+            if (_nextEventBtn != null) _nextEventBtn.interactable = !isLive && doc != null && (doc.Destroyed.Count > 0 || doc.Shots.Count > 0);
             if (_back10Btn != null) _back10Btn.interactable = !isLive && doc != null;
             if (_fwd10Btn != null) _fwd10Btn.interactable = !isLive && doc != null;
             if (_playPauseBtn != null) _playPauseBtn.interactable = !isLive && doc != null;
@@ -352,8 +392,60 @@ namespace TacSim.UI
             if (_closeBtnLabel != null)
                 _closeBtnLabel.text = isLive ? "STOP WATCH [ESC]" : "CLOSE [ESC]";
 
+            RefreshTimelineMarkers(doc, isLive);
             RefreshRosterRows(doc, frame, obs, isLive);
             RefreshEventFeed(doc, obs, isLive);
+        }
+
+        private void RefreshTimelineMarkers(ArenaReplayDocument doc, bool isLive)
+        {
+            if (_timelineMarkers.Count == 0) return;
+            if (isLive || doc == null || doc.EndMs <= 0)
+            {
+                _lastMarkerDocMatchId = 0;
+                _lastMarkerEventCount = -1;
+                for (int i = 0; i < _timelineMarkers.Count; i++)
+                    if (_timelineMarkers[i].rect != null && _timelineMarkers[i].rect.gameObject.activeSelf)
+                        _timelineMarkers[i].rect.gameObject.SetActive(false);
+                return;
+            }
+
+            int eventSig = doc.Destroyed.Count * 10000 + doc.Shots.Count;
+            if (_lastMarkerDocMatchId == doc.MatchId && _lastMarkerEventCount == eventSig)
+                return;
+            _lastMarkerDocMatchId = doc.MatchId;
+            _lastMarkerEventCount = eventSig;
+
+            int used = 0;
+            // Prioritize wreck markers (crimson, taller), then hit shot markers (gold)
+            for (int i = 0; i < doc.Destroyed.Count && used < _timelineMarkers.Count; i++)
+            {
+                float frac = Mathf.Clamp01(doc.Destroyed[i].TimeMs / (float)doc.EndMs);
+                var m = _timelineMarkers[used++];
+                m.rect.anchorMin = new Vector2(frac, 0f);
+                m.rect.anchorMax = new Vector2(frac, 1f);
+                m.rect.offsetMin = new Vector2(-1.8f, -3f);
+                m.rect.offsetMax = new Vector2(1.8f, 3f);
+                m.img.color = new Color(1.0f, 0.28f, 0.24f, 0.98f);
+                m.rect.gameObject.SetActive(true);
+            }
+            for (int i = 0; i < doc.Shots.Count && used < _timelineMarkers.Count; i++)
+            {
+                if (!string.Equals(doc.Shots[i].Outcome, "hit", StringComparison.OrdinalIgnoreCase)) continue;
+                float frac = Mathf.Clamp01(doc.Shots[i].TimeMs / (float)doc.EndMs);
+                var m = _timelineMarkers[used++];
+                m.rect.anchorMin = new Vector2(frac, 0.15f);
+                m.rect.anchorMax = new Vector2(frac, 0.85f);
+                m.rect.offsetMin = new Vector2(-1.2f, 0f);
+                m.rect.offsetMax = new Vector2(1.2f, 0f);
+                m.img.color = new Color(1.0f, 0.82f, 0.26f, 0.92f);
+                m.rect.gameObject.SetActive(true);
+            }
+            for (int i = used; i < _timelineMarkers.Count; i++)
+            {
+                if (_timelineMarkers[i].rect != null && _timelineMarkers[i].rect.gameObject.activeSelf)
+                    _timelineMarkers[i].rect.gameObject.SetActive(false);
+            }
         }
 
         private void RefreshRosterRows(ArenaReplayDocument doc, ArenaReplaySampledFrame frame, ArenaObserverPicture obs, bool isLive)
@@ -408,14 +500,31 @@ namespace TacSim.UI
                 return;
             }
 
-            if (_feedTitleText != null) _feedTitleText.text = "SHOTS & WRECKS TIMELINE";
             if (doc == null)
             {
+                if (_feedTitleText != null) _feedTitleText.text = "SHOTS & WRECKS TIMELINE";
                 _eventFeedText.text = "Waiting for match tape...";
                 return;
             }
 
             float curMs = _arena.ReplayCursorMs;
+            int shotsUpToNow = 0, hitsUpToNow = 0, wrecksUpToNow = 0;
+            for (int i = 0; i < doc.Shots.Count; i++)
+            {
+                if (doc.Shots[i].TimeMs > curMs) continue;
+                shotsUpToNow++;
+                if (string.Equals(doc.Shots[i].Outcome, "hit", StringComparison.OrdinalIgnoreCase)) hitsUpToNow++;
+            }
+            for (int i = 0; i < doc.Destroyed.Count; i++)
+            {
+                if (doc.Destroyed[i].TimeMs <= curMs) wrecksUpToNow++;
+            }
+            if (_feedTitleText != null)
+            {
+                int acc = shotsUpToNow > 0 ? Mathf.RoundToInt((hitsUpToNow * 100f) / shotsUpToNow) : 0;
+                _feedTitleText.text = $"{shotsUpToNow} SHOTS ({hitsUpToNow} HITS {acc}%) · {wrecksUpToNow} WRECK{(wrecksUpToNow == 1 ? "" : "S")}";
+            }
+
             var sb = new StringBuilder(256);
             int lines = 0;
 

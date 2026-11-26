@@ -8117,5 +8117,123 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ArenaReplayTheaterMarkersSpectatorMinimapAndOverviewScanSort_JumpsEventsFocusesBlipsAndAvoidsMinimapOverlap()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave8PR1_ReplayAndOverviewTest");
+            try
+            {
+                var catalog = TacSimAssetCatalog.LoadOrDefault();
+                var arenaGo = new UnityEngine.GameObject("Arena");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(catalog, TacSimTerrainDecoder.LoadStaticArena("proving_ground"));
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.Overlays.BindControllers(null, arena, null);
+                hud.ReplayHud.BindArena(arena);
+                hud.Minimap.BindWorldSources(null, null, null, null, arena);
+                hud.TacticalOverview.BindControllers(null, null, arena);
+
+                // 1. Arena Tactical Overview: non-overlap shifting, ODDS sorting, and secondary SCAN action
+                var scanned = new List<string>();
+                var locked = new List<string>();
+                hud.TacticalOverview.OnArenaContactLockClicked += locked.Add;
+                hud.TacticalOverview.OnArenaContactScanClicked += scanned.Add;
+
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 120, ""seated"": true, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""mode"": ""skirmish"", ""power"": ""online"",
+                    ""x_cm"": 10000, ""y_cm"": 10000, ""heading_deg"": 90, ""speed_kph"": 10,
+                    ""contacts"": [
+                        { ""designator"": ""B1"", ""class"": ""line_tank"", ""party"": ""B"", ""friendly"": false, ""cell"": [110, 100], ""range_m"": 100, ""bearing_deg"": 90, ""facing"": ""front"", ""aspect"": ""front"", ""band"": ""close"", ""health"": ""intact"", ""odds"": [{ ""weapon"": ""main_gun"", ""percent"": 38 }] },
+                        { ""designator"": ""B2"", ""class"": ""biped_mk1"", ""party"": ""B"", ""friendly"": false, ""cell"": [128, 100], ""range_m"": 280, ""bearing_deg"": 90, ""facing"": ""rear"", ""aspect"": ""rear"", ""band"": ""medium"", ""moving"": true, ""health"": ""scarred"", ""odds"": [{ ""weapon"": ""main_gun"", ""percent"": 88 }] }
+                    ]
+                }"));
+
+                hud.TacticalOverview.SetAvoidMidLeftMinimap(true);
+                Assert.IsTrue(hud.TacticalOverview.IsAvoidingMidLeftMinimap);
+                hud.TacticalOverview.SyncOverview(TacSimActiveStage.SimulatorArena, hideForOverlay: false, forceImmediate: true);
+                Assert.AreEqual("B1", hud.TacticalOverview.FirstRowId, "Default DIST sort puts nearer B1 (100m) first");
+
+                // Toggle to ODDS sort -> B2 (88%) rises above B1 (38%)!
+                hud.TacticalOverview.ToggleSortMode();
+                Assert.IsTrue(hud.TacticalOverview.SortArenaByOdds);
+                Assert.AreEqual("B2", hud.TacticalOverview.FirstRowId, "ODDS sort must rank higher-odds B2 (88%) first");
+
+                // Primary row click emits LOCK; secondary row click emits SCAN!
+                Assert.IsTrue(hud.TacticalOverview.ClickRowByIndex(0));
+                Assert.IsTrue(hud.TacticalOverview.ClickRowSecondaryByIndex(0));
+                CollectionAssert.AreEqual(new[] { "B2" }, locked);
+                CollectionAssert.AreEqual(new[] { "B2" }, scanned);
+
+                // 2. Exit live cockpit -> load 3D Replay Document with hits & wrecks
+                arena.ExitArena();
+                arena.HandleReplayPanelFrame(JsonNode.Parse(@"{
+                    ""schema"": { ""id"": ""arena.replay"", ""shape"": ""replay"", ""version"": 1 },
+                    ""match"": 77, ""arena"": ""proving_ground"", ""cell_cm"": 1000, ""width"": 64, ""height"": 64,
+                    ""end_ms"": 20000, ""outcome"": ""red"", ""reason"": ""elimination"", ""mode"": ""skirmish"",
+                    ""roster"": [
+                        { ""callsign"": ""R1"", ""team"": ""red"" },
+                        { ""callsign"": ""B1"", ""team"": ""blue"" }
+                    ],
+                    ""keyframes"": [
+                        [0, [[16, 16, 90], [48, 48, 270]]],
+                        [10000, [[24, 24, 90], [44, 44, 270]]],
+                        [20000, [[32, 32, 90], [44, 44, 270]]]
+                    ],
+                    ""shots"": [
+                        [5000, 0, 1, ""miss""],
+                        [9000, 0, 1, ""hit""],
+                        [14000, 0, 1, ""hit""]
+                    ],
+                    ""destroyed"": [
+                        [15000, 1]
+                    ]
+                }"));
+                hud.ReplayHud.RefreshView();
+
+                Assert.IsTrue(arena.IsReplayModeActive);
+                Assert.IsTrue(hud.ReplayHud.IsVisible);
+                Assert.GreaterOrEqual(hud.ReplayHud.VisibleTimelineMarkerCount, 3, "Scrubber track must plot markers for hit shots and wrecks");
+                Assert.IsTrue(arena.IsLockedTargetGroundRingVisible, "3D ground focus ring must highlight the followed spectator unit");
+
+                // StepReplayToEvent jumps cleanly from 0ms -> 9000ms (first hit) -> 14000ms (second hit) -> 15000ms (wreck)!
+                arena.SeekReplayMs(0f);
+                hud.ReplayHud.ClickNextEventForTests();
+                Assert.AreEqual(9000f, arena.ReplayCursorMs, 1f);
+                hud.ReplayHud.ClickNextEventForTests();
+                Assert.AreEqual(14000f, arena.ReplayCursorMs, 1f);
+                hud.ReplayHud.ClickNextEventForTests();
+                Assert.AreEqual(15000f, arena.ReplayCursorMs, 1f);
+                StringAssert.Contains("3 SHOTS", hud.ReplayHud.ReplayStatsSnapshot);
+                StringAssert.Contains("1 WRECK", hud.ReplayHud.ReplayStatsSnapshot);
+
+                // 3. Spectator Minimap renders both replay units and supports click-to-focus-camera!
+                int clickedUnitIdx = -1;
+                hud.Minimap.OnReplayMinimapUnitClicked += idx =>
+                {
+                    clickedUnitIdx = idx;
+                    arena.SelectReplayFocusUnit(idx);
+                };
+                hud.Minimap.SyncMinimap(TacSimActiveStage.SimulatorArena, UnityEngine.Vector3.zero, 0f, rightCornerOccupied: true, forceRedraw: true);
+                Assert.AreEqual(2, hud.Minimap.LastReplayMinimapUnitCount, "Spectator minimap must plot all visible replay roster units");
+
+                // Click B1's position on the terrain grid (44.5/W, 44.5/H) -> focuses unit index 1!
+                float gridW = arena.TerrainGrid.Width * System.Math.Max(1, arena.TerrainGrid.SpanCells);
+                float gridH = arena.TerrainGrid.Height * System.Math.Max(1, arena.TerrainGrid.SpanCells);
+                Assert.IsTrue(hud.Minimap.HandleClickAtUv(new UnityEngine.Vector2(
+                    (44.5f - arena.TerrainGrid.OriginCellX) / gridW,
+                    (44.5f - arena.TerrainGrid.OriginCellY) / gridH)));
+                Assert.AreEqual(1, clickedUnitIdx);
+                Assert.AreEqual(1, arena.ReplayFocusUnitIndex);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

@@ -30,6 +30,7 @@ namespace TacSim.UI
         public event Action<int, int> OnSurfaceCellClicked;
         public event Action<string> OnArenaMinimapContactClicked;
         public event Action<int, int> OnArenaMinimapCellClicked;
+        public event Action<int> OnReplayMinimapUnitClicked;
         public event Action OnOpenSolarChartRequested;
 
         public bool IsCollapsed { get; private set; }
@@ -39,6 +40,7 @@ namespace TacSim.UI
         public int InspectedStationFloor { get; private set; }
         public string HeaderText => _headerText != null ? _headerText.text : string.Empty;
         public int LastArenaMinimapContactBlipCount => _arenaContactHits.Count;
+        public int LastReplayMinimapUnitCount => _replayUnitHits.Count;
         public bool LastArenaMinimapHasSensorRing { get; private set; }
         public bool LastArenaMinimapHasObjective { get; private set; }
         public bool LastArenaMinimapHasWaypoint { get; private set; }
@@ -84,6 +86,7 @@ namespace TacSim.UI
         private readonly List<(Rect uvRect, string id)> _shipCompHitRects = new List<(Rect, string)>();
         private readonly List<(Vector2 uv, string id, bool isRock)> _orbitalBlipHits = new List<(Vector2, string, bool)>();
         private readonly List<(Vector2 uv, string designator, bool canLock)> _arenaContactHits = new List<(Vector2, string, bool)>();
+        private readonly List<(Vector2 uv, int rosterIndex)> _replayUnitHits = new List<(Vector2, int)>();
         private float _arenaMinCellX;
         private float _arenaMinCellY;
         private float _arenaSpanCellsX = 64f;
@@ -319,6 +322,29 @@ namespace TacSim.UI
             }
             else if (ActiveStage == TacSimActiveStage.SimulatorArena && _arena?.TerrainGrid != null)
             {
+                if (_arena.IsSpectatorTheaterActive && _replayUnitHits.Count > 0)
+                {
+                    int bestIdx = -1;
+                    float bestReplaySq = 0.085f * 0.085f;
+                    for (int i = 0; i < _replayUnitHits.Count; i++)
+                    {
+                        float dx = _replayUnitHits[i].uv.x - uv.x;
+                        float dy = _replayUnitHits[i].uv.y - uv.y;
+                        float sq = dx * dx + dy * dy;
+                        if (sq < bestReplaySq)
+                        {
+                            bestReplaySq = sq;
+                            bestIdx = _replayUnitHits[i].rosterIndex;
+                        }
+                    }
+                    if (bestIdx >= 0)
+                    {
+                        OnReplayMinimapUnitClicked?.Invoke(bestIdx);
+                        return true;
+                    }
+                    return false;
+                }
+
                 string bestDesig = null;
                 float bestSq = 0.075f * 0.075f;
                 for (int i = 0; i < _arenaContactHits.Count; i++)
@@ -647,13 +673,22 @@ namespace TacSim.UI
         {
             ClearPixels(new Color32(10, 14, 22, 255));
             _arenaContactHits.Clear();
+            _replayUnitHits.Clear();
             LastArenaMinimapHasSensorRing = false;
             LastArenaMinimapHasObjective = false;
             LastArenaMinimapHasWaypoint = false;
 
+            bool isSpectator = _arena != null && _arena.IsSpectatorTheaterActive && _arena.ActiveReplayDoc != null;
             var st = _arena?.State;
             if (_headerText != null)
-                _headerText.text = st != null ? $"ARENA — {st.Callsign} ({st.Mode.ToUpperInvariant()})" : "ARENA RADAR";
+            {
+                if (isSpectator)
+                    _headerText.text = _arena.IsLiveObserverActive
+                        ? $"OBSERVER — MATCH #{_arena.ActiveSpectatorMatchId}"
+                        : $"REPLAY — MATCH #{_arena.ActiveSpectatorMatchId}";
+                else
+                    _headerText.text = st != null ? $"ARENA — {st.Callsign} ({st.Mode.ToUpperInvariant()})" : "ARENA RADAR";
+            }
 
             var grid = _arena?.TerrainGrid;
             int gw = grid != null && grid.Width > 0 ? grid.Width : 64;
@@ -668,10 +703,19 @@ namespace TacSim.UI
 
             float ownCellX = originX + totalCellsX * 0.5f;
             float ownCellY = originY + totalCellsY * 0.5f;
-            if (st != null && siteCellM > 0.01f)
+            if (!isSpectator && st != null && siteCellM > 0.01f)
             {
                 ownCellX = st.Xm / siteCellM;
                 ownCellY = st.Zm / siteCellM;
+            }
+            else if (isSpectator && _arena.LatestReplayFrame != null &&
+                     _arena.ReplayFocusUnitIndex >= 0 &&
+                     _arena.ReplayFocusUnitIndex < _arena.LatestReplayFrame.Units.Length &&
+                     _arena.LatestReplayFrame.Units[_arena.ReplayFocusUnitIndex].HasValue)
+            {
+                var fp = _arena.LatestReplayFrame.Units[_arena.ReplayFocusUnitIndex].Value;
+                ownCellX = fp.CellX;
+                ownCellY = fp.CellY;
             }
 
             float zoomClamped = Mathf.Clamp(_zoom, 1.0f, 2.5f);
@@ -725,7 +769,7 @@ namespace TacSim.UI
                         Color32 spCol = isHold ? new Color32(255, 212, 72, 255) : new Color32(92, 224, 248, 255);
                         Vector2 spPx = UvToPx(spUv);
                         DrawFilledCircle(spPx, 2.5f, spCol);
-                        if (isHold && (st == null || !st.HasDynamicObjective))
+                        if (isHold && (isSpectator || st == null || !st.HasDynamicObjective))
                         {
                             float holdRadPx = Mathf.Clamp((grid.HoldRadiusCells * span / _arenaSpanCellsX) * MapTexSize, 6f, MapTexSize * 0.4f);
                             DrawCircleOutline(spPx, holdRadPx, new Color32(240, 194, 62, 255));
@@ -733,6 +777,38 @@ namespace TacSim.UI
                         }
                     }
                 }
+            }
+
+            if (isSpectator)
+            {
+                var doc = _arena.ActiveReplayDoc;
+                var frame = _arena.LatestReplayFrame;
+                if (doc != null && frame != null)
+                {
+                    int n = Mathf.Min(doc.Roster.Count, frame.Units.Length);
+                    for (int i = 0; i < n; i++)
+                    {
+                        var pose = frame.Units[i];
+                        if (!pose.HasValue) continue;
+                        Vector2 uv = CellToUv(pose.Value.CellX + 0.5f, pose.Value.CellY + 0.5f);
+                        if (uv.x < 0f || uv.x > 1f || uv.y < 0f || uv.y > 1f) continue;
+                        bool wrecked = i < frame.IsWrecked.Length && frame.IsWrecked[i];
+                        Color32 col = wrecked
+                            ? new Color32(115, 115, 122, 255)
+                            : (doc.Roster[i].IsBlue ? new Color32(82, 184, 255, 255) : new Color32(255, 84, 78, 255));
+                        Vector2 p = UvToPx(uv);
+                        if (wrecked)
+                            DrawFilledCircle(p, 3.0f, col);
+                        else
+                            DrawHeadingArrowUv(uv, pose.Value.HeadingDeg, col);
+
+                        if (i == _arena.ReplayFocusUnitIndex)
+                            DrawCircleOutline(p, 7.5f, new Color32(255, 224, 86, 255));
+
+                        _replayUnitHits.Add((uv, i));
+                    }
+                }
+                return;
             }
 
             if (st != null)

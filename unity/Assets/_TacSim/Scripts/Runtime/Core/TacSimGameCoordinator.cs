@@ -536,6 +536,15 @@ namespace TacSim.Core
                 {
                     ArenaStage?.ExecuteCockpitAction($"drive {cx},{cy}");
                 };
+                Hud.Minimap.OnReplayMinimapUnitClicked += rosterIdx =>
+                {
+                    if (ArenaStage != null && ArenaStage.IsSpectatorTheaterActive)
+                    {
+                        ArenaStage.SelectReplayFocusUnit(rosterIdx);
+                        BindCameraToArenaRig();
+                        Hud?.ReplayHud?.RefreshView();
+                    }
+                };
                 Hud.Minimap.OnOpenSolarChartRequested += () => Hud.SolarMap?.SetOpen(true);
             }
 
@@ -678,6 +687,11 @@ namespace TacSim.Core
                 {
                     if (!MushProtocol.TryValidateSafeCommandToken(desig, out string safeDesig)) return;
                     HandleArenaCockpitVerb($"lock {safeDesig}");
+                };
+                Hud.TacticalOverview.OnArenaContactScanClicked += desig =>
+                {
+                    if (!MushProtocol.TryValidateSafeCommandToken(desig, out string safeDesig)) return;
+                    HandleArenaCockpitVerb($"scan {safeDesig}");
                 };
             }
 
@@ -1210,6 +1224,7 @@ namespace TacSim.Core
                     stage == TacSimActiveStage.SimulatorArena;
 
                 Hud.Minimap.SyncMinimap(stage, pos, yaw, rightCornerBusy);
+                Hud.TacticalOverview?.SetAvoidMidLeftMinimap(rightCornerBusy && !Hud.Minimap.IsCollapsed);
                 Hud.QuestJournal?.SyncTrackerVisibility(stage, rightCornerBusy || compactHud);
                 Hud.SceneIntelModal?.SetBannerSuppressed(cinematicHud || stage == TacSimActiveStage.SimulatorArena || Hud.IsLoginOverlayVisible);
             }
