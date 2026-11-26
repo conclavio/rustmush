@@ -36,6 +36,44 @@ namespace TacSim.Space
         public string Facet = "front";       // "front" | "left" | "right" | "rear" | "top"
     }
 
+    public readonly struct OrbitalRadarBlip
+    {
+        public readonly string Id;
+        public readonly string Label;
+        public readonly double OffsetXKm;
+        public readonly double OffsetYKm;
+        public readonly double RangeKm;
+        public readonly bool IsRock;
+        public readonly bool IsHostile;
+        public readonly bool IsFriendly;
+        public readonly bool IsTorpedo;
+        public readonly bool IsLocked;
+
+        public OrbitalRadarBlip(
+            string id,
+            string label,
+            double offsetXKm,
+            double offsetYKm,
+            double rangeKm,
+            bool isRock,
+            bool isHostile,
+            bool isFriendly,
+            bool isTorpedo,
+            bool isLocked)
+        {
+            Id = id;
+            Label = label;
+            OffsetXKm = offsetXKm;
+            OffsetYKm = offsetYKm;
+            RangeKm = rangeKm;
+            IsRock = isRock;
+            IsHostile = isHostile;
+            IsFriendly = isFriendly;
+            IsTorpedo = isTorpedo;
+            IsLocked = isLocked;
+        }
+    }
+
     /// <summary>
     /// Renders authoritative 3D Orbital Space Flight (player ship hull + fusion plume, rotating body,
     /// server-perceived Zero-G Ore Asteroids &amp; Naval Contacts from `space.holotank` / `space.cockpit`,
@@ -70,6 +108,29 @@ namespace TacSim.Space
         public string LockedContactId { get; private set; } = string.Empty;
         public IReadOnlyList<SpaceMountTelemetry> FireMounts => _fireMounts;
         public SpaceLockTelemetry ActiveLock { get; private set; }
+        public IReadOnlyList<OrbitalRadarBlip> RadarBlips => _radarBlips;
+        public double RadarRangeKm { get; private set; } = 1000.0;
+
+        private readonly List<OrbitalRadarBlip> _radarBlips = new List<OrbitalRadarBlip>();
+        private int _cycleBlipIndex = -1;
+
+        public bool TryCycleNextRadarContact(out string id, out bool isRock)
+        {
+            id = null;
+            isRock = false;
+            int count = _radarBlips.Count;
+            if (count == 0) return false;
+            for (int step = 0; step < count; step++)
+            {
+                _cycleBlipIndex = (_cycleBlipIndex + 1) % count;
+                var b = _radarBlips[_cycleBlipIndex];
+                if (b.IsTorpedo || string.IsNullOrEmpty(b.Id)) continue;
+                id = b.Id;
+                isRock = b.IsRock;
+                return true;
+            }
+            return false;
+        }
 
         /// <summary>
         /// Fired when the local 60 Hz integrator reaches a terminal contact (`(tapeCommand, isClampCandidate)`).
@@ -103,6 +164,22 @@ namespace TacSim.Space
         private Transform _lockAspectIndicator;
         private Transform _lockAspectSectorPlate;
         private TextMeshPro _lockAspectLabel;
+
+        // Homeworld/EVE 3D Orbital Tactical Reference Plane, Heading Vector, Lock Tether & Contact Drop-Lines
+        private const float TacticalPlaneOffsetY = -6.0f;
+        private const int MaxDropLines = 24;
+        private GameObject _tacticalGridRoot;
+        private LineRenderer _headingVectorLine;
+        private LineRenderer _lockTetherLine;
+        private readonly List<LineRenderer> _dropLinePool = new List<LineRenderer>(MaxDropLines);
+        public bool IsTacticalGridVisible => _tacticalGridRoot != null && _tacticalGridRoot.activeSelf;
+        public int ActiveDropLineCount { get; private set; }
+        public bool HasActiveLockTether => _lockTetherLine != null && _lockTetherLine.enabled;
+
+        public void SetTacticalGridVisible(bool visible)
+        {
+            if (_tacticalGridRoot != null) _tacticalGridRoot.SetActive(visible);
+        }
 
         private LineRenderer _activeBeamRenderer;
         private Transform _activeBeamEndGlow;
@@ -192,6 +269,8 @@ namespace TacSim.Space
             SelectedRockId = string.Empty;
             LockedContactId = string.Empty;
             OwnShipHolotankId = string.Empty;
+            _radarBlips.Clear();
+            RadarRangeKm = 1000.0;
             HasClusterMiningTelemetry = false;
             AuthoritativeMatchedRockId = string.Empty;
             AuthoritativeApproachingRockId = string.Empty;
@@ -402,6 +481,145 @@ namespace TacSim.Space
             bb.NameplateText = _lockAspectLabel;
 
             _lockAspectIndicator.gameObject.SetActive(false);
+            BuildOrbitalTacticalGrid();
+        }
+
+        private void BuildOrbitalTacticalGrid()
+        {
+            _dropLinePool.Clear();
+            ActiveDropLineCount = 0;
+
+            _tacticalGridRoot = new GameObject("OrbitalTacticalHoloGrid");
+            _tacticalGridRoot.transform.SetParent(transform, false);
+            _tacticalGridRoot.transform.position = OrbitalStageOrigin;
+
+            Material ringMat = UrpMaterialFactory.GetHologramUnlit("OrbitalTacRingMat", new Color(0.18f, 0.72f, 0.88f, 0.28f));
+            float[] ringRadii = { 36f, 82f, 148f };
+            const int Segments = 48;
+            for (int r = 0; r < ringRadii.Length; r++)
+            {
+                var rGo = new GameObject($"TacRing_{r}");
+                rGo.transform.SetParent(_tacticalGridRoot.transform, false);
+                var lr = rGo.AddComponent<LineRenderer>();
+                lr.useWorldSpace = true;
+                lr.loop = true;
+                lr.startWidth = 0.28f;
+                lr.endWidth = 0.28f;
+                lr.sharedMaterial = ringMat;
+                lr.positionCount = Segments;
+                float rad = ringRadii[r];
+                for (int s = 0; s < Segments; s++)
+                {
+                    float ang = (s / (float)Segments) * Mathf.PI * 2f;
+                    lr.SetPosition(s, OrbitalStageOrigin + new Vector3(Mathf.Cos(ang) * rad, TacticalPlaneOffsetY, Mathf.Sin(ang) * rad));
+                }
+            }
+
+            Material axisMat = UrpMaterialFactory.GetHologramUnlit("OrbitalTacAxisMat", new Color(0.20f, 0.64f, 0.78f, 0.20f));
+            CreateTacGridAxis(_tacticalGridRoot.transform, "AxisNS",
+                OrbitalStageOrigin + new Vector3(0f, TacticalPlaneOffsetY, -152f),
+                OrbitalStageOrigin + new Vector3(0f, TacticalPlaneOffsetY, 152f), axisMat);
+            CreateTacGridAxis(_tacticalGridRoot.transform, "AxisEW",
+                OrbitalStageOrigin + new Vector3(-152f, TacticalPlaneOffsetY, 0f),
+                OrbitalStageOrigin + new Vector3(152f, TacticalPlaneOffsetY, 0f), axisMat);
+
+            var hdgGo = new GameObject("OwnshipHeadingVector");
+            hdgGo.transform.SetParent(_tacticalGridRoot.transform, false);
+            _headingVectorLine = hdgGo.AddComponent<LineRenderer>();
+            _headingVectorLine.useWorldSpace = true;
+            _headingVectorLine.positionCount = 2;
+            _headingVectorLine.startWidth = 0.42f;
+            _headingVectorLine.endWidth = 0.14f;
+            _headingVectorLine.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("OwnHeadingMat", new Color(0.28f, 0.96f, 1.0f, 0.78f));
+
+            var tetherGo = new GameObject("TargetLockTether");
+            tetherGo.transform.SetParent(_tacticalGridRoot.transform, false);
+            _lockTetherLine = tetherGo.AddComponent<LineRenderer>();
+            _lockTetherLine.useWorldSpace = true;
+            _lockTetherLine.positionCount = 2;
+            _lockTetherLine.startWidth = 0.30f;
+            _lockTetherLine.endWidth = 0.22f;
+            _lockTetherLine.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("LockTetherMat", new Color(1.0f, 0.40f, 0.24f, 0.75f));
+            _lockTetherLine.enabled = false;
+
+            Material dropMat = UrpMaterialFactory.GetHologramUnlit("ContactDropLineMat", new Color(0.32f, 0.85f, 0.98f, 0.38f));
+            for (int i = 0; i < MaxDropLines; i++)
+            {
+                var dGo = new GameObject($"ContactDropLine_{i}");
+                dGo.transform.SetParent(_tacticalGridRoot.transform, false);
+                var dlr = dGo.AddComponent<LineRenderer>();
+                dlr.useWorldSpace = true;
+                dlr.positionCount = 2;
+                dlr.startWidth = 0.22f;
+                dlr.endWidth = 0.16f;
+                dlr.sharedMaterial = dropMat;
+                dlr.enabled = false;
+                _dropLinePool.Add(dlr);
+            }
+
+            SyncOrbitalTacticalVisuals();
+        }
+
+        private static void CreateTacGridAxis(Transform parent, string name, Vector3 a, Vector3 b, Material mat)
+        {
+            var go = new GameObject(name);
+            go.transform.SetParent(parent, false);
+            var lr = go.AddComponent<LineRenderer>();
+            lr.useWorldSpace = true;
+            lr.positionCount = 2;
+            lr.startWidth = 0.20f;
+            lr.endWidth = 0.20f;
+            lr.sharedMaterial = mat;
+            lr.SetPosition(0, a);
+            lr.SetPosition(1, b);
+        }
+
+        private void SyncOrbitalTacticalVisuals()
+        {
+            if (_headingVectorLine != null && PlayerShipTransform != null)
+            {
+                float len = 18f + Mathf.Clamp01(ThrottlePermille / 1000f) * 32f;
+                Vector3 fwd = PlayerShipTransform.rotation * Vector3.forward;
+                _headingVectorLine.SetPosition(0, PlayerShipTransform.position + fwd * 8f);
+                _headingVectorLine.SetPosition(1, PlayerShipTransform.position + fwd * (8f + len));
+            }
+
+            int usedDrops = 0;
+            float planeY = OrbitalStageOrigin.y + TacticalPlaneOffsetY;
+            foreach (var kv in _namedOrbitalTargets)
+            {
+                if (usedDrops >= _dropLinePool.Count) break;
+                if (kv.Value == null) continue;
+                Vector3 p = kv.Value.position;
+                var dlr = _dropLinePool[usedDrops++];
+                dlr.SetPosition(0, p);
+                dlr.SetPosition(1, new Vector3(p.x, planeY, p.z));
+                dlr.enabled = true;
+            }
+            ActiveDropLineCount = usedDrops;
+            for (int i = usedDrops; i < _dropLinePool.Count; i++)
+                _dropLinePool[i].enabled = false;
+
+            if (_lockTetherLine != null && PlayerShipTransform != null)
+            {
+                string targetKey = ActiveLock != null && !string.IsNullOrEmpty(ActiveLock.ShipId)
+                    ? ActiveLock.ShipId
+                    : (!string.IsNullOrEmpty(LockedContactId) ? LockedContactId : SelectedRockId);
+                if (!string.IsNullOrEmpty(targetKey) && TryGetTargetPosition(targetKey, out Vector3 tPos))
+                {
+                    bool isRock = _knownRockIds.Contains(targetKey);
+                    Color col = isRock ? new Color(0.95f, 0.78f, 0.25f, 0.72f) : new Color(1.0f, 0.36f, 0.22f, 0.80f);
+                    _lockTetherLine.startColor = col;
+                    _lockTetherLine.endColor = col;
+                    _lockTetherLine.SetPosition(0, PlayerShipTransform.position);
+                    _lockTetherLine.SetPosition(1, tPos);
+                    _lockTetherLine.enabled = true;
+                }
+                else
+                {
+                    _lockTetherLine.enabled = false;
+                }
+            }
         }
 
         /// <summary>
@@ -425,6 +643,8 @@ namespace TacSim.Space
             SelectedRockId = string.Empty;
             LockedContactId = string.Empty;
             OwnShipHolotankId = string.Empty;
+            _radarBlips.Clear();
+            RadarRangeKm = 1000.0;
             ActiveLock = null;
             _fireMounts.Clear();
             HasClusterMiningTelemetry = false;
@@ -457,6 +677,7 @@ namespace TacSim.Space
                 PlayerShipTransform.rotation = Quaternion.identity;
             UpdateDrivePlume();
             SyncLockedAspectIndicator();
+            SyncOrbitalTacticalVisuals();
             OnSpaceTelemetryChanged?.Invoke();
         }
 
@@ -513,6 +734,8 @@ namespace TacSim.Space
             var seenTorpedoes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             _knownRockIds.Clear();
             OwnShipHolotankId = string.Empty;
+            _radarBlips.Clear();
+            RadarRangeKm = Math.Max(1.0, holotank.Double("range_km", 1000.0));
 
             Material rockMat = UrpMaterialFactory.GetOpaque("AsteroidOre", new Color(0.32f, 0.28f, 0.24f), 0.15f, 0.2f);
             Material veinMat = UrpMaterialFactory.GetEmissive("OreVein", new Color(0.22f, 0.72f, 0.85f), new Color(0.25f, 0.95f, 1.0f) * 1.4f);
@@ -563,6 +786,9 @@ namespace TacSim.Space
                     string spectral = rk.Str("spectral", rk.Str("label", "Pocket"));
                     Vector3 offset = ComputeRelativeStageOffset(rk, obsXKm, obsYKm, obsZKm, defaultRadius: 48f, index: r);
                     UpsertOreRockTarget(rId, $"ROCK {rId} [{spectral}]", OrbitalStageOrigin + offset, r, rockMat, veinMat);
+                    double rdx = rk.Double("x_km", 0.0) - obsXKm;
+                    double rdy = rk.Double("y_km", 0.0) - obsYKm;
+                    _radarBlips.Add(new OrbitalRadarBlip(rId, $"ROCK {rId}", rdx, rdy, Math.Sqrt(rdx * rdx + rdy * rdy), isRock: true, isHostile: false, isFriendly: false, isTorpedo: false, isLocked: string.Equals(SelectedRockId, rId, StringComparison.OrdinalIgnoreCase)));
                     seenTargets.Add(rId);
                     rocksSpawned++;
                 }
@@ -590,9 +816,13 @@ namespace TacSim.Space
                         string lbl = c.Str("label", c.Str("name", $"ROCK {rKey}"));
                         Vector3 offset = ComputeRelativeStageOffset(c, obsXKm, obsYKm, obsZKm, defaultRadius: 50f, index: i);
                         UpsertOreRockTarget(rKey, lbl, OrbitalStageOrigin + offset, i, rockMat, veinMat);
+                        double cdx = c.Double("x_km", 0.0) - obsXKm;
+                        double cdy = c.Double("y_km", 0.0) - obsYKm;
+                        bool rkLocked = c.Bool("locked", false);
+                        _radarBlips.Add(new OrbitalRadarBlip(rKey, lbl, cdx, cdy, Math.Sqrt(cdx * cdx + cdy * cdy), isRock: true, isHostile: false, isFriendly: false, isTorpedo: false, isLocked: rkLocked));
                         seenTargets.Add(rKey);
                         contactsSpawned++;
-                        if (c.Bool("locked", false))
+                        if (rkLocked)
                             SelectedRockId = rKey;
                         continue;
                     }
@@ -608,9 +838,13 @@ namespace TacSim.Space
                     Color col = hostile ? new Color(1f, 0.42f, 0.36f)
                               : (friendly ? new Color(0.45f, 1.0f, 0.65f) : new Color(0.45f, 0.82f, 1f));
                     UpsertNavalContact(id, $"{id} — {name}", pos, rot, col, hostile, friendly);
+                    double ndx = c.Double("x_km", 0.0) - obsXKm;
+                    double ndy = c.Double("y_km", 0.0) - obsYKm;
+                    bool ctLocked = c.Bool("locked", false);
+                    _radarBlips.Add(new OrbitalRadarBlip(id, name, ndx, ndy, Math.Sqrt(ndx * ndx + ndy * ndy), isRock: false, isHostile: hostile, isFriendly: friendly, isTorpedo: false, isLocked: ctLocked));
                     seenTargets.Add(id);
                     contactsSpawned++;
-                    if (c.Bool("locked", false))
+                    if (ctLocked)
                         LockedContactId = id;
                 }
             }
@@ -658,6 +892,7 @@ namespace TacSim.Space
                 LockedContactId = string.Empty;
 
             SyncLockedAspectIndicator();
+            SyncOrbitalTacticalVisuals();
             OnSpaceTelemetryChanged?.Invoke();
         }
 
@@ -1373,6 +1608,7 @@ namespace TacSim.Space
                 PlayerShipTransform.rotation = ComputePlayerShipRotation(ShipYawDeg, ShipPitchDeg, ShipRollDeg);
             UpdateDrivePlume();
             SyncLockedAspectIndicator();
+            SyncOrbitalTacticalVisuals();
             OnSpaceTelemetryChanged?.Invoke();
         }
 
@@ -1448,6 +1684,7 @@ namespace TacSim.Space
             }
 
             _lockAspectIndicator.gameObject.SetActive(true);
+            SyncOrbitalTacticalVisuals();
         }
 
         public void SetLocalHelmPreview(float yawDeg, float pitchDeg, float throttlePermille)
@@ -1478,6 +1715,7 @@ namespace TacSim.Space
                 if (burning)
                     _particlePlumeInstance.localScale = Vector3.one * (0.65f + t * 0.95f);
             }
+            SyncOrbitalTacticalVisuals();
         }
 
         public void StartDockingFromFeed(JsonNode dockingFeed)

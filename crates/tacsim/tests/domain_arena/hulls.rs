@@ -605,6 +605,15 @@ fn ic4_the_boundary_refuses_every_way_off_but_staff_recovery() {
     });
     assert!(sys, "{}", said(&tw, &events, pilot));
     assert_eq!(location(&tw, pilot), Some(bridge));
+    // `+ooc` (the 2026-11-24 playtest) asks the same gate, and is refused the same way:
+    // nobody steps out of character from aboard a hull.
+    let events = tw.run(pilot, "+ooc");
+    assert!(
+        said(&tw, &events, pilot).contains(&aboard_sentence("Pilot")),
+        "{}",
+        said(&tw, &events, pilot)
+    );
+    assert_eq!(location(&tw, pilot), Some(bridge));
     // C03 made JUMP_OK so the pilot's own `@teleport` clears
     // `perm::can_teleport` and the refusal is the gate's (IC4 review T2).
     tw.world_mut()

@@ -5211,6 +5211,10 @@ fn commit_pending_world_reads_are_typed_refusals_but_ordering_stays_live() {
 }
 
 async fn assert_live_hard_mode_gate(mode: WorldMode) {
+    // On tokio's paused clock (doc 51 unit FL.6): the world's time is the
+    // runtime's, and "nothing forbidden ran" is asserted after the kit's
+    // `idle` barrier, when every task that could run has, not after a sleep.
+    let time = mush_config::TimeSource::tokio_at(mush_storykit::STORY_EPOCH * 1_000);
     let counts = Arc::new(GateProbeCounts::default());
     let mut world = World::new_minimal();
     let input_actor = world
@@ -5223,7 +5227,7 @@ async fn assert_live_hard_mode_gate(mode: WorldMode) {
     );
     // Make the registered 1 ms tick overdue, then clear setup dirtiness so
     // any store write below can only have come from a forbidden seam.
-    world.set_now(unix_now_s().saturating_sub(1));
+    world.set_now(time.unix_s().saturating_sub(1));
     let _ = world.take_dirty();
     let engine = Engine::with_modules(
         world,
@@ -5257,7 +5261,7 @@ async fn assert_live_hard_mode_gate(mode: WorldMode) {
             metrics: Arc::new(Metrics::new()),
             quarantine_spool: crate::quarantine::QuarantineSpool::in_memory(),
             outbox_adapters: Vec::new(),
-            time: mush_config::TimeSource::System,
+            time,
         },
         Arc::new(DurableOutboxRegistry::new()),
         None,
@@ -5332,7 +5336,7 @@ async fn assert_live_hard_mode_gate(mode: WorldMode) {
         handle.barrier().await,
         "second barrier remains live in {mode:?}"
     );
-    tokio::time::sleep(Duration::from_millis(20)).await;
+    mush_storykit::idle().await;
 
     assert_eq!(
         counts.total(),
@@ -5405,7 +5409,7 @@ async fn assert_live_hard_mode_gate(mode: WorldMode) {
         None,
         &store,
     );
-    tokio::time::sleep(Duration::from_millis(10)).await;
+    mush_storykit::idle().await;
     assert!(
         matches!(effect_rx.try_recv(), Err(mpsc::error::TryRecvError::Empty)),
         "an external effect launched in {mode:?}"
@@ -5427,7 +5431,7 @@ async fn assert_live_hard_mode_gate(mode: WorldMode) {
         .expect("hard-mode writer task panicked");
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn live_hard_modes_block_every_mutating_execution_seam() {
     for mode in [
         WorldMode::Booting,
@@ -7192,6 +7196,13 @@ type HeldReceipt = oneshot::Sender<Result<u64, String>>;
 /// every write meanwhile — so the test's first command is the first commit
 /// and meets no predecessor.
 async fn held_receipt_rig() -> HeldReceiptRig {
+    held_receipt_rig_on(mush_config::TimeSource::System).await
+}
+
+/// [`held_receipt_rig`] with the world's clock given: a `start_paused` test
+/// passes `TimeSource::tokio_at`, so the world's time and its timers are the
+/// paused runtime's (doc 51 unit FL.6).
+async fn held_receipt_rig_on(time: mush_config::TimeSource) -> HeldReceiptRig {
     let engine = boot_engine();
     let (tx, rx) = mpsc::channel(INBOUND_CAPACITY);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -7211,6 +7222,7 @@ async fn held_receipt_rig() -> HeldReceiptRig {
     let (writer, writer_rx) = persist::test_store_writer_channel(Arc::clone(&metrics));
     let mut deps = ServerDeps::in_memory();
     deps.metrics = Arc::clone(&metrics);
+    deps.time = time;
     let recorder = Arc::new(RecordingGateway::default());
     let gateway: Gateway = recorder.clone();
     let world_join = tokio::spawn(run(
@@ -8312,9 +8324,15 @@ async fn a_shutdown_refuses_the_queued_lines_and_keeps_the_queued_barriers_behin
 /// a held receipt it ends once the receipt lands, and whatever still waits
 /// in the queue is answered rather than dropped: a line hears the
 /// retryable `CommitPending` refusal, a barrier `Unavailable`.
-#[tokio::test]
+///
+/// On tokio's paused clock (doc 51 unit FL.6), so that "the world has seen
+/// its inbound close" is a barrier and not a count of yields.
+#[tokio::test(start_paused = true)]
 async fn what_still_waits_when_the_loop_ends_is_answered_not_dropped() {
-    let mut rig = held_receipt_rig().await;
+    let mut rig = held_receipt_rig_on(mush_config::TimeSource::tokio_at(
+        mush_storykit::STORY_EPOCH * 1_000,
+    ))
+    .await;
     rig.line(1, "@create receipt-anchor").await;
     let (serial, receipt) = rig.next_write().await;
 
@@ -8344,18 +8362,17 @@ async fn what_still_waits_when_the_loop_ends_is_answered_not_dropped() {
     } = rig;
     drop(handle);
     // Doc 18 cut IC14 row 49 (lead ruling L29, test-side): let the world see
-    // its inbound close BEFORE the receipt exists. The test runs on tokio's
-    // current-thread runtime, and with the close and the receipt both ready
-    // the loop's `select!` picks either first: about one run in fifteen
-    // (2 of 30 measured) it took the receipt first, completed the commit with
-    // its inbound still open, and ran the queued line as an ordinary drain —
-    // a legitimate path, but not the one this test proves. Yielding hands the
-    // world its turns while only the close is ready, so its `Wake::Closed` arm
-    // marks the pending commit `exit_after_ack` first; what the test asserts is
-    // unchanged.
-    for _ in 0..16 {
-        tokio::task::yield_now().await;
-    }
+    // its inbound close BEFORE the receipt exists. With the close and the
+    // receipt both ready the loop's unbiased `select!` picks either first:
+    // about one run in fifteen (2 of 30 measured) it took the receipt first,
+    // completed the commit with its inbound still open, and ran the queued
+    // line as an ordinary drain — a legitimate path, but not the one this test
+    // proves. While only the close is ready the world's `Wake::Closed` arm
+    // marks the pending commit `exit_after_ack`. IC14 gave the world sixteen
+    // yields for that; doc 51 unit FL.6 waits instead until the world has
+    // parked, which on the paused clock is the kit's `idle` barrier, so the
+    // close has been taken however many turns it needed.
+    mush_storykit::idle().await;
     assert!(!world_join.is_finished(), "the world waits for the receipt");
     receipt
         .send(Ok(serial))

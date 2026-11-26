@@ -347,7 +347,7 @@ async fn typed_refusals_are_the_line_refusals_byte_for_byte() -> TestResult {
                 ("invalid".to_owned(), INVALID.to_owned()),
                 "{action:?}"
             );
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            w.server.settled().await?;
             check_eq!(
                 printed(&w.server, p.buyer)?,
                 Vec::<String>::new(),
@@ -651,7 +651,7 @@ async fn typed_accept_without_a_price_shows_and_submits_nothing() -> TestResult 
         ] {
             let (got, message) = refused(typed(&w.server, p.buyer, action).await?)?;
             check_eq!(got, code, "{line}");
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            w.server.settled().await?;
             check_eq!(
                 printed(&w.server, p.buyer)?,
                 Vec::<String>::new(),

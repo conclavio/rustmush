@@ -695,6 +695,11 @@ In short: one busy-sentence table and a counted whole-reply read in the kit, the
 `StoryBudget` in `mining_cohort`'s stories, the solo flight's match derived and its hit stated as
 odds; rows 5 and 6 leave `flaky-known.toml`, and the soak's new flake (row 20) is fixed.
 
+**FL.6 is cut and built** (cut 2026-11-25 with FL.5 to FL.10, "Yes, cut them"). Its row below is as
+it was sketched; [the cut note](51-cut-notes.md) says where the build differs. In short: the kit's
+`idle` is the paused clock's barrier, row 10 and the in-`src` tests it fits run on the paused
+clock, and `wait_budget` counts mush-server's test code under `src/`.
+
 One pull request each. S is under a day's session, M one to two, L more. "Runs" is §2.4's count
 for the suite. FL.0 is this document and its script, merged as #771.
 

@@ -227,15 +227,15 @@ async fn spawn_ledger_archive_schedules_when_enabled() {
     .unwrap()
     .expect("an enabled tier schedules the nightly pass");
 
-    // The job publishes before its first sleep; give the scheduler a turn.
-    let mut snapshot = metrics.snapshot();
-    for _ in 0..200 {
-        if snapshot.ledger_archive_chunks != 0 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-        snapshot = metrics.snapshot();
-    }
+    // The job publishes before its first sleep. Wait for the gauge under the
+    // kit's one step limit (doc 51 unit FL.6), not a second of 5-ms polls.
+    mush_storykit::wait_until(
+        mush_storykit::STEP_TIMEOUT,
+        "the spawned pass publishing its archive gauge",
+        async || metrics.snapshot().ledger_archive_chunks != 0,
+    )
+    .await;
+    let snapshot = metrics.snapshot();
     assert_eq!(
         snapshot.ledger_archive_chunks, 1,
         "the spawned pass never published its gauge; the write half is dead"

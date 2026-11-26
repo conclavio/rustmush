@@ -35,6 +35,21 @@
 //!   that function's own header, so a helper that only paused tests call is
 //!   still counted.
 //!
+//! ## The `src` scope
+//!
+//! For the crates in [`SRC_SCOPE`] (doc 51 unit FL.6: mush-server) the gate
+//! also counts the **test code under `src/`**, where a crate's in-process
+//! tests of its own loop live. Test code is a file whose path has a `tests`
+//! directory in it, a file named `tests.rs` or `*_tests.rs`, a file fenced by
+//! a leading `#![cfg(test)]`, and in any other file every `#[cfg(test)]` item,
+//! brace-counted from the attribute to its close. Production code is never
+//! counted: a retry loop's sleep in the store writer is not a test's wait.
+//! The rows read `src/<path>`, beside the `tests/<path>` rows.
+//!
+//! A crate enters the scope with a baseline: its first bless writes its
+//! `src/` counts as their own low-water marks and the line `# scope src`.
+//! From then on a `src/` row rises only as a `tests/` row does, with a reason.
+//!
 //! `scripts/wait_audit.py --budget` prints the same counts from the same
 //! rules, one row a file. The two must agree; doc 51's cut note for FL.1
 //! records both at the baseline.
@@ -81,6 +96,12 @@ const CLOCK_NEEDLES: [&str; 2] = ["unix_now_s", "unix_now_ms"];
 
 /// The crate that is a rig whole: the kit, where the primitives belong.
 const KIT_CRATE: &str = "mush-storykit";
+
+/// The crates whose test code under `src/` is counted too (the `src` scope).
+const SRC_SCOPE: [&str; 1] = ["mush-server"];
+
+/// The line a budget file carries once its crate's `src` scope is baselined.
+const SCOPE_LINE: &str = "scope src";
 
 const BUDGET_DIR: &str = "wait_budget";
 const BLESS_VAR: &str = "WAIT_BUDGET_BLESS";
@@ -253,6 +274,40 @@ fn story_sites(source: &str) -> Sites {
     sites
 }
 
+/// The test code of one file under a crate's `src/`, `rel` being its path
+/// relative to the crate: the whole file (comments and literals blanked) when
+/// the file is test code whole, else its `#[cfg(test)]` items with everything
+/// else blanked, or `None` when it holds no test code.
+fn src_test_code(rel: &str, source: &str) -> Option<String> {
+    let stripped = scan::strip_comments_and_literals(source);
+    let parts: Vec<&str> = rel.split('/').collect();
+    let name = parts.last().copied().unwrap_or(rel);
+    let dirs = parts.get(1..parts.len().saturating_sub(1)).unwrap_or(&[]);
+    if dirs.contains(&"tests")
+        || name == "tests.rs"
+        || name.ends_with("_tests.rs")
+        || scan::file_is_test_only(&stripped)
+    {
+        return Some(stripped);
+    }
+    let blanked = scan::blank_cfg_test_items(&stripped);
+    if blanked == stripped {
+        return None;
+    }
+    let kept: Vec<u8> = stripped
+        .bytes()
+        .zip(blanked.bytes())
+        .map(|(was, now)| {
+            if was != now || was == b'\n' {
+                was
+            } else {
+                b' '
+            }
+        })
+        .collect();
+    Some(String::from_utf8_lossy(&kept).into_owned())
+}
+
 /// Whether `path` (relative to its crate, forward slashes) is a rig file.
 fn is_rig(path: &str) -> bool {
     path.contains("/support/") || path.ends_with("/harness.rs")
@@ -268,24 +323,41 @@ fn measure(root: &Path) -> BTreeMap<String, Counts> {
         let Some(name) = dir.file_name().map(|n| n.to_string_lossy().into_owned()) else {
             continue;
         };
-        let tests = dir.join("tests");
-        if name == KIT_CRATE || !tests.is_dir() {
+        if name == KIT_CRATE {
             continue;
         }
         let mut rows = Counts::new();
-        for path in scan::rust_files(&tests) {
-            let rel = scan::relative(&dir, &path);
-            if is_rig(&rel) {
-                continue;
-            }
-            let Ok(source) = fs::read_to_string(&path) else {
-                continue;
-            };
-            let sites = story_sites(&source);
+        let mut count = |rel: String, code: &str| {
+            let sites = story_sites(code);
             for counter in Counter::ALL {
                 let n = sites.of(counter);
                 if n > 0 {
                     rows.insert((rel.clone(), counter), n);
+                }
+            }
+        };
+        let tests = dir.join("tests");
+        if tests.is_dir() {
+            for path in scan::rust_files(&tests) {
+                let rel = scan::relative(&dir, &path);
+                if is_rig(&rel) {
+                    continue;
+                }
+                let Ok(source) = fs::read_to_string(&path) else {
+                    continue;
+                };
+                count(rel, &source);
+            }
+        }
+        let src = dir.join("src");
+        if SRC_SCOPE.contains(&name.as_str()) && src.is_dir() {
+            for path in scan::rust_files(&src) {
+                let rel = scan::relative(&dir, &path);
+                let Ok(source) = fs::read_to_string(&path) else {
+                    continue;
+                };
+                if let Some(code) = src_test_code(&rel, &source) {
+                    count(rel, &code);
                 }
             }
         }
@@ -320,6 +392,8 @@ struct Row {
 struct Budget {
     rows: BTreeMap<(String, Counter), Row>,
     raises: BTreeMap<(String, Counter), (usize, String)>,
+    /// The `src` scope is baselined: the file carries `# scope src`.
+    src_scope: bool,
 }
 
 const RAISE_SHAPE: &str = "a raise reads `# raised <counter> <path> to <n>: <reason>`";
@@ -328,7 +402,9 @@ fn parse(text: &str) -> Result<Budget, String> {
     let mut b = Budget::default();
     for line in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
         if let Some(comment) = line.strip_prefix('#') {
-            if let Some(rest) = comment.trim().strip_prefix("raised ") {
+            if comment.trim() == SCOPE_LINE {
+                b.src_scope = true;
+            } else if let Some(rest) = comment.trim().strip_prefix("raised ") {
                 let (head, reason) = rest.split_once(':').ok_or(RAISE_SHAPE)?;
                 let (what, to) = head.rsplit_once(" to ").ok_or(RAISE_SHAPE)?;
                 let (counter, path) = what.trim().split_once(' ').ok_or(RAISE_SHAPE)?;
@@ -391,6 +467,11 @@ fn render(crate_name: &str, b: &Budget) -> String {
         Counter::Wait.count(sum(Counter::Wait)),
         Counter::Clock.count(sum(Counter::Clock)),
     );
+    if b.src_scope {
+        text.push_str(&format!(
+            "#\n# The test code under `src/` is counted too (doc 51 cut FL.6).\n# {SCOPE_LINE}\n"
+        ));
+    }
     for ((path, counter), (to, reason)) in &b.raises {
         text.push_str(&format!(
             "# raised {} {path} to {to}: {reason}\n",
@@ -516,12 +597,17 @@ fn blessed(
         let counts = measured.get(name).cloned().unwrap_or_default();
         let old = budgets.get(name);
         let mut next = Budget::default();
+        // A crate entering the `src` scope: its `src/` rows are baselined.
+        let in_scope = SRC_SCOPE.contains(&name.as_str());
+        let src_baseline = in_scope && !old.is_some_and(|b| b.src_scope);
+        next.src_scope = in_scope;
         for (key, actual) in counts {
             let (path, counter) = &key;
             let was = old.and_then(|b| b.rows.get(&key)).copied();
             let low = match was {
                 Some(row) => row.low_water.min(actual),
                 None if baseline => actual,
+                None if src_baseline && path.starts_with("src/") => actual,
                 None => 0,
             };
             if actual > was.map_or(low, |row| row.budget) {
@@ -720,6 +806,91 @@ fn a_rig_file_is_a_path_with_support_in_it_or_a_harness() {
     ] {
         assert!(!is_rig(story), "{story}");
     }
+}
+
+#[test]
+fn the_src_scope_counts_test_code_and_never_production_code() {
+    let mixed = r#"
+        async fn retry_forever() {
+            loop {
+                tokio::time::sleep(BACKOFF).await;
+            }
+        }
+
+        #[cfg(test)]
+        mod tests {
+            #[tokio::test]
+            async fn a_test_of_the_loop() {
+                tokio::time::sleep(STEP).await;
+                let _ = mush_config::unix_now_s();
+            }
+
+            #[tokio::test(start_paused = true)]
+            async fn a_paused_one() {
+                tokio::time::sleep(STEP).await;
+            }
+        }
+
+        fn after_the_tests() {
+            std::thread::sleep(PACE);
+        }
+    "#;
+    let code = src_test_code("src/persist.rs", mixed).expect("the file holds test code");
+    assert_eq!(story_sites(&code), Sites { wait: 1, clock: 1 });
+
+    let production = "fn pace() { std::thread::sleep(PACE); }";
+    assert_eq!(src_test_code("src/lib.rs", production), None);
+
+    // A file that is test code whole, by its path or by a leading fence.
+    let whole = "async fn helper() { tokio::time::sleep(STEP).await; }";
+    for rel in [
+        "src/world_task/tests.rs",
+        "src/world_task/submission_disposition/tests/retry.rs",
+        "src/lib_tests.rs",
+    ] {
+        let code = src_test_code(rel, whole).expect("test code whole");
+        assert_eq!(story_sites(&code), Sites { wait: 1, clock: 0 }, "{rel}");
+    }
+    let fenced = format!("#![cfg(test)]\n{whole}");
+    assert!(src_test_code("src/probe.rs", &fenced).is_some());
+    // `tests` must be a directory under `src/`, not the file's stem.
+    assert_eq!(src_test_code("src/tests_of_nothing.rs", production), None);
+}
+
+#[test]
+fn a_crate_entering_the_src_scope_is_baselined_once() {
+    let crate_name = SRC_SCOPE[0].to_owned();
+    let measured = BTreeMap::from([(
+        crate_name.clone(),
+        Counts::from([
+            (("src/a.rs".to_owned(), Counter::Wait), 2),
+            (("tests/b.rs".to_owned(), Counter::Wait), 1),
+        ]),
+    )]);
+    let old = BTreeMap::from([(
+        crate_name.clone(),
+        parse("wait 1 1 tests/b.rs\n").expect("the budget parses"),
+    )]);
+    // The first bless in scope takes the `src/` count as its own low-water mark.
+    let first = blessed(&measured, &old, None, false).expect("a baseline");
+    let text = render(&crate_name, &first[&crate_name]);
+    assert!(text.contains("# scope src"), "{text}");
+    assert!(text.contains("wait 2 2 src/a.rs"), "{text}");
+    let reread = BTreeMap::from([(crate_name.clone(), parse(&text).expect("it parses"))]);
+    assert_eq!(violations(&measured, &reread), Vec::<String>::new());
+    // After it, a `src/` row rises only with a reason.
+    let risen = BTreeMap::from([(
+        crate_name.clone(),
+        Counts::from([
+            (("src/a.rs".to_owned(), Counter::Wait), 2),
+            (("src/new.rs".to_owned(), Counter::Wait), 1),
+            (("tests/b.rs".to_owned(), Counter::Wait), 1),
+        ]),
+    )]);
+    assert!(blessed(&risen, &reread, None, false).is_err());
+    // Out of scope there is no baseline: a `src/` row is a rise from zero.
+    let elsewhere = one("src/a.rs", Counter::Wait, 1);
+    assert!(blessed(&elsewhere, &budgets("wait 1 1 tests/b.rs\n"), None, false).is_err());
 }
 
 fn one(path: &str, counter: Counter, n: usize) -> BTreeMap<String, Counts> {

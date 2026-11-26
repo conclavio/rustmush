@@ -31,6 +31,12 @@ use mush_store::{
     StoreError, TokenRecord, WorldSnapshot, WriteBatch, WriteReceipt,
 };
 
+/// The one limit an event of these proofs gets: a frame, a disposition, the
+/// server's bind, a task count (doc 51 §3.7, unit FL.6). Each wait returns when
+/// its event comes; the limit is only how long a stalled one takes to fail.
+/// The proofs once chose 10, 15, 20 or 30 s at each call.
+const STEP: Duration = mush_storykit::STEP_TIMEOUT;
+
 fn scratch_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "rustmush-ipc-authoritative-{tag}-{}",
@@ -68,7 +74,7 @@ async fn boot_server(tag: &'static str) -> (mush_ipc::IpcEndpoint, Arc<InMemoryS
             ))
             .unwrap();
     });
-    let endpoint = tokio::time::timeout(Duration::from_secs(30), bound_rx)
+    let endpoint = tokio::time::timeout(STEP, bound_rx)
         .await
         .expect("server bind timed out")
         .expect("server returned bound endpoint");
@@ -145,7 +151,7 @@ async fn brace_offer(
     )
     .await
     .unwrap();
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(STEP, async {
         loop {
             if let ToGateway::Reply {
                 id: 900,
@@ -174,7 +180,7 @@ async fn authenticated_action_transfers_ownership_only_after_exact_intent() {
         .await
         .unwrap();
 
-    let (token, status, projected_receipt) = tokio::time::timeout(Duration::from_secs(15), async {
+    let (token, status, projected_receipt) = tokio::time::timeout(STEP, async {
         let mut owned = None;
         loop {
             match frames.read::<ToGateway>().await.unwrap().unwrap() {
@@ -292,7 +298,7 @@ async fn authenticated_action_transfers_ownership_only_after_exact_intent() {
     .unwrap();
     let mut authorized = None;
     let mut spoofed = None;
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(STEP, async {
         while authorized.is_none() || spoofed.is_none() {
             match frames.read::<ToGateway>().await.unwrap().unwrap() {
                 ToGateway::Reply {
@@ -334,7 +340,7 @@ async fn authenticated_action_transfers_ownership_only_after_exact_intent() {
     write_frame(&mut writer, &ToServer::Input(request.clone()))
         .await
         .unwrap();
-    let replay = tokio::time::timeout(Duration::from_secs(10), async {
+    let replay = tokio::time::timeout(STEP, async {
         loop {
             if let ToGateway::RequestDisposition {
                 request: seen,
@@ -383,7 +389,7 @@ async fn actor_field_cannot_spoof_the_authenticated_connection() {
         .await
         .unwrap();
 
-    let disposition = tokio::time::timeout(Duration::from_secs(10), async {
+    let disposition = tokio::time::timeout(STEP, async {
         loop {
             if let ToGateway::RequestDisposition {
                 request: seen,
@@ -432,7 +438,7 @@ async fn tampered_offer_tag_is_rejected_before_intent() {
         .await
         .unwrap();
 
-    let disposition = tokio::time::timeout(Duration::from_secs(10), async {
+    let disposition = tokio::time::timeout(STEP, async {
         loop {
             if let ToGateway::RequestDisposition {
                 request: seen,
@@ -505,7 +511,7 @@ async fn a_peer_release_of_a_coordinator_action_cannot_kill_the_reader_loop() {
         .await
         .unwrap();
 
-        let disposition = tokio::time::timeout(Duration::from_secs(10), async {
+        let disposition = tokio::time::timeout(STEP, async {
             loop {
                 if let ToGateway::RequestDisposition {
                     request: seen,
@@ -558,7 +564,7 @@ async fn a_peer_release_of_a_coordinator_action_cannot_kill_the_reader_loop() {
     )
     .await
     .unwrap();
-    let probe = tokio::time::timeout(Duration::from_secs(10), async {
+    let probe = tokio::time::timeout(STEP, async {
         loop {
             match frames.read::<ToGateway>().await.unwrap().unwrap() {
                 ToGateway::Reply { id: 950, resp } => break resp,
@@ -1194,7 +1200,7 @@ async fn boot_fault_server(tag: &'static str) -> (mush_ipc::IpcEndpoint, Arc<Pre
             ))
             .unwrap();
     });
-    let endpoint = tokio::time::timeout(Duration::from_secs(30), bound_rx)
+    let endpoint = tokio::time::timeout(STEP, bound_rx)
         .await
         .expect("server bind timed out")
         .expect("server returned bound endpoint");
@@ -1208,7 +1214,7 @@ async fn next_disposition(
     uid: mush_ipc::RequestUid,
     what: &str,
 ) -> GatewayRequestDisposition {
-    tokio::time::timeout(Duration::from_secs(20), async {
+    tokio::time::timeout(STEP, async {
         loop {
             if let ToGateway::RequestDisposition {
                 request: seen,
@@ -1281,7 +1287,7 @@ async fn a_quarantined_preflight_is_answered_and_releases_custody() {
     )
     .await
     .unwrap();
-    let probe = tokio::time::timeout(Duration::from_secs(10), async {
+    let probe = tokio::time::timeout(STEP, async {
         loop {
             match frames.read::<ToGateway>().await.unwrap().unwrap() {
                 ToGateway::Reply { id: 960, resp } => break resp,
@@ -1370,7 +1376,7 @@ async fn a_permanently_transient_preflight_retains_and_then_stops_at_the_rearm_b
         GatewayRequestDisposition::Rejected { retryable: true },
         "the re-arm bound hands the request back to the gateway"
     );
-    let mut frames = tokio::time::timeout(Duration::from_secs(10), reader)
+    let mut frames = tokio::time::timeout(STEP, reader)
         .await
         .expect("reader task")
         .expect("reader join");
@@ -1468,7 +1474,7 @@ fn boot_world() -> mush_server::world_task::PersistHandles {
 /// loop is the only thing on that runtime, so the count is exactly the reader
 /// task plus whatever the reader task spawned.
 fn wait_for_tasks(rt: &tokio::runtime::Runtime, ready: impl Fn(usize) -> bool, what: &str) {
-    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let deadline = std::time::Instant::now() + STEP;
     loop {
         let alive = rt.metrics().num_alive_tasks();
         if ready(alive) {

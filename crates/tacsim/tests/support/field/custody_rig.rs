@@ -522,6 +522,15 @@ pub(crate) async fn handover_at_ceres(at: &Ground, paid: bool) {
     );
     let condition = run(&mut rig.tw, a, "+sortie/condition");
     assert!(condition.contains("in processing at Ceres"), "{condition}");
+    // `+ooc` (the 2026-11-24 playtest) asks the held gate, which keeps a character in
+    // processing inside the port: nobody steps out of character from custody.
+    let ooc = run(&mut rig.tw, a, "+ooc");
+    assert!(ooc.contains("You are being processed at Ceres"), "{ooc}");
+    assert_eq!(
+        rig.tw.world().get(a).and_then(|object| object.location),
+        Some(room),
+        "{ooc}"
+    );
     let captives = run(&mut rig.tw, b, "+ship/captives");
     assert!(captives.contains("You hold nobody aboard."), "{captives}");
 

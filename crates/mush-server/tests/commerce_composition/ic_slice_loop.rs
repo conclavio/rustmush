@@ -3940,7 +3940,7 @@ async fn ic12_negative_checks_refuse_in_fiction_and_move_nothing() {
         ],
     )
     .await;
-    walk(&mut rig, vex, "x", LIMBO).await;
+    walk(&mut rig, vex, "+ooc", LIMBO).await;
     refused(
         &mut rig,
         vex,
@@ -4059,7 +4059,7 @@ async fn ic12_negative_checks_refuse_in_fiction_and_move_nothing() {
     // is no player's verb, and its generic answer is what the occupant hears.
     let boundary = "Vex is aboard Salt Moth; it moves only between Salt Moth's rooms, or leaves \
                     through the simulation or staff recovery (@spatial).";
-    for line in ["o", "s", "home"] {
+    for line in ["o", "s", "home", "+ooc"] {
         refused(&mut rig, vex, line, boundary, &snap).await;
     }
     refused(
@@ -4421,10 +4421,8 @@ async fn ic12_negative_checks_refuse_in_fiction_and_move_nothing() {
     );
     assert!(!under_way(&rig.tw, hull));
 
-    // 12. `o` → `x` → `c` from a Stickney-stamped position: the `+ic` hint.
-    let _ = run(&mut rig, vex, "o").await;
-    assert_ne!(location(&rig.tw, vex), Some(p08), "`o` stepped out");
-    walk(&mut rig, vex, "x", LIMBO).await;
+    // 12. `+ooc` → `c` from a Stickney-stamped position: the `+ic` hint.
+    walk(&mut rig, vex, "+ooc", LIMBO).await;
     let out = run(&mut rig, vex, "c").await;
     assert!(
         out.contains(&tacsim::ic_return::left_at_line(
@@ -4433,12 +4431,9 @@ async fn ic12_negative_checks_refuse_in_fiction_and_move_nothing() {
         "{out}"
     );
     assert_eq!(location(&rig.tw, vex), Some(LIMBO), "the door held");
+    // `+ic` puts Vex back in the room `+ooc` left.
     let out = run(&mut rig, vex, "+ic").await;
-    assert_eq!(
-        location(&rig.tw, vex),
-        Some(station_room(&rig.tw, P, "room.p01_berth_gallery")),
-        "{out}"
-    );
+    assert_eq!(location(&rig.tw, vex), Some(p08), "{out}");
     let _ = ruth;
     assert_no_pages(&rig.tw);
 }
