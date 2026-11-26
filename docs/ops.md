@@ -2939,6 +2939,11 @@ row (`class = "unclassed"`) with no failure on record is deleted. The
 `load-sensitive` group in `.config/nextest.toml` is still there and is only
 a load limit (two at a time); it carries no retry.
 
+Since doc 51 unit FL.10 (2026-11-26) the list is empty, so nothing is
+retried. A new row is a test that failed and then passed at one head, with
+its doc 51 class and its row of `docs/flaky-tests.md`; doc 43 §2.3 rules 16
+to 21 say where its fix goes.
+
 ## Test targets since T.3: the group binaries
 
 Since test-strategy cut T.3 (2026-10-26) a crate's integration tests are a few

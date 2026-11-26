@@ -101,18 +101,7 @@ test-group = 'load-sensitive'
 # crates/mush-contract-tests/flaky-known.toml: one term a row, one retry, nothing else.
 # Do not edit it. Change the list, then regenerate:
 #   FLAKY_KNOWN_BLESS=1 cargo test -p mush-contract-tests --test ci_policy flaky_known::
-[[profile.default.overrides]]
-filter = '''
-    (binary_id(mush-gateway::split_halves) & test(/^arena_story_split::/))
-  | (binary_id(mush-gateway::split_halves) & test(=gateway_generations::a_drains_while_b_serves_and_every_session_is_warned_then_moved))
-  | (binary_id(mush-sim) & test(=journey::tests::e7c6_b2_a_leg_boundary_overflow_is_visible_not_silent))
-  | (binary_id(mush-sim) & test(=journey::tests::e7c6_b2_the_leg_cursor_is_the_idempotency_key))
-  | (binary_id(mush-sim) & test(=journey::tests::e7c6_b2_the_wire_re_runs_max_legs_and_every_invariant))
-  | binary_id(mush-worldgen::plan)
-  | binary_id(mush-worldgen::review_plan)
-  | binary_id(mush-worldgen::s8_authority)
-'''
-retries = 1
+# The list is empty: no test is retried.
 # END GENERATED flaky-known
 
 [profile.ci]

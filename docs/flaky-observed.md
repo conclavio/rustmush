@@ -4,10 +4,10 @@
 
 # Flaky tests observed
 
-*Generated 2026-11-26 12:47 UTC. What was seen, by the rule of [flaky-tests.md](flaky-tests.md), which stays the hand-written record of causes. A test here whose Record is `none` is the work queue. The columns: Class and Known list are the list's (crates/mush-contract-tests/flaky-known.toml); Record is the row of flaky-tests.md that names the test; 14 d and 30 d count the runs or passes in which the test failed or passed on retry; Soak is failed passes over passes; a Why of branches alone is a lead to read, not a finding.*
+*Generated 2026-11-26 13:37 UTC. What was seen, by the rule of [flaky-tests.md](flaky-tests.md), which stays the hand-written record of causes. A test here whose Record is `none` is the work queue. The columns: Class and Known list are the list's (crates/mush-contract-tests/flaky-known.toml); Record is the row of flaky-tests.md that names the test; 14 d and 30 d count the runs or passes in which the test failed or passed on retry; Soak is failed passes over passes; a Why of branches alone is a lead to read, not a finding.*
 
 
-Sources: ci.yml, the last 14 day(s); 735 run(s) listed, 107 with reports read (the shards with a failed job).
+Sources: ci.yml, the last 14 day(s); 744 run(s) listed, 109 with reports read (the shards with a failed job).
 
 | Test | Binary | Class | Known list | Record | First seen | Last seen | 14 d | 30 d | Soak | Why | Last three |
 |---|---|---|---|---|---|---|---:|---:|---|---|---|
@@ -62,17 +62,4 @@ Sources: ci.yml, the last 14 day(s); 735 run(s) listed, 107 with reports read (t
 | `observer_rule::af3_the_resume_names_nothing_a_pilot_or_a_bystander_may_not_read` | `mushd::sim_lenses` |  | **NOT LISTED** | row 21 | 2026-11-24 | 2026-11-24 | 1 | 1 |  | same head x1 | [45426726188 a1 rest-mushd](https://github.com/conclavio/rustmush/actions/runs/45426726188/attempts/1) |
 | `sim_rematch::two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_spec` | `mushd::sim_lenses` |  | **NOT LISTED** | row 16 | 2026-11-13 | 2026-11-13 | 1 | 1 |  | same head x1 | [43515376467 a1 rest-mushd](https://github.com/conclavio/rustmush/actions/runs/43515376467/attempts/1) |
 
-65 more test(s) failed on one branch or one head only and are that branch's own by the rule; `--run <id>` names them for a run.
-
-**The known list:** 8 row(s), 0 seen in these sources, 0 past expiry.
-
-Listed and not seen (no evidence here to renew on):
-
-- `mush-gateway::split_halves` `gateway_generations::a_drains_while_b_serves_and_every_session_is_warned_then_moved`, process, expires 2026-12-07
-- `mush-gateway::split_halves` `arena_story_split::*`, unclassed, expires 2026-12-07
-- `mush-worldgen::plan` (the whole binary), unclassed, expires 2026-12-07
-- `mush-worldgen::review_plan` (the whole binary), unclassed, expires 2026-12-07
-- `mush-worldgen::s8_authority` (the whole binary), unclassed, expires 2026-12-07
-- `mush-sim` `journey::tests::e7c6_b2_the_leg_cursor_is_the_idempotency_key`, unclassed, expires 2026-12-07
-- `mush-sim` `journey::tests::e7c6_b2_a_leg_boundary_overflow_is_visible_not_silent`, unclassed, expires 2026-12-07
-- `mush-sim` `journey::tests::e7c6_b2_the_wire_re_runs_max_legs_and_every_invariant`, unclassed, expires 2026-12-07
+68 more test(s) failed on one branch or one head only and are that branch's own by the rule; `--run <id>` names them for a run.
