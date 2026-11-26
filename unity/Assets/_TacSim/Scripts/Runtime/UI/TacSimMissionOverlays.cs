@@ -149,9 +149,21 @@ namespace TacSim.UI
         private const int MaxPooledWeaponSlotButtons = 4;
         private readonly List<PooledWeaponSlotButton> _weaponSlotPool = new List<PooledWeaponSlotButton>(MaxPooledWeaponSlotButtons);
 
+        // OOC Arena Locked Target Inspection Paper-Doll Card (`contacts[i].condition` + `scan_tables`)
+        private GameObject _targetInspectCard;
+        private Text _targetInspectText;
+        private Button _targetScanBtn;
+        private RawImage _targetArmorDollImg;
+        private Texture2D _targetArmorDollTex;
+        private Color32[] _targetArmorDollPixels;
+        private string _lastTargetDollSignature = string.Empty;
+
         public bool IsLobbyModalOpen => _arenaLobbyModal != null && _arenaLobbyModal.activeSelf;
         public bool IsSpaceFireCardVisible => _spaceFireCard != null && _spaceFireCard.activeSelf;
         public bool IsDetachmentBarVisible => _detachmentBar != null && _detachmentBar.activeSelf;
+        public bool IsTargetInspectCardVisible => _targetInspectCard != null && _targetInspectCard.activeSelf;
+        public string TargetInspectSummarySnapshot => _targetInspectText != null ? _targetInspectText.text : string.Empty;
+        public Texture2D TargetArmorDollTexture => _targetArmorDollTex;
         public bool IsAutoLockArmedUi => _arena != null && _arena.HasAutoLockRule;
         public bool IsAutoFireArmedUi => _arena != null && _arena.HasAutoFireRule;
         public int AutoFireOddsThresholdPct => _autoFireOddsPct;
@@ -268,6 +280,12 @@ namespace TacSim.UI
                 else DestroyImmediate(_arenaArmorDollTex);
                 _arenaArmorDollTex = null;
             }
+            if (_targetArmorDollTex != null)
+            {
+                if (Application.isPlaying) Destroy(_targetArmorDollTex);
+                else DestroyImmediate(_targetArmorDollTex);
+                _targetArmorDollTex = null;
+            }
         }
 
         public void ResetSessionState()
@@ -276,6 +294,7 @@ namespace TacSim.UI
             _selectedAdvanceSpot = null;
             _lastKeySpotsSignature = string.Empty;
             _lastArmorDollSignature = string.Empty;
+            _lastTargetDollSignature = string.Empty;
             ActiveArmorDollUnitType = string.Empty;
             if (_orbitalOpsBar != null) _orbitalOpsBar.SetActive(false);
             if (_spaceFireCard != null) _spaceFireCard.SetActive(false);
@@ -283,6 +302,7 @@ namespace TacSim.UI
             if (_arenaLobbyModal != null) _arenaLobbyModal.SetActive(false);
             if (_arenaBattleHudRoot != null) _arenaBattleHudRoot.SetActive(false);
             if (_detachmentBar != null) _detachmentBar.SetActive(false);
+            if (_targetInspectCard != null) _targetInspectCard.SetActive(false);
             if (_arenaLobbyLiveRosterText != null) _arenaLobbyLiveRosterText.text = DefaultLobbyRosterHint;
         }
 
@@ -958,6 +978,27 @@ namespace TacSim.UI
                 _contactRowPool.Add(pooled);
             }
 
+            // Locked Target Inspection Paper-Doll Card (docked right edge cleanly below ArenaContactsPanel `-422` and above OwnPlatformCard)
+            _targetInspectCard = CreatePanel(_arenaBattleHudRoot.transform, "ArenaTargetInspectCard", new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-390f, -586f), new Vector2(-16f, -430f), new Color(0.04f, 0.07f, 0.12f, 0.93f));
+            _targetInspectText = CreateTxt(_targetInspectCard.transform, string.Empty, 11, FontStyle.Normal, TextAnchor.UpperLeft, Color.white);
+            _targetInspectText.supportRichText = true;
+            SetRect(_targetInspectText.rectTransform, new Vector2(0f, 0.24f), new Vector2(0.64f, 1f), new Vector2(10f, 2f), new Vector2(-4f, -8f));
+
+            _targetScanBtn = CreateBtn(_targetInspectCard.transform, "SCAN TARGET", new Color(0.14f, 0.42f, 0.56f), HandleScanLockedTargetClick);
+            SetRect(_targetScanBtn.GetComponent<RectTransform>(), new Vector2(0f, 0f), new Vector2(0.64f, 0.24f), new Vector2(10f, 8f), new Vector2(-4f, -2f));
+            var scanBtnLbl = _targetScanBtn.GetComponentInChildren<Text>();
+            if (scanBtnLbl != null) scanBtnLbl.fontSize = 11;
+
+            var tgtDollFrame = CreatePanel(_targetInspectCard.transform, "TargetArmorDollFrame", new Vector2(0.65f, 0f), new Vector2(1f, 1f), new Vector2(2f, 8f), new Vector2(-10f, -8f), new Color(0.02f, 0.04f, 0.08f, 0.96f));
+            var tgtDollGo = new GameObject("TargetArmorDollImg", typeof(RectTransform), typeof(RawImage));
+            tgtDollGo.transform.SetParent(tgtDollFrame.transform, false);
+            _targetArmorDollImg = tgtDollGo.GetComponent<RawImage>();
+            _targetArmorDollImg.color = Color.white;
+            _targetArmorDollImg.raycastTarget = false;
+            SetRect(_targetArmorDollImg.rectTransform, Vector2.zero, Vector2.one, new Vector2(6f, 6f), new Vector2(-6f, -6f));
+            tgtDollGo.SetActive(false);
+            _targetInspectCard.SetActive(false);
+
             var hullCard = CreatePanel(_arenaBattleHudRoot.transform, "OwnPlatformCard", new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-430f, 18f), new Vector2(-16f, 326f), new Color(0.03f, 0.07f, 0.12f, 0.93f));
             _arenaOwnArmorText = CreateTxt(hullCard.transform, "", 11, FontStyle.Normal, TextAnchor.UpperLeft, Color.white);
             _arenaOwnArmorText.supportRichText = true;
@@ -1171,6 +1212,7 @@ namespace TacSim.UI
             UpdateDetachmentCommandDeck(s);
             UpdateStandingRulesAndWeaponDeck(s);
             UpdateArmorPaperDoll(s);
+            UpdateTargetInspectionCard(s);
             UpdatePooledContactRows(s);
         }
 
@@ -1178,6 +1220,112 @@ namespace TacSim.UI
         public void ClickAutoFireToggleForTests() => HandleAutoFireRuleClick();
         public void CycleAutoFireOddsForTests() => CycleAutoFireOddsPreset();
         public void ClickWeaponSlotButtonForTests(int index) => FireWeaponSlotAt(index);
+        public void ClickScanLockedTargetForTests() => HandleScanLockedTargetClick();
+
+        private void HandleScanLockedTargetClick()
+        {
+            if (_arena == null || _arena.State == null) return;
+            string desig = _arena.State.LockedDesignator;
+            if (!MushProtocol.TryValidateSafeCommandToken(desig, out string safeDesig))
+                return;
+            OnArenaCockpitVerbRequested?.Invoke($"scan {safeDesig}");
+        }
+
+        private void UpdateTargetInspectionCard(ArenaCockpitState s)
+        {
+            if (_targetInspectCard == null) return;
+            if (_arena == null || s == null || !_arena.TryGetLockedContact(out var ct) || ct == null)
+            {
+                if (_targetInspectCard.activeSelf) _targetInspectCard.SetActive(false);
+                return;
+            }
+
+            if (!_targetInspectCard.activeSelf) _targetInspectCard.SetActive(true);
+
+            string safeDesig = MushProtocol.EscapeUnityRichText(ct.Designator ?? string.Empty);
+            string safeClass = MushProtocol.EscapeUnityRichText((ct.ClassLabel ?? "unit").ToUpperInvariant());
+            string aspectUpper = (ct.Aspect ?? "front").ToUpperInvariant();
+            string aspectCol = aspectUpper == "REAR"
+                ? "#66FF99"
+                : (aspectUpper == "LEFT" || aspectUpper == "RIGHT") ? "#FFCC55" : "#99CCEE";
+            string aspectBadge = aspectUpper == "REAR"
+                ? $"<color={aspectCol}><b>REAR EXPOSED</b></color>"
+                : $"<color={aspectCol}><b>{aspectUpper}</b></color>";
+            string bandTag = !string.IsNullOrEmpty(ct.Band) ? $" ({MushProtocol.EscapeUnityRichText(ct.Band.ToUpperInvariant())})" : string.Empty;
+            string moveTag = ct.IsWreck
+                ? "<color=#FF5555>[WRECK]</color>"
+                : (ct.Moving ? "<color=#66EEFF>[MOVING]</color>" : "<color=#8899AA>[STATIC]</color>");
+            string ageTag = ct.AgeMs >= 1000 ? $"{ct.AgeMs / 1000f:F1}s" : $"{ct.AgeMs}ms";
+
+            var sb = new StringBuilder(240);
+            sb.Append($"<color=#FFEE66><b>LOCK {safeDesig}</b></color> [{safeClass}] {moveTag}\n");
+            sb.Append($"RNG: <b>{(int)ct.RangeM}m</b>{bandTag}  |  ASPECT: {aspectBadge}  <color=#88A0B8>({ageTag})</color>\n");
+
+            var scanSections = _arena.TryGetContactScanSections(ct);
+            bool hasScan = scanSections != null && scanSections.Count > 0 && !string.IsNullOrEmpty(ct.ConditionBands);
+            if (hasScan)
+            {
+                sb.Append("SCAN: ");
+                int lim = Mathf.Min(scanSections.Count, ct.ConditionBands.Length);
+                for (int i = 0; i < lim; i++)
+                {
+                    if (i > 0) sb.Append(' ');
+                    char b = char.ToLowerInvariant(ct.ConditionBands[i]);
+                    string bc = b == 'g' ? "#66EE88" : b == 'y' ? "#FFD255" : b == 'r' ? "#FF6655" : "#888894";
+                    string sLabel = MushProtocol.EscapeUnityRichText(scanSections[i].Replace("_", " ").ToUpperInvariant());
+                    if (sLabel.Length > 7) sLabel = sLabel.Substring(0, 7);
+                    sb.Append($"<color={bc}>{sLabel}:{char.ToUpperInvariant(b)}</color>");
+                }
+                sb.Append('\n');
+            }
+            else
+            {
+                sb.Append("<color=#88A8C0>NO HULL SCAN — CLICK SCAN TARGET</color>\n");
+            }
+
+            if (ct.FatalSections != null && ct.FatalSections.Count > 0)
+            {
+                sb.Append("<color=#FF8866>FATAL:</color> ");
+                for (int i = 0; i < ct.FatalSections.Count; i++)
+                {
+                    if (i > 0) sb.Append(", ");
+                    sb.Append(MushProtocol.EscapeUnityRichText(ct.FatalSections[i].ToUpperInvariant()));
+                }
+            }
+            else
+            {
+                sb.Append($"HIT ODDS: <b>{s.LockHitPercent}%</b>  |  HEALTH: <b>{MushProtocol.EscapeUnityRichText((ct.HealthWord ?? "UNKNOWN").ToUpperInvariant())}</b>");
+            }
+
+            if (_targetInspectText != null)
+                _targetInspectText.text = sb.ToString();
+
+            if (_targetScanBtn != null)
+                _targetScanBtn.interactable = !ct.IsWreck;
+
+            if (_targetArmorDollImg != null)
+            {
+                string unitKey = !string.IsNullOrEmpty(ct.UnitType) ? ct.UnitType : ct.ClassLabel;
+                var doll = TacSimArmorPaperDoll.FindForUnitType(unitKey);
+                if (doll != null)
+                {
+                    string sig = $"{unitKey}|{(ct.IsWreck ? 'W' : 'A')}|{ct.ConditionTable}|{ct.ConditionBands}";
+                    if (!string.Equals(sig, _lastTargetDollSignature, StringComparison.Ordinal) || _targetArmorDollTex == null)
+                    {
+                        _lastTargetDollSignature = sig;
+                        _targetArmorDollTex = TacSimArmorPaperDoll.RenderContactScanToTexture(
+                            doll, scanSections, ct.ConditionBands, ct.IsWreck, _targetArmorDollTex, ref _targetArmorDollPixels);
+                        _targetArmorDollImg.texture = _targetArmorDollTex;
+                    }
+                    if (!_targetArmorDollImg.gameObject.activeSelf)
+                        _targetArmorDollImg.gameObject.SetActive(true);
+                }
+                else if (_targetArmorDollImg.gameObject.activeSelf)
+                {
+                    _targetArmorDollImg.gameObject.SetActive(false);
+                }
+            }
+        }
 
         private void HandleAutoLockRuleClick()
         {

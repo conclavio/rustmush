@@ -139,6 +139,28 @@ namespace TacSim.Arena
         }
 
         /// <summary>
+        /// Maps a compact scan condition letter (`g`/`y`/`r`/`d` from `arena.cockpit` `contacts[i].condition.bands`)
+        /// to its exact 2-tone palette colour, or cool radar-steel for unscanned sections.
+        /// </summary>
+        public static Color32 BandLetterColor(char band, int tone)
+        {
+            bool light = tone == 1;
+            switch (char.ToLowerInvariant(band))
+            {
+                case 'g':
+                    return light ? new Color32(0x7a, 0xd8, 0x8a, 255) : new Color32(0x46, 0xbe, 0x5a, 255);
+                case 'y':
+                    return light ? new Color32(0xf5, 0xd2, 0x6e, 255) : new Color32(0xe6, 0xb4, 0x32, 255);
+                case 'r':
+                    return light ? new Color32(0xf0, 0x78, 0x6a, 255) : new Color32(0xdc, 0x3c, 0x32, 255);
+                case 'd':
+                    return light ? new Color32(0x6a, 0x6a, 0x72, 255) : new Color32(0x4a, 0x4a, 0x52, 255);
+                default:
+                    return light ? new Color32(0x62, 0x7a, 0x94, 255) : new Color32(0x44, 0x58, 0x6e, 255);
+            }
+        }
+
+        /// <summary>
         /// Renders the paper doll into a reusable `Texture2D` (creating or resizing only when dimensions change),
         /// drawing crisp 1px dark seam lines around every part boundary matching `DollView.svelte` / `mush-pixel`.
         /// </summary>
@@ -151,6 +173,70 @@ namespace TacSim.Arena
         {
             if (doll == null || doll.Width <= 0 || doll.Height <= 0) return existingTex;
 
+            var partColors = new Color32[doll.Parts.Length];
+            for (int p = 0; p < doll.Parts.Length; p++)
+            {
+                int tone = p < doll.Tones.Length ? doll.Tones[p] : 0;
+                if (TryResolvePartCondition(doll.Parts[p], sections, fallbackState, out int left, out int max))
+                    partColors[p] = ConditionColor(left, max, tone);
+                else
+                    partColors[p] = ConditionColor(0, 0, tone);
+            }
+
+            return RasterizeDollPixels(doll, partColors, existingTex, ref pixelBuffer);
+        }
+
+        /// <summary>
+        /// Renders a locked contact's scanned section condition bands (`scan_tables[table]` + `condition.bands`)
+        /// into a reusable target inspection `Texture2D`. Unscanned contacts render in crisp radar-steel tones.
+        /// </summary>
+        public static Texture2D RenderContactScanToTexture(
+            ArenaDollGrid doll,
+            IReadOnlyList<string> sectionNames,
+            string bandLetters,
+            bool isWreck,
+            Texture2D existingTex,
+            ref Color32[] pixelBuffer)
+        {
+            if (doll == null || doll.Width <= 0 || doll.Height <= 0) return existingTex;
+
+            bool hasScan = sectionNames != null && sectionNames.Count > 0 && !string.IsNullOrEmpty(bandLetters);
+            var partColors = new Color32[doll.Parts.Length];
+            for (int p = 0; p < doll.Parts.Length; p++)
+            {
+                int tone = p < doll.Tones.Length ? doll.Tones[p] : 0;
+                if (isWreck)
+                {
+                    partColors[p] = BandLetterColor('d', tone);
+                    continue;
+                }
+
+                char band = '?';
+                if (hasScan && doll.Parts[p] != null)
+                {
+                    string secId = doll.Parts[p].Section;
+                    int lim = Math.Min(sectionNames.Count, bandLetters.Length);
+                    for (int s = 0; s < lim; s++)
+                    {
+                        if (string.Equals(sectionNames[s], secId, StringComparison.OrdinalIgnoreCase))
+                        {
+                            band = bandLetters[s];
+                            break;
+                        }
+                    }
+                }
+                partColors[p] = BandLetterColor(band, tone);
+            }
+
+            return RasterizeDollPixels(doll, partColors, existingTex, ref pixelBuffer);
+        }
+
+        private static Texture2D RasterizeDollPixels(
+            ArenaDollGrid doll,
+            Color32[] partColors,
+            Texture2D existingTex,
+            ref Color32[] pixelBuffer)
+        {
             int texW = doll.Width * CellScalePx + 2;
             int texH = doll.Height * CellScalePx + 2;
             Texture2D tex = existingTex;
@@ -175,16 +261,6 @@ namespace TacSim.Arena
 
             for (int i = 0; i < totalPx; i++)
                 pixelBuffer[i] = Transparent;
-
-            var partColors = new Color32[doll.Parts.Length];
-            for (int p = 0; p < doll.Parts.Length; p++)
-            {
-                int tone = p < doll.Tones.Length ? doll.Tones[p] : 0;
-                if (TryResolvePartCondition(doll.Parts[p], sections, fallbackState, out int left, out int max))
-                    partColors[p] = ConditionColor(left, max, tone);
-                else
-                    partColors[p] = ConditionColor(0, 0, tone);
-            }
 
             int CellAt(int cx, int cy)
             {
