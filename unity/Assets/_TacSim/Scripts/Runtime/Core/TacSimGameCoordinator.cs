@@ -529,6 +529,8 @@ namespace TacSim.Core
                         case "ui:sheet": Hud.CharacterSheet?.SetOpen(true); break;
                         case "ui:solar_map": Hud.SolarMap?.SetOpen(true); break;
                         case "ui:ops_dir": Hud.OpsDirectory?.SetOpen(true); break;
+                        case "ui:social": Hud.SocialModal?.SetOpen(true); break;
+                        case "ui:journal": Hud.QuestJournal?.SetOpen(true); break;
                         case "ui:keybinds": Hud.KeybindHelp?.SetOpen(true); break;
                         case "ui:options": Hud.DisplayOptions?.SetOpen(true); break;
                         case "ui:cycle_cam": HandleCycleOrbitalCamera(); break;
@@ -550,6 +552,31 @@ namespace TacSim.Core
                 };
             }
 
+            if (Hud.SocialModal != null)
+            {
+                Hud.SocialModal.OnCommandRequested += ExecutePlayerCommand;
+                Hud.SocialModal.OnPrefillChatRequested += prefix => Hud?.PrefillChatInput(prefix);
+                Hud.SocialModal.OnRefreshWhoRequested += () =>
+                {
+                    if (_ws != null && _ws.IsConnected) _ws.SendWhoQuery();
+                };
+                Hud.SocialModal.OnRefreshMailRequested += folder =>
+                {
+                    if (_ws != null && _ws.IsConnected && _ws.HasAdvertisedPanel("mail"))
+                        _ws.SendMailListQuery(folder);
+                };
+                Hud.SocialModal.OnRefreshComsysRequested += () =>
+                {
+                    if (_ws != null && _ws.IsConnected && _ws.HasAdvertisedPanel("comsys"))
+                        _ws.SendPanelSubscribe("comsys");
+                };
+            }
+
+            if (Hud.QuestJournal != null)
+            {
+                Hud.QuestJournal.OnCommandRequested += ExecutePlayerCommand;
+            }
+
             _contentSync.OnSyncLog += msg =>
             {
                 if (Hud != null)
@@ -562,6 +589,18 @@ namespace TacSim.Core
                 _contentSync.RequestManifestOverWebSocket(_ws, Time.realtimeSinceStartup);
                 if (_ws.HasAdvertisedPanel("sky.chart"))
                     _ws.SendPanelSubscribe("sky.chart");
+                _ws.SendWhoQuery();
+                if (_ws.HasAdvertisedPanel("mail"))
+                    _ws.SendMailListQuery();
+                if (_ws.HasAdvertisedPanel("comsys"))
+                    _ws.SendPanelSubscribe("comsys");
+            };
+            _ws.OnWhoReceived += list => Hud?.SocialModal?.ApplyWhoEntries(list);
+            _ws.OnMailNoticeReceived += unread =>
+            {
+                Hud?.SocialModal?.ApplyMailNotice(unread);
+                if (unread > 0)
+                    Hud?.FloatingCallouts?.ShowCallout($"IC MAIL: {unread} UNREAD [O]", new Color(1f, 0.86f, 0.36f, 1f), 2.2f);
             };
             _ws.OnRoomReceived += HandleServerRoomView;
             _ws.OnNarrativeReceived += HandleServerNarrative;
@@ -813,6 +852,7 @@ namespace TacSim.Core
                     stage == TacSimActiveStage.SimulatorArena;
 
                 Hud.Minimap.SyncMinimap(stage, pos, yaw, rightCornerBusy);
+                Hud.QuestJournal?.SyncTrackerVisibility(stage, rightCornerBusy);
             }
 
             // Update 3D Holographic Wayfinder ribbon & compass banner every frame
@@ -2577,6 +2617,7 @@ namespace TacSim.Core
             string safeSpeaker = MushProtocol.EscapeUnityRichText(ch.Actor?.Name ?? string.Empty);
             string body = !string.IsNullOrEmpty(ch.RichMarkup) ? ch.RichMarkup : MushProtocol.EscapeUnityRichText(ch.Text);
             Hud.AppendLogLine($"<color=#77DDAA>[{safeChan}]</color> {safeSpeaker}: {body}");
+            Hud.SocialModal?.IngestChannelMessage(ch);
         }
 
         private void HandleServerComposing(MushComposingEvent comp)
@@ -2597,6 +2638,8 @@ namespace TacSim.Core
             Hud.AppendLogLine(display);
             if (Hud.IsModalOpen)
                 Hud.AppendModalResponseLine(display);
+            Hud.SocialModal?.IngestMailReadOutput(plainLine, richMarkup);
+            Hud.QuestJournal?.IngestServerOutput(plainLine, richMarkup);
 
             // Trigger surface/orbital action VFX only upon authoritative server outcome lines!
             if (!string.IsNullOrEmpty(plainLine))
@@ -2674,6 +2717,12 @@ namespace TacSim.Core
             {
                 case "tacsim.content":
                     _contentSync?.HandleWebSocketContentPanel(_ws, data, Time.realtimeSinceStartup);
+                    break;
+                case "mail":
+                    Hud?.SocialModal?.ApplyMailPanel(data);
+                    break;
+                case "comsys":
+                    Hud?.SocialModal?.ApplyComsysPanel(data);
                     break;
                 case "port.trade":
                 {
