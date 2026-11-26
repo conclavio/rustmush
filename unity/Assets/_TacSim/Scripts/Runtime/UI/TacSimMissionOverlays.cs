@@ -981,7 +981,7 @@ namespace TacSim.UI
             });
             _advanceBtnLabel = _advanceBtn.GetComponentInChildren<Text>();
             CreateBtn(squadRow.transform, "SQUAD: HOLD", new Color(0.20f, 0.36f, 0.46f), () => OnArenaCockpitVerbRequested?.Invoke($"{ResolveSquadAllOrderPrefix()}hold"));
-            CreateBtn(squadRow.transform, "CUPOLA [V]", new Color(0.28f, 0.28f, 0.46f), () => OnToggleVehicleCameraViewRequested?.Invoke());
+            CreateBtn(squadRow.transform, "CAM VIEW [V]", new Color(0.28f, 0.28f, 0.46f), () => OnToggleVehicleCameraViewRequested?.Invoke());
             CreateBtn(squadRow.transform, "EXIT POD", new Color(0.48f, 0.16f, 0.18f), () => OnArenaCockpitVerbRequested?.Invoke("exit"));
 
             // Detachment Command Deck (stacked cleanly above ArenaSquadOrderBar, visible only when server projects `detachment`)

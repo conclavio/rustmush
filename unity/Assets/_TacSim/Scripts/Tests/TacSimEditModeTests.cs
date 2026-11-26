@@ -7310,5 +7310,141 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void Arena3DCombatVfxAndCameraShake_CyclesThreeCamerasDecaysShakeDrivesDamageSmokeTracersAndHitEvents()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave5PR2_CombatVfxCameraTest");
+            try
+            {
+                // 1. 3-mode Arena Camera Cycle (Chase -> Cupola -> Overhead -> Chase) & Impulse Camera Shake decay
+                var camGo = new UnityEngine.GameObject("Cam", typeof(UnityEngine.Camera));
+                camGo.transform.SetParent(rootGo.transform, false);
+                var camRig = camGo.AddComponent<TacSim.Character.TacSimCameraRig>();
+                camRig.ControlledCamera = camGo.GetComponent<UnityEngine.Camera>();
+
+                var coord = rootGo.AddComponent<TacSimGameCoordinator>();
+                coord.CameraRig = camRig;
+
+                camRig.SetMode(TacSim.Character.CameraRigMode.GroundVehicleChase);
+                Assert.AreEqual(TacSim.Character.CameraRigMode.GroundVehicleChase, camRig.Mode);
+                coord.ToggleGroundVehicleCameraMode();
+                Assert.AreEqual(TacSim.Character.CameraRigMode.GroundVehicleCupola, camRig.Mode);
+                coord.ToggleGroundVehicleCameraMode();
+                Assert.AreEqual(TacSim.Character.CameraRigMode.GroundVehicleOverhead, camRig.Mode);
+                Assert.AreEqual(8000f, camRig.ControlledCamera.farClipPlane, 0.1f, "Overhead camera must keep 8km battlefield draw distance");
+                coord.ToggleGroundVehicleCameraMode();
+                Assert.AreEqual(TacSim.Character.CameraRigMode.GroundVehicleChase, camRig.Mode);
+
+                camRig.TriggerCameraShake(0.60f, 0.25f);
+                Assert.IsTrue(camRig.IsCameraShakeActive);
+                camRig.StepCameraShake(0.05f);
+                Assert.Greater(camRig.CurrentShakeOffset.magnitude, 0.01f, "Active shake must emit non-zero camera impulse offset");
+                camRig.StepCameraShake(0.30f);
+                Assert.IsFalse(camRig.IsCameraShakeActive, "Shake must cleanly stop after duration elapses");
+                Assert.AreEqual(UnityEngine.Vector3.zero, camRig.CurrentShakeOffset);
+
+                // 2. Unit Damage Smoke (scarred/crippled) vs Wreck Smoke states
+                var catalog = TacSimAssetCatalog.LoadOrDefault();
+                var rig = TacSimVehicleVisualFactory.SpawnArenaCombatUnit(catalog, rootGo.transform, "tacsim.unit.line_tank", "B1", "B", UnityEngine.Vector3.zero, 90f);
+                rig.SetDamageState("intact", false);
+                Assert.IsFalse(rig.IsDamageSmokeActive);
+                Assert.IsFalse(rig.WreckSmokeVisual.activeSelf);
+
+                rig.SetDamageState("scarred", false);
+                Assert.IsTrue(rig.IsDamageSmokeActive, "Scarred contact must emit battle damage smoke");
+                Assert.IsFalse(rig.WreckSmokeVisual.activeSelf);
+
+                rig.SetDamageState("crippled", false);
+                Assert.IsTrue(rig.IsDamageSmokeActive, "Crippled contact must emit intensified damage smoke");
+                Assert.Greater(rig.DamageSmokeVisual.transform.localScale.x, 1.2f);
+
+                rig.SetDamageState("wreck", true);
+                Assert.IsFalse(rig.IsDamageSmokeActive, "Wrecked hull transitions from damage smoke to wreck fire marker");
+                Assert.IsTrue(rig.WreckSmokeVisual.activeSelf);
+
+                // 3. Live Arena VFX: damaged contact smoke, animated ballistic/laser tracers, muzzle flash, and incoming armor hit detection
+                var arenaGo = new UnityEngine.GameObject("Arena");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(catalog, TacSimTerrainDecoder.LoadStaticArena("proving_ground"));
+
+                string hitFacet = null;
+                int hitDelta = 0;
+                bool hitInternal = false;
+                arena.OnPlayerArmorDamaged += (facet, delta, isInternal) =>
+                {
+                    hitFacet = facet;
+                    hitDelta = delta;
+                    hitInternal = isInternal;
+                };
+
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 92, ""seated"": true, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""mode"": ""skirmish"", ""power"": ""online"",
+                    ""x_cm"": 10000, ""y_cm"": 10000, ""heading_deg"": 90, ""speed_kph"": 12,
+                    ""lock_designator"": ""B1"",
+                    ""sections"": [
+                        { ""id"": ""hull"", ""condition"": ""intact"", ""internals"": 100, ""internals_max"": 100,
+                          ""facets"": [
+                            { ""id"": ""front"", ""armor"": 100, ""armor_max"": 100 },
+                            { ""id"": ""left"", ""armor"": 100, ""armor_max"": 100 },
+                            { ""id"": ""right"", ""armor"": 100, ""armor_max"": 100 },
+                            { ""id"": ""rear"", ""armor"": 100, ""armor_max"": 100 }
+                          ] }
+                    ],
+                    ""weapons"": [],
+                    ""contacts"": [
+                        { ""designator"": ""B1"", ""class"": ""line_tank"", ""unit_type"": ""tacsim.unit.line_tank"", ""party"": ""B"", ""friendly"": false, ""cell"": [120, 100], ""range_m"": 200, ""bearing_deg"": 90, ""facing"": ""front"", ""health"": ""crippled"", ""reads_dead"": false }
+                    ],
+                    ""notices"": [
+                        { ""kind"": ""fire"", ""weapon"": ""main_cannon"", ""designator"": ""B1"", ""text"": ""R1 fires main_cannon at B1."" }
+                    ]
+                }"));
+
+                Assert.IsTrue(arena.TryGetContactRig("B1", out var b1Rig));
+                Assert.IsTrue(b1Rig.IsDamageSmokeActive, "Live crippled contact rig must show damage smoke");
+                Assert.Greater(arena.ActiveShotTracerCount, 0, "Weapon fire notice must spawn animated 3D shot tracer");
+                Assert.IsTrue(arena.IsMuzzleFlashActive, "Firing weapon must illuminate player muzzle flash");
+
+                arena.StepTracersForTests(0.12f);
+                Assert.Greater(arena.ActiveShotTracerCount, 0, "Ballistic tracer must still be in-flight at 0.12s");
+                arena.StepTracersForTests(0.50f);
+                Assert.AreEqual(0, arena.ActiveShotTracerCount, "Expired tracers must be destroyed cleanly");
+                Assert.IsFalse(arena.IsMuzzleFlashActive, "Muzzle flash must extinguish after brief burst");
+
+                // Incoming armor & internal hit on next frame triggers OnPlayerArmorDamaged + impact burst!
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 92, ""seated"": true, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""mode"": ""skirmish"", ""power"": ""online"",
+                    ""x_cm"": 10000, ""y_cm"": 10000, ""heading_deg"": 90, ""speed_kph"": 12,
+                    ""lock_designator"": ""B1"",
+                    ""sections"": [
+                        { ""id"": ""hull"", ""condition"": ""scarred"", ""internals"": 88, ""internals_max"": 100,
+                          ""facets"": [
+                            { ""id"": ""front"", ""armor"": 65, ""armor_max"": 100 },
+                            { ""id"": ""left"", ""armor"": 100, ""armor_max"": 100 },
+                            { ""id"": ""right"", ""armor"": 100, ""armor_max"": 100 },
+                            { ""id"": ""rear"", ""armor"": 100, ""armor_max"": 100 }
+                          ] }
+                    ],
+                    ""weapons"": [],
+                    ""contacts"": [
+                        { ""designator"": ""B1"", ""class"": ""line_tank"", ""unit_type"": ""tacsim.unit.line_tank"", ""party"": ""B"", ""friendly"": false, ""cell"": [120, 100], ""range_m"": 200, ""bearing_deg"": 90, ""facing"": ""front"", ""health"": ""crippled"", ""reads_dead"": false }
+                    ],
+                    ""notices"": []
+                }"));
+
+                Assert.AreEqual("FRONT", hitFacet, "Front armor drop must report FRONT facet");
+                Assert.AreEqual(35, hitDelta, "Front armor drop 100 -> 65 must report 35% delta");
+                Assert.IsTrue(hitInternal, "Internals drop 100 -> 88 must flag internalHit");
+                Assert.IsTrue(arena.PlayerRig.IsDamageSmokeActive, "Damaged player hull must emit battle damage smoke");
+                Assert.Greater(arena.ActiveShotTracerCount, 0, "Incoming armor hit must spawn impact shockwave burst");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

@@ -11,17 +11,20 @@ namespace TacSim.Character
         BowDockingCollar = 3,
         GroundVehicleChase = 4,
         GroundVehicleCupola = 5,
-        OrbitalTacticalHigh = 6
+        OrbitalTacticalHigh = 6,
+        GroundVehicleOverhead = 7
     }
 
     /// <summary>
-    /// Unified 6-mode camera rig:
+    /// Unified 8-mode camera rig:
     /// 1) Wall-avoiding 3rd-person over-shoulder orbit camera (stations, OOC Sim Centre &amp; ship compartments)
     /// 2) Bridge Holo-Tank tactical overview
     /// 3) 3D Orbital Exterior chase camera around the hull in space
     /// 4) 60 Hz 6-DOF Bow Docking Collar alignment camera
     /// 5) 3D Ground Vehicle Chase camera (Surface Prospector Rovers &amp; Red vs Blue Arena Tanks/Mechs)
     /// 6) Commander Cupola / Cockpit visor view
+    /// 7) High Orbital Tactical overview
+    /// 8) 2.5D Ground Vehicle Overhead tactical battlefield view + decaying combat impulse camera shake
     /// </summary>
     public sealed class TacSimCameraRig : MonoBehaviour
     {
@@ -46,6 +49,7 @@ namespace TacSim.Character
         public float orbitalDistance = 26f;
         public float orbitalTacticalDistance = 138f;
         public float vehicleDistance = 18f;
+        public float vehicleOverheadDistance = 96f;
         public float mouseSensitivity = 2.8f;
 
         public int OrbitSensitivityPct { get; private set; } = 100;
@@ -54,6 +58,8 @@ namespace TacSim.Character
         public int FieldOfViewDeg { get; private set; } = 62;
         public CameraRigMode Mode { get; private set; } = CameraRigMode.ThirdPersonWalk;
         public bool OrbitInputEnabled { get; set; } = true;
+        public Vector3 CurrentShakeOffset { get; private set; }
+        public bool IsCameraShakeActive => _shakeRemainingSec > 0f && _shakeIntensity > 0.0001f;
 
         private float _yawDeg = 0f;
         private float _pitchDeg = 16f;
@@ -63,9 +69,54 @@ namespace TacSim.Character
         private float _tacticalPitchDeg = 52f;
         private float _vehicleYawOffsetDeg = 0f;
         private float _vehiclePitchDeg = 22f;
+        private float _vehicleOverheadYawDeg = 0f;
+        private float _vehicleOverheadPitchDeg = 56f;
+        private float _shakeIntensity;
+        private float _shakeDurationSec;
+        private float _shakeRemainingSec;
+        private float _shakePhase;
         private Vector3 _smoothedPivot;
         private bool _pivotInitialized;
         private bool _rmbOrbitDragging;
+
+        public void TriggerCameraShake(float intensity, float durationSec = 0.28f)
+        {
+            float clampedIntensity = Mathf.Clamp(intensity, 0.02f, 3.5f);
+            float clampedDur = Mathf.Clamp(durationSec, 0.04f, 1.5f);
+            _shakeIntensity = Mathf.Max(_shakeIntensity, clampedIntensity);
+            _shakeDurationSec = Mathf.Max(_shakeDurationSec, clampedDur);
+            _shakeRemainingSec = Mathf.Max(_shakeRemainingSec, clampedDur);
+        }
+
+        public void StepCameraShake(float dt)
+        {
+            if (_shakeRemainingSec <= 0f || _shakeDurationSec <= 0f || _shakeIntensity <= 0.0001f)
+            {
+                _shakeRemainingSec = 0f;
+                _shakeDurationSec = 0f;
+                _shakeIntensity = 0f;
+                CurrentShakeOffset = Vector3.zero;
+                return;
+            }
+
+            float step = Mathf.Max(0f, dt);
+            _shakeRemainingSec = Mathf.Max(0f, _shakeRemainingSec - step);
+            if (_shakeRemainingSec <= 0f)
+            {
+                _shakeDurationSec = 0f;
+                _shakeIntensity = 0f;
+                CurrentShakeOffset = Vector3.zero;
+                return;
+            }
+
+            _shakePhase += step * 48f + 0.37f;
+            float ratio = _shakeRemainingSec / Mathf.Max(0.0001f, _shakeDurationSec);
+            float amp = _shakeIntensity * ratio * ratio;
+            CurrentShakeOffset = new Vector3(
+                Mathf.Sin(_shakePhase) * amp,
+                Mathf.Cos(_shakePhase * 1.73f) * amp * 0.72f,
+                Mathf.Sin(_shakePhase * 2.41f) * amp * 0.45f);
+        }
 
         private bool UpdateRmbOrbitDragState(bool overUi)
         {
@@ -124,7 +175,11 @@ namespace TacSim.Character
             if (ControlledCamera != null)
             {
                 ControlledCamera.nearClipPlane = mode == CameraRigMode.BowDockingCollar ? 0.05f : 0.15f;
-                ControlledCamera.farClipPlane = (mode == CameraRigMode.OrbitalExterior || mode == CameraRigMode.OrbitalTacticalHigh || mode == CameraRigMode.GroundVehicleChase || mode == CameraRigMode.GroundVehicleCupola) ? 8000f : 1500f;
+                ControlledCamera.farClipPlane = (mode == CameraRigMode.OrbitalExterior ||
+                    mode == CameraRigMode.OrbitalTacticalHigh ||
+                    mode == CameraRigMode.GroundVehicleChase ||
+                    mode == CameraRigMode.GroundVehicleCupola ||
+                    mode == CameraRigMode.GroundVehicleOverhead) ? 8000f : 1500f;
                 ControlledCamera.fieldOfView = mode == CameraRigMode.BowDockingCollar ? 66f : FieldOfViewDeg;
             }
         }
@@ -190,6 +245,16 @@ namespace TacSim.Character
                         UpdateGroundVehicleChase(dt);
                     }
                     break;
+
+                case CameraRigMode.GroundVehicleOverhead:
+                    UpdateGroundVehicleOverhead(dt);
+                    break;
+            }
+
+            StepCameraShake(dt);
+            if (CurrentShakeOffset.sqrMagnitude > 1e-8f)
+            {
+                ControlledCamera.transform.position += ControlledCamera.transform.rotation * CurrentShakeOffset;
             }
         }
 
@@ -367,6 +432,40 @@ namespace TacSim.Character
 
             Vector3 desiredPos = pivot + backDir * safeDist;
             ControlledCamera.transform.position = Vector3.Lerp(ControlledCamera.transform.position, desiredPos, 1f - Mathf.Exp(-14f * dt));
+            Vector3 toPivot = pivot - ControlledCamera.transform.position;
+            if (toPivot.sqrMagnitude > 1e-6f)
+                ControlledCamera.transform.rotation = Quaternion.LookRotation(toPivot.normalized, Vector3.up);
+        }
+
+        private void UpdateGroundVehicleOverhead(float dt)
+        {
+            if (GroundVehicleTarget == null) return;
+
+            bool overUi = EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
+            if (OrbitInputEnabled)
+            {
+                if (UpdateRmbOrbitDragState(overUi))
+                {
+                    float ySign = InvertY ? 1f : -1f;
+                    _vehicleOverheadYawDeg += Input.GetAxis("Mouse X") * mouseSensitivity * 1.6f;
+                    _vehicleOverheadPitchDeg = Mathf.Clamp(_vehicleOverheadPitchDeg + ySign * Input.GetAxis("Mouse Y") * mouseSensitivity * 1.2f, 32f, 82f);
+                }
+                float scroll = Input.mouseScrollDelta.y;
+                if (!overUi && Mathf.Abs(scroll) > 0.01f)
+                {
+                    float zoomScale = ZoomSpeedPct / 100f;
+                    vehicleOverheadDistance = Mathf.Clamp(vehicleOverheadDistance - scroll * 6.5f * zoomScale, 35f, 220f);
+                }
+            }
+            else
+            {
+                _rmbOrbitDragging = false;
+            }
+
+            Quaternion orbitRot = Quaternion.Euler(_vehicleOverheadPitchDeg, _vehicleOverheadYawDeg, 0f);
+            Vector3 pivot = GroundVehicleTarget.position + Vector3.up * 2.0f;
+            Vector3 desiredPos = pivot + orbitRot * (Vector3.back * vehicleOverheadDistance);
+            ControlledCamera.transform.position = Vector3.Lerp(ControlledCamera.transform.position, desiredPos, 1f - Mathf.Exp(-10f * dt));
             Vector3 toPivot = pivot - ControlledCamera.transform.position;
             if (toPivot.sqrMagnitude > 1e-6f)
                 ControlledCamera.transform.rotation = Quaternion.LookRotation(toPivot.normalized, Vector3.up);

@@ -415,9 +415,24 @@ namespace TacSim.Core
                     if (isLaser) Audio.PlayLaserPulse();
                     else Audio.PlayRailgunCrack();
                 }
+                CameraRig?.TriggerCameraShake(isLaser ? 0.14f : 0.38f, isLaser ? 0.16f : 0.28f);
                 Hud?.FloatingCallouts?.ShowCallout(
                     isLaser ? "LASER STRIKE" : "MAIN GUN SALVO",
                     isLaser ? new Color(1f, 0.36f, 0.42f, 1f) : new Color(1f, 0.84f, 0.34f, 1f));
+            };
+            ArenaStage.OnPlayerArmorDamaged += (facetLabel, deltaPct, internalHit) =>
+            {
+                CameraRig?.TriggerCameraShake(internalHit ? 0.72f : 0.45f, internalHit ? 0.42f : 0.30f);
+                if (Audio != null)
+                {
+                    if (internalHit) Audio.PlayRedAlertKlaxon();
+                    else Audio.PlayRailgunCrack();
+                }
+                string safeFacet = MushProtocol.EscapeUnityRichText(facetLabel ?? "HULL");
+                Hud?.FloatingCallouts?.ShowCallout(
+                    internalHit ? $"INTERNAL BREACH -{deltaPct}%!" : $"{safeFacet} ARMOR HIT -{deltaPct}%",
+                    internalHit ? new Color(1f, 0.20f, 0.18f, 1f) : new Color(1f, 0.62f, 0.22f, 1f),
+                    internalHit ? 2.4f : 1.7f);
             };
             ArenaStage.OnRequestArenaMapSubscribe += () =>
             {
@@ -3463,16 +3478,30 @@ namespace TacSim.Core
             if (target == null) return;
             CameraRig.GroundVehicleTarget = target;
             CameraRig.GroundCupolaAnchor = cupola;
-            if (CameraRig.Mode != CameraRigMode.GroundVehicleChase && CameraRig.Mode != CameraRigMode.GroundVehicleCupola)
+            if (CameraRig.Mode != CameraRigMode.GroundVehicleChase &&
+                CameraRig.Mode != CameraRigMode.GroundVehicleCupola &&
+                CameraRig.Mode != CameraRigMode.GroundVehicleOverhead)
                 CameraRig.SetMode(CameraRigMode.GroundVehicleChase);
         }
 
-        private void ToggleGroundVehicleCameraMode()
+        public void ToggleGroundVehicleCameraMode()
         {
+            if (CameraRig == null) return;
             if (CameraRig.Mode == CameraRigMode.GroundVehicleChase)
+            {
                 CameraRig.SetMode(CameraRigMode.GroundVehicleCupola);
+                Hud?.FloatingCallouts?.ShowCallout("CAMERA: COMMANDER CUPOLA", new Color(0.56f, 0.92f, 1f, 1f), 1.3f);
+            }
+            else if (CameraRig.Mode == CameraRigMode.GroundVehicleCupola)
+            {
+                CameraRig.SetMode(CameraRigMode.GroundVehicleOverhead);
+                Hud?.FloatingCallouts?.ShowCallout("CAMERA: TACTICAL OVERHEAD", new Color(0.65f, 0.95f, 0.72f, 1f), 1.3f);
+            }
             else
+            {
                 CameraRig.SetMode(CameraRigMode.GroundVehicleChase);
+                Hud?.FloatingCallouts?.ShowCallout("CAMERA: CHASE VIEW", new Color(0.75f, 0.90f, 1f, 1f), 1.3f);
+            }
         }
     }
 }
