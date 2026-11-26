@@ -30,6 +30,7 @@ namespace TacSim.Core
         public ThirdPersonPlayerController Player;
         public TacSimHudController Hud;
         public TacSimAudioSynthesizer Audio;
+        public TacSimWayfinder3D Wayfinder;
 
         public TacSimTradeAndShipState TradeState { get; private set; }
         public TacSimActiveStage ActiveStage => _stageDirector != null ? _stageDirector.CurrentStage : TacSimActiveStage.StationWalk;
@@ -224,6 +225,20 @@ namespace TacSim.Core
             if (Hud.TacticalBrackets != null)
                 Hud.TacticalBrackets.BindControllers(SpaceStage, SurfaceStage, ArenaStage);
 
+            if (Wayfinder == null)
+            {
+                Wayfinder = FindAnyObjectByType<TacSimWayfinder3D>();
+                if (Wayfinder == null)
+                {
+                    var wfGo = new GameObject("TacSimWayfinder3D");
+                    Wayfinder = wfGo.AddComponent<TacSimWayfinder3D>();
+                }
+            }
+            Wayfinder.EnsureVisuals();
+
+            if (Hud.OpsDirectory != null)
+                Hud.OpsDirectory.BindSources(StationWorld, ShipInterior, Wayfinder, TradeState, SpaceStage, SurfaceStage, ArenaStage);
+
             if (_ws == null)
                 _ws = new MushWsClient();
             if (_contentSync == null)
@@ -362,29 +377,11 @@ namespace TacSim.Core
             {
                 Hud.Minimap.OnStationRoomClicked += targetRoomEntry =>
                 {
-                    if (StationWorld == null || string.IsNullOrEmpty(targetRoomEntry)) return;
-                    if (string.Equals(targetRoomEntry, StationWorld.ActiveRoomEntryId, StringComparison.OrdinalIgnoreCase)) return;
-                    var path = StationWorld.FindExitPath(StationWorld.ActiveRoomEntryId, targetRoomEntry);
-                    if (path != null && path.Count > 0)
-                    {
-                        var first = _navWalker.PlanAndDispatchOne(NavWalkerScope.Station, _serverStationRoomEntry, path, Time.time);
-                        if (first.HasValue)
-                        {
-                            Hud.AppendLogLine($"<color=#66DDFF>[NAV]</color> Plotting walk to <b>{MushProtocol.EscapeUnityRichText(targetRoomEntry)}</b> ({path.Count} hop{(path.Count == 1 ? "" : "s")}).");
-                            DispatchNavHop(first.Value, 0.35f);
-                        }
-                    }
+                    PlotStationWayfinderRoute(targetRoomEntry, autoWalk: true);
                 };
                 Hud.Minimap.OnShipCompartmentClicked += targetComp =>
                 {
-                    if (ShipInterior == null || string.IsNullOrEmpty(targetComp)) return;
-                    var path = ShipInterior.FindExitPath(ShipInterior.ActiveCompartmentId, targetComp);
-                    if (path != null && path.Count > 0)
-                    {
-                        var first = _navWalker.PlanAndDispatchOne(NavWalkerScope.Ship, _serverShipCompartment, path, Time.time);
-                        if (first.HasValue)
-                            DispatchNavHop(first.Value, 0.35f);
-                    }
+                    PlotShipWayfinderRoute(targetComp, autoWalk: true);
                 };
                 Hud.Minimap.OnOrbitalBlipClicked += (id, isRock) =>
                 {
@@ -468,6 +465,46 @@ namespace TacSim.Core
                 };
             }
 
+            if (Wayfinder != null)
+            {
+                Wayfinder.OnArrivedAtDestination += destName =>
+                {
+                    if (Audio != null) Audio.PlayUiClick();
+                    Hud?.AppendLogLine($"<color=#66FFAA>[WAYFINDER]</color> Arrived at <b>{MushProtocol.EscapeUnityRichText(destName)}</b>.");
+                    Hud?.OpsDirectory?.SyncWayfinderBanner(ActiveStage);
+                };
+            }
+
+            if (Hud.OpsDirectory != null)
+            {
+                Hud.OpsDirectory.OnPlotStationRoomRequested += (roomId, autoWalk) => PlotStationWayfinderRoute(roomId, autoWalk);
+                Hud.OpsDirectory.OnPlotShipCompartmentRequested += (compId, autoWalk) => PlotShipWayfinderRoute(compId, autoWalk);
+                Hud.OpsDirectory.OnStepWayfinderWalkRequested += StepActiveWayfinderWalk;
+                Hud.OpsDirectory.OnClearWayfinderRequested += () =>
+                {
+                    Wayfinder?.ClearRoute();
+                    Hud.OpsDirectory?.SyncWayfinderBanner(ActiveStage);
+                };
+                Hud.OpsDirectory.OnPresenceTargetRequested += (id, name, isPlayer) =>
+                {
+                    if (Hud?.UnitFrames == null || string.IsNullOrEmpty(name)) return;
+                    Hud.UnitFrames.SetTarget(
+                        isPlayer ? "PILOT" : "CAST",
+                        isPlayer ? new Color(0.16f, 0.56f, 0.44f, 0.96f) : new Color(0.18f, 0.44f, 0.64f, 0.96f),
+                        name,
+                        isPlayer ? "Online Pilot (Room Presence)" : "Station / Ship Cast",
+                        1f,
+                        "IN ROOM",
+                        new Color(0.24f, 0.78f, 0.58f, 0.95f),
+                        "LOOK",
+                        () => ExecutePlayerCommand($"look {name}"),
+                        isPlayer ? "PAGE" : "SAY",
+                        () => Hud.PrefillChatInput(isPlayer ? $"page {name}=" : $"say {name}, "));
+                };
+                Hud.OpsDirectory.OnPrefillChatRequested += prefix => Hud?.PrefillChatInput(prefix);
+                Hud.OpsDirectory.OnCommandRequested += ExecutePlayerCommand;
+            }
+
             _contentSync.OnSyncLog += msg =>
             {
                 if (Hud != null)
@@ -548,6 +585,65 @@ namespace TacSim.Core
         private float _nextUnitFrameSyncAt;
         private int _arenaCycleIdx = -1;
         private PlayerAvatarPreset _activeAvatarPreset = PlayerAvatarPreset.StellarTrooperFemale;
+
+        private void PlotStationWayfinderRoute(string targetRoomEntry, bool autoWalk)
+        {
+            if (StationWorld == null || string.IsNullOrEmpty(targetRoomEntry)) return;
+            if (string.Equals(targetRoomEntry, StationWorld.ActiveRoomEntryId, StringComparison.OrdinalIgnoreCase)) return;
+
+            Vector3 pPos = Player != null ? Player.transform.position : StationWorld.GetRoomSpawnPosition(StationWorld.ActiveRoomEntryId);
+            bool plotted = Wayfinder != null && Wayfinder.PlotStationRoute(StationWorld, StationWorld.ActiveRoomEntryId, targetRoomEntry, pPos);
+            if (!plotted) return;
+
+            if (Audio != null) Audio.PlayUiClick();
+            Hud?.OpsDirectory?.SyncWayfinderBanner(ActiveStage);
+            Hud?.AppendLogLine($"<color=#66EEFF>[WAYFINDER]</color> 3D trail active to <b>{MushProtocol.EscapeUnityRichText(Wayfinder.TargetDisplayName)}</b> ({Wayfinder.RemainingHops} hop{(Wayfinder.RemainingHops == 1 ? "" : "s")}).");
+
+            if (autoWalk)
+                StepActiveWayfinderWalk();
+        }
+
+        private void PlotShipWayfinderRoute(string targetComp, bool autoWalk)
+        {
+            if (ShipInterior == null || string.IsNullOrEmpty(targetComp)) return;
+            if (string.Equals(targetComp, ShipInterior.ActiveCompartmentId, StringComparison.OrdinalIgnoreCase)) return;
+
+            Vector3 pPos = Player != null ? Player.transform.position : ShipInterior.GetCompartmentSpawnWorldPos(ShipInterior.ActiveCompartmentId);
+            bool plotted = Wayfinder != null && Wayfinder.PlotShipRoute(ShipInterior, ShipInterior.ActiveCompartmentId, targetComp, pPos);
+            if (!plotted) return;
+
+            if (Audio != null) Audio.PlayUiClick();
+            Hud?.OpsDirectory?.SyncWayfinderBanner(ActiveStage);
+            Hud?.AppendLogLine($"<color=#66EEFF>[WAYFINDER]</color> Ship deck trail active to <b>{MushProtocol.EscapeUnityRichText(Wayfinder.TargetDisplayName)}</b> ({Wayfinder.RemainingHops} hop{(Wayfinder.RemainingHops == 1 ? "" : "s")}).");
+
+            if (autoWalk)
+                StepActiveWayfinderWalk();
+        }
+
+        private void StepActiveWayfinderWalk()
+        {
+            if (Wayfinder == null || !Wayfinder.HasActiveRoute) return;
+            if (Wayfinder.Scope == WayfinderScope.Station && StationWorld != null)
+            {
+                var path = StationWorld.FindExitPath(StationWorld.ActiveRoomEntryId, Wayfinder.TargetId);
+                if (path != null && path.Count > 0)
+                {
+                    var first = _navWalker.PlanAndDispatchOne(NavWalkerScope.Station, _serverStationRoomEntry, path, Time.time);
+                    if (first.HasValue)
+                        DispatchNavHop(first.Value, 0.35f);
+                }
+            }
+            else if (Wayfinder.Scope == WayfinderScope.Ship && ShipInterior != null)
+            {
+                var path = ShipInterior.FindExitPath(ShipInterior.ActiveCompartmentId, Wayfinder.TargetId);
+                if (path != null && path.Count > 0)
+                {
+                    var first = _navWalker.PlanAndDispatchOne(NavWalkerScope.Ship, _serverShipCompartment, path, Time.time);
+                    if (first.HasValue)
+                        DispatchNavHop(first.Value, 0.35f);
+                }
+            }
+        }
 
         private void SyncTargetFrameForInteractable(WorldInteractable wi)
         {
@@ -647,6 +743,14 @@ namespace TacSim.Core
                 Hud.Minimap.SyncMinimap(stage, pos, yaw, rightCornerBusy);
             }
 
+            // Update 3D Holographic Wayfinder ribbon & compass banner every frame
+            if (Wayfinder != null)
+            {
+                Vector3 wpPos = Player != null ? Player.transform.position : Vector3.zero;
+                Wayfinder.SyncProgress(stage, StationWorld, ShipInterior, wpPos, Time.deltaTime);
+                Hud.OpsDirectory?.SyncWayfinderBanner(stage);
+            }
+
             // Update 3D screen-space tactical brackets & directional armor/compass widgets every frame
             if (Hud.TacticalBrackets != null)
             {
@@ -660,6 +764,8 @@ namespace TacSim.Core
             if (Hud.UnitFrames == null) return;
             if (Application.isPlaying && Time.unscaledTime < _nextUnitFrameSyncAt) return;
             _nextUnitFrameSyncAt = Time.unscaledTime + 0.15f;
+
+            Hud.OpsDirectory?.UpdateLiveRoom(_lastRoomView, stage);
 
             if (Hud.CharacterSheet != null)
             {
@@ -1013,6 +1119,7 @@ namespace TacSim.Core
             if (SpaceStage != null) SpaceStage.ResetSessionState();
             if (ShipInterior != null) ShipInterior.ResetSessionState();
             if (StationWorld != null) StationWorld.ResetSessionState();
+            if (Wayfinder != null) Wayfinder.ClearRoute();
             if (Player != null)
             {
                 Player.IsSeatedAtHelm = false;
