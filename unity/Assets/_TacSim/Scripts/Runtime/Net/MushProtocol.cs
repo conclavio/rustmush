@@ -1053,6 +1053,28 @@ namespace TacSim.Net
         }
 
         /// <summary>
+        /// Builds canonical ClientCommand::Req with Query::NarrativeBacklog (`narrative` panel delta with `backlog`):
+        /// {"t":"req","d":{"id":1,"q":{"t":"narrative_backlog","d":{"before_seq":42,"limit":30}}}}
+        /// </summary>
+        public static string BuildNarrativeBacklogQueryCommand(ulong id, ulong? beforeSeq = null, int limit = 30)
+        {
+            var obj = JsonNode.NewObject();
+            obj["t"] = JsonNode.FromString("req");
+            var d = JsonNode.NewObject();
+            d["id"] = JsonNode.FromULong(id);
+            var q = JsonNode.NewObject();
+            q["t"] = JsonNode.FromString("narrative_backlog");
+            var qd = JsonNode.NewObject();
+            if (beforeSeq.HasValue)
+                qd["before_seq"] = JsonNode.FromULong(beforeSeq.Value);
+            qd["limit"] = JsonNode.FromLong(Math.Max(1, Math.Min(200, limit)));
+            q["d"] = qd;
+            d["q"] = q;
+            obj["d"] = d;
+            return obj.ToJson();
+        }
+
+        /// <summary>
         /// Builds canonical ClientCommand::Req with Query::PanelSubscribe:
         /// {"t":"req","d":{"id":1,"q":{"t":"panel_subscribe","d":{"feed":"space.cockpit"}}}}
         /// </summary>

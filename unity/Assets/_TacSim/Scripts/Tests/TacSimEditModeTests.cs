@@ -6390,5 +6390,117 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void NarrativeBacklogCommsSearchAndTimestamps_PaginatesFiltersAndStripsRichTags()
+        {
+            // 1. Canonical Query::NarrativeBacklog wire frame (initial & paged)
+            string initReq = MushProtocol.BuildNarrativeBacklogQueryCommand(20UL, beforeSeq: null, limit: 30);
+            StringAssert.Contains("\"t\":\"narrative_backlog\"", initReq);
+            StringAssert.Contains("\"limit\":30", initReq);
+            StringAssert.DoesNotContain("\"before_seq\"", initReq);
+
+            string pagedReq = MushProtocol.BuildNarrativeBacklogQueryCommand(21UL, beforeSeq: 41UL, limit: 25);
+            StringAssert.Contains("\"before_seq\":41", pagedReq);
+            StringAssert.Contains("\"limit\":25", pagedReq);
+
+            // 2. Rich-text tag stripping avoids false positives on markup words like "color"
+            Assert.AreEqual("Voss says, \"Berth 4 clear.\"", TacSim.UI.TacSimHudController.StripUnityRichTextTags("<color=#66EEAA><b>Voss</b></color> says, \"Berth 4 clear.\""));
+
+            var rootGo = new UnityEngine.GameObject("Wave3PR6_NarrativeBacklogTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                ulong? requestedBeforeSeq = 999UL;
+                int requestCount = 0;
+                hud.OnNarrativeBacklogRequested += bSeq => { requestedBeforeSeq = bSeq; requestCount++; };
+
+                // 3. Delta `narrative` backlog passthrough via MushWsClient
+                using (var ws = new MushWsClient())
+                {
+                    ws.OnPanelUpdated += (feed, data) =>
+                    {
+                        if (feed == "narrative")
+                            hud.ApplyNarrativeBacklog(data);
+                    };
+
+                    hud.AppendLogLine("<b>Kestrel</b> says, \"Current live line.\"");
+
+                    ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{
+                        ""seq"": 50, ""ts"": 1700000100000, ""t"": ""panel"",
+                        ""d"": {
+                            ""feed"": ""narrative"", ""kind"": ""delta"",
+                            ""data"": {
+                                ""backlog"": {
+                                    ""before_seq"": null, ""more"": true, ""evicted"": false,
+                                    ""lines"": [
+                                        { ""seq"": 45, ""ts"": 1700000050000, ""kind"": ""say"", ""actor"": { ""id"": ""#22"", ""name"": ""Voss"" }, ""text"": { ""spans"": [ { ""text"": ""Dockmaster cleared berth 4."" } ] } },
+                                        { ""seq"": 41, ""ts"": 1700000010000, ""kind"": ""pose"", ""actor"": { ""id"": ""#23"", ""name"": ""Mira"" }, ""text"": { ""spans"": [ { ""text"": ""waves from the gantry."" } ] } }
+                                    ]
+                                }
+                            }
+                        }
+                    }"));
+                    ws.PumpMainThread();
+
+                    Assert.AreEqual(2, hud.NarrativeBacklogLoadedCount);
+                    Assert.AreEqual(41UL, hud.OldestNarrativeBacklogSeq);
+                    Assert.IsTrue(hud.HasMoreNarrativeBacklog);
+
+                    // Paging earlier dispatches before_seq = 41
+                    hud.RequestEarlierNarrativeBacklog();
+                    Assert.AreEqual(1, requestCount);
+                    Assert.AreEqual(41UL, requestedBeforeSeq);
+
+                    // Duplicate seqs are ignored cleanly
+                    ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{
+                        ""seq"": 51, ""ts"": 1700000105000, ""t"": ""panel"",
+                        ""d"": {
+                            ""feed"": ""narrative"", ""kind"": ""delta"",
+                            ""data"": {
+                                ""backlog"": {
+                                    ""before_seq"": 41, ""more"": false, ""evicted"": false,
+                                    ""lines"": [
+                                        { ""seq"": 41, ""ts"": 1700000010000, ""kind"": ""pose"", ""actor"": { ""id"": ""#23"", ""name"": ""Mira"" }, ""text"": { ""spans"": [ { ""text"": ""waves from the gantry."" } ] } }
+                                    ]
+                                }
+                            }
+                        }
+                    }"));
+                    ws.PumpMainThread();
+                    Assert.AreEqual(2, hud.NarrativeBacklogLoadedCount, "Duplicate backlog sequence IDs must not double-count");
+                    Assert.IsFalse(hud.HasMoreNarrativeBacklog);
+                }
+
+                // 4. Comms search filter matches plain text & ignores rich-text color tags
+                hud.SetCommsSearchQuery("berth 4");
+                Assert.AreEqual(1, hud.VisibleFilteredLineCount, "Search for 'berth 4' should isolate Voss's backlog line");
+
+                hud.SetCommsSearchQuery("color");
+                Assert.AreEqual(0, hud.VisibleFilteredLineCount, "Search for 'color' must not false-match Unity <color=...> markup tags");
+
+                hud.SetCommsSearchQuery(string.Empty);
+                Assert.GreaterOrEqual(hud.VisibleFilteredLineCount, 3);
+
+                // 5. Timestamps toggle
+                hud.SetShowCommsTimestamps(true, persist: false);
+                Assert.IsTrue(hud.ShowCommsTimestamps);
+                hud.AppendLogLine("[SYS] Telemetry link verified.");
+                hud.SetCommsSearchQuery("Telemetry link");
+                Assert.AreEqual(1, hud.VisibleFilteredLineCount);
+
+                // Reset clears backlog state & search query cleanly
+                hud.ResetSessionState();
+                Assert.AreEqual(0, hud.NarrativeBacklogLoadedCount);
+                Assert.IsNull(hud.OldestNarrativeBacklogSeq);
+                Assert.AreEqual(string.Empty, hud.CommsSearchQuery);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

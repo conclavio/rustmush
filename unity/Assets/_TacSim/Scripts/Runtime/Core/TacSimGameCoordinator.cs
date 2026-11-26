@@ -450,6 +450,11 @@ namespace TacSim.Core
             Hud.OnCycleTargetRequested += HandleCycleTarget;
             Hud.OnCycleOrbitalCameraRequested += HandleCycleOrbitalCamera;
             Hud.OnSpaceQuickFireRequested += HandleSpaceQuickFire;
+            Hud.OnNarrativeBacklogRequested += beforeSeq =>
+            {
+                if (_ws != null && _ws.IsConnected)
+                    _ws.SendNarrativeBacklogQuery(beforeSeq, 30);
+            };
 
             if (Hud.Minimap != null)
             {
@@ -732,6 +737,7 @@ namespace TacSim.Core
                     _ws.SendPanelSubscribe("sky.chart");
                 _ws.SendWhoQuery();
                 _ws.SendCommandsQuery();
+                _ws.SendNarrativeBacklogQuery(null, 30);
                 if (_ws.HasAdvertisedPanel("mail") || _ws.HasAdvertisedPanel("mail.list"))
                     _ws.SendMailListQuery();
                 if (_ws.HasAdvertisedPanel("comsys") || _ws.HasAdvertisedPanel("comsys.state"))
@@ -2932,6 +2938,9 @@ namespace TacSim.Core
                     break;
                 case "commands.list":
                     Hud?.CommandPalette?.ApplyServerCommandsList(data);
+                    break;
+                case "narrative":
+                    Hud?.ApplyNarrativeBacklog(data);
                     break;
                 case "npc.thinking":
                     if (data != null && data.IsObject)
