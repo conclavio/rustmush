@@ -24,6 +24,7 @@ namespace TacSim.UI
         public event Action OnExitSurfaceExcursionRequested;
         public event Action OnOpenGroundChartRequested;
         public event Action<string> OnArenaCockpitVerbRequested;
+        public event Action<string> OnPrefillChatRequested;
         public event Action OnToggleVehicleCameraViewRequested;
 
         private Font _font;
@@ -84,6 +85,26 @@ namespace TacSim.UI
         private Transform _arenaKeySpotsRowRoot;
         private string _lastKeySpotsSignature = string.Empty;
 
+        // OOC Arena Detachment Squad Command & Incoming Order Banner (`arena.cockpit.detachment`)
+        private GameObject _detachmentBar;
+        private GameObject _detachmentOrderRow;
+        private Text _detachmentOrderText;
+        private Button _detachmentWilcoBtn;
+        private Button _detachmentNegativeBtn;
+        private Text _detachmentInvalidText;
+
+        private sealed class PooledDetachmentSlotButton
+        {
+            public GameObject Root;
+            public Image Background;
+            public Button Button;
+            public Text Label;
+            public string BoundPrefill;
+        }
+
+        private const int MaxPooledDetachmentButtons = 7; // [ALL] + slots 1..6
+        private readonly List<PooledDetachmentSlotButton> _detachmentSlotPool = new List<PooledDetachmentSlotButton>(MaxPooledDetachmentButtons);
+
         private const string DefaultLobbyRosterHint =
             "Walk north into <b>Red Room</b> or south into <b>Blue Room</b> after <b>SIM START</b>, then press <b>[E]</b> on your pod (or click <b>BOARD POD</b>)!";
 
@@ -102,6 +123,22 @@ namespace TacSim.UI
 
         public bool IsLobbyModalOpen => _arenaLobbyModal != null && _arenaLobbyModal.activeSelf;
         public bool IsSpaceFireCardVisible => _spaceFireCard != null && _spaceFireCard.activeSelf;
+        public bool IsDetachmentBarVisible => _detachmentBar != null && _detachmentBar.activeSelf;
+        public bool IsDetachmentOrderBannerVisible => _detachmentOrderRow != null && _detachmentOrderRow.activeSelf;
+        public string DetachmentOrderText => _detachmentOrderText != null ? _detachmentOrderText.text : string.Empty;
+        public int VisibleDetachmentSlotButtonCount
+        {
+            get
+            {
+                int n = 0;
+                for (int i = 0; i < _detachmentSlotPool.Count; i++)
+                {
+                    if (_detachmentSlotPool[i].Root != null && _detachmentSlotPool[i].Root.activeSelf)
+                        n++;
+                }
+                return n;
+            }
+        }
         public string SpaceLockSummaryText => _spaceLockSummaryText != null ? _spaceLockSummaryText.text : string.Empty;
         public int VisibleSpaceMountRowCount
         {
@@ -134,6 +171,7 @@ namespace TacSim.UI
             _modeBtnImages.Clear();
             _contactRowPool.Clear();
             _spaceMountRowPool.Clear();
+            _detachmentSlotPool.Clear();
 
             if (gameplayHudRoot == null) return;
 
@@ -192,6 +230,7 @@ namespace TacSim.UI
             if (_surfaceHudRoot != null) _surfaceHudRoot.SetActive(false);
             if (_arenaLobbyModal != null) _arenaLobbyModal.SetActive(false);
             if (_arenaBattleHudRoot != null) _arenaBattleHudRoot.SetActive(false);
+            if (_detachmentBar != null) _detachmentBar.SetActive(false);
             if (_arenaLobbyLiveRosterText != null) _arenaLobbyLiveRosterText.text = DefaultLobbyRosterHint;
         }
 
@@ -232,12 +271,42 @@ namespace TacSim.UI
                 : null;
         }
 
+        private string ResolveSquadAllOrderPrefix()
+        {
+            var det = _arena?.State?.Detachment;
+            if (det != null && !string.IsNullOrEmpty(det.AllOrderPrefill))
+                return det.AllOrderPrefill;
+            return "order all ";
+        }
+
         public string ResolveSquadAdvanceCommand()
         {
             string spot = ResolveAdvanceSpot();
             return MushProtocol.TryValidateSafeCommandToken(spot, out string safeSpot, maxLen: 16)
-                ? $"order all advance {safeSpot}"
+                ? $"{ResolveSquadAllOrderPrefix()}advance {safeSpot}"
                 : null;
+        }
+
+        public void DispatchDetachmentWilco()
+        {
+            string cmd = _arena?.State?.Detachment?.WilcoCommand;
+            if (!string.IsNullOrEmpty(cmd))
+                OnArenaCockpitVerbRequested?.Invoke(cmd);
+        }
+
+        public void DispatchDetachmentNegative()
+        {
+            string cmd = _arena?.State?.Detachment?.NegativeCommand;
+            if (!string.IsNullOrEmpty(cmd))
+                OnArenaCockpitVerbRequested?.Invoke(cmd);
+        }
+
+        public void PrefillDetachmentSlot(int buttonIndex)
+        {
+            if (buttonIndex < 0 || buttonIndex >= _detachmentSlotPool.Count) return;
+            var btn = _detachmentSlotPool[buttonIndex];
+            if (btn.Root != null && btn.Root.activeSelf && !string.IsNullOrEmpty(btn.BoundPrefill))
+                OnPrefillChatRequested?.Invoke(btn.BoundPrefill);
         }
 
         private void UpdateAdvanceButtonVisual()
@@ -879,7 +948,7 @@ namespace TacSim.UI
             var sHlg = squadRow.AddComponent<HorizontalLayoutGroup>();
             sHlg.spacing = 5f; sHlg.childControlWidth = true; sHlg.childControlHeight = true; sHlg.childForceExpandWidth = true;
 
-            CreateBtn(squadRow.transform, "SQUAD: ENGAGE", new Color(0.52f, 0.24f, 0.16f), () => OnArenaCockpitVerbRequested?.Invoke("order all engage"));
+            CreateBtn(squadRow.transform, "SQUAD: ENGAGE", new Color(0.52f, 0.24f, 0.16f), () => OnArenaCockpitVerbRequested?.Invoke($"{ResolveSquadAllOrderPrefix()}engage"));
             _advanceBtn = CreateBtn(squadRow.transform, "SQUAD: ADVANCE", new Color(0.46f, 0.34f, 0.14f), () =>
             {
                 string advCmd = ResolveSquadAdvanceCommand();
@@ -887,9 +956,48 @@ namespace TacSim.UI
                     OnArenaCockpitVerbRequested?.Invoke(advCmd);
             });
             _advanceBtnLabel = _advanceBtn.GetComponentInChildren<Text>();
-            CreateBtn(squadRow.transform, "SQUAD: HOLD", new Color(0.20f, 0.36f, 0.46f), () => OnArenaCockpitVerbRequested?.Invoke("order all hold"));
+            CreateBtn(squadRow.transform, "SQUAD: HOLD", new Color(0.20f, 0.36f, 0.46f), () => OnArenaCockpitVerbRequested?.Invoke($"{ResolveSquadAllOrderPrefix()}hold"));
             CreateBtn(squadRow.transform, "CUPOLA [V]", new Color(0.28f, 0.28f, 0.46f), () => OnToggleVehicleCameraViewRequested?.Invoke());
             CreateBtn(squadRow.transform, "EXIT POD", new Color(0.48f, 0.16f, 0.18f), () => OnArenaCockpitVerbRequested?.Invoke("exit"));
+
+            // Detachment Command Deck (stacked cleanly above ArenaSquadOrderBar, visible only when server projects `detachment`)
+            _detachmentBar = CreatePanel(_arenaBattleHudRoot.transform, "ArenaDetachmentBar", new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(452f, 114f), new Vector2(-446f, 184f), new Color(0.03f, 0.07f, 0.13f, 0.94f));
+
+            _detachmentOrderRow = CreatePanel(_detachmentBar.transform, "DetachmentOrderRow", new Vector2(0f, 0.50f), new Vector2(1f, 1f), new Vector2(8f, 2f), new Vector2(-8f, -4f), new Color(0.08f, 0.12f, 0.18f, 0.92f));
+            _detachmentOrderText = CreateTxt(_detachmentOrderRow.transform, "", 12, FontStyle.Bold, TextAnchor.MiddleLeft, Color.white);
+            _detachmentOrderText.supportRichText = true;
+            SetRect(_detachmentOrderText.rectTransform, new Vector2(0f, 0f), new Vector2(0.72f, 1f), new Vector2(8f, 0f), new Vector2(-4f, 0f));
+
+            _detachmentWilcoBtn = CreateBtn(_detachmentOrderRow.transform, "WILCO", new Color(0.14f, 0.48f, 0.30f), DispatchDetachmentWilco);
+            SetRect(_detachmentWilcoBtn.GetComponent<RectTransform>(), new Vector2(0.73f, 0f), new Vector2(0.86f, 1f), new Vector2(2f, 2f), new Vector2(-2f, -2f));
+
+            _detachmentNegativeBtn = CreateBtn(_detachmentOrderRow.transform, "NEGATIVE", new Color(0.54f, 0.18f, 0.18f), DispatchDetachmentNegative);
+            SetRect(_detachmentNegativeBtn.GetComponent<RectTransform>(), new Vector2(0.86f, 0f), new Vector2(1f, 1f), new Vector2(2f, 2f), new Vector2(-2f, -2f));
+            _detachmentOrderRow.SetActive(false);
+
+            _detachmentInvalidText = CreateTxt(_detachmentBar.transform, "<color=#FF7766>DETACHMENT PROJECTION INVALID — COMMANDS DISABLED</color>", 12, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(1f, 0.52f, 0.46f));
+            _detachmentInvalidText.supportRichText = true;
+            SetRect(_detachmentInvalidText.rectTransform, new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(10f, 4f), new Vector2(-10f, -4f));
+            _detachmentInvalidText.gameObject.SetActive(false);
+
+            var detSlotsRow = CreatePanel(_detachmentBar.transform, "DetachmentSlotsRow", new Vector2(0f, 0f), new Vector2(1f, 0.50f), new Vector2(8f, 4f), new Vector2(-8f, -2f), Color.clear);
+            var detHlg = detSlotsRow.AddComponent<HorizontalLayoutGroup>();
+            detHlg.spacing = 4f; detHlg.childControlWidth = true; detHlg.childControlHeight = true; detHlg.childForceExpandWidth = true;
+
+            for (int b = 0; b < MaxPooledDetachmentButtons; b++)
+            {
+                int capturedIdx = b;
+                var slotBtn = new PooledDetachmentSlotButton();
+                var btn = CreateBtn(detSlotsRow.transform, string.Empty, new Color(0.14f, 0.28f, 0.40f), () => PrefillDetachmentSlot(capturedIdx));
+                slotBtn.Root = btn.gameObject;
+                slotBtn.Button = btn;
+                slotBtn.Background = btn.GetComponent<Image>();
+                slotBtn.Label = btn.GetComponentInChildren<Text>();
+                if (slotBtn.Label != null) slotBtn.Label.fontSize = 11;
+                slotBtn.Root.SetActive(false);
+                _detachmentSlotPool.Add(slotBtn);
+            }
+            _detachmentBar.SetActive(false);
 
             _arenaBattleHudRoot.SetActive(false);
         }
@@ -962,7 +1070,101 @@ namespace TacSim.UI
 
             RebuildKeySpotButtonsIfChanged();
             UpdateAdvanceButtonVisual();
+            UpdateDetachmentCommandDeck(s);
             UpdatePooledContactRows(s);
+        }
+
+        private void UpdateDetachmentCommandDeck(ArenaCockpitState s)
+        {
+            if (_detachmentBar == null) return;
+            var det = s?.Detachment;
+            bool invalid = s != null && s.DetachmentProjectionInvalid;
+
+            if (det == null && !invalid)
+            {
+                if (_detachmentBar.activeSelf) _detachmentBar.SetActive(false);
+                return;
+            }
+
+            if (!_detachmentBar.activeSelf) _detachmentBar.SetActive(true);
+
+            if (invalid || det == null)
+            {
+                if (_detachmentInvalidText != null) _detachmentInvalidText.gameObject.SetActive(true);
+                if (_detachmentOrderRow != null) _detachmentOrderRow.SetActive(false);
+                for (int i = 0; i < _detachmentSlotPool.Count; i++)
+                {
+                    _detachmentSlotPool[i].BoundPrefill = null;
+                    if (_detachmentSlotPool[i].Root != null && _detachmentSlotPool[i].Root.activeSelf)
+                        _detachmentSlotPool[i].Root.SetActive(false);
+                }
+                return;
+            }
+
+            if (_detachmentInvalidText != null) _detachmentInvalidText.gameObject.SetActive(false);
+
+            // 1. Incoming Order Banner + WILCO / NEGATIVE controls
+            if (_detachmentOrderRow != null)
+            {
+                bool hasOrder = det.MyOrder != null;
+                _detachmentOrderRow.SetActive(hasOrder);
+                if (hasOrder)
+                {
+                    string safeFrom = MushProtocol.EscapeUnityRichText((det.MyOrder.From ?? string.Empty).ToUpperInvariant());
+                    string safeObj = MushProtocol.EscapeUnityRichText(det.MyOrder.Objective ?? string.Empty);
+                    string badge = det.MyOrder.Response == "wilco"
+                        ? "<color=#55FF99>[WILCO]</color>"
+                        : det.MyOrder.Response == "negative"
+                            ? "<color=#FF7766>[NEGATIVE]</color>"
+                            : "<color=#FFDD55>[AWAITING ACK]</color>";
+                    if (_detachmentOrderText != null)
+                        _detachmentOrderText.text = $"<color=#77CCFF>ORDER {safeFrom}:</color> {safeObj}  {badge}";
+                    if (_detachmentWilcoBtn != null)
+                        _detachmentWilcoBtn.interactable = !string.IsNullOrEmpty(det.WilcoCommand) && det.MyOrder.Response != "wilco";
+                    if (_detachmentNegativeBtn != null)
+                        _detachmentNegativeBtn.interactable = !string.IsNullOrEmpty(det.NegativeCommand) && det.MyOrder.Response != "negative";
+                }
+            }
+
+            // 2. Pooled Slot Prefill Buttons: index 0 = [ALL], index 1..N = detachment slots
+            int shown = 0;
+            if (_detachmentSlotPool.Count > 0)
+            {
+                var allBtn = _detachmentSlotPool[0];
+                allBtn.BoundPrefill = det.AllOrderPrefill;
+                if (allBtn.Label != null) allBtn.Label.text = $"ALL [DT:{det.Id}]";
+                if (allBtn.Background != null) allBtn.Background.color = new Color(0.24f, 0.36f, 0.52f);
+                if (allBtn.Root != null && !allBtn.Root.activeSelf) allBtn.Root.SetActive(true);
+                shown = 1;
+            }
+
+            for (int i = 0; i < det.Slots.Count && shown < _detachmentSlotPool.Count; i++)
+            {
+                var sl = det.Slots[i];
+                var btn = _detachmentSlotPool[shown];
+                bool isLeader = det.LeaderSlot.HasValue && det.LeaderSlot.Value == sl.Slot;
+                string ctrlTag = sl.Controller == "player" ? "P" : sl.Controller == "npc" ? "NPC" : "AI";
+                btn.BoundPrefill = sl.OrderPrefill;
+                if (btn.Label != null)
+                    btn.Label.text = $"{sl.Slot} {sl.Callsign}{(isLeader ? "*" : "")} [{ctrlTag}]";
+                if (btn.Background != null)
+                {
+                    btn.Background.color = isLeader
+                        ? new Color(0.46f, 0.34f, 0.14f)
+                        : sl.Controller == "player"
+                            ? new Color(0.14f, 0.38f, 0.48f)
+                            : new Color(0.16f, 0.22f, 0.30f);
+                }
+                if (btn.Root != null && !btn.Root.activeSelf) btn.Root.SetActive(true);
+                shown++;
+            }
+
+            for (int r = shown; r < _detachmentSlotPool.Count; r++)
+            {
+                _detachmentSlotPool[r].BoundPrefill = null;
+                if (_detachmentSlotPool[r].Root != null && _detachmentSlotPool[r].Root.activeSelf)
+                    _detachmentSlotPool[r].Root.SetActive(false);
+            }
         }
 
         private void RebuildKeySpotButtonsIfChanged()

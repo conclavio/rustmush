@@ -42,6 +42,174 @@ namespace TacSim.Arena
         public int HitOddsPct;
     }
 
+    public sealed class ArenaDetachmentSlot
+    {
+        public int Slot;
+        public string Callsign = string.Empty;
+        public string Pilot;
+        public string Controller = "automated"; // "player" | "npc" | "automated"
+        public string OrderPrefill = string.Empty;
+    }
+
+    public sealed class ArenaDetachmentOrder
+    {
+        public string Sequence = string.Empty;
+        public string From = string.Empty;
+        public string Objective = string.Empty;
+        public string Response; // null | "wilco" | "negative"
+    }
+
+    /// <summary>
+    /// Strict server-projected detachment command roster matching `crates/tacsim/src/detachment/live.rs`
+    /// and `web/src/lib/detachment.ts`. Invalid projected commands disable the whole surface (never trimmed/repaired).
+    /// </summary>
+    public sealed class ArenaDetachmentState
+    {
+        public string Id = string.Empty;
+        public string Revision = string.Empty;
+        public string Term = string.Empty;
+        public int? LeaderSlot;
+        public readonly List<ArenaDetachmentSlot> Slots = new List<ArenaDetachmentSlot>(6);
+        public string AllOrderPrefill = string.Empty;
+        public ArenaDetachmentOrder MyOrder;
+        public string WilcoCommand;
+        public string NegativeCommand;
+
+        private static bool IsCounter(string s)
+        {
+            if (string.IsNullOrEmpty(s) || s.Length > 20) return false;
+            if (s.Length > 1 && s[0] == '0') return false;
+            for (int i = 0; i < s.Length; i++)
+            {
+                if (s[i] < '0' || s[i] > '9') return false;
+            }
+            return ulong.TryParse(s, out _);
+        }
+
+        private static bool IsSafeLabel(string s, int maxChars)
+        {
+            if (string.IsNullOrEmpty(s) || s.Length > maxChars) return false;
+            for (int i = 0; i < s.Length; i++)
+            {
+                char c = s[i];
+                if (c < 0x20 || (c >= 0x7F && c <= 0x9F) || c == '\u2028' || c == '\u2029')
+                    return false;
+            }
+            return true;
+        }
+
+        public static bool TryDecode(JsonNode node, out ArenaDetachmentState result)
+        {
+            result = null;
+            if (node == null || !node.IsObject) return false;
+
+            string id = node["id"].Kind == JsonKind.String ? node.Str("id", string.Empty) : string.Empty;
+            string rev = node["revision"].Kind == JsonKind.String ? node.Str("revision", string.Empty) : string.Empty;
+            string term = node["term"].Kind == JsonKind.String ? node.Str("term", string.Empty) : string.Empty;
+            if (!IsCounter(id) || !IsCounter(rev) || !IsCounter(term)) return false;
+
+            var slotsArr = node["slots"].AsArray();
+            if (slotsArr == null || slotsArr.Count == 0 || slotsArr.Count > 6) return false;
+
+            string prefix = $"ORDER DT:{id}:{rev}:{term} ";
+            string allPrefill = node["all_order_prefill"].Kind == JsonKind.String ? node.Str("all_order_prefill", string.Empty) : string.Empty;
+            if (!string.Equals(allPrefill, prefix + "ALL ", StringComparison.Ordinal)) return false;
+
+            var parsed = new ArenaDetachmentState
+            {
+                Id = id,
+                Revision = rev,
+                Term = term,
+                AllOrderPrefill = allPrefill
+            };
+
+            var seen = new HashSet<int>();
+            for (int i = 0; i < slotsArr.Count; i++)
+            {
+                var raw = slotsArr[i];
+                if (!raw.IsObject) return false;
+                if (raw["slot"].Kind != JsonKind.Int && raw["slot"].Kind != JsonKind.Float) return false;
+                double rawNum = raw.Double("slot", -1);
+                int slot = (int)rawNum;
+                if (Math.Abs(rawNum - slot) > 1e-9 || slot < 1 || slot > 6 || !seen.Add(slot)) return false;
+
+                string cs = raw["callsign"].Kind == JsonKind.String ? raw.Str("callsign", string.Empty) : string.Empty;
+                if (!IsSafeLabel(cs, 32)) return false;
+
+                string pilot = null;
+                if (!raw["pilot"].IsNull)
+                {
+                    if (raw["pilot"].Kind != JsonKind.String) return false;
+                    pilot = raw.Str("pilot", string.Empty);
+                    if (!IsSafeLabel(pilot, 96)) return false;
+                }
+
+                string ctrl = raw["controller"].Kind == JsonKind.String ? raw.Str("controller", string.Empty) : string.Empty;
+                if (ctrl != "player" && ctrl != "npc" && ctrl != "automated") return false;
+
+                string pref = raw["order_prefill"].Kind == JsonKind.String ? raw.Str("order_prefill", string.Empty) : string.Empty;
+                if (!string.Equals(pref, $"{prefix}{slot} ", StringComparison.Ordinal)) return false;
+
+                parsed.Slots.Add(new ArenaDetachmentSlot
+                {
+                    Slot = slot,
+                    Callsign = cs,
+                    Pilot = pilot,
+                    Controller = ctrl,
+                    OrderPrefill = pref
+                });
+            }
+            parsed.Slots.Sort((a, b) => a.Slot.CompareTo(b.Slot));
+
+            if (!node["leader_slot"].IsNull)
+            {
+                if (node["leader_slot"].Kind != JsonKind.Int && node["leader_slot"].Kind != JsonKind.Float) return false;
+                double lNum = node.Double("leader_slot", -1);
+                int ls = (int)lNum;
+                if (Math.Abs(lNum - ls) > 1e-9 || !seen.Contains(ls)) return false;
+                parsed.LeaderSlot = ls;
+            }
+
+            if (!node["my_order"].IsNull)
+            {
+                var ord = node["my_order"];
+                if (!ord.IsObject) return false;
+                string seq = ord["sequence"].Kind == JsonKind.String ? ord.Str("sequence", string.Empty) : string.Empty;
+                string from = ord["from"].Kind == JsonKind.String ? ord.Str("from", string.Empty) : string.Empty;
+                string obj = ord["objective"].Kind == JsonKind.String ? ord.Str("objective", string.Empty) : string.Empty;
+                if (!IsCounter(seq) || !IsSafeLabel(from, 96) || !IsSafeLabel(obj, 256)) return false;
+
+                string resp = null;
+                if (!ord["response"].IsNull)
+                {
+                    if (ord["response"].Kind != JsonKind.String) return false;
+                    resp = ord.Str("response", string.Empty);
+                    if (resp != "wilco" && resp != "negative") return false;
+                }
+                parsed.MyOrder = new ArenaDetachmentOrder
+                {
+                    Sequence = seq,
+                    From = from,
+                    Objective = obj,
+                    Response = resp
+                };
+            }
+
+            string expectedWilco = parsed.MyOrder != null ? $"WILCO DT:{id}:{rev} {parsed.MyOrder.Sequence}" : null;
+            string expectedNeg = parsed.MyOrder != null ? $"NEGATIVE DT:{id}:{rev} {parsed.MyOrder.Sequence}" : null;
+            string actualWilco = node["wilco_command"].IsNull ? null : (node["wilco_command"].Kind == JsonKind.String ? node.Str("wilco_command", string.Empty) : "__bad__");
+            string actualNeg = node["negative_command"].IsNull ? null : (node["negative_command"].Kind == JsonKind.String ? node.Str("negative_command", string.Empty) : "__bad__");
+            if (!string.Equals(actualWilco, expectedWilco, StringComparison.Ordinal) ||
+                !string.Equals(actualNeg, expectedNeg, StringComparison.Ordinal))
+                return false;
+
+            parsed.WilcoCommand = actualWilco;
+            parsed.NegativeCommand = actualNeg;
+            result = parsed;
+            return true;
+        }
+    }
+
     public sealed class ArenaCockpitState
     {
         public ulong MatchId;
@@ -82,6 +250,8 @@ namespace TacSim.Arena
         public int HoldControlScore;
         public string SquadPosture = "ENGAGE";
         public string MatchBanner = string.Empty;
+        public ArenaDetachmentState Detachment;
+        public bool DetachmentProjectionInvalid;
 
         public readonly List<ArenaWeaponSlotState> Weapons = new List<ArenaWeaponSlotState>();
         public readonly List<ArenaContactState> Contacts = new List<ArenaContactState>();
@@ -166,6 +336,7 @@ namespace TacSim.Arena
         public event Action OnReplayStateChanged;
         public event Action OnReplayClosed;
         public event Action<string> OnArenaCombatLog;
+        public event Action<ArenaDetachmentOrder> OnNewDetachmentOrderReceived;
         public event Action OnToggleCameraViewRequested;
         public event Action<bool> OnWeaponShotFired; // (isLaser)
 
@@ -218,6 +389,7 @@ namespace TacSim.Arena
             _desiredLiveSpeedKph = 0f;
             _lastSentSpeedKph = 0f;
             _lastSentHeadingDeg = -999f;
+            _lastNotifiedDetachmentOrderKey = string.Empty;
             LiveLobbyMatchState = "idle";
             LiveLobbySlotSummary = string.Empty;
             State = new ArenaCockpitState();
@@ -247,6 +419,7 @@ namespace TacSim.Arena
         private readonly List<ArenaReplayShot> _scratchWindowShots = new List<ArenaReplayShot>(16);
         private readonly List<ActiveShotTracer> _activeTracers = new List<ActiveShotTracer>();
         private int _pendingOpenKeyframeIndex = -1;
+        private string _lastNotifiedDetachmentOrderKey = string.Empty;
 
         private float _desiredLiveSpeedKph;
         private float _desiredLiveHeadingDeg = 90f;
@@ -894,6 +1067,41 @@ namespace TacSim.Arena
                 EnsurePlayerRigSpawned(State.UnitType, State.Callsign, State.Party);
 
             UpdateOwnPlayerRigPose(0.1f);
+
+            // Strict server-projected detachment roster & orders (`crates/tacsim/src/detachment/live.rs`)
+            var detNode = d["detachment"];
+            if (detNode != null && !detNode.IsNull)
+            {
+                if (ArenaDetachmentState.TryDecode(detNode, out var det))
+                {
+                    State.Detachment = det;
+                    State.DetachmentProjectionInvalid = false;
+                    if (det.MyOrder != null && string.IsNullOrEmpty(det.MyOrder.Response))
+                    {
+                        string ordKey = $"{det.Id}:{det.Revision}:{det.MyOrder.Sequence}";
+                        if (!string.Equals(ordKey, _lastNotifiedDetachmentOrderKey, StringComparison.Ordinal))
+                        {
+                            _lastNotifiedDetachmentOrderKey = ordKey;
+                            OnNewDetachmentOrderReceived?.Invoke(det.MyOrder);
+                        }
+                    }
+                    else if (det.MyOrder == null)
+                    {
+                        _lastNotifiedDetachmentOrderKey = string.Empty;
+                    }
+                }
+                else
+                {
+                    State.Detachment = null;
+                    State.DetachmentProjectionInvalid = true;
+                }
+            }
+            else
+            {
+                State.Detachment = null;
+                State.DetachmentProjectionInvalid = false;
+                _lastNotifiedDetachmentOrderKey = string.Empty;
+            }
 
             var notices = d["notices"].AsArray();
             if (notices != null)
