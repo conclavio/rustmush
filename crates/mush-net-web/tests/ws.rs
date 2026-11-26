@@ -5,12 +5,12 @@ mod common;
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
-use std::time::Duration;
 
 use common::{CHAR_KEY, MockWebHooks, TOKEN, spawn_server, sys_env, test_config};
 use futures::{SinkExt, StreamExt};
 use mush_net_web::{AttachErr, ResumeErr, ResumeOk, WEB_CONN_ID_BASE, WebConfig};
 use mush_proto::{ClientCommand, Envelope, OutputEvent, PictureKind, ProjectedCommitToken, Query};
+use mush_storykit::within;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::error::ProtocolError;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
@@ -43,9 +43,8 @@ async fn connect_ws(
 /// Next JSON envelope (skips WS-level control frames).
 async fn recv_env(ws: &mut Ws) -> Envelope {
     loop {
-        let msg = tokio::time::timeout(Duration::from_secs(3), ws.next())
+        let msg = within("a frame", ws.next())
             .await
-            .expect("timed out waiting for a frame")
             .expect("stream ended")
             .expect("ws error");
         match msg {
@@ -59,9 +58,7 @@ async fn recv_env(ws: &mut Ws) -> Envelope {
 /// Reads until the server's close frame; returns `(code, reason)`.
 async fn recv_close(ws: &mut Ws) -> (u16, String) {
     loop {
-        let msg = tokio::time::timeout(Duration::from_secs(3), ws.next())
-            .await
-            .expect("timed out waiting for close");
+        let msg = within("the close frame", ws.next()).await;
         match msg {
             Some(Ok(Message::Close(Some(frame)))) => {
                 return (frame.code.into(), frame.reason.to_string());
@@ -299,7 +296,7 @@ async fn resume_bad_session_closes_4401_without_attach() {
     let (code, _reason) = recv_close(&mut ws).await;
     assert_eq!(code, 4401);
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    hooks.sockets_ended(1).await;
     let st = hooks.state();
     assert!(
         st.disconnects.is_empty(),
@@ -318,7 +315,7 @@ async fn resume_busy_closes_1013_without_fresh_attach() {
     assert_eq!(code, 1013, "temporary admission pressure is retryable");
     assert_eq!(reason, "server busy; try again");
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    hooks.sockets_ended(1).await;
     let st = hooks.state();
     assert_eq!(st.resumes.len(), 1, "resume was attempted exactly once");
     assert!(
@@ -342,7 +339,7 @@ async fn resume_unavailable_closes_1012_without_fresh_attach() {
     assert_eq!(code, 1012, "boundary loss is a service-restart condition");
     assert_eq!(reason, "game restarting; reconnect shortly");
 
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    hooks.sockets_ended(1).await;
     let st = hooks.state();
     assert_eq!(st.resumes.len(), 1, "resume was attempted exactly once");
     assert!(
@@ -365,7 +362,7 @@ async fn connect_refusal_closes_4401_with_reason() {
     let (code, reason) = recv_close(&mut ws).await;
     assert_eq!(code, 4401);
     assert_eq!(reason, "That character is unavailable.");
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    hooks.sockets_ended(1).await;
     assert!(hooks.state().disconnects.is_empty());
 }
 
@@ -407,7 +404,7 @@ async fn a_busy_or_restarting_game_never_spends_the_fatal_close() {
         let (code, reason) = recv_close(&mut ws).await;
         assert_eq!(code, expected_code);
         assert_eq!(reason, expected_reason);
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        hooks.sockets_ended(1).await;
         assert!(hooks.state().disconnects.is_empty(), "never attached");
     }
 }
@@ -449,7 +446,7 @@ async fn oversize_frame_closes_the_connection() {
     // bytes can surface to the peer as WSAECONNRESET before the close frame.
     // Either outcome proves the transport was closed; when the close frame
     // wins the race, its protocol code must still be correct.
-    let close = tokio::time::timeout(Duration::from_secs(3), async {
+    let close = within("the oversize connection's teardown", async {
         loop {
             match ws.next().await {
                 Some(Ok(Message::Close(Some(frame)))) => {
@@ -475,8 +472,7 @@ async fn oversize_frame_closes_the_connection() {
             }
         }
     })
-    .await
-    .expect("timed out waiting for oversize connection teardown");
+    .await;
     if let Some(code) = close {
         assert_eq!(code, 1008);
     }
@@ -522,9 +518,8 @@ async fn unanswered_pings_close_the_connection() {
 
     let mut pings = 0u32;
     let code = loop {
-        let msg = tokio::time::timeout(Duration::from_secs(3), ws.next())
+        let msg = within("a ping or the keepalive close", ws.next())
             .await
-            .expect("timed out")
             .expect("stream ended")
             .expect("ws error");
         match msg {
@@ -556,21 +551,25 @@ async fn answered_pings_keep_the_connection_alive() {
         max_missed_pongs: 2,
         ..test_config()
     };
+    let config_missed = config.max_missed_pongs;
     let addr = spawn_server(hooks.clone(), config).await;
     let (mut ws, _) = connect_ws(addr, "char=7").await.unwrap();
     expect_hello(&recv_env(&mut ws).await);
 
-    // Answer every ping for ~10 intervals — far past the 2-missed cutoff.
-    let deadline = tokio::time::Instant::now() + Duration::from_millis(400);
-    while tokio::time::Instant::now() < deadline {
-        let Ok(msg) = tokio::time::timeout(Duration::from_millis(60), ws.next()).await else {
-            continue;
-        };
-        let msg = msg.expect("stream ended").expect("ws error");
+    // Answer five times as many pings as the cutoff allows to go missing.
+    // Each ping is the server's own mark that one more interval has passed
+    // with the connection open, so no span is chosen here.
+    let mut answered = 0;
+    while answered < 5 * config_missed {
+        let msg = within("a ping", ws.next())
+            .await
+            .expect("stream ended")
+            .expect("ws error");
         if let Message::Text(text) = msg {
             let env: Envelope = serde_json::from_str(text.as_str()).unwrap();
             if let OutputEvent::Ping { nonce } = env.event {
                 send_cmd(&mut ws, &ClientCommand::Pong { nonce }).await;
+                answered += 1;
             }
         } else if let Message::Close(frame) = msg {
             panic!("connection closed despite pongs: {frame:?}");
@@ -612,7 +611,9 @@ async fn client_disconnect_reports_disconnected_once() {
             st.disconnects.len() == 1
         })
         .await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // The slot is given back after the one `disconnected` call: a second one
+    // would have come before it.
+    hooks.sockets_ended(1).await;
     assert_eq!(hooks.state().disconnects.len(), 1, "exactly once");
 }
 
@@ -790,23 +791,37 @@ async fn a_picture_request_is_accepted_as_a_noop_and_sends_no_binary_frames() {
         .await;
     }
 
+    // The marks (doc 51 §3.3). The pump takes a connection's commands in
+    // order and writes whatever a command answers before it reads the next,
+    // so once the line after the requests has reached the game, any frame a
+    // request drew is already on the wire. The game's envelope is written
+    // after that, so every such frame arrives before it.
+    send_cmd(&mut ws, &ClientCommand::Line("mark".into())).await;
+    hooks
+        .wait_for("the line after the picture requests", |st| {
+            st.lines.iter().any(|(_, line)| line == "mark")
+        })
+        .await;
     let tx = {
         let st = hooks.state();
         st.conns.values().next().unwrap().clone()
     };
     tx.send(sys_env(1, "still here")).await.unwrap();
-    let env = recv_env(&mut ws).await;
-    assert_eq!(env.seq, 1);
-
-    let binary = tokio::time::timeout(Duration::from_millis(200), async {
-        loop {
-            match ws.next().await {
-                Some(Ok(Message::Binary(_))) => return true,
-                Some(Ok(_)) => {}
-                _ => return false,
+    loop {
+        let msg = within("the game's envelope", ws.next())
+            .await
+            .expect("stream ended")
+            .expect("ws error");
+        match msg {
+            Message::Binary(_) => panic!("no server-side PNG frames are sent"),
+            Message::Text(text) => {
+                let env: Envelope = serde_json::from_str(text.as_str()).unwrap();
+                if env.seq == 1 {
+                    break;
+                }
             }
+            Message::Close(frame) => panic!("unexpected close: {frame:?}"),
+            _ => {}
         }
-    })
-    .await;
-    assert!(binary.is_err(), "no server-side PNG frames are sent");
+    }
 }

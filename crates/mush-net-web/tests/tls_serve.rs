@@ -32,6 +32,7 @@ use std::time::Duration;
 
 use common::{MockWebHooks, test_config};
 use mush_net_web::{TlsConfig, WebConfig};
+use mush_storykit::within;
 
 /// A throwaway directory for the generated PEM pair, removed on drop.
 ///
@@ -120,22 +121,13 @@ async fn serve_tls_binds_and_answers_healthz_over_tls() {
         .expect("a reqwest client that tolerates a self-signed certificate");
     let url = format!("https://{listen}/healthz");
 
-    // `bound` fires before `axum_server` has the socket; retry the connect.
-    let mut last = None;
-    let mut response = None;
-    for _ in 0..100 {
-        match client.get(&url).send().await {
-            Ok(resp) => {
-                response = Some(resp);
-                break;
-            }
-            Err(err) => {
-                last = Some(err);
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        }
-    }
-    let response = response.unwrap_or_else(|| panic!("no TLS handshake completed in 5s: {last:?}"));
+    // `bound` fires before `axum_server` has the socket; ask again until a
+    // handshake completes. The failure prints the last refusal.
+    let response =
+        mush_storykit::wait_for(mush_storykit::STEP_TIMEOUT, "a TLS handshake", async || {
+            client.get(&url).send().await.map_err(|err| err.to_string())
+        })
+        .await;
 
     assert_eq!(
         response.status(),
@@ -146,8 +138,7 @@ async fn serve_tls_binds_and_answers_healthz_over_tls() {
     assert_eq!(body["ok"], false, "healthz body: {body}");
 
     let _ = stop_tx.send(());
-    let outcome = tokio::time::timeout(Duration::from_secs(10), server).await;
-    let outcome = outcome.expect("the TLS server stops on the shutdown signal");
+    let outcome = within("the TLS server's stop on the shutdown signal", server).await;
     outcome
         .expect("the server task did not panic")
         .expect("the TLS server exits cleanly");
@@ -222,8 +213,8 @@ impl rustls::client::danger::ServerCertVerifier for NoVerify {
 /// `payload` as decrypted application bytes, and wait for the server to close
 /// the TLS stream. Returns the negotiated ALPN protocol (if any).
 async fn tls_send_and_await_close(addr: SocketAddr, payload: &'static [u8]) -> Option<Vec<u8>> {
-    tokio::time::timeout(
-        Duration::from_secs(3),
+    within(
+        "the TLS probe's close (a wedged permit never closes it)",
         tokio::task::spawn_blocking(move || {
             use std::io::{Read as _, Write as _};
 
@@ -264,7 +255,6 @@ async fn tls_send_and_await_close(addr: SocketAddr, payload: &'static [u8]) -> O
         }),
     )
     .await
-    .expect("TLS probe must close promptly instead of wedging permits")
     .expect("blocking TLS probe task panicked")
 }
 
@@ -306,19 +296,19 @@ async fn serve_tls_closes_stalled_handshakes_and_h2_preface_probes_and_releases_
     let url = format!("https://{addr}/healthz");
 
     let assert_permit_free = || async {
-        let resp = tokio::time::timeout(Duration::from_secs(3), client.get(&url).send())
-            .await
-            .expect("permit must be released for subsequent HTTPS request")
-            .expect("subsequent HTTPS request succeeds");
+        let resp = within(
+            "a subsequent HTTPS request (the permit released)",
+            client.get(&url).send(),
+        )
+        .await
+        .expect("subsequent HTTPS request succeeds");
         assert_eq!(resp.status(), 503);
     };
 
     // 1. Stalled raw TCP connect (0 TLS handshake bytes) times out and frees the single permit.
     let mut stalled = tokio::net::TcpStream::connect(addr).await.unwrap();
     let mut buf = [0u8; 16];
-    let res = tokio::time::timeout(Duration::from_secs(2), stalled.read(&mut buf))
-        .await
-        .expect("stalled TLS handshake must close promptly");
+    let res = within("the stalled TLS handshake's close", stalled.read(&mut buf)).await;
     assert!(
         matches!(res, Ok(0) | Err(_)),
         "expected EOF/reset on stalled TLS handshake, got {res:?}"
@@ -349,9 +339,8 @@ async fn serve_tls_closes_stalled_handshakes_and_h2_preface_probes_and_releases_
     assert_permit_free().await;
 
     let _ = stop_tx.send(());
-    tokio::time::timeout(Duration::from_secs(10), server)
+    within("the TLS server's stop on shutdown", server)
         .await
-        .expect("TLS server stops on shutdown")
         .expect("server task did not panic")
         .expect("TLS server exits cleanly");
 }

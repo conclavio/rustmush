@@ -23,11 +23,21 @@ namespace TacSim.Core
     public sealed class TacSimAudioSynthesizer : MonoBehaviour
     {
         public const string MutePlayerPrefKey = "TacSim.AudioMuted";
+        public const string MasterVolPrefKey = "TacSim.AudioMasterPct";
+        public const string AmbientVolPrefKey = "TacSim.AudioAmbientPct";
+        public const string SfxVolPrefKey = "TacSim.AudioSfxPct";
         public const int SampleRate = 22050;
+        private const float BaseAmbientGain = 0.085f;
+        private const float BaseSfxGain = 0.22f;
         private const double MinPerClipIntervalSec = 0.045;
         private const double MinGlobalBurstIntervalSec = 0.015;
 
         public bool IsMuted { get; private set; }
+        public int MasterVolumePct { get; private set; } = 100;
+        public int AmbientVolumePct { get; private set; } = 80;
+        public int SfxVolumePct { get; private set; } = 90;
+        public float EffectiveAmbientVolume => IsMuted ? 0f : BaseAmbientGain * (MasterVolumePct / 100f) * (AmbientVolumePct / 100f);
+        public float EffectiveSfxVolume => IsMuted ? 0f : BaseSfxGain * (MasterVolumePct / 100f) * (SfxVolumePct / 100f);
         public int AllocatedClipCount => CountAllocatedClips();
 
         private AudioSource _ambientLoop;
@@ -46,6 +56,7 @@ namespace TacSim.Core
         private AudioClip _laserPulseClip;
         private AudioClip _railgunCrackClip;
         private AudioClip _torpedoLaunchClip;
+        private AudioClip _redAlertKlaxonClip;
 
         private static double MonotonicSeconds() =>
             Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
@@ -82,6 +93,7 @@ namespace TacSim.Core
             DestroyClip(ref _laserPulseClip);
             DestroyClip(ref _railgunCrackClip);
             DestroyClip(ref _torpedoLaunchClip);
+            DestroyClip(ref _redAlertKlaxonClip);
         }
 
         private static void DestroyClip(ref AudioClip clip)
@@ -106,6 +118,7 @@ namespace TacSim.Core
             if (_laserPulseClip != null) c++;
             if (_railgunCrackClip != null) c++;
             if (_torpedoLaunchClip != null) c++;
+            if (_redAlertKlaxonClip != null) c++;
             return c;
         }
 
@@ -114,13 +127,16 @@ namespace TacSim.Core
             if (_ambientLoop != null && _stationHumClip != null) return;
 
             IsMuted = PlayerPrefs.GetInt(MutePlayerPrefKey, 0) == 1;
+            MasterVolumePct = Mathf.Clamp(PlayerPrefs.GetInt(MasterVolPrefKey, 100), 0, 100);
+            AmbientVolumePct = Mathf.Clamp(PlayerPrefs.GetInt(AmbientVolPrefKey, 80), 0, 100);
+            SfxVolumePct = Mathf.Clamp(PlayerPrefs.GetInt(SfxVolPrefKey, 90), 0, 100);
 
             if (_ambientLoop == null)
             {
                 _ambientLoop = gameObject.AddComponent<AudioSource>();
                 _ambientLoop.loop = true;
                 _ambientLoop.spatialBlend = 0f;
-                _ambientLoop.volume = IsMuted ? 0f : 0.085f;
+                _ambientLoop.volume = EffectiveAmbientVolume;
                 _ambientLoop.playOnAwake = false;
             }
 
@@ -129,7 +145,7 @@ namespace TacSim.Core
                 _sfxSource = gameObject.AddComponent<AudioSource>();
                 _sfxSource.loop = false;
                 _sfxSource.spatialBlend = 0f;
-                _sfxSource.volume = 0.22f;
+                _sfxSource.volume = EffectiveSfxVolume;
                 _sfxSource.playOnAwake = false;
             }
 
@@ -153,10 +169,54 @@ namespace TacSim.Core
             IsMuted = muted;
             PlayerPrefs.SetInt(MutePlayerPrefKey, muted ? 1 : 0);
             PlayerPrefs.Save();
+            ApplyMixerVolumes();
+        }
+
+        public void SetMasterVolumePct(int pct)
+        {
+            MasterVolumePct = Mathf.Clamp(pct, 0, 100);
+            PlayerPrefs.SetInt(MasterVolPrefKey, MasterVolumePct);
+            PlayerPrefs.Save();
+            ApplyMixerVolumes();
+        }
+
+        public void SetAmbientVolumePct(int pct)
+        {
+            AmbientVolumePct = Mathf.Clamp(pct, 0, 100);
+            PlayerPrefs.SetInt(AmbientVolPrefKey, AmbientVolumePct);
+            PlayerPrefs.Save();
+            ApplyMixerVolumes();
+        }
+
+        public void SetSfxVolumePct(int pct)
+        {
+            SfxVolumePct = Mathf.Clamp(pct, 0, 100);
+            PlayerPrefs.SetInt(SfxVolPrefKey, SfxVolumePct);
+            PlayerPrefs.Save();
+            ApplyMixerVolumes();
+        }
+
+        public void ResetMixerDefaults()
+        {
+            IsMuted = false;
+            MasterVolumePct = 100;
+            AmbientVolumePct = 80;
+            SfxVolumePct = 90;
+            PlayerPrefs.SetInt(MutePlayerPrefKey, 0);
+            PlayerPrefs.SetInt(MasterVolPrefKey, MasterVolumePct);
+            PlayerPrefs.SetInt(AmbientVolPrefKey, AmbientVolumePct);
+            PlayerPrefs.SetInt(SfxVolPrefKey, SfxVolumePct);
+            PlayerPrefs.Save();
+            ApplyMixerVolumes();
+        }
+
+        private void ApplyMixerVolumes()
+        {
+            float ambVol = EffectiveAmbientVolume;
             if (_ambientLoop != null)
             {
-                _ambientLoop.volume = muted ? 0f : 0.085f;
-                if (muted)
+                _ambientLoop.volume = ambVol;
+                if (IsMuted || ambVol <= 0.0001f)
                 {
                     if (_ambientLoop.isPlaying)
                         _ambientLoop.Stop();
@@ -165,6 +225,10 @@ namespace TacSim.Core
                 {
                     _ambientLoop.Play();
                 }
+            }
+            if (_sfxSource != null)
+            {
+                _sfxSource.volume = EffectiveSfxVolume;
             }
         }
 
@@ -180,14 +244,15 @@ namespace TacSim.Core
             AudioClip desired = mode == AmbientSoundscape.ShipInterior ? _shipHumClip
                               : mode == AmbientSoundscape.OrbitalSpace ? _spaceHumClip
                               : _stationHumClip;
-            if (_ambientLoop.clip == desired && (_ambientLoop.isPlaying || IsMuted))
+            bool shouldSilence = IsMuted || EffectiveAmbientVolume <= 0.0001f;
+            if (_ambientLoop.clip == desired && (_ambientLoop.isPlaying || shouldSilence))
                 return;
 
             _ambientLoop.clip = desired;
-            _ambientLoop.volume = IsMuted ? 0f : 0.085f;
-            if (desired != null && !IsMuted)
+            _ambientLoop.volume = EffectiveAmbientVolume;
+            if (desired != null && !shouldSilence)
                 _ambientLoop.Play();
-            else if (IsMuted && _ambientLoop.isPlaying)
+            else if (shouldSilence && _ambientLoop.isPlaying)
                 _ambientLoop.Stop();
         }
 
@@ -199,6 +264,12 @@ namespace TacSim.Core
         public void PlayLaserPulse() => PlayOneShotIfUnmuted(_laserPulseClip, 0.55f);
         public void PlayRailgunCrack() => PlayOneShotIfUnmuted(_railgunCrackClip, 0.70f);
         public void PlayTorpedoLaunch() => PlayOneShotIfUnmuted(_torpedoLaunchClip, 0.65f);
+        public void PlayRedAlertKlaxon()
+        {
+            if (_redAlertKlaxonClip == null)
+                _redAlertKlaxonClip = BuildClipFromSamples("RedAlertKlaxon", GenerateRedAlertKlaxonSamples());
+            PlayOneShotIfUnmuted(_redAlertKlaxonClip, 0.78f);
+        }
 
         /// <summary>
         /// Triggers matching tactical / market SFX for an outbound MUSH command line.
@@ -436,6 +507,30 @@ namespace TacSim.Core
                 float thump = Mathf.Sin(t * 74f * Mathf.PI * 2f) * Mathf.Exp(-t * 15f) * 0.55f;
                 float booster = lp * Mathf.Clamp01(t / 0.06f) * Mathf.Exp(-Mathf.Max(0f, t - 0.08f) * 5.2f) * 0.45f;
                 buf[i] = Mathf.Clamp(thump + booster, -1f, 1f);
+            }
+            return buf;
+        }
+
+        public static float[] GenerateRedAlertKlaxonSamples()
+        {
+            int samples = (int)(SampleRate * 0.62f);
+            float[] buf = new float[samples];
+            float phase = 0f;
+            int split = samples / 2;
+            int ramp = Math.Max(1, (int)(SampleRate * 0.008f));
+            for (int i = 0; i < samples; i++)
+            {
+                bool second = i >= split;
+                int local = second ? i - split : i;
+                int len = second ? samples - split : split;
+                float u = local / (float)Math.Max(1, len);
+                float freq = Mathf.Lerp(540f, 820f, u);
+                phase += (freq / SampleRate) * Mathf.PI * 2f;
+                float env = 1f;
+                if (local < ramp) env *= local / (float)ramp;
+                if (local >= len - ramp) env *= Math.Max(0, len - 1 - local) / (float)ramp;
+                float tone = Mathf.Sin(phase) * 0.42f + Mathf.Sin(phase * 2f) * 0.14f;
+                buf[i] = Mathf.Clamp(tone * env, -1f, 1f);
             }
             return buf;
         }

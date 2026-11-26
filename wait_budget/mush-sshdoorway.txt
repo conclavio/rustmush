@@ -1,9 +1,13 @@
 # mush-sshdoorway — the wait budget of its story files (doc 51 cut FL.1).
 #
 # `<counter> <budget> <low-water> <path>`: `wait` is a raw sleep or timeout,
-# `clock` a wall-clock read. A count may only fall. Regenerate with:
+# `clock` a wall-clock read, `span` a literal span passed to a wait (cut
+# FL.9). A count may only fall. Regenerate with:
 #   WAIT_BUDGET_BLESS=1 cargo test -p mush-contract-tests --test ci_policy wait_budget::
 # A raise carries a written reason; the prefer-instead is `mush-storykit`.
 #
-# total: 7 raw waits, 0 wall-clock reads
-wait 7 7 tests/e2e.rs
+# total: 0 raw waits, 0 wall-clock reads, 1 literal span passed to a wait
+#
+# Literal spans are counted from their baseline (doc 51 cut FL.9).
+# spans counted
+span 1 1 tests/e2e.rs

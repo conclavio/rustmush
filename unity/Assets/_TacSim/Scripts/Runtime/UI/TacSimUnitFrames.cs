@@ -12,8 +12,15 @@ namespace TacSim.UI
     public sealed class TacSimUnitFrames : MonoBehaviour
     {
         public bool IsTargetVisible => _targetRoot != null && _targetRoot.activeSelf;
+        public bool IsFrameRootVisible => _root != null && _root.activeSelf;
         public string PlayerTitleText => _playerTitle != null ? _playerTitle.text : string.Empty;
         public string TargetTitleText => _targetTitle != null ? _targetTitle.text : string.Empty;
+
+        public void SetHiddenByHudPreset(bool hidden)
+        {
+            if (_root != null && _root.activeSelf == hidden)
+                _root.SetActive(!hidden);
+        }
 
         private Font _font;
         private GameObject _root;

@@ -173,16 +173,24 @@ namespace TacSim.Space
         private Transform _lockAspectSectorPlate;
         private TextMeshPro _lockAspectLabel;
 
-        // Homeworld/EVE 3D Orbital Tactical Reference Plane, Heading Vector, Lock Tether & Contact Drop-Lines
+        // Homeworld/EVE 3D Orbital Tactical Reference Plane, Heading Vector, Newtonian Velocity Vector, Rock Scanner & Drop-Lines
         private const float TacticalPlaneOffsetY = -6.0f;
         private const int MaxDropLines = 24;
         private GameObject _tacticalGridRoot;
         private LineRenderer _headingVectorLine;
+        private LineRenderer _velocityVectorLine;
+        private Transform _velocityProgradeTip;
         private LineRenderer _lockTetherLine;
+        private Transform _rockScannerRing;
+        private MeshRenderer _rockScannerOuterRenderer;
+        private MeshRenderer _rockScannerInnerRenderer;
         private readonly List<LineRenderer> _dropLinePool = new List<LineRenderer>(MaxDropLines);
         public bool IsTacticalGridVisible => _tacticalGridRoot != null && _tacticalGridRoot.activeSelf;
         public int ActiveDropLineCount { get; private set; }
         public bool HasActiveLockTether => _lockTetherLine != null && _lockTetherLine.enabled;
+        public Vector3 OwnVelocityUnityMps { get; private set; }
+        public bool IsVelocityVectorVisible => _velocityVectorLine != null && _velocityVectorLine.enabled;
+        public bool IsRockScannerRingVisible => _rockScannerRing != null && _rockScannerRing.gameObject.activeSelf;
 
         public void SetTacticalGridVisible(bool visible)
         {
@@ -545,6 +553,48 @@ namespace TacSim.Space
             _headingVectorLine.endWidth = 0.14f;
             _headingVectorLine.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("OwnHeadingMat", new Color(0.28f, 0.96f, 1.0f, 0.78f));
 
+            var velGo = new GameObject("OwnshipVelocityVector");
+            velGo.transform.SetParent(_tacticalGridRoot.transform, false);
+            _velocityVectorLine = velGo.AddComponent<LineRenderer>();
+            _velocityVectorLine.useWorldSpace = true;
+            _velocityVectorLine.positionCount = 2;
+            _velocityVectorLine.startWidth = 0.34f;
+            _velocityVectorLine.endWidth = 0.16f;
+            _velocityVectorLine.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("OwnVelocityMat", new Color(0.32f, 1.0f, 0.56f, 0.85f));
+            _velocityVectorLine.enabled = false;
+
+            var tipGo = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            tipGo.name = "VelocityProgradeTip";
+            tipGo.transform.SetParent(_tacticalGridRoot.transform, false);
+            tipGo.transform.localScale = Vector3.one * 1.15f;
+            var tipCol = tipGo.GetComponent<Collider>();
+            if (tipCol != null) { if (Application.isPlaying) Destroy(tipCol); else DestroyImmediate(tipCol); }
+            tipGo.GetComponent<MeshRenderer>().sharedMaterial = UrpMaterialFactory.GetEmissive("ProgradeTipGlow", new Color(0.26f, 1.0f, 0.55f), new Color(0.35f, 1.0f, 0.65f) * 2.2f);
+            tipGo.SetActive(false);
+            _velocityProgradeTip = tipGo.transform;
+
+            var rockScanGo = new GameObject("AsteroidSpectralScannerHalo");
+            rockScanGo.transform.SetParent(_tacticalGridRoot.transform, false);
+            var outerRing = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            outerRing.name = "ScannerOuterRing";
+            outerRing.transform.SetParent(rockScanGo.transform, false);
+            outerRing.transform.localScale = new Vector3(16.5f, 0.08f, 16.5f);
+            var oc = outerRing.GetComponent<Collider>();
+            if (oc != null) { if (Application.isPlaying) Destroy(oc); else DestroyImmediate(oc); }
+            _rockScannerOuterRenderer = outerRing.GetComponent<MeshRenderer>();
+            _rockScannerOuterRenderer.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("RockScanCyan", new Color(0.24f, 0.92f, 1.0f, 0.24f));
+
+            var innerRing = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            innerRing.name = "ScannerInnerBand";
+            innerRing.transform.SetParent(rockScanGo.transform, false);
+            innerRing.transform.localScale = new Vector3(12.2f, 0.16f, 12.2f);
+            var ic = innerRing.GetComponent<Collider>();
+            if (ic != null) { if (Application.isPlaying) Destroy(ic); else DestroyImmediate(ic); }
+            _rockScannerInnerRenderer = innerRing.GetComponent<MeshRenderer>();
+            _rockScannerInnerRenderer.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("RockScanBandCyan", new Color(0.35f, 1.0f, 0.88f, 0.36f));
+            rockScanGo.SetActive(false);
+            _rockScannerRing = rockScanGo.transform;
+
             var tetherGo = new GameObject("TargetLockTether");
             tetherGo.transform.SetParent(_tacticalGridRoot.transform, false);
             _lockTetherLine = tetherGo.AddComponent<LineRenderer>();
@@ -595,6 +645,68 @@ namespace TacSim.Space
                 Vector3 fwd = PlayerShipTransform.rotation * Vector3.forward;
                 _headingVectorLine.SetPosition(0, PlayerShipTransform.position + fwd * 8f);
                 _headingVectorLine.SetPosition(1, PlayerShipTransform.position + fwd * (8f + len));
+            }
+
+            if (_velocityVectorLine != null && PlayerShipTransform != null)
+            {
+                float speedMps = OwnVelocityUnityMps.magnitude;
+                if (speedMps > 0.5f)
+                {
+                    Vector3 vDir = OwnVelocityUnityMps / speedMps;
+                    float vLen = Mathf.Clamp(14f + Mathf.Log(1f + speedMps / 15f) * 14f, 14f, 64f);
+                    Vector3 vStart = PlayerShipTransform.position + vDir * 7f;
+                    Vector3 vEnd = PlayerShipTransform.position + vDir * (7f + vLen);
+                    _velocityVectorLine.SetPosition(0, vStart);
+                    _velocityVectorLine.SetPosition(1, vEnd);
+                    _velocityVectorLine.enabled = true;
+                    if (_velocityProgradeTip != null)
+                    {
+                        _velocityProgradeTip.position = vEnd;
+                        if (!_velocityProgradeTip.gameObject.activeSelf) _velocityProgradeTip.gameObject.SetActive(true);
+                    }
+                }
+                else
+                {
+                    _velocityVectorLine.enabled = false;
+                    if (_velocityProgradeTip != null && _velocityProgradeTip.gameObject.activeSelf)
+                        _velocityProgradeTip.gameObject.SetActive(false);
+                }
+            }
+
+            if (_rockScannerRing != null)
+            {
+                string scanRock = !string.IsNullOrEmpty(AuthoritativeMatchedRockId)
+                    ? AuthoritativeMatchedRockId
+                    : (!string.IsNullOrEmpty(AuthoritativeApproachingRockId) ? AuthoritativeApproachingRockId : SelectedRockId);
+                if (!string.IsNullOrEmpty(scanRock) && _knownRockIds.Contains(scanRock) && TryGetTargetPosition(scanRock, out Vector3 rockPos))
+                {
+                    _rockScannerRing.position = rockPos;
+                    if (!_rockScannerRing.gameObject.activeSelf) _rockScannerRing.gameObject.SetActive(true);
+                    bool matched = string.Equals(scanRock, AuthoritativeMatchedRockId, StringComparison.OrdinalIgnoreCase);
+                    bool approaching = !matched && string.Equals(scanRock, AuthoritativeApproachingRockId, StringComparison.OrdinalIgnoreCase);
+                    if (_rockScannerOuterRenderer != null && _rockScannerInnerRenderer != null)
+                    {
+                        if (matched)
+                        {
+                            _rockScannerOuterRenderer.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("RockScanMatched", new Color(0.22f, 1.0f, 0.55f, 0.30f));
+                            _rockScannerInnerRenderer.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("RockScanBandMatched", new Color(0.32f, 1.0f, 0.65f, 0.48f));
+                        }
+                        else if (approaching)
+                        {
+                            _rockScannerOuterRenderer.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("RockScanApproach", new Color(1.0f, 0.78f, 0.24f, 0.28f));
+                            _rockScannerInnerRenderer.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("RockScanBandApproach", new Color(1.0f, 0.85f, 0.32f, 0.44f));
+                        }
+                        else
+                        {
+                            _rockScannerOuterRenderer.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("RockScanCyan", new Color(0.24f, 0.92f, 1.0f, 0.24f));
+                            _rockScannerInnerRenderer.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("RockScanBandCyan", new Color(0.35f, 1.0f, 0.88f, 0.36f));
+                        }
+                    }
+                }
+                else if (_rockScannerRing.gameObject.activeSelf)
+                {
+                    _rockScannerRing.gameObject.SetActive(false);
+                }
             }
 
             int usedDrops = 0;
@@ -666,6 +778,7 @@ namespace TacSim.Space
             _lastHolotankBurnPermille = 0f;
             _hasLastCockpitSpeed = false;
             _lastCockpitSpeedMps = 0f;
+            OwnVelocityUnityMps = Vector3.zero;
             _torpProgress = -1f;
             if (_activeTorpedoVisual != null)
                 _activeTorpedoVisual.gameObject.SetActive(false);
@@ -768,6 +881,14 @@ namespace TacSim.Space
                         obsXKm = c.Double("x_km", 0.0);
                         obsYKm = c.Double("y_km", 0.0);
                         obsZKm = c.Double("z_km", 0.0);
+                        // Bubble velocity -> Unity axis mapping: +x->+Z, +y->+X, +z->+Y (km/s -> m/s)
+                        if (c.ContainsKey("vx_kms") || c.ContainsKey("vy_kms") || c.ContainsKey("vz_kms"))
+                        {
+                            OwnVelocityUnityMps = new Vector3(
+                                (float)(c.Double("vy_kms", 0.0) * 1000.0),
+                                (float)(c.Double("vz_kms", 0.0) * 1000.0),
+                                (float)(c.Double("vx_kms", 0.0) * 1000.0));
+                        }
                         double burnMag = Math.Abs(c.Double("ax_mps2", 0.0)) +
                                          Math.Abs(c.Double("ay_mps2", 0.0)) +
                                          Math.Abs(c.Double("az_mps2", 0.0));
@@ -1901,6 +2022,11 @@ namespace TacSim.Space
 
         private void UpdateOrbitalMiningAndWeaponAnimations()
         {
+            if (_rockScannerRing != null && _rockScannerRing.gameObject.activeSelf)
+            {
+                _rockScannerRing.Rotate(0f, 28f * Time.deltaTime, 0f, UnityEngine.Space.Self);
+            }
+
             if (_activeBeamRenderer != null && _activeBeamRenderer.enabled && Time.time > _beamExpireTime)
             {
                 _activeBeamRenderer.enabled = false;

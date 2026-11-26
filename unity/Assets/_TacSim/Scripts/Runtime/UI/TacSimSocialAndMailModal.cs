@@ -39,13 +39,17 @@ namespace TacSim.UI
         public string Title = string.Empty;
         public bool Gagged;
         public bool IsIc;
+        public bool Logged;
+        public int UnreadCount;
+        public ulong LastSeq;
+        public bool BacklogLoaded;
         public string ColorHex = string.Empty;
         public readonly List<string> RecentLines = new List<string>();
     }
 
     /// <summary>
     /// Live MMORPG `[O]` Social, Online Pilots (`WHO`), IC Mail (`@mail` / `mail.list`),
-    /// and Comsys Channels (`comsys` / `clist` / `addcom`) window.
+    /// and Comsys Channels (`comsys` / `channel_backlog` / `clist` / `addcom`) window.
     /// Zero offline fake entries: every list is driven directly by authoritative `mushd` frames.
     /// </summary>
     public sealed class TacSimSocialAndMailModal : MonoBehaviour
@@ -55,6 +59,7 @@ namespace TacSim.UI
         public event Action OnRefreshWhoRequested;
         public event Action<string> OnRefreshMailRequested;
         public event Action OnRefreshComsysRequested;
+        public event Action<string> OnChannelBacklogRequested;
         public event Action<int> OnUnreadMailCountChanged;
 
         private const int MaxWhoRows = 14;
@@ -438,7 +443,14 @@ namespace TacSim.UI
             // Right: Selected Channel Transcript & Speak Bar
             var rightPane = CreatePanel(body.transform, "ChannelTranscriptPane", new Vector2(0.38f, 0f), new Vector2(1f, 1f), new Vector2(6f, 10f), new Vector2(-12f, -10f), new Color(0.02f, 0.05f, 0.09f, 0.92f));
             _activeChanHeaderText = CreateText(rightPane.transform, "Select a channel on the left to read & speak.", 12, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.50f, 0.92f, 1f));
-            SetRect(_activeChanHeaderText.rectTransform, new Vector2(0f, 1f), new Vector2(0.75f, 1f), new Vector2(10f, -32f), new Vector2(0f, -4f));
+            SetRect(_activeChanHeaderText.rectTransform, new Vector2(0f, 1f), new Vector2(0.62f, 1f), new Vector2(10f, -32f), new Vector2(0f, -4f));
+
+            var recallChanBtn = CreateButton(rightPane.transform, "RECALL", new Color(0.14f, 0.42f, 0.46f), () =>
+            {
+                if (!string.IsNullOrEmpty(_selectedChannelName))
+                    OnChannelBacklogRequested?.Invoke(_selectedChannelName);
+            });
+            SetRect(recallChanBtn.GetComponent<RectTransform>(), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-174f, -30f), new Vector2(-96f, -6f));
 
             var whoChanBtn = CreateButton(rightPane.transform, "MEMBERS", new Color(0.16f, 0.36f, 0.50f), () =>
             {
@@ -613,12 +625,21 @@ namespace TacSim.UI
         public void ApplyComsysPanel(JsonNode data)
         {
             if (data == null || !data.IsObject) return;
+
+            // Delta frame carrying channel backlog slice (`comsys.backlog` -> `data.backlog`)
+            var backlog = data["backlog"];
+            if (backlog != null && backlog.IsObject)
+            {
+                ApplyChannelBacklog(backlog);
+                return;
+            }
+
             var arr = data["channels"].AsArray();
             if (arr == null) return;
 
-            var oldLogs = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            var oldLogs = new Dictionary<string, (List<string> lines, bool loaded)>(StringComparer.OrdinalIgnoreCase);
             for (int i = 0; i < _channels.Count; i++)
-                oldLogs[_channels[i].Name] = new List<string>(_channels[i].RecentLines);
+                oldLogs[_channels[i].Name] = (new List<string>(_channels[i].RecentLines), _channels[i].BacklogLoaded);
 
             _channels.Clear();
             for (int i = 0; i < arr.Count; i++)
@@ -634,14 +655,79 @@ namespace TacSim.UI
                     Title = c.Str("title", string.Empty).Trim(),
                     Gagged = c.Bool("gagged", false),
                     IsIc = c.Bool("ic", false),
+                    Logged = c.Bool("logged", false),
+                    UnreadCount = Mathf.Max(0, c.Int("unread", 0)),
+                    LastSeq = c.ULong("seq", 0),
                     ColorHex = c["color"].IsObject ? c["color"].Str("web_hex", string.Empty) : string.Empty
                 };
                 if (oldLogs.TryGetValue(name, out var preserved))
-                    info.RecentLines.AddRange(preserved);
+                {
+                    info.RecentLines.AddRange(preserved.lines);
+                    info.BacklogLoaded = preserved.loaded;
+                }
                 _channels.Add(info);
             }
             if (string.IsNullOrEmpty(_selectedChannelName) && _channels.Count > 0)
                 _selectedChannelName = _channels[0].Name;
+
+            var active = FindChannel(_selectedChannelName);
+            if (active != null && active.Logged && !active.BacklogLoaded)
+                OnChannelBacklogRequested?.Invoke(active.Name);
+
+            RefreshChannelsUi();
+        }
+
+        private void ApplyChannelBacklog(JsonNode backlog)
+        {
+            string chanName = backlog.Str("channel", string.Empty).Trim();
+            if (string.IsNullOrEmpty(chanName)) return;
+
+            var target = FindChannel(chanName);
+            if (target == null)
+            {
+                target = new ComsysChannelInfo { Name = chanName, Alias = chanName, Logged = true };
+                _channels.Add(target);
+                if (string.IsNullOrEmpty(_selectedChannelName))
+                    _selectedChannelName = target.Name;
+            }
+
+            var msgs = backlog["messages"].AsArray();
+            var formatted = new List<string>(msgs != null ? msgs.Count : 0);
+            if (msgs != null)
+            {
+                // `comsys.backlog` delivers messages newest-first; reverse into chronological display order.
+                for (int i = msgs.Count - 1; i >= 0; i--)
+                {
+                    var m = msgs[i];
+                    if (!m.IsObject) continue;
+                    string actor = m["actor"].IsObject ? m["actor"].Str("name", "Pilot") : "Pilot";
+                    string title = m.Str("title", string.Empty).Trim();
+                    string kind = m.Str("kind", "say");
+                    string rich = MushProtocol.RenderRichTextToUnityMarkup(m["text"]);
+                    if (string.IsNullOrEmpty(rich))
+                        rich = MushProtocol.EscapeUnityRichText(MushProtocol.FlattenRichText(m["text"]));
+
+                    string prefix = !string.IsNullOrEmpty(title)
+                        ? $"<color=#88CCEE>[{MushProtocol.EscapeUnityRichText(title)}]</color> "
+                        : string.Empty;
+                    string safeActor = MushProtocol.EscapeUnityRichText(actor);
+                    string line = string.Equals(kind, "pose", StringComparison.OrdinalIgnoreCase)
+                        ? $"{prefix}<b>{safeActor}</b> {rich}"
+                        : (string.Equals(kind, "emit", StringComparison.OrdinalIgnoreCase)
+                            ? $"{prefix}{rich}"
+                            : $"{prefix}<b>{safeActor}:</b> {rich}");
+                    formatted.Add(line);
+                }
+            }
+
+            target.RecentLines.Clear();
+            target.RecentLines.AddRange(formatted);
+            while (target.RecentLines.Count > 40)
+                target.RecentLines.RemoveAt(0);
+            target.BacklogLoaded = true;
+            if (string.Equals(target.Name, _selectedChannelName, StringComparison.OrdinalIgnoreCase))
+                target.UnreadCount = 0;
+
             RefreshChannelsUi();
         }
 
@@ -661,6 +747,10 @@ namespace TacSim.UI
             target.RecentLines.Add($"<b>{MushProtocol.EscapeUnityRichText(actor)}:</b> {body}");
             while (target.RecentLines.Count > 40)
                 target.RecentLines.RemoveAt(0);
+            bool viewingNow = IsOpen && ActiveTab == SocialModalTab.Channels &&
+                              string.Equals(target.Name, _selectedChannelName, StringComparison.OrdinalIgnoreCase);
+            if (!viewingNow)
+                target.UnreadCount++;
             if (IsOpen && ActiveTab == SocialModalTab.Channels)
                 RefreshChannelsUi();
         }
@@ -669,7 +759,20 @@ namespace TacSim.UI
         {
             if (string.IsNullOrWhiteSpace(channelName)) return;
             _selectedChannelName = channelName.Trim();
+            var active = FindChannel(_selectedChannelName);
+            if (active != null)
+            {
+                active.UnreadCount = 0;
+                if (active.Logged && !active.BacklogLoaded)
+                    OnChannelBacklogRequested?.Invoke(active.Name);
+            }
             RefreshChannelsUi();
+        }
+
+        public int GetChannelLineCount(string channelName)
+        {
+            var ch = FindChannel(channelName);
+            return ch != null ? ch.RecentLines.Count : 0;
         }
 
         public void SubmitQuickMail()
@@ -815,8 +918,9 @@ namespace TacSim.UI
                         ? new Color(0.16f, 0.44f, 0.60f, 0.98f)
                         : new Color(0.06f, 0.12f, 0.19f, 0.90f);
                     string scopeTag = c.IsIc ? "<color=#66FFAA>[IC]</color>" : "<color=#88CCFF>[OOC]</color>";
+                    string unreadTag = c.UnreadCount > 0 ? $" <color=#FFCC55>({c.UnreadCount})</color>" : string.Empty;
                     string gagTag = c.Gagged ? " <color=#FF7766>(GAGGED)</color>" : string.Empty;
-                    row.Label.text = $"{scopeTag} {MushProtocol.EscapeUnityRichText(c.Name)} ({MushProtocol.EscapeUnityRichText(c.Alias)}){gagTag}";
+                    row.Label.text = $"{scopeTag} {MushProtocol.EscapeUnityRichText(c.Name)} ({MushProtocol.EscapeUnityRichText(c.Alias)}){unreadTag}{gagTag}";
                     if (row.GagBtnLabel != null)
                         row.GagBtnLabel.text = c.Gagged ? "UNGAG" : "GAG";
                     row.Root.SetActive(true);
@@ -832,8 +936,9 @@ namespace TacSim.UI
             var active = FindChannel(_selectedChannelName);
             if (_activeChanHeaderText != null)
             {
+                string logBadge = active != null && active.Logged ? " · LOGGED" : string.Empty;
                 _activeChanHeaderText.text = active != null
-                    ? $"{(active.IsIc ? "IC" : "OOC")} CHANNEL: {active.Name.ToUpperInvariant()}  (verb: {active.Alias})"
+                    ? $"{(active.IsIc ? "IC" : "OOC")} CHANNEL: {active.Name.ToUpperInvariant()}  (verb: {active.Alias}{logBadge})"
                     : "No channels joined — click LIST ALL (clist) or join below.";
             }
             if (_channelTranscriptText != null)

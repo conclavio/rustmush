@@ -5878,5 +5878,715 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ArenaReplayAndObserverTheater_DecodesInterpolatesSpawns3DRigsAndWiresHudControls()
+        {
+            // 1. Decode pushed grid trigger from `SIM REPLAY <match>`
+            var gridPayload = JsonNode.Parse(@"{
+                ""schema"": { ""shape"": ""grid"" },
+                ""match"": 42,
+                ""keyframe"": { ""index"": 1 }
+            }");
+            Assert.IsTrue(TacSim.Arena.TacSimArenaReplayModel.TryDecodeReplayGridTrigger(gridPayload, out ulong trigMatch, out int trigKf));
+            Assert.AreEqual(42UL, trigMatch);
+            Assert.AreEqual(1, trigKf);
+
+            // 2. Decode full `arena.replay` document & test smooth interpolation + shortest-arc heading turn
+            var docPayload = JsonNode.Parse(@"{
+                ""schema"": { ""shape"": ""replay"" },
+                ""match"": 42,
+                ""arena"": ""proving_ground"",
+                ""cell_cm"": 1000,
+                ""width"": 64,
+                ""height"": 64,
+                ""summary_ms"": 5000,
+                ""end_ms"": 12000,
+                ""outcome"": ""red"",
+                ""reason"": ""elimination"",
+                ""mode"": ""hold"",
+                ""roster"": [
+                    { ""callsign"": ""R1"", ""team"": ""red"" },
+                    { ""callsign"": ""B1"", ""team"": ""blue"" }
+                ],
+                ""keyframes"": [
+                    [0, [[10, 10, 350], [40, 40, 180]]],
+                    [5000, [[20, 10, 10], [30, 40, 180]]],
+                    [10000, [[24, 14, 45], [30, 40, 180]]]
+                ],
+                ""shots"": [
+                    [4500, 0, 1, ""hit""],
+                    [8000, 0, 1, ""hit""]
+                ],
+                ""destroyed"": [
+                    [8000, 1]
+                ]
+            }");
+            Assert.IsTrue(TacSim.Arena.TacSimArenaReplayModel.TryDecodeReplayDocument(docPayload, out var doc));
+            Assert.AreEqual(42UL, doc.MatchId);
+            Assert.AreEqual(2, doc.Roster.Count);
+            Assert.AreEqual(3, doc.Keyframes.Count);
+            Assert.AreEqual(2, doc.Shots.Count);
+            Assert.AreEqual(1, doc.Destroyed.Count);
+
+            // Halfway between t=0 (350 deg) and t=5000 (10 deg) -> x=15, heading=0 deg (shortest arc through north!)
+            var mid = TacSim.Arena.TacSimArenaReplayModel.SampleInterpolatedFrame(doc, 2500f);
+            Assert.IsTrue(mid.BetweenKeyframes);
+            Assert.IsFalse(mid.Held);
+            Assert.AreEqual(15f, mid.Units[0].Value.CellX, 0.01f);
+            Assert.AreEqual(0f, mid.Units[0].Value.HeadingDeg, 0.1f);
+            Assert.AreEqual(1, mid.RedAliveCount);
+            Assert.AreEqual(1, mid.BlueAliveCount);
+            StringAssert.Contains("Between keyframes 1 and 2", TacSim.Arena.TacSimArenaReplayModel.FormatFrameSourceLabel(doc, mid));
+
+            // After wreck at 8000 ms, B1 is marked wrecked and BlueAliveCount drops to 0
+            var afterWreck = TacSim.Arena.TacSimArenaReplayModel.SampleInterpolatedFrame(doc, 10000f);
+            Assert.IsFalse(afterWreck.BetweenKeyframes);
+            Assert.IsTrue(afterWreck.IsWrecked[1]);
+            Assert.AreEqual(1, afterWreck.RedAliveCount);
+            Assert.AreEqual(0, afterWreck.BlueAliveCount);
+
+            // 3. OocArenaController + TacSimReplayControlsHud integration (Replay -> Keyframe Step -> Live Observer -> Clear)
+            var rootGo = new UnityEngine.GameObject("ArenaReplayTheaterTest");
+            try
+            {
+                var arenaGo = new UnityEngine.GameObject("ArenaReplayCtrl");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(null, null);
+
+                int docSubRequests = 0;
+                arena.OnRequestReplayDocumentSubscribe += () => docSubRequests++;
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                Assert.IsNotNull(hud.ReplayHud, "BuildHud must wire TacSimReplayControlsHud");
+                hud.ReplayHud.BindArena(arena);
+
+                // Pushed grid trigger enters replay mode & asks for full replay doc once
+                arena.HandleReplayPanelFrame(gridPayload);
+                Assert.IsTrue(arena.IsReplayModeActive);
+                Assert.IsTrue(arena.IsStageVisible);
+                Assert.AreEqual(1, docSubRequests);
+
+                // Full replay document spawns 3D rigs for both teams and jumps to triggered keyframe index 1 (5000 ms)
+                arena.HandleReplayPanelFrame(docPayload);
+                Assert.AreEqual(5000f, arena.ReplayCursorMs, 0.1f);
+                Assert.AreEqual(2, arena.ActiveReplayRigCount);
+                Assert.IsNotNull(arena.SpectatorFocusTransform);
+
+                hud.ReplayHud.RefreshView();
+                Assert.IsTrue(hud.ReplayHud.IsVisible);
+                Assert.AreEqual(2, hud.ReplayHud.VisibleRosterRowCount);
+                StringAssert.Contains("MATCH #42", hud.ReplayHud.HeaderBannerText);
+                StringAssert.Contains("[HOLD]", hud.ReplayHud.HeaderBannerText);
+
+                // Step forward keyframe to 10000 ms & cycle focused unit to B1
+                arena.StepReplayKeyframe(+1);
+                Assert.AreEqual(10000f, arena.ReplayCursorMs, 0.1f);
+                arena.CycleReplayFocusUnit(+1);
+                Assert.AreEqual(1, arena.ReplayFocusUnitIndex);
+
+                // Live staff `arena.observer` snapshot seamlessly replaces replay mode
+                var obsPayload = JsonNode.Parse(@"{
+                    ""match"": 77,
+                    ""now_ms"": 18000,
+                    ""tempo"": ""Brisk"",
+                    ""floor_ms"": 1000,
+                    ""cell_cm"": 1000,
+                    ""width"": 64,
+                    ""height"": 64,
+                    ""in_flight"": 2,
+                    ""units"": [
+                        [""R1"", ""R"", 12, 14, 90, 501, ""p""],
+                        [""B1"", ""B"", 38, 22, 270, 502, ""pmw""]
+                    ]
+                }");
+                arena.HandleObserverPanelFrame(obsPayload);
+                Assert.IsTrue(arena.IsLiveObserverActive);
+                Assert.IsFalse(arena.IsReplayModeActive);
+                Assert.AreEqual(77UL, arena.ActiveSpectatorMatchId);
+                Assert.AreEqual(2, arena.ActiveReplayRigCount);
+                hud.ReplayHud.RefreshView();
+                StringAssert.Contains("[LIVE OBSERVER]", hud.ReplayHud.HeaderBannerText);
+                StringAssert.Contains("IN FLIGHT: 2", hud.ReplayHud.HeaderBannerText);
+
+                // `watching: false` clears live observer cleanly
+                arena.HandleObserverPanelFrame(JsonNode.Parse(@"{ ""watching"": false }"));
+                Assert.IsFalse(arena.IsLiveObserverActive);
+                Assert.IsFalse(arena.IsStageVisible);
+                hud.ReplayHud.RefreshView();
+                Assert.IsFalse(hud.ReplayHud.IsVisible);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
+
+        [Test]
+        public void AudioMixerCameraPrefsAndHudDensityPresets_ApplyAndPersistCleanly()
+        {
+            var rootGo = new UnityEngine.GameObject("AudioMixerCamHudTest");
+            try
+            {
+                // 1. Audio Mixer channels, effective volumes & lazy Red Alert Klaxon clip
+                var audio = rootGo.AddComponent<TacSim.Core.TacSimAudioSynthesizer>();
+                audio.InitializeAudioGraph();
+                Assert.AreEqual(100, audio.MasterVolumePct);
+                Assert.AreEqual(80, audio.AmbientVolumePct);
+                Assert.AreEqual(90, audio.SfxVolumePct);
+
+                audio.SetMasterVolumePct(50);
+                audio.SetAmbientVolumePct(50);
+                audio.SetSfxVolumePct(40);
+                Assert.AreEqual(0.085f * 0.25f, audio.EffectiveAmbientVolume, 0.0005f);
+                Assert.AreEqual(0.22f * 0.20f, audio.EffectiveSfxVolume, 0.0005f);
+
+                float[] klaxon = TacSim.Core.TacSimAudioSynthesizer.GenerateRedAlertKlaxonSamples();
+                Assert.Greater(klaxon.Length, 5000);
+                audio.PlayRedAlertKlaxon();
+                Assert.AreEqual(12, audio.AllocatedClipCount, "Lazy Red Alert klaxon should allocate 12th clip");
+                audio.DisposeClips();
+                Assert.AreEqual(0, audio.AllocatedClipCount);
+
+                // 2. Camera preferences (Sensitivity, Zoom Speed, Invert-Y, FOV)
+                var camGo = new UnityEngine.GameObject("CamPrefsTest", typeof(UnityEngine.Camera));
+                camGo.transform.SetParent(rootGo.transform, false);
+                var rig = camGo.AddComponent<TacSim.Character.TacSimCameraRig>();
+                rig.ControlledCamera = camGo.GetComponent<UnityEngine.Camera>();
+                rig.ApplyCameraPreferences(150, 125, invertY: true, fovDeg: 72, savePrefs: false);
+                Assert.AreEqual(150, rig.OrbitSensitivityPct);
+                Assert.AreEqual(125, rig.ZoomSpeedPct);
+                Assert.IsTrue(rig.InvertY);
+                Assert.AreEqual(72, rig.FieldOfViewDeg);
+                Assert.AreEqual(72f, rig.ControlledCamera.fieldOfView, 0.01f);
+                Assert.AreEqual(4.2f, rig.mouseSensitivity, 0.01f);
+
+                // 3. 3-Tab Options Console & F9 Cinematic HUD Density Toggle
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.DisplayOptions.BindSubsystems(audio, rig);
+                hud.DisplayOptions.SelectTab(TacSim.UI.TacSimOptionsTab.Audio);
+                Assert.AreEqual(TacSim.UI.TacSimOptionsTab.Audio, hud.DisplayOptions.ActiveTab);
+                hud.DisplayOptions.SelectTab(TacSim.UI.TacSimOptionsTab.CameraAndHud);
+                Assert.AreEqual(TacSim.UI.TacSimOptionsTab.CameraAndHud, hud.DisplayOptions.ActiveTab);
+
+                hud.DisplayOptions.SetHudDensityPreset(TacSim.UI.TacSimHudDensityPreset.Compact, save: false);
+                Assert.AreEqual(TacSim.UI.TacSimHudDensityPreset.Compact, TacSim.UI.TacSimDisplayOptions.CurrentHudDensity);
+                Assert.IsFalse(hud.IsCinematicHudActive);
+
+                // Toggle F9 Cinematic mode hides UnitFrames & Minimap, then restores Compact cleanly
+                Assert.AreEqual(TacSim.UI.TacSimHudDensityPreset.Cinematic, hud.DisplayOptions.ToggleCinematicHudMode());
+                Assert.IsTrue(hud.IsCinematicHudActive);
+                Assert.IsFalse(hud.UnitFrames.IsFrameRootVisible);
+                Assert.IsFalse(hud.Minimap.IsVisible);
+
+                Assert.AreEqual(TacSim.UI.TacSimHudDensityPreset.Compact, hud.DisplayOptions.ToggleCinematicHudMode());
+                Assert.IsFalse(hud.IsCinematicHudActive);
+                Assert.IsTrue(hud.UnitFrames.IsFrameRootVisible);
+                Assert.IsTrue(hud.Minimap.IsVisible);
+
+                // Reset back to Standard for other tests
+                hud.DisplayOptions.SetHudDensityPreset(TacSim.UI.TacSimHudDensityPreset.Standard, save: false);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
+
+        [Test]
+        public void LiveRpScenesAndSignalContacts_ParsesRoomGlancePanelFramesAndDispatchesInspectVerbs()
+        {
+            // 1. Parse RoomView.ambient["scene"] glance
+            var rv = MushProtocol.ParseRoomView(JsonNode.Parse(@"{
+                ""id"": ""#101"",
+                ""name"": ""Ceres Exchange Floor"",
+                ""ambient"": {
+                    ""scene"": {
+                        ""id"": 19,
+                        ""title"": ""Broker Dispute"",
+                        ""kind"": ""timestop"",
+                        ""mode"": ""turn"",
+                        ""status"": ""active"",
+                        ""round"": 2,
+                        ""turn"": 1,
+                        ""current_actor"": { ""id"": ""#42"", ""name"": ""Nadia"" }
+                    }
+                }
+            }"));
+            Assert.IsNotNull(rv.Scene);
+            Assert.AreEqual(19L, rv.Scene.Id);
+            Assert.AreEqual("Broker Dispute", rv.Scene.Title);
+            Assert.AreEqual("Nadia", rv.Scene.CurrentActor.Name);
+
+            var rootGo = new UnityEngine.GameObject("SceneAndSignalIntelTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                Assert.IsNotNull(hud.SceneIntelModal, "BuildHud must wire [L] TacSimSceneAndIntelModal");
+
+                string turnAlertScene = null;
+                hud.SceneIntelModal.OnLocalPlayerTurnStarted += s => turnAlertScene = s;
+                hud.SceneIntelModal.SetLocalCharacter("#42", "Nadia");
+
+                // 2. Room glance activates scene banner & fires local-turn alert when current_actor matches player
+                hud.SceneIntelModal.ApplyRoomSceneGlance(rv.Scene);
+                Assert.IsTrue(hud.SceneIntelModal.IsSceneBannerVisible);
+                Assert.IsTrue(hud.SceneIntelModal.IsLocalPlayersTurn);
+                Assert.AreEqual("Broker Dispute", turnAlertScene);
+
+                // 3. Full `scenes` panel keyframe populates participant roster & null clears cleanly
+                hud.SceneIntelModal.ApplyScenesPanel(JsonNode.Parse(@"{
+                    ""id"": 19,
+                    ""title"": ""Broker Dispute"",
+                    ""kind"": ""timestop"",
+                    ""mode"": ""turn"",
+                    ""status"": ""paused"",
+                    ""round"": 2,
+                    ""turn"": 0,
+                    ""current_actor"": { ""id"": ""#55"", ""name"": ""Ilse"" },
+                    ""facilitator"": { ""id"": ""#42"", ""name"": ""Nadia"" },
+                    ""anchor"": { ""id"": ""#101"", ""name"": ""Ceres Exchange Floor"" },
+                    ""participants"": [
+                        { ""id"": ""#55"", ""name"": ""Ilse"" },
+                        { ""id"": ""#42"", ""name"": ""Nadia"" }
+                    ],
+                    ""observers"": [{ ""id"": ""#77"", ""name"": ""Dov"" }]
+                }"));
+                Assert.IsFalse(hud.SceneIntelModal.IsLocalPlayersTurn);
+                Assert.AreEqual(2, hud.SceneIntelModal.ActiveScene.Participants.Count);
+                Assert.AreEqual(1, hud.SceneIntelModal.ActiveScene.Observers.Count);
+
+                // 4. `tactics.contacts` propagation ledger populates clickable rows & dispatches sanitized `+contact <id>`
+                hud.SceneIntelModal.ApplySignalContactsPanel(JsonNode.Parse(@"{
+                    ""schema"": { ""id"": ""tactics.contacts"", ""shape"": ""list"" },
+                    ""truncated"": false,
+                    ""rows"": [
+                        { ""id"": ""C-01"", ""gen"": 2, ""rev"": 4, ""state"": ""live"", ""age"": ""3s"", ""band"": ""thermal"", ""source"": ""own"" },
+                        { ""id"": ""C-02"", ""gen"": 1, ""rev"": 1, ""state"": ""stale"", ""age"": ""48s"", ""band"": ""radar"", ""source"": ""relay"" }
+                    ]
+                }"));
+                Assert.AreEqual(2, hud.SceneIntelModal.SignalContactCount);
+                Assert.AreEqual(2, hud.SceneIntelModal.VisibleContactRowCount);
+
+                string dispatchedCmd = null;
+                hud.SceneIntelModal.OnCommandRequested += c => dispatchedCmd = c;
+                hud.SceneIntelModal.InspectContactById("C-01");
+                Assert.AreEqual("+contact C-01", dispatchedCmd);
+
+                // Rejects injected whitespace/control characters
+                dispatchedCmd = null;
+                hud.SceneIntelModal.InspectContactById("C-01\nQUIT");
+                Assert.IsNull(dispatchedCmd);
+
+                // Null scenes panel clears active scene & banner; ESC closes modal
+                hud.SceneIntelModal.SetOpen(true);
+                Assert.IsTrue(hud.TryCloseTopmostModal());
+                Assert.IsFalse(hud.SceneIntelModal.IsOpen);
+                hud.SceneIntelModal.ApplyScenesPanel(JsonNode.Null);
+                Assert.IsNull(hud.SceneIntelModal.ActiveScene);
+                Assert.IsFalse(hud.SceneIntelModal.IsSceneBannerVisible);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
+
+        [Test]
+        public void StationExitSignageTrafficAndOrbitalVelocityScanner_SpawnsAndAnimates3DVisuals()
+        {
+            var rootGo = new UnityEngine.GameObject("StationSignageAndSpaceVectorsTest");
+            try
+            {
+                // 1. Station 3D Illuminated Doorway Destination Lintels & Animated Exterior Port Traffic Shuttles
+                var stGo = new UnityEngine.GameObject("StationSignageTest");
+                stGo.transform.SetParent(rootGo.transform, false);
+                var station = stGo.AddComponent<TacSim.World.StationWorldController>();
+                station.BuildStation(null, "neighborhood.ceres_freeport");
+
+                Assert.GreaterOrEqual(station.DoorwaySignCount, 12, "Ceres Freeport doorways must spawn illuminated overhead destination lintel signs");
+                Assert.AreEqual(3, station.ExteriorTrafficShuttleCount, "Berth Gallery exterior orbital lane must spawn 3 animated port traffic shuttles");
+
+                // 2. Orbital Space 3D Newtonian Velocity Vector & Asteroid Spectral Scanner Halo Ring
+                var spGo = new UnityEngine.GameObject("SpaceVectorsTest");
+                spGo.transform.SetParent(rootGo.transform, false);
+                var space = spGo.AddComponent<TacSim.Space.SpaceFlightController>();
+                space.BuildSpaceStage(null);
+
+                Assert.IsFalse(space.IsVelocityVectorVisible, "Velocity vector should stay hidden at zero velocity");
+                Assert.IsFalse(space.IsRockScannerRingVisible, "Rock scanner ring should stay hidden when no asteroid is targeted");
+
+                space.ApplyHolotankFeed(JsonNode.Parse(@"{
+                    ""range_km"": 200,
+                    ""contacts"": [
+                        { ""id"": ""own"", ""you"": true, ""x_km"": 0, ""y_km"": 0, ""z_km"": 0, ""vx_kms"": 0.12, ""vy_kms"": 0.04, ""vz_kms"": 0.0 }
+                    ],
+                    ""rocks"": [
+                        { ""id"": ""A"", ""x_km"": 4, ""y_km"": 1, ""z_km"": 0, ""spectral"": ""C-type volatiles"" }
+                    ]
+                }"));
+
+                Assert.IsTrue(space.IsVelocityVectorVisible, "Non-zero ownship velocity must project 3D Newtonian velocity vector");
+                Assert.Greater(space.OwnVelocityUnityMps.magnitude, 100f);
+                Assert.IsTrue(space.IsRockScannerRingVisible, "Selected asteroid rock must project 3D spectral scanner halo ring");
+
+                // Reset clears velocity vector & scanner halo cleanly
+                space.ResetSessionState();
+                Assert.IsFalse(space.IsVelocityVectorVisible);
+                Assert.IsFalse(space.IsRockScannerRingVisible);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
+
+        [Test]
+        public void LivePaletteCommandsNpcThinkingAndComsysBacklog_HydrateAndRouteAuthoritatively()
+        {
+            // 1. Canonical Query::Commands & Query::ChannelBacklog wire frames
+            string cmdsReq = MushProtocol.BuildCommandsQueryCommand(12UL);
+            StringAssert.Contains("\"t\":\"commands\"", cmdsReq);
+            string backlogReq = MushProtocol.BuildChannelBacklogQueryCommand(13UL, "Public", beforeSeq: 50UL, limit: 25);
+            StringAssert.Contains("\"t\":\"channel_backlog\"", backlogReq);
+            StringAssert.Contains("\"channel\":\"Public\"", backlogReq);
+            StringAssert.Contains("\"before_seq\":50", backlogReq);
+            StringAssert.Contains("\"limit\":25", backlogReq);
+
+            // 2. Argument detection heuristic for live server commands
+            Assert.IsTrue(TacSim.UI.TacSimCommandPalette.CommandTakesArguments("addcom <alias>=<channel>", "addcom"));
+            Assert.IsTrue(TacSim.UI.TacSimCommandPalette.CommandTakesArguments("+helm/approach <rock>", "+helm/approach"));
+            Assert.IsFalse(TacSim.UI.TacSimCommandPalette.CommandTakesArguments("inventory", "inventory"));
+
+            var rootGo = new UnityEngine.GameObject("Wave3PR5_LiveHydrationTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                // 3. Live `commands.list` palette hydration + smart prefill vs direct execution
+                string sentCmd = null;
+                string prefilledCmd = null;
+                hud.CommandPalette.OnCommandRequested += c => sentCmd = c;
+                hud.CommandPalette.OnPrefillCommandRequested += p => prefilledCmd = p;
+
+                hud.CommandPalette.ApplyServerCommandsList(JsonNode.Parse(@"{
+                    ""commands"": [
+                        { ""name"": ""+ship"", ""aliases"": [], ""switches"": [""hold""], ""usage"": ""+ship"", ""summary"": ""Already curated"", ""module"": ""tacsim"" },
+                        { ""name"": ""inventory"", ""aliases"": [""inv""], ""switches"": [], ""usage"": ""inventory"", ""summary"": ""List carried items"", ""module"": ""core"" },
+                        { ""name"": ""addcom"", ""aliases"": [], ""switches"": [], ""usage"": ""addcom <alias>=<channel>"", ""summary"": ""Join a comsys channel"", ""module"": ""comsys"" }
+                    ],
+                    ""truncated"": false
+                }"));
+                Assert.AreEqual(3, hud.CommandPalette.ServerCommandCount);
+
+                hud.CommandPalette.SetOpen(true);
+                hud.CommandPalette.SetQuery("inv");
+                Assert.GreaterOrEqual(hud.CommandPalette.FilteredMatchCount, 1, "Alias 'inv' should match live 'inventory' server command");
+                Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
+                Assert.AreEqual("inventory", sentCmd, "Zero-arg live server command must dispatch immediately");
+
+                hud.CommandPalette.SetOpen(true);
+                hud.CommandPalette.SetQuery("addcom");
+                Assert.GreaterOrEqual(hud.CommandPalette.FilteredMatchCount, 1);
+                Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
+                Assert.AreEqual("addcom ", prefilledCmd, "Argument-taking server command must pre-fill chat input");
+
+                // 4. Comsys keyframe + delta backlog passthrough via MushWsClient
+                using (var ws = new MushWsClient())
+                {
+                    var backlogRequested = new List<string>();
+                    hud.SocialModal.OnChannelBacklogRequested += ch => backlogRequested.Add(ch);
+                    ws.OnPanelUpdated += (feed, data) =>
+                    {
+                        if (feed == "comsys")
+                            hud.SocialModal.ApplyComsysPanel(data);
+                    };
+
+                    // Keyframe hydrates channels & triggers backlog request for logged default channel
+                    ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{
+                        ""seq"": 1, ""ts"": 1000, ""t"": ""panel"",
+                        ""d"": {
+                            ""feed"": ""comsys"", ""kind"": ""keyframe"",
+                            ""data"": {
+                                ""channels"": [
+                                    { ""name"": ""Public"", ""alias"": ""pub"", ""title"": """", ""gagged"": false, ""logged"": true, ""ic"": false, ""seq"": 12, ""last_read"": 9, ""unread"": 3 },
+                                    { ""name"": ""Trade"", ""alias"": ""trd"", ""title"": """", ""gagged"": false, ""logged"": true, ""ic"": true, ""seq"": 4, ""last_read"": 4, ""unread"": 0 }
+                                ]
+                            }
+                        }
+                    }"));
+                    ws.PumpMainThread();
+
+                    Assert.AreEqual(2, hud.SocialModal.ChannelCount);
+                    Assert.AreEqual(1, backlogRequested.Count, "Auto-selected logged channel must trigger channel_backlog request");
+                    Assert.AreEqual("Public", backlogRequested[0]);
+
+                    // Delta frame carrying `backlog` (newest-first) must pass through MushWsClient & populate chronological transcript
+                    ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{
+                        ""seq"": 2, ""ts"": 1010, ""t"": ""panel"",
+                        ""d"": {
+                            ""feed"": ""comsys"", ""kind"": ""delta"",
+                            ""data"": {
+                                ""backlog"": {
+                                    ""channel"": ""Public"",
+                                    ""before_seq"": null,
+                                    ""messages"": [
+                                        { ""seq"": 12, ""actor"": { ""id"": ""#22"", ""name"": ""Voss"" }, ""title"": ""Pilot"", ""kind"": ""say"", ""text"": { ""spans"": [ { ""text"": ""Berth 4 clear."" } ] }, ""ts"": 1005 },
+                                        { ""seq"": 11, ""actor"": { ""id"": ""#21"", ""name"": ""Kestrel"" }, ""title"": null, ""kind"": ""pose"", ""text"": { ""spans"": [ { ""text"": ""checks the cargo manifest."" } ] }, ""ts"": 1002 }
+                                    ]
+                                }
+                            }
+                        }
+                    }"));
+                    ws.PumpMainThread();
+
+                    Assert.AreEqual(2, hud.SocialModal.GetChannelLineCount("Public"), "Comsys delta backlog slice must populate channel transcript");
+                    hud.SocialModal.SelectChannel("Trade");
+                    Assert.AreEqual(2, backlogRequested.Count, "Selecting a second logged channel must fetch its backlog");
+                    Assert.AreEqual("Trade", backlogRequested[1]);
+                }
+
+                // 5. Live 3D NPC thinking bubble on StationWorldController & open NPC dialog modal
+                var catalog = TacSimAssetCatalog.LoadOrDefault();
+                var stationGo = new UnityEngine.GameObject("ThinkingTestStation");
+                stationGo.transform.SetParent(rootGo.transform);
+                var station = stationGo.AddComponent<StationWorldController>();
+                station.BuildStation(catalog, "ceres_freeport");
+                var rv = MushProtocol.ParseRoomView(JsonNode.Parse(@"{
+                    ""id"": ""#10"", ""name"": ""Arrivals"", ""desc"": ""Concourse"",
+                    ""atlas"": { ""pack"": ""ceres_freeport"", ""entry"": ""room.c03_arrivals"", ""surface"": ""station"" },
+                    ""contents"": [
+                        { ""id"": ""#77"", ""name"": ""Harbor Clerk"", ""kind"": ""thing"" }
+                    ]
+                }"));
+                station.ApplyRoomView(rv, "#1");
+
+                station.SetActorThinking("#77", "Harbor Clerk", true);
+                Assert.AreEqual("thinking...", station.GetActorSpeechText("#77"), "Active npc.thinking must display 3D thinking bubble above NPC");
+
+                hud.ShowDetailModal("HARBOR CLERK", "Welcome to Ceres.", npcName: "Harbor Clerk");
+                hud.SetNpcModalThinking("Harbor Clerk", true);
+                Assert.IsTrue(hud.IsNpcModalThinking, "Open NPC modal must reflect live npc.thinking active state");
+
+                // Speech arriving clears modal thinking & replaces 3D bubble; subsequent thinking=false must NOT wipe spoken line!
+                station.ShowActorSpeech("#77", "Harbor Clerk", "Berth four is open.");
+                station.SetActorThinking("#77", "Harbor Clerk", false);
+                Assert.AreEqual("Berth four is open.", station.GetActorSpeechText("#77"), "Clearing npc.thinking must never erase the NPC's actual spoken line");
+
+                hud.AppendModalResponseLine("<b>Harbor Clerk</b> says, \"Berth four is open.\"");
+                Assert.IsFalse(hud.IsNpcModalThinking, "NPC speech arriving in open dialog modal must clear thinking indicator");
+
+                // Session reset clears server command table cleanly
+                hud.ResetSessionState();
+                Assert.AreEqual(0, hud.CommandPalette.ServerCommandCount);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
+
+        [Test]
+        public void NarrativeBacklogCommsSearchAndTimestamps_PaginatesFiltersAndStripsRichTags()
+        {
+            // 1. Canonical Query::NarrativeBacklog wire frame (initial & paged)
+            string initReq = MushProtocol.BuildNarrativeBacklogQueryCommand(20UL, beforeSeq: null, limit: 30);
+            StringAssert.Contains("\"t\":\"narrative_backlog\"", initReq);
+            StringAssert.Contains("\"limit\":30", initReq);
+            StringAssert.DoesNotContain("\"before_seq\"", initReq);
+
+            string pagedReq = MushProtocol.BuildNarrativeBacklogQueryCommand(21UL, beforeSeq: 41UL, limit: 25);
+            StringAssert.Contains("\"before_seq\":41", pagedReq);
+            StringAssert.Contains("\"limit\":25", pagedReq);
+
+            // 2. Rich-text tag stripping avoids false positives on markup words like "color"
+            Assert.AreEqual("Voss says, \"Berth 4 clear.\"", TacSim.UI.TacSimHudController.StripUnityRichTextTags("<color=#66EEAA><b>Voss</b></color> says, \"Berth 4 clear.\""));
+
+            var rootGo = new UnityEngine.GameObject("Wave3PR6_NarrativeBacklogTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                ulong? requestedBeforeSeq = 999UL;
+                int requestCount = 0;
+                hud.OnNarrativeBacklogRequested += bSeq => { requestedBeforeSeq = bSeq; requestCount++; };
+
+                // 3. Delta `narrative` backlog passthrough via MushWsClient
+                using (var ws = new MushWsClient())
+                {
+                    ws.OnPanelUpdated += (feed, data) =>
+                    {
+                        if (feed == "narrative")
+                            hud.ApplyNarrativeBacklog(data);
+                    };
+
+                    hud.AppendLogLine("<b>Kestrel</b> says, \"Current live line.\"");
+
+                    ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{
+                        ""seq"": 50, ""ts"": 1700000100000, ""t"": ""panel"",
+                        ""d"": {
+                            ""feed"": ""narrative"", ""kind"": ""delta"",
+                            ""data"": {
+                                ""backlog"": {
+                                    ""before_seq"": null, ""more"": true, ""evicted"": false,
+                                    ""lines"": [
+                                        { ""seq"": 45, ""ts"": 1700000050000, ""kind"": ""say"", ""actor"": { ""id"": ""#22"", ""name"": ""Voss"" }, ""text"": { ""spans"": [ { ""text"": ""Dockmaster cleared berth 4."" } ] } },
+                                        { ""seq"": 41, ""ts"": 1700000010000, ""kind"": ""pose"", ""actor"": { ""id"": ""#23"", ""name"": ""Mira"" }, ""text"": { ""spans"": [ { ""text"": ""waves from the gantry."" } ] } }
+                                    ]
+                                }
+                            }
+                        }
+                    }"));
+                    ws.PumpMainThread();
+
+                    Assert.AreEqual(2, hud.NarrativeBacklogLoadedCount);
+                    Assert.AreEqual(41UL, hud.OldestNarrativeBacklogSeq);
+                    Assert.IsTrue(hud.HasMoreNarrativeBacklog);
+
+                    // Paging earlier dispatches before_seq = 41
+                    hud.RequestEarlierNarrativeBacklog();
+                    Assert.AreEqual(1, requestCount);
+                    Assert.AreEqual(41UL, requestedBeforeSeq);
+
+                    // Duplicate seqs are ignored cleanly
+                    ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{
+                        ""seq"": 51, ""ts"": 1700000105000, ""t"": ""panel"",
+                        ""d"": {
+                            ""feed"": ""narrative"", ""kind"": ""delta"",
+                            ""data"": {
+                                ""backlog"": {
+                                    ""before_seq"": 41, ""more"": false, ""evicted"": false,
+                                    ""lines"": [
+                                        { ""seq"": 41, ""ts"": 1700000010000, ""kind"": ""pose"", ""actor"": { ""id"": ""#23"", ""name"": ""Mira"" }, ""text"": { ""spans"": [ { ""text"": ""waves from the gantry."" } ] } }
+                                    ]
+                                }
+                            }
+                        }
+                    }"));
+                    ws.PumpMainThread();
+                    Assert.AreEqual(2, hud.NarrativeBacklogLoadedCount, "Duplicate backlog sequence IDs must not double-count");
+                    Assert.IsFalse(hud.HasMoreNarrativeBacklog);
+                }
+
+                // 4. Comms search filter matches plain text & ignores rich-text color tags
+                hud.SetCommsSearchQuery("berth 4");
+                Assert.AreEqual(1, hud.VisibleFilteredLineCount, "Search for 'berth 4' should isolate Voss's backlog line");
+
+                hud.SetCommsSearchQuery("color");
+                Assert.AreEqual(0, hud.VisibleFilteredLineCount, "Search for 'color' must not false-match Unity <color=...> markup tags");
+
+                hud.SetCommsSearchQuery(string.Empty);
+                Assert.GreaterOrEqual(hud.VisibleFilteredLineCount, 3);
+
+                // 5. Timestamps toggle
+                hud.SetShowCommsTimestamps(true, persist: false);
+                Assert.IsTrue(hud.ShowCommsTimestamps);
+                hud.AppendLogLine("[SYS] Telemetry link verified.");
+                hud.SetCommsSearchQuery("Telemetry link");
+                Assert.AreEqual(1, hud.VisibleFilteredLineCount);
+
+                // Reset clears backlog state & search query cleanly
+                hud.ResetSessionState();
+                Assert.AreEqual(0, hud.NarrativeBacklogLoadedCount);
+                Assert.IsNull(hud.OldestNarrativeBacklogSeq);
+                Assert.AreEqual(string.Empty, hud.CommsSearchQuery);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
+
+        [Test]
+        public void BridgeHoloProjectorRingsSolarOrbitsAndRoverSlopeHeadlights_RenderAndAlignCleanly()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave3PR7_HoloAndRoverTest");
+            try
+            {
+                var catalog = TacSimAssetCatalog.LoadOrDefault();
+
+                // 1. 3D Bridge Holo-Table volumetric range rings, sweep arm & 3D solar orbital tracks
+                var shipGo = new UnityEngine.GameObject("TestBridgeShip");
+                shipGo.transform.SetParent(rootGo.transform);
+                var ship = shipGo.AddComponent<ShipInteriorController>();
+                ship.BuildInterior(catalog, "tacsim.unit.dray");
+
+                Assert.AreEqual(3, ship.HoloGridRingCount, "Bridge holo-table must render 3 concentric tactical range rings");
+                Assert.IsTrue(ship.HasHoloSweepArm, "Bridge holo-table must render animated radar sweep arm");
+
+                // Invariant check: HoloTankContacts childCount remains strictly 4 for ownship + 3 live contacts!
+                ship.PopulateHoloBlips(JsonNode.Parse(@"{
+                    ""range_km"": 500,
+                    ""contacts"": [
+                        { ""id"": ""own"", ""you"": true, ""x_km"": 0, ""y_km"": 0, ""z_km"": 0 },
+                        { ""id"": ""C1"", ""kind"": ""ship"", ""relation"": ""hostile"", ""x_km"": 120, ""y_km"": 40, ""z_km"": 15 },
+                        { ""id"": ""C2"", ""kind"": ""ship"", ""relation"": ""friendly"", ""x_km"": -90, ""y_km"": 60, ""z_km"": -10 },
+                        { ""id"": ""A"", ""kind"": ""rock"", ""x_km"": 50, ""y_km"": -80, ""z_km"": 5 }
+                    ]
+                }"));
+                var holoContacts = shipGo.transform.Find("HoloTankPedestal")?.Find("HoloTankContacts");
+                Assert.IsNotNull(holoContacts);
+                Assert.AreEqual(4, holoContacts.childCount, "HoloTankContacts childCount invariant must stay exact (ownship + 3 contacts)");
+                Assert.AreEqual(0, ship.HoloSolarOrbitRingCount, "Local tactical bubble mode must hide solar orbit rings");
+
+                // Switch to Solar System mode -> renders 3D orbital track rings for primary solar bodies
+                var chart = TacSimSolarChartFrame.FromJson(JsonNode.Parse(@"{
+                    ""ic_time"": ""2350-05-01"",
+                    ""vantage"": { ""body"": ""ceres"", ""port"": ""ceres"" },
+                    ""scale"": { ""r0_au"": 1.5, ""au_max"": 12.0 },
+                    ""bodies"": [
+                        { ""id"": ""earth"", ""label"": ""Earth"", ""r_au"": 1.0, ""lon_deg"": 15.0, ""lat_deg"": 0.0, ""here"": false },
+                        { ""id"": ""mars"", ""label"": ""Mars"", ""r_au"": 1.52, ""lon_deg"": 110.0, ""lat_deg"": 1.8, ""here"": false },
+                        { ""id"": ""ceres"", ""label"": ""Ceres"", ""r_au"": 2.77, ""lon_deg"": 230.0, ""lat_deg"": 10.6, ""here"": true }
+                    ],
+                    ""routes"": []
+                }"));
+                ship.ApplySolarChartFrame(chart);
+                ship.SetHoloDisplayMode(BridgeHoloMode.SolarSystem);
+                Assert.AreEqual(3, ship.HoloSolarOrbitRingCount, "Solar System holo-table mode must draw concentric 3D orbital rings per primary body");
+
+                // Alert escalation tints holo-grid rings without throwing
+                ship.SetAlertLevel(ShipAlertLevel.RedAlert);
+                Assert.AreEqual(ShipAlertLevel.RedAlert, ship.ActiveAlertLevel);
+
+                // 2. Surface Prospector Rover dual headlights + terrain-slope alignment
+                var surfGo = new UnityEngine.GameObject("TestSurfaceStage");
+                surfGo.transform.SetParent(rootGo.transform);
+                var surf = surfGo.AddComponent<TacSim.Surface.SurfaceMiningController>();
+                surf.BuildSurfaceStage(catalog, "occator_rim");
+
+                Assert.AreEqual(2, surf.RoverHeadlightCount, "Prospector rover must mount dual forward spotlights");
+                Assert.IsFalse(surf.IsRoverDustPlumeActive, "Stationary rover must keep regolith dust plume hidden");
+
+                // Synthetic sloped terrain grid -> ComputeTerrainAlignedRotation yields non-zero slope tilt clamped <= 28 deg
+                var grid = new DecodedTerrainGrid
+                {
+                    Width = 8,
+                    Height = 8,
+                    CellSizeM = 10f,
+                    ElevMeters = new float[64],
+                    Classes = new TerrainCellClass[64]
+                };
+                for (int y = 0; y < 8; y++)
+                {
+                    for (int x = 0; x < 8; x++)
+                        grid.ElevMeters[y * 8 + x] = y * 3.5f + x * 1.2f; // steady uphill ramp
+                }
+                var aligned = TacSim.Surface.SurfaceMiningController.ComputeTerrainAlignedRotation(grid, new UnityEngine.Vector3(35f, 0f, 35f), headingDeg: 0f, out float tiltDeg);
+                Assert.Greater(tiltDeg, 5f, "Sloped terrain must tilt rover chassis onto local grade");
+                Assert.LessOrEqual(tiltDeg, 40f);
+                Assert.Greater(UnityEngine.Quaternion.Angle(UnityEngine.Quaternion.identity, aligned), 5f);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

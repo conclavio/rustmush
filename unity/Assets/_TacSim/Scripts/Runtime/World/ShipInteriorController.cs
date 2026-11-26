@@ -67,6 +67,10 @@ namespace TacSim.World
         private Transform _crewActorsContainer;
         private string _crewActorsCompartmentId;
         private Transform _holotankBlipsRoot;
+        private Transform _holoGridRoot;
+        private Transform _holoSolarOrbitRingsRoot;
+        private Transform _holoSweepArm;
+        private readonly List<LineRenderer> _holoGridLines = new List<LineRenderer>(8);
         private Transform _cargoPalletsRoot;
         private WorldInteractable _airlockLeaveInteractable;
         private Light _bridgeMainLight;
@@ -84,6 +88,9 @@ namespace TacSim.World
         public bool HasBridgeExteriorPlanet => _vistaPlanetTransform != null;
         public bool IsHoloShowingSolarSystem => !_holoShowingTacticalContacts && _lastSolarChart != null && _lastSolarChart.Bodies.Count > 0;
         public int ClickableHoloNodeCount => _holoClickNodes.Count;
+        public int HoloGridRingCount { get; private set; }
+        public int HoloSolarOrbitRingCount => _holoSolarOrbitRingsRoot != null ? _holoSolarOrbitRingsRoot.childCount : 0;
+        public bool HasHoloSweepArm => _holoSweepArm != null;
 
         // Companionway stairwell openings in ship local X/Z so climbing between Passage (Y=0),
         // Bridge (Y=+3.4m), and Cargo Hold (Y=-3.6m) has full head & capsule clearance.
@@ -812,6 +819,8 @@ namespace TacSim.World
             _holotankBlipsRoot.localPosition = new Vector3(0f, 1.05f, 0f);
             _holotankBlipsRoot.localScale = Vector3.one;
 
+            BuildBridgeHoloProjectorGrid(holoRoot.transform);
+
             // Seed default holo sun/Ceres + ship blip until live space.holotank arrives
             PopulateHoloBlips(null);
 
@@ -857,10 +866,100 @@ namespace TacSim.World
             helmWi.OnInteracted = item => OnInteractableTriggered?.Invoke(item);
         }
 
+        private void BuildBridgeHoloProjectorGrid(Transform holoRoot)
+        {
+            _holoGridLines.Clear();
+            HoloGridRingCount = 0;
+
+            var gridGo = new GameObject("HoloProjectorGrid");
+            gridGo.transform.SetParent(holoRoot, false);
+            gridGo.transform.localPosition = new Vector3(0f, 1.05f, 0f);
+            _holoGridRoot = gridGo.transform;
+
+            Material ringMat = UrpMaterialFactory.GetHologramUnlit("BridgeHoloGrid_Normal", new Color(0.22f, 0.82f, 1.0f, 0.34f));
+            float[] radii = { 0.24f, 0.48f, 0.72f };
+            const int Segments = 40;
+            for (int r = 0; r < radii.Length; r++)
+            {
+                var rGo = new GameObject($"HoloRangeRing_{r}");
+                rGo.transform.SetParent(_holoGridRoot, false);
+                var lr = rGo.AddComponent<LineRenderer>();
+                lr.useWorldSpace = false;
+                lr.loop = true;
+                lr.startWidth = 0.008f;
+                lr.endWidth = 0.008f;
+                lr.sharedMaterial = ringMat;
+                lr.positionCount = Segments;
+                float rad = radii[r];
+                for (int s = 0; s < Segments; s++)
+                {
+                    float ang = (s / (float)Segments) * Mathf.PI * 2f;
+                    lr.SetPosition(s, new Vector3(Mathf.Cos(ang) * rad, 0f, Mathf.Sin(ang) * rad));
+                }
+                _holoGridLines.Add(lr);
+                HoloGridRingCount++;
+            }
+
+            // Cardinal reticle axes across the holo projection plane
+            for (int a = 0; a < 2; a++)
+            {
+                var axGo = new GameObject(a == 0 ? "HoloAxisX" : "HoloAxisZ");
+                axGo.transform.SetParent(_holoGridRoot, false);
+                var lr = axGo.AddComponent<LineRenderer>();
+                lr.useWorldSpace = false;
+                lr.positionCount = 2;
+                lr.startWidth = 0.006f;
+                lr.endWidth = 0.006f;
+                lr.sharedMaterial = ringMat;
+                if (a == 0)
+                {
+                    lr.SetPosition(0, new Vector3(-0.74f, 0f, 0f));
+                    lr.SetPosition(1, new Vector3(0.74f, 0f, 0f));
+                }
+                else
+                {
+                    lr.SetPosition(0, new Vector3(0f, 0f, -0.74f));
+                    lr.SetPosition(1, new Vector3(0f, 0f, 0.74f));
+                }
+                _holoGridLines.Add(lr);
+            }
+
+            // Rotating radar sweep beam
+            var sweepGo = new GameObject("HoloSweepArm");
+            sweepGo.transform.SetParent(_holoGridRoot, false);
+            var sweepLr = sweepGo.AddComponent<LineRenderer>();
+            sweepLr.useWorldSpace = false;
+            sweepLr.positionCount = 2;
+            sweepLr.startWidth = 0.012f;
+            sweepLr.endWidth = 0.004f;
+            sweepLr.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("BridgeHoloSweepMat", new Color(0.35f, 0.96f, 1.0f, 0.62f));
+            sweepLr.SetPosition(0, Vector3.zero);
+            sweepLr.SetPosition(1, new Vector3(0f, 0f, 0.72f));
+            _holoSweepArm = sweepGo.transform;
+
+            var solarRingsGo = new GameObject("HoloSolarOrbitRings");
+            solarRingsGo.transform.SetParent(_holoGridRoot, false);
+            _holoSolarOrbitRingsRoot = solarRingsGo.transform;
+        }
+
+        private void ClearHoloSolarOrbitRings()
+        {
+            if (_holoSolarOrbitRingsRoot == null) return;
+            for (int i = _holoSolarOrbitRingsRoot.childCount - 1; i >= 0; i--)
+            {
+                var ch = _holoSolarOrbitRingsRoot.GetChild(i).gameObject;
+                if (Application.isPlaying) Destroy(ch);
+                else DestroyImmediate(ch);
+            }
+        }
+
         private void Update()
         {
             if (_vistaPlanetTransform != null)
                 _vistaPlanetTransform.Rotate(Vector3.up, Time.deltaTime * 1.1f, UnityEngine.Space.Self);
+
+            if (_holoSweepArm != null)
+                _holoSweepArm.Rotate(0f, Time.deltaTime * 44f, 0f, UnityEngine.Space.Self);
 
             if (_bridgeMainLight != null && ActiveAlertLevel != ShipAlertLevel.Normal)
             {
@@ -1036,6 +1135,19 @@ namespace TacSim.World
                         ? UrpMaterialFactory.GetEmissive("BridgeAlert_Amber", new Color(0.82f, 0.54f, 0.12f), new Color(1.0f, 0.72f, 0.20f) * 1.8f)
                         : UrpMaterialFactory.GetEmissive("BridgeAlert_Normal", new Color(0.18f, 0.56f, 0.72f), new Color(0.24f, 0.78f, 0.96f) * 1.1f));
                 _bridgeAlertStripRenderer.sharedMaterial = m;
+            }
+            if (_holoGridLines.Count > 0)
+            {
+                Material gm = ActiveAlertLevel == ShipAlertLevel.RedAlert
+                    ? UrpMaterialFactory.GetHologramUnlit("BridgeHoloGrid_Red", new Color(1.0f, 0.28f, 0.22f, 0.44f))
+                    : (ActiveAlertLevel == ShipAlertLevel.Caution
+                        ? UrpMaterialFactory.GetHologramUnlit("BridgeHoloGrid_Amber", new Color(1.0f, 0.74f, 0.24f, 0.38f))
+                        : UrpMaterialFactory.GetHologramUnlit("BridgeHoloGrid_Normal", new Color(0.22f, 0.82f, 1.0f, 0.34f)));
+                for (int i = 0; i < _holoGridLines.Count; i++)
+                {
+                    if (_holoGridLines[i] != null)
+                        _holoGridLines[i].sharedMaterial = gm;
+                }
             }
         }
 
@@ -1275,11 +1387,32 @@ namespace TacSim.World
 
         public void SetActorComposing(string actorId, string actorName, bool composing)
         {
+            SetActorTransientBubble(actorId, actorName, composing, "...", 8.5f);
+        }
+
+        public void SetActorThinking(string actorId, string actorName, bool thinking)
+        {
+            SetActorTransientBubble(actorId, actorName, thinking, "thinking...", 18.0f);
+        }
+
+        public string GetActorSpeechText(string actorId)
+        {
+            if (!string.IsNullOrEmpty(actorId) &&
+                _crewBillboards.TryGetValue(actorId, out var bb) &&
+                bb != null && bb.IsSpeechActive)
+            {
+                return bb.CurrentSpeechText;
+            }
+            return string.Empty;
+        }
+
+        private void SetActorTransientBubble(string actorId, string actorName, bool active, string marker, float durationSec)
+        {
             if (!string.IsNullOrEmpty(actorId) && _crewBillboards.TryGetValue(actorId, out var bb) && bb != null)
             {
-                if (composing)
-                    bb.ShowSpeech("...");
-                else if (bb.SpeechBubbleText != null && bb.SpeechBubbleText.text == "...")
+                if (active)
+                    bb.ShowSpeech(marker, durationSec);
+                else if (bb.SpeechBubbleText != null && bb.SpeechBubbleText.text == marker)
                     bb.SpeechBubbleText.gameObject.SetActive(false);
                 return;
             }
@@ -1292,8 +1425,8 @@ namespace TacSim.World
                     {
                         if (_crewBillboards.TryGetValue(kv.Key, out var b2) && b2 != null)
                         {
-                            if (composing) b2.ShowSpeech("...");
-                            else if (b2.SpeechBubbleText != null && b2.SpeechBubbleText.text == "...") b2.SpeechBubbleText.gameObject.SetActive(false);
+                            if (active) b2.ShowSpeech(marker, durationSec);
+                            else if (b2.SpeechBubbleText != null && b2.SpeechBubbleText.text == marker) b2.SpeechBubbleText.gameObject.SetActive(false);
                         }
                         break;
                     }
@@ -1399,6 +1532,7 @@ namespace TacSim.World
                 else DestroyImmediate(ch);
             }
             _holoClickNodes.Clear();
+            ClearHoloSolarOrbitRings();
 
             if (ActiveHoloMode == BridgeHoloMode.SolarSystem && _lastSolarChart != null && _lastSolarChart.Bodies.Count > 0)
             {
@@ -1548,10 +1682,15 @@ namespace TacSim.World
             Material routeMat = UrpMaterialFactory.GetHologramUnlit("HoloRouteArc", new Color(1.0f, 0.76f, 0.26f, 0.65f));
             Material stemMat = UrpMaterialFactory.GetHologramUnlit("HoloStem", new Color(0.35f, 0.86f, 1.0f, 0.35f));
 
+            Material orbitTrackMat = UrpMaterialFactory.GetHologramUnlit("HoloSolarOrbitTrack", new Color(0.28f, 0.72f, 0.96f, 0.28f));
+            Material hereOrbitMat = UrpMaterialFactory.GetHologramUnlit("HoloSolarHereOrbit", new Color(0.28f, 1.0f, 0.74f, 0.52f));
+            ClearHoloSolarOrbitRings();
+
             // Glowing central Sun
             CreateHoloSphere(_holotankBlipsRoot, Vector3.zero, 0.13f, sunMat, clickableId: null, isSolar: false, isRock: false, stemMat: null);
 
             var bodyPositions = new Dictionary<string, Vector3>(StringComparer.OrdinalIgnoreCase);
+            int orbitRingsAdded = 0;
             for (int i = 0; i < chart.Bodies.Count; i++)
             {
                 var b = chart.Bodies[i];
@@ -1561,6 +1700,27 @@ namespace TacSim.World
                 var route = chart.FindRouteForBodyOrPort(b.Id);
                 string clickSlug = route != null && !string.IsNullOrEmpty(route.To) ? route.To : b.Id;
                 CreateHoloSphere(_holotankBlipsRoot, pos, b.Here ? 0.095f : 0.06f, b.Here ? hereMat : bodyMat, clickableId: clickSlug, isSolar: true, isRock: false, stemMat: stemMat);
+
+                float orbitRadius = new Vector2(pos.x, pos.z).magnitude;
+                if (_holoSolarOrbitRingsRoot != null && orbitRadius > 0.05f && orbitRingsAdded < 10)
+                {
+                    var ringGo = new GameObject($"SolarOrbit_{b.Id}");
+                    ringGo.transform.SetParent(_holoSolarOrbitRingsRoot, false);
+                    var lr = ringGo.AddComponent<LineRenderer>();
+                    lr.useWorldSpace = false;
+                    lr.loop = true;
+                    lr.startWidth = b.Here ? 0.009f : 0.005f;
+                    lr.endWidth = b.Here ? 0.009f : 0.005f;
+                    lr.sharedMaterial = b.Here ? hereOrbitMat : orbitTrackMat;
+                    const int OrbitSegs = 36;
+                    lr.positionCount = OrbitSegs;
+                    for (int s = 0; s < OrbitSegs; s++)
+                    {
+                        float ang = (s / (float)OrbitSegs) * Mathf.PI * 2f;
+                        lr.SetPosition(s, new Vector3(Mathf.Cos(ang) * orbitRadius, 0f, Mathf.Sin(ang) * orbitRadius));
+                    }
+                    orbitRingsAdded++;
+                }
             }
 
             // Route beams between cleared corridor bodies

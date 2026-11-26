@@ -76,6 +76,8 @@ namespace TacSim.UI
         public event Action OnCycleTargetRequested;
         public event Action OnCycleOrbitalCameraRequested;
         public event Action OnSpaceQuickFireRequested;
+        public event Action OnCloseReplayRequested;
+        public event Action<ulong?> OnNarrativeBacklogRequested;
 
         public static TacSimHudController ActiveInstance { get; private set; }
 
@@ -99,6 +101,8 @@ namespace TacSim.UI
         public TacSimSocialAndMailModal SocialModal { get; private set; }
         public TacSimQuestJournal QuestJournal { get; private set; }
         public TacSimTacticalOverview TacticalOverview { get; private set; }
+        public TacSimReplayControlsHud ReplayHud { get; private set; }
+        public TacSimSceneAndIntelModal SceneIntelModal { get; private set; }
         public ChatLogTab ActiveChatTab { get; private set; } = ChatLogTab.All;
         public int QuickActionSlotCount => _quickSlotActions.Count;
         public bool IsDockingHudVisible => _dockingPanel != null && _dockingPanel.activeSelf;
@@ -131,6 +135,7 @@ namespace TacSim.UI
                        (KeybindHelp != null && KeybindHelp.IsOpen) ||
                        (SocialModal != null && SocialModal.IsOpen) ||
                        (QuestJournal != null && QuestJournal.IsOpen) ||
+                       (SceneIntelModal != null && SceneIntelModal.IsOpen) ||
                        (Overlays != null && Overlays.IsLobbyModalOpen) ||
                        (term != null && term.IsTerminalOpen);
             }
@@ -142,6 +147,7 @@ namespace TacSim.UI
             {
                 var term = ResolveActiveMindTerminal();
                 return (_chatInput != null && _chatInput.isFocused) ||
+                       (_commsSearchInput != null && _commsSearchInput.isFocused) ||
                        (_npcSayInput != null && _npcSayInput.isFocused) ||
                        (CommandPalette != null && CommandPalette.IsSearchFocused) ||
                        (KeybindHelp != null && KeybindHelp.IsAnyInputFocused) ||
@@ -152,6 +158,16 @@ namespace TacSim.UI
                        (_loginPanel != null && _loginPanel.activeSelf);
             }
         }
+
+        private const string PrefShowCommsTimestamps = "TacSim.ShowCommsTimestamps";
+
+        public bool ShowCommsTimestamps { get; private set; }
+        public bool IsCommsSearchOpen => _commsSearchRow != null && _commsSearchRow.activeSelf;
+        public string CommsSearchQuery => _commsSearchQuery ?? string.Empty;
+        public int VisibleFilteredLineCount { get; private set; }
+        public int NarrativeBacklogLoadedCount => _seenBacklogSeqs.Count;
+        public ulong? OldestNarrativeBacklogSeq => _oldestNarrativeBacklogSeq;
+        public bool HasMoreNarrativeBacklog => _hasMoreNarrativeBacklog;
 
         private Font _uiFont;
         private Canvas _canvas;
@@ -172,8 +188,11 @@ namespace TacSim.UI
         private PlayerAvatarPreset _selectedAvatar = PlayerAvatarPreset.StellarTrooperFemale;
         private readonly List<Image> _avatarButtons = new List<Image>();
 
-        // Top bar
+        // Top bar & HUD density chrome
         private GameObject _hudRoot;
+        private GameObject _topStripPanel;
+        private GameObject _cinematicRestoreChip;
+        private bool _isCinematicHudActive;
         private Text _locationText;
         private Text _netBadgeText;
         private Text _shipAndClockText;
@@ -197,10 +216,21 @@ namespace TacSim.UI
         private Text _helmStatusLabel;
         private Text _holoModeBtnLabel;
 
-        // Tabbed Comms / Combat Log & Command History
+        // Tabbed Comms / Combat Log, Search Filter, Timestamps, Narrative Scrollback & Command History
         private RectTransform _commsPanelRect;
+        private RectTransform _commsViewportRect;
         private bool _commsExpanded;
         private Text _commsExpandLabel;
+        private Image _commsTimeBtnImg;
+        private Image _commsFindBtnImg;
+        private Button _commsHistoryBtn;
+        private GameObject _commsSearchRow;
+        private InputField _commsSearchInput;
+        private Text _commsSearchCountText;
+        private string _commsSearchQuery = string.Empty;
+        private readonly HashSet<ulong> _seenBacklogSeqs = new HashSet<ulong>();
+        private ulong? _oldestNarrativeBacklogSeq;
+        private bool _hasMoreNarrativeBacklog = true;
         private readonly List<(ChatLogTab tab, string line)> _categorizedLogEntries = new List<(ChatLogTab, string)>();
         private readonly List<Image> _chatTabImages = new List<Image>();
         private readonly bool[] _chatTabUnread = new bool[5];
@@ -288,10 +318,12 @@ namespace TacSim.UI
         private InputField _npcSayInput;
         private Text _npcSayPlaceholderText;
         private string _activeNpcTargetName;
+        private bool _modalNpcThinking;
         private string _modalCommandPrefix;
         private MushServerRequest _activeServerRequest;
         private string _modalBaseIntro = string.Empty;
         private readonly List<string> _modalResponseLines = new List<string>();
+        public bool IsNpcModalThinking => _modalNpcThinking;
 
         // 6-DOF Docking Telemetry Panel
         private GameObject _dockingPanel;
@@ -456,6 +488,7 @@ namespace TacSim.UI
         {
             _activeServerRequest = null;
             _activeNpcTargetName = null;
+            _modalNpcThinking = false;
             _modalCommandPrefix = null;
             _modalBaseIntro = string.Empty;
             _modalResponseLines.Clear();
@@ -472,6 +505,14 @@ namespace TacSim.UI
 
             _logLines.Clear();
             _categorizedLogEntries.Clear();
+            _seenBacklogSeqs.Clear();
+            _oldestNarrativeBacklogSeq = null;
+            _hasMoreNarrativeBacklog = true;
+            _commsSearchQuery = string.Empty;
+            VisibleFilteredLineCount = 0;
+            if (_commsSearchInput != null) _commsSearchInput.SetTextWithoutNotify(string.Empty);
+            if (_commsSearchRow != null) _commsSearchRow.SetActive(false);
+            UpdateCommsViewportInsets();
             _commandHistoryCursor = _commandHistory.Count;
             for (int i = 0; i < _chatTabUnread.Length; i++) _chatTabUnread[i] = false;
             ActiveChatTab = ChatLogTab.All;
@@ -496,7 +537,9 @@ namespace TacSim.UI
             KeybindHelp?.ResetSessionState();
             SocialModal?.ResetSessionState();
             QuestJournal?.ResetSessionState();
+            SceneIntelModal?.ResetSessionState();
             TacticalOverview?.ResetSessionState();
+            ReplayHud?.ResetSessionState();
             TacticalBrackets?.ResetSessionState();
             FloatingCallouts?.ResetSessionState();
             UnitFrames?.ResetSessionState();
@@ -554,6 +597,9 @@ namespace TacSim.UI
             Overlays = gameObject.GetComponent<TacSimMissionOverlays>() ?? gameObject.AddComponent<TacSimMissionOverlays>();
             Overlays.BuildOverlays(_hudRoot.transform, _uiFont);
 
+            ReplayHud = gameObject.GetComponent<TacSimReplayControlsHud>() ?? gameObject.AddComponent<TacSimReplayControlsHud>();
+            ReplayHud.BuildHud(_hudRoot.transform, _uiFont);
+
             UnitFrames = gameObject.GetComponent<TacSimUnitFrames>() ?? gameObject.AddComponent<TacSimUnitFrames>();
             UnitFrames.BuildFrames(_hudRoot.transform, _uiFont);
 
@@ -575,6 +621,9 @@ namespace TacSim.UI
             QuestJournal = gameObject.GetComponent<TacSimQuestJournal>() ?? gameObject.AddComponent<TacSimQuestJournal>();
             QuestJournal.BuildUi(_hudRoot.transform, _uiFont);
 
+            SceneIntelModal = gameObject.GetComponent<TacSimSceneAndIntelModal>() ?? gameObject.AddComponent<TacSimSceneAndIntelModal>();
+            SceneIntelModal.BuildUi(_hudRoot.transform, _uiFont);
+
             SocialModal = gameObject.GetComponent<TacSimSocialAndMailModal>() ?? gameObject.AddComponent<TacSimSocialAndMailModal>();
             SocialModal.BuildModal(_hudRoot.transform, _uiFont);
             SocialModal.OnUnreadMailCountChanged += UpdateSocialMailBadge;
@@ -587,10 +636,36 @@ namespace TacSim.UI
 
             DisplayOptions = gameObject.GetComponent<TacSimDisplayOptions>() ?? gameObject.AddComponent<TacSimDisplayOptions>();
             DisplayOptions.BuildModal(canvasGo.transform, _uiFont);
+            DisplayOptions.OnHudDensityChanged -= ApplyHudDensityPreset;
+            DisplayOptions.OnHudDensityChanged += ApplyHudDensityPreset;
             DisplayOptions.ApplyStartupPreferences();
+
+            var restoreBtn = CreateButton(canvasGo.transform, "[F9] RESTORE HUD", new Color(0.08f, 0.16f, 0.24f, 0.78f), () => DisplayOptions?.ToggleCinematicHudMode());
+            restoreBtn.name = "CinematicRestoreChip";
+            SetRect(restoreBtn.GetComponent<RectTransform>(), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-156f, -38f), new Vector2(-14f, -10f));
+            _cinematicRestoreChip = restoreBtn.gameObject;
+            _cinematicRestoreChip.SetActive(false);
+
+            ApplyHudDensityPreset(TacSimDisplayOptions.CurrentHudDensity);
 
             IsInitialized = true;
             ShowLoginOverlay(true, "Sign in to mushd (e.g. https://dev1.conclav.io) to enter the 2350 Corridor.");
+        }
+
+        public bool IsCinematicHudActive => _isCinematicHudActive;
+
+        public void ApplyHudDensityPreset(TacSimHudDensityPreset preset)
+        {
+            _isCinematicHudActive = preset == TacSimHudDensityPreset.Cinematic;
+            bool showChrome = !_isCinematicHudActive;
+            if (_topStripPanel != null) _topStripPanel.SetActive(showChrome);
+            if (_commsPanelRect != null) _commsPanelRect.gameObject.SetActive(showChrome);
+            if (_quickActionsStripPanel != null && _isCinematicHudActive)
+                _quickActionsStripPanel.SetActive(false);
+            UnitFrames?.SetHiddenByHudPreset(_isCinematicHudActive);
+            Minimap?.SetHiddenByHudPreset(_isCinematicHudActive);
+            if (_cinematicRestoreChip != null)
+                _cinematicRestoreChip.SetActive(_isCinematicHudActive && !IsLoginOverlayVisible);
         }
 
         private static void EnsureEventSystem()
@@ -620,6 +695,7 @@ namespace TacSim.UI
 
             // 1. Top Telemetry Strip
             var topBar = CreatePanel(_hudRoot.transform, "TopStrip", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(16f, -64f), new Vector2(-16f, -10f), new Color(0.04f, 0.07f, 0.11f, 0.86f));
+            _topStripPanel = topBar;
             _locationText = CreateText(topBar.transform, "CERES FREEPORT — PORT WATCH ARRIVALS [PUBLIC DECK]", 18, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.82f, 0.94f, 1f));
             SetRect(_locationText.rectTransform, new Vector2(0f, 0f), new Vector2(0.42f, 1f), new Vector2(18f, 0f), Vector2.zero);
 
@@ -675,14 +751,17 @@ namespace TacSim.UI
 
             BuildHelmFlightDeckBar(_hudRoot.transform);
 
-            // 4. Bottom-Left Tabbed Comms & Combat Log Drawer (WoW/EQ tabs + quick-prefix pills + expand toggle + Up/Down history)
+            // 4. Bottom-Left Tabbed Comms & Combat Log Drawer (WoW/EQ tabs + history recall + search filter + timestamps + quick-prefix pills + expand toggle + Up/Down history)
+            if (Application.isPlaying)
+                ShowCommsTimestamps = PlayerPrefs.GetInt(PrefShowCommsTimestamps, 0) != 0;
+
             var commsPanel = CreatePanel(_hudRoot.transform, "CommsDrawer", new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(14f, 16f), new Vector2(436f, 282f), new Color(0.03f, 0.05f, 0.08f, 0.90f));
             _commsPanelRect = commsPanel.GetComponent<RectTransform>();
             _commsExpanded = false;
 
-            var chatTabStrip = CreatePanel(commsPanel.transform, "CommsTabStrip", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(8f, -26f), new Vector2(-34f, -4f), Color.clear);
+            var chatTabStrip = CreatePanel(commsPanel.transform, "CommsTabStrip", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(8f, -26f), new Vector2(-118f, -4f), Color.clear);
             var ctHlg = chatTabStrip.AddComponent<HorizontalLayoutGroup>();
-            ctHlg.spacing = 4f;
+            ctHlg.spacing = 3f;
             ctHlg.childControlWidth = true;
             ctHlg.childControlHeight = true;
             ctHlg.childForceExpandWidth = true;
@@ -692,16 +771,46 @@ namespace TacSim.UI
                 var capturedTab = (ChatLogTab)i;
                 var tb = CreateButton(chatTabStrip.transform, chatTabLabels[i], new Color(0.10f, 0.18f, 0.26f), () => SelectChatLogTab(capturedTab));
                 var tTxt = tb.GetComponentInChildren<Text>();
-                if (tTxt != null) tTxt.fontSize = 10;
+                if (tTxt != null) tTxt.fontSize = 9;
                 _chatTabImages.Add(tb.GetComponent<Image>());
             }
+
+            _commsHistoryBtn = CreateButton(commsPanel.transform, "<<", new Color(0.12f, 0.24f, 0.34f), RequestEarlierNarrativeBacklog);
+            SetRect(_commsHistoryBtn.GetComponent<RectTransform>(), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-114f, -26f), new Vector2(-88f, -4f));
+            var histLbl = _commsHistoryBtn.GetComponentInChildren<Text>();
+            if (histLbl != null) histLbl.fontSize = 10;
+
+            var findBtn = CreateButton(commsPanel.transform, "?", new Color(0.12f, 0.24f, 0.34f), ToggleCommsSearch);
+            SetRect(findBtn.GetComponent<RectTransform>(), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-86f, -26f), new Vector2(-62f, -4f));
+            _commsFindBtnImg = findBtn.GetComponent<Image>();
+            var findLbl = findBtn.GetComponentInChildren<Text>();
+            if (findLbl != null) findLbl.fontSize = 10;
+
+            var timeBtn = CreateButton(commsPanel.transform, "T", new Color(0.12f, 0.24f, 0.34f), () => SetShowCommsTimestamps(!ShowCommsTimestamps));
+            SetRect(timeBtn.GetComponent<RectTransform>(), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-60f, -26f), new Vector2(-36f, -4f));
+            _commsTimeBtnImg = timeBtn.GetComponent<Image>();
+            var timeLbl = timeBtn.GetComponentInChildren<Text>();
+            if (timeLbl != null) timeLbl.fontSize = 10;
+
             var expBtn = CreateButton(commsPanel.transform, "^", new Color(0.14f, 0.24f, 0.34f), ToggleCommsExpanded);
-            SetRect(expBtn.GetComponent<RectTransform>(), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-30f, -26f), new Vector2(-8f, -4f));
+            SetRect(expBtn.GetComponent<RectTransform>(), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-34f, -26f), new Vector2(-8f, -4f));
             _commsExpandLabel = expBtn.GetComponentInChildren<Text>();
             if (_commsExpandLabel != null) _commsExpandLabel.fontSize = 11;
+
+            _commsSearchRow = CreatePanel(commsPanel.transform, "CommsSearchRow", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(8f, -52f), new Vector2(-8f, -28f), new Color(0.05f, 0.10f, 0.16f, 0.96f));
+            _commsSearchInput = CreateInputField(_commsSearchRow.transform, "Filter log (plain text)...", new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(2f, 1f), new Vector2(-78f, -1f));
+            _commsSearchInput.onValueChanged.AddListener(SetCommsSearchQuery);
+            _commsSearchCountText = CreateText(_commsSearchRow.transform, "", 10, FontStyle.Bold, TextAnchor.MiddleRight, new Color(0.62f, 0.86f, 0.98f));
+            SetRect(_commsSearchCountText.rectTransform, new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-76f, 0f), new Vector2(-24f, 0f));
+            var clearSearchBtn = CreateButton(_commsSearchRow.transform, "X", new Color(0.32f, 0.14f, 0.16f), () => { SetCommsSearchQuery(string.Empty); ToggleCommsSearch(); });
+            SetRect(clearSearchBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-22f, 1f), new Vector2(-2f, -1f));
+            _commsSearchRow.SetActive(false);
+
             RefreshChatTabHighlights();
+            RefreshCommsToolbarVisuals();
 
             var commsViewport = CreatePanel(commsPanel.transform, "CommsViewport", new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(12f, 64f), new Vector2(-12f, -30f), new Color(0f, 0f, 0f, 0.02f));
+            _commsViewportRect = commsViewport.GetComponent<RectTransform>();
             commsViewport.AddComponent<RectMask2D>();
             _commsScrollRect = commsViewport.AddComponent<ScrollRect>();
 
@@ -1279,6 +1388,11 @@ namespace TacSim.UI
                 QuestJournal.SetOpen(false);
                 return true;
             }
+            if (SceneIntelModal != null && SceneIntelModal.IsOpen)
+            {
+                SceneIntelModal.SetOpen(false);
+                return true;
+            }
             if (SolarMap != null && SolarMap.IsOpen)
             {
                 SolarMap.SetOpen(false);
@@ -1316,6 +1430,11 @@ namespace TacSim.UI
                 Overlays.ShowArenaLobbyModal(false);
                 return true;
             }
+            if (ReplayHud != null && ReplayHud.IsVisible)
+            {
+                OnCloseReplayRequested?.Invoke();
+                return true;
+            }
             return false;
         }
 
@@ -1346,6 +1465,12 @@ namespace TacSim.UI
                 (!IsTextInputFocused || (KeybindHelp != null && KeybindHelp.IsOpen && !KeybindHelp.IsAnyInputFocused)))
             {
                 KeybindHelp?.ToggleOpen();
+            }
+
+            if (Input.GetKeyDown(KeyCode.F9) && !IsTextInputFocused &&
+                (_loginPanel == null || !_loginPanel.activeSelf))
+            {
+                DisplayOptions?.ToggleCinematicHudMode();
             }
 
             if (Input.GetKeyDown(KeyCode.F11) && !IsTextInputFocused)
@@ -1392,6 +1517,14 @@ namespace TacSim.UI
                 QuestJournal?.ToggleOpen();
             }
 
+            if (Input.GetKeyDown(KeyCode.L) && !IsTextInputFocused &&
+                !Input.GetKey(KeyCode.LeftControl) && !Input.GetKey(KeyCode.RightControl) &&
+                !Input.GetKey(KeyCode.LeftAlt) && !Input.GetKey(KeyCode.RightAlt) &&
+                (_loginPanel == null || !_loginPanel.activeSelf))
+            {
+                SceneIntelModal?.ToggleOpen();
+            }
+
             // Up/Down command history recall inside the chat input bar
             if (_chatInput != null && _chatInput.isFocused && _commandHistory.Count > 0)
             {
@@ -1413,6 +1546,7 @@ namespace TacSim.UI
                 (KeybindHelp == null || !KeybindHelp.IsOpen) &&
                 (SocialModal == null || !SocialModal.IsOpen) &&
                 (QuestJournal == null || !QuestJournal.IsOpen) &&
+                (SceneIntelModal == null || !SceneIntelModal.IsOpen) &&
                 (DisplayOptions == null || !DisplayOptions.IsOpen) &&
                 !(ResolveActiveMindTerminal()?.IsTerminalOpen ?? false) &&
                 !(Overlays?.IsLobbyModalOpen ?? false);
@@ -1644,23 +1778,214 @@ namespace TacSim.UI
             }
         }
 
+        public static string StripUnityRichTextTags(string richLine)
+        {
+            if (string.IsNullOrEmpty(richLine)) return string.Empty;
+            var sb = new StringBuilder(richLine.Length);
+            bool inTag = false;
+            for (int i = 0; i < richLine.Length; i++)
+            {
+                char c = richLine[i];
+                if (c == '<')
+                {
+                    inTag = true;
+                    continue;
+                }
+                if (inTag)
+                {
+                    if (c == '>') inTag = false;
+                    continue;
+                }
+                sb.Append(c);
+            }
+            return sb.ToString();
+        }
+
+        private static string FormatTimestampPrefix(long? unixMs = null)
+        {
+            DateTime dt = unixMs.HasValue && unixMs.Value > 0
+                ? DateTimeOffset.FromUnixTimeMilliseconds(unixMs.Value).ToLocalTime().DateTime
+                : DateTime.Now;
+            return $"<color=#5C7B96>[{dt:HH:mm}]</color> ";
+        }
+
+        public void ToggleCommsSearch()
+        {
+            if (_commsSearchRow == null) return;
+            bool next = !_commsSearchRow.activeSelf;
+            _commsSearchRow.SetActive(next);
+            UpdateCommsViewportInsets();
+            RefreshCommsToolbarVisuals();
+            if (next && _commsSearchInput != null)
+            {
+                _commsSearchInput.Select();
+                _commsSearchInput.ActivateInputField();
+            }
+            else if (!next)
+            {
+                if (_commsSearchInput != null)
+                {
+                    _commsSearchInput.SetTextWithoutNotify(string.Empty);
+                    _commsSearchInput.DeactivateInputField();
+                }
+                if (!string.IsNullOrEmpty(_commsSearchQuery))
+                {
+                    _commsSearchQuery = string.Empty;
+                    RebuildVisibleCommsLog();
+                }
+            }
+        }
+
+        public void SetCommsSearchQuery(string query)
+        {
+            _commsSearchQuery = query != null ? query.Trim() : string.Empty;
+            RebuildVisibleCommsLog();
+        }
+
+        public void SetShowCommsTimestamps(bool show, bool persist = true)
+        {
+            ShowCommsTimestamps = show;
+            if (persist && Application.isPlaying)
+            {
+                PlayerPrefs.SetInt(PrefShowCommsTimestamps, show ? 1 : 0);
+                PlayerPrefs.Save();
+            }
+            RefreshCommsToolbarVisuals();
+            RebuildVisibleCommsLog();
+        }
+
+        public void RequestEarlierNarrativeBacklog()
+        {
+            if (!_hasMoreNarrativeBacklog && _oldestNarrativeBacklogSeq.HasValue)
+                return;
+            OnNarrativeBacklogRequested?.Invoke(_oldestNarrativeBacklogSeq);
+        }
+
+        public void ApplyNarrativeBacklog(JsonNode data)
+        {
+            if (data == null || !data.IsObject) return;
+            var backlog = data["backlog"];
+            if (backlog == null || !backlog.IsObject) return;
+
+            _hasMoreNarrativeBacklog = backlog.Bool("more", false);
+            var linesArr = backlog["lines"].AsArray();
+            var prepended = new List<(ChatLogTab tab, string line)>();
+
+            if (linesArr != null)
+            {
+                // `narrative_backlog_reply` returns lines newest-first; iterate backwards for chronological order.
+                for (int i = linesArr.Count - 1; i >= 0; i--)
+                {
+                    var item = linesArr[i];
+                    if (!item.IsObject) continue;
+                    ulong seq = item.ULong("seq", 0);
+                    if (seq > 0)
+                    {
+                        if (!_oldestNarrativeBacklogSeq.HasValue || seq < _oldestNarrativeBacklogSeq.Value)
+                            _oldestNarrativeBacklogSeq = seq;
+                        if (!_seenBacklogSeqs.Add(seq))
+                            continue;
+                    }
+
+                    string kind = item.Str("kind", "emit");
+                    var actorNode = item["actor"];
+                    string speaker = actorNode != null && actorNode.IsObject
+                        ? MushProtocol.EscapeUnityRichText(actorNode.Str("name", string.Empty))
+                        : string.Empty;
+                    string rich = MushProtocol.RenderRichTextToUnityMarkup(item["text"]);
+                    if (string.IsNullOrEmpty(rich))
+                        rich = MushProtocol.EscapeUnityRichText(MushProtocol.FlattenRichText(item["text"]));
+                    if (string.IsNullOrEmpty(rich)) continue;
+
+                    string formatted = string.Equals(kind, "say", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(speaker)
+                        ? $"<b>{speaker}</b> says, \"{rich}\""
+                        : (!string.IsNullOrEmpty(speaker) ? $"<b>{speaker}</b> {rich}" : rich);
+
+                    long ts = item.Long("ts", 0);
+                    string tsPrefix = ShowCommsTimestamps && ts > 0 ? FormatTimestampPrefix(ts) : string.Empty;
+                    string tinted = $"{tsPrefix}<color=#9AB4CA>{formatted}</color>";
+                    prepended.Add((ClassifyLogCategory(tinted), tinted));
+                }
+            }
+
+            if (prepended.Count > 0)
+            {
+                var mergedQueue = new List<string>(prepended.Count + _logLines.Count);
+                for (int i = 0; i < prepended.Count; i++)
+                    mergedQueue.Add(prepended[i].line);
+                foreach (string existing in _logLines)
+                    mergedQueue.Add(existing);
+                _logLines.Clear();
+                int qStart = Mathf.Max(0, mergedQueue.Count - MaxLogLines);
+                for (int i = qStart; i < mergedQueue.Count; i++)
+                    _logLines.Enqueue(mergedQueue[i]);
+
+                _categorizedLogEntries.InsertRange(0, prepended);
+                while (_categorizedLogEntries.Count > MaxLogLines * 2)
+                    _categorizedLogEntries.RemoveAt(_categorizedLogEntries.Count - 1);
+            }
+
+            RefreshCommsToolbarVisuals();
+            RebuildVisibleCommsLog();
+        }
+
+        private void UpdateCommsViewportInsets()
+        {
+            if (_commsViewportRect == null) return;
+            float topInset = IsCommsSearchOpen ? -56f : -30f;
+            _commsViewportRect.offsetMax = new Vector2(-12f, topInset);
+        }
+
+        private void RefreshCommsToolbarVisuals()
+        {
+            if (_commsFindBtnImg != null)
+                _commsFindBtnImg.color = IsCommsSearchOpen ? new Color(0.20f, 0.56f, 0.74f, 1f) : new Color(0.12f, 0.24f, 0.34f, 0.94f);
+            if (_commsTimeBtnImg != null)
+                _commsTimeBtnImg.color = ShowCommsTimestamps ? new Color(0.20f, 0.56f, 0.74f, 1f) : new Color(0.12f, 0.24f, 0.34f, 0.94f);
+            if (_commsHistoryBtn != null)
+                _commsHistoryBtn.interactable = _hasMoreNarrativeBacklog || !_oldestNarrativeBacklogSeq.HasValue;
+        }
+
         private void RebuildVisibleCommsLog()
         {
             if (_commsLogText == null) return;
+            string q = _commsSearchQuery ?? string.Empty;
+            bool hasQuery = !string.IsNullOrEmpty(q);
+            int totalInTab = 0;
+            var visible = new List<string>();
+
             if (ActiveChatTab == ChatLogTab.All)
             {
-                _commsLogText.text = string.Join("\n", _logLines);
+                foreach (string line in _logLines)
+                {
+                    totalInTab++;
+                    if (!hasQuery || StripUnityRichTextTags(line).IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0)
+                        visible.Add(line);
+                }
             }
             else
             {
-                var filtered = new List<string>();
                 for (int i = 0; i < _categorizedLogEntries.Count; i++)
                 {
-                    if (_categorizedLogEntries[i].tab == ActiveChatTab)
-                        filtered.Add(_categorizedLogEntries[i].line);
+                    if (_categorizedLogEntries[i].tab != ActiveChatTab) continue;
+                    totalInTab++;
+                    string line = _categorizedLogEntries[i].line;
+                    if (!hasQuery || StripUnityRichTextTags(line).IndexOf(q, StringComparison.OrdinalIgnoreCase) >= 0)
+                        visible.Add(line);
                 }
-                _commsLogText.text = filtered.Count > 0 ? string.Join("\n", filtered) : $"<color=#6888A0>No {ActiveChatTab.ToString().ToLowerInvariant()} entries yet.</color>";
             }
+
+            VisibleFilteredLineCount = visible.Count;
+            if (_commsSearchCountText != null)
+                _commsSearchCountText.text = hasQuery ? $"{visible.Count}/{totalInTab}" : string.Empty;
+
+            if (visible.Count > 0)
+                _commsLogText.text = string.Join("\n", visible);
+            else if (hasQuery)
+                _commsLogText.text = $"<color=#6888A0>No matches for \"{MushProtocol.EscapeUnityRichText(q)}\" in {ActiveChatTab}.</color>";
+            else
+                _commsLogText.text = $"<color=#6888A0>No {ActiveChatTab.ToString().ToLowerInvariant()} entries yet.</color>";
+
             LayoutRebuilder.ForceRebuildLayoutImmediate(_commsLogText.rectTransform);
             if (_commsScrollRect != null)
                 _commsScrollRect.verticalNormalizedPosition = 0f;
@@ -1745,10 +2070,11 @@ namespace TacSim.UI
         {
             if (string.IsNullOrWhiteSpace(richLine)) return;
             ChatLogTab cat = ClassifyLogCategory(richLine);
-            _logLines.Enqueue(richLine);
+            string displayLine = ShowCommsTimestamps ? FormatTimestampPrefix() + richLine : richLine;
+            _logLines.Enqueue(displayLine);
             while (_logLines.Count > MaxLogLines) _logLines.Dequeue();
 
-            _categorizedLogEntries.Add((cat, richLine));
+            _categorizedLogEntries.Add((cat, displayLine));
             while (_categorizedLogEntries.Count > MaxLogLines * 2)
                 _categorizedLogEntries.RemoveAt(0);
 
@@ -2354,6 +2680,7 @@ namespace TacSim.UI
             if (_modalPanel != null)
                 _modalPanel.SetActive(false);
             _activeNpcTargetName = null;
+            _modalNpcThinking = false;
             _modalCommandPrefix = null;
             if (cancelServerRequest && _activeServerRequest != null)
             {
@@ -2382,6 +2709,7 @@ namespace TacSim.UI
             _modalHeaderText.text = header;
             _modalBaseIntro = body ?? string.Empty;
             _modalResponseLines.Clear();
+            _modalNpcThinking = false;
             _modalBodyText.text = _modalBaseIntro;
             LayoutRebuilder.ForceRebuildLayoutImmediate(_modalBodyText.rectTransform);
             if (_modalScrollRect != null)
@@ -2408,6 +2736,35 @@ namespace TacSim.UI
                     CreateButton(_modalButtonsRoot, item.label, new Color(0.14f, 0.38f, 0.48f), () => act?.Invoke());
                 }
             }
+        }
+
+        public void SetNpcModalThinking(string npcName, bool thinking)
+        {
+            if (_modalPanel == null || !_modalPanel.activeSelf || string.IsNullOrWhiteSpace(_activeNpcTargetName))
+                return;
+            if (!string.IsNullOrWhiteSpace(npcName) &&
+                !string.Equals(npcName.Trim(), _activeNpcTargetName.Trim(), StringComparison.OrdinalIgnoreCase))
+                return;
+            if (_modalNpcThinking == thinking) return;
+            _modalNpcThinking = thinking;
+            RenderModalBodyText();
+        }
+
+        private void RenderModalBodyText()
+        {
+            if (_modalBodyText == null) return;
+            string body = _modalResponseLines.Count == 0
+                ? _modalBaseIntro
+                : $"{_modalBaseIntro}\n\n{string.Join("\n", _modalResponseLines)}";
+            if (_modalNpcThinking && !string.IsNullOrWhiteSpace(_activeNpcTargetName))
+            {
+                string safeNpc = MushProtocol.EscapeUnityRichText(_activeNpcTargetName);
+                body = $"{body}\n\n<color=#FFCC66><i>{safeNpc} is thinking...</i></color>";
+            }
+            _modalBodyText.text = body;
+            LayoutRebuilder.ForceRebuildLayoutImmediate(_modalBodyText.rectTransform);
+            if (_modalScrollRect != null)
+                _modalScrollRect.verticalNormalizedPosition = 0f;
         }
 
         private static bool IsRoomSpeechLine(string line)
@@ -2461,6 +2818,11 @@ namespace TacSim.UI
 
             if (!string.IsNullOrWhiteSpace(richLine))
             {
+                if (_modalNpcThinking && !string.IsNullOrWhiteSpace(_activeNpcTargetName) &&
+                    richLine.IndexOf(_activeNpcTargetName, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    _modalNpcThinking = false;
+                }
                 foreach (string sub in richLine.Split('\n'))
                 {
                     if (string.IsNullOrWhiteSpace(sub)) continue;
@@ -2470,18 +2832,7 @@ namespace TacSim.UI
                     _modalResponseLines.RemoveAt(0);
             }
 
-            if (_modalResponseLines.Count == 0)
-            {
-                _modalBodyText.text = _modalBaseIntro;
-            }
-            else
-            {
-                _modalBodyText.text = $"{_modalBaseIntro}\n\n{string.Join("\n", _modalResponseLines)}";
-            }
-
-            LayoutRebuilder.ForceRebuildLayoutImmediate(_modalBodyText.rectTransform);
-            if (_modalScrollRect != null)
-                _modalScrollRect.verticalNormalizedPosition = 0f;
+            RenderModalBodyText();
         }
 
         public void ShowServerRequestModal(MushServerRequest req)

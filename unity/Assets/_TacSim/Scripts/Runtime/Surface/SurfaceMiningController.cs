@@ -69,6 +69,8 @@ namespace TacSim.Surface
         private LineRenderer _roverRouteLine;
         private Transform _roverWaypointRing;
         private Transform _hoverCursorRing;
+        private readonly List<Light> _roverHeadlights = new List<Light>(2);
+        private Transform _roverDustPlume;
         private float _pulseScale = -1f;
         private Color _pulseColor = Color.cyan;
         private float _drillActiveUntil;
@@ -77,6 +79,9 @@ namespace TacSim.Surface
         public int RouteSplinePointCount => _roverRouteLine != null ? _roverRouteLine.positionCount : 0;
         public bool HasHoverDriveCursor => _hoverCursorRing != null;
         public int ActiveBeaconHaloCount => _markersRoot != null ? _markersRoot.childCount : 0;
+        public int RoverHeadlightCount => _roverHeadlights.Count;
+        public bool IsRoverDustPlumeActive => _roverDustPlume != null && _roverDustPlume.gameObject.activeSelf;
+        public float LastRoverSlopeTiltDeg { get; private set; }
 
         private bool _hasCachedHullSiteCell;
         private int _cachedHullSiteX;
@@ -316,6 +321,10 @@ namespace TacSim.Surface
 
         private void SpawnPlayerProspectorRover()
         {
+            _roverHeadlights.Clear();
+            _roverDustPlume = null;
+            LastRoverSlopeTiltDeg = 0f;
+
             AuthoritativeSiteCellX = 128;
             AuthoritativeSiteCellY = 124;
             _roverTargetLocalPos = new Vector3(140f, 0f, 120f);
@@ -323,6 +332,54 @@ namespace TacSim.Surface
             ActiveRoverRig = TacSimVehicleVisualFactory.SpawnSurfaceRover(Catalog, transform, "RIG 1 [@]", worldPos, 180f, isEscort: false);
             _roverHeadingDeg = 180f;
             RigOnGround = IsExcursionActive;
+
+            if (ActiveRoverRig?.Root != null)
+            {
+                Transform chassisParent = ActiveRoverRig.HullTiltRoot != null
+                    ? ActiveRoverRig.HullTiltRoot
+                    : ActiveRoverRig.Root.transform;
+
+                Material lampMat = UrpMaterialFactory.GetEmissive("RoverHeadlightLens", new Color(0.92f, 0.96f, 1.0f), new Color(1.0f, 0.98f, 0.88f) * 2.4f);
+                float[] lampXs = { -0.82f, 0.82f };
+                for (int i = 0; i < lampXs.Length; i++)
+                {
+                    var lampGo = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                    lampGo.name = i == 0 ? "RoverHeadlight_L" : "RoverHeadlight_R";
+                    lampGo.transform.SetParent(chassisParent, false);
+                    lampGo.transform.localPosition = new Vector3(lampXs[i], 1.24f, 2.38f);
+                    lampGo.transform.localRotation = Quaternion.Euler(14f, 0f, 0f);
+                    lampGo.transform.localScale = new Vector3(0.32f, 0.16f, 0.10f);
+                    var col = lampGo.GetComponent<Collider>();
+                    if (col != null) { if (Application.isPlaying) Destroy(col); else DestroyImmediate(col); }
+                    lampGo.GetComponent<MeshRenderer>().sharedMaterial = lampMat;
+
+                    var spot = lampGo.AddComponent<Light>();
+                    spot.type = LightType.Spot;
+                    spot.range = 42f;
+                    spot.spotAngle = 56f;
+                    spot.intensity = 9.5f;
+                    spot.color = new Color(0.94f, 0.97f, 1.0f);
+                    _roverHeadlights.Add(spot);
+                }
+
+                var dustRoot = new GameObject("RoverDustPlume").transform;
+                dustRoot.SetParent(chassisParent, false);
+                dustRoot.localPosition = new Vector3(0f, 0.42f, -2.85f);
+                Material dustMat = UrpMaterialFactory.GetHologramUnlit("RegolithDustPlume", new Color(0.72f, 0.68f, 0.62f, 0.34f));
+                for (int p = 0; p < 2; p++)
+                {
+                    var puff = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+                    puff.name = p == 0 ? "DustPuff_L" : "DustPuff_R";
+                    puff.transform.SetParent(dustRoot, false);
+                    puff.transform.localPosition = new Vector3(p == 0 ? -1.15f : 1.15f, 0.15f, -0.35f * p);
+                    puff.transform.localScale = new Vector3(1.1f, 0.65f, 1.45f);
+                    var dc = puff.GetComponent<Collider>();
+                    if (dc != null) { if (Application.isPlaying) Destroy(dc); else DestroyImmediate(dc); }
+                    puff.GetComponent<MeshRenderer>().sharedMaterial = dustMat;
+                }
+                dustRoot.gameObject.SetActive(false);
+                _roverDustPlume = dustRoot;
+            }
         }
 
         private void BuildScanAndDrillVfx()
@@ -1183,9 +1240,54 @@ namespace TacSim.Surface
             StepRoverKinematics(ref localPos, dt, MonotonicSeconds());
 
             ActiveRoverRig.Root.transform.position = SurfaceStageOrigin + localPos;
-            ActiveRoverRig.Root.transform.rotation = Quaternion.Euler(0f, _roverHeadingDeg, 0f);
+            Quaternion slopeRot = ComputeTerrainAlignedRotation(TerrainGrid, localPos, _roverHeadingDeg, out float slopeTiltDeg);
+            LastRoverSlopeTiltDeg = slopeTiltDeg;
+            ActiveRoverRig.Root.transform.rotation = Quaternion.Slerp(ActiveRoverRig.Root.transform.rotation, slopeRot, Mathf.Clamp01(dt * 8f));
             ActiveRoverRig.UpdateArticulation(dt, _roverSpeedKph, null, drilling);
+            SyncRoverDustPlume();
             SyncRoverRouteSpline();
+        }
+
+        public static Quaternion ComputeTerrainAlignedRotation(
+            DecodedTerrainGrid grid,
+            Vector3 localPos,
+            float headingDeg,
+            out float slopeTiltDeg)
+        {
+            slopeTiltDeg = 0f;
+            if (grid == null)
+                return Quaternion.Euler(0f, headingDeg, 0f);
+
+            float rad = headingDeg * Mathf.Deg2Rad;
+            Vector3 fwd = new Vector3(Mathf.Sin(rad), 0f, Mathf.Cos(rad));
+            Vector3 right = new Vector3(Mathf.Cos(rad), 0f, -Mathf.Sin(rad));
+            const float ForeAftSample = 1.6f;
+            const float SideSample = 1.2f;
+
+            float yFwd = grid.SampleElevationMeters(localPos.x + fwd.x * ForeAftSample, localPos.z + fwd.z * ForeAftSample);
+            float yAft = grid.SampleElevationMeters(localPos.x - fwd.x * ForeAftSample, localPos.z - fwd.z * ForeAftSample);
+            float yRight = grid.SampleElevationMeters(localPos.x + right.x * SideSample, localPos.z + right.z * SideSample);
+            float yLeft = grid.SampleElevationMeters(localPos.x - right.x * SideSample, localPos.z - right.z * SideSample);
+
+            float pitchDeg = Mathf.Clamp(-Mathf.Atan2(yFwd - yAft, ForeAftSample * 2f) * Mathf.Rad2Deg, -28f, 28f);
+            float rollDeg = Mathf.Clamp(Mathf.Atan2(yRight - yLeft, SideSample * 2f) * Mathf.Rad2Deg, -28f, 28f);
+            slopeTiltDeg = Mathf.Sqrt(pitchDeg * pitchDeg + rollDeg * rollDeg);
+            return Quaternion.Euler(pitchDeg, headingDeg, rollDeg);
+        }
+
+        private void SyncRoverDustPlume()
+        {
+            if (_roverDustPlume == null) return;
+            bool moving = IsExcursionActive && _roverSpeedKph > 1.5f;
+            if (_roverDustPlume.gameObject.activeSelf != moving)
+                _roverDustPlume.gameObject.SetActive(moving);
+            if (moving)
+            {
+                float speedFrac = Mathf.Clamp01(_roverSpeedKph / 28f);
+                float pulse = 0.85f + 0.25f * Mathf.Sin(Time.time * 12f);
+                float s = Mathf.Lerp(0.45f, 1.15f, speedFrac) * pulse;
+                _roverDustPlume.localScale = new Vector3(s, s * 0.75f, s * 1.25f);
+            }
         }
 
         public void StepRoverKinematics(ref Vector3 localPos, float dt, double nowMonotonicSec)

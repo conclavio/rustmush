@@ -1557,6 +1557,7 @@ cells ran on cores 0 to 23 of a quiet box (load at most 12.9 on 32 cores).
 | `say` / `ask` / `ask_whole` definitions in `sim_lenses` | 15 / 12 / 10 | 0 |
 | `struct Term` / `strip_ansi` / `AcceptAll` under `crates/mushd/tests/` | 4 / 4 / 4 | 0 |
 | Raw waits in mushd's story files (`wait_budget/mushd.txt`) | 105 | 73 |
+| Literal spans passed to a wait in them (FL.9's counter, after main was merged in) | 80 | 55 |
 | mushd's rows in `flaky-known.toml` | 7 | 0 |
 
 `scripts/wait_audit.py --budget` agrees: 73 waits and 5 wall-clock reads in mushd's story files.
@@ -1646,3 +1647,161 @@ Each of the next three runs found the next layer. The fourth was clean.
 
 - **Q-FL8-1.** The flood bucket's refusal is a busy answer to the kit's readers but not to the bot's
   (Divergences, 2). Default: leave the bot as it is. A bot that typed fast enough to meet the bucket would want it.
+
+## FL.9
+
+The small crates. Built 2026-11-25 on `6b63cb8be` (FL.7's branch, PR #806, with main merged in), stacked on FL.7
+by the owner's word of 2026-11-26; #806 merged before this unit's pull request opened, and main was merged in
+(it brought only Unity files). It adds one module to `mush-storykit` (`step.rs`), moves the stories of
+mush-net-web, mush-net-ssh and mush-sshdoorway onto the kit, and builds the `span` counter of `wait_budget`, which
+FL.1 left a stub. **It changes no product code.** None of the three crates had a row in `flaky-known.toml`, so no
+row closes.
+
+**The suites' soak rate.** None of the three is in `scripts/soak.sh`'s list, so the soak was by hand on
+conclav.dev. It ran the story binaries (mush-net-web's `http`, `ws` and `tls_serve` with `--features tls`,
+mush-net-ssh's `loopback`, mush-sshdoorway's `e2e`; 146 tests) with `--retries 0` and eight threads. The base ran
+on cores 0 to 15 and this unit on 16 to 31, at the same time.
+
+| | Passes | Failed passes | Tests that failed | A pass, summed test time (median) |
+|---|---:|---:|---|---:|
+| Before, `6b63cb8be` | 24 | 0 | none | 73.9 s |
+| After, this unit | 24 | 0 | none | 74.7 s |
+
+**Neither soak found a flake, and CI's record has none for these crates.** `docs/flaky-observed.md` held one row
+for them, mush-net-ssh's `tui::port_walk::tests::corridor_destinations_are_exactly_the_lanes_venue_words`
+(2026-11-20, two branches), and it is not a flake:
+
+- Both runs (44701582254 and 44694457791) were on doc 50 branches.
+- Each branch added the `isidis` port to `tacsim/content/lane/ceres_phobos.json` before the TUI's `CORRIDORS`
+  had it, and the assertion prints the one missing word.
+- The test reads two files and no clock.
+
+So this unit's case is the rules, not a soak rate. Every wait below was a sleep, or a limit chosen at the call,
+that a slower box could break.
+
+**Survey.** The three crates' story files held 65 raw waits, 4 wall-clock reads and 70 literal spans passed to a
+wait. The span count is by this unit's counter, run at the base.
+
+- **mush-net-web** (33 waits):
+  - `ws.rs`: five 50-ms sleeps before "never attached, so no disconnect", a 400-ms loop answering pings, and a
+    200-ms window for "no binary frame".
+  - `http.rs`: two 50-ms sleeps "to let the accept loop take the permits", three after a dropped socket, and a
+    300-ms and a 600-ms sleep to outlive a request timeout and a connection age.
+  - `tls_serve.rs`: a retry loop of 100 times 50 ms.
+  - Every read was under a 2-, 3- or 10-s limit, and the rig's `wait_for` polled at 10 ms for 3 s.
+- **mush-net-ssh** (25 waits, 1 clock read):
+  - Three hand-rolled poll loops.
+  - An 1,100-ms sleep for the flood bucket to refill.
+  - Three sleeps past an accept deadline before "still open" or "still held".
+  - 80- and 50-ms sleeps before "the pre-shell data did nothing" and "no second attach".
+  - 150 ms "to let the SFTP inbound overflow", 120 ms "for the held queries to run", and 5-ms pacing in a flood.
+  - Its own `STEP_TIMEOUT` of 15 s, and a host key path named by the wall clock's nanoseconds.
+- **mush-sshdoorway** (7 waits in `e2e.rs`; the rig held the rest):
+  - A 200-ms sleep after `drain.begin()` before "new connections are refused".
+  - A 2,250-ms sleep in `cockpit.rs` to outlive the idle grace. It is a rig file, so it was never counted.
+  - Two poll loops of 20 ms.
+  - The rig's `wait_for_secs`, with limits of 6 to 30 s chosen at each call.
+  - Its data directory, named by the wall clock.
+
+**Built.**
+
+- **The kit's `step.rs`.**
+  - **`within(label, event)`** and **`within_for(bound, label, event)`**: one event under the kit's one step
+    limit, or a bound the caller derives. A failure names the event.
+  - **`at_most(span, work)`**, for a future whose end is not the point (the doorway's flood).
+  - **`round_trip(handle)`**: a `tcpip-forward` request, which no server here grants, and its answer. An SSH
+    server's session loop takes one connection's packets in order and awaits each handler before the next. So the
+    answer proves that every packet sent before it has been handled.
+  - Four unit tests on the paused clock.
+- **mush-net-web.** The rig's `wait_for` is the kit's loop.
+  - **`sockets_ended(n)`** is the absence mark. The slot guard is the last thing a socket task drops, after its one
+    `disconnected` call, so once `n` slots are back no disconnect is still to come.
+  - In `http.rs` the permits need no wait. One accept loop takes sockets in handshake order and acquires a
+    socket's permit before it accepts the next.
+  - A freed slot is waited for as the fact, a fresh `/healthz` served (`until_served`).
+  - "Survives past the request timeout" and "past the connection age" read the socket's first keepalive ping. The
+    ping is set one interval past the timeout, so it is the server's own mark of time.
+  - In `ws.rs` the ping test answers five times the missed-pong cutoff in pings.
+  - "No binary frame" is asserted between two marks: a line that reached the game after the picture requests, and
+    the game's next envelope.
+- **mush-net-ssh** (`loopback.rs`, still one file; its rig did not move).
+  - The kit's `STEP_TIMEOUT` replaces the file's 15 s, so a limit is 60 s.
+  - The flood bucket's refill is the server's own answer: the story types the guess again while it is "too fast".
+  - **`DeadlineMark`** marks a deadline's end without a sleep. A second server on the same deadline, with hooks of
+    its own, accepts one client after the story's. When that client's slot is back, the story's deadline has run
+    out too. The stalled variant is cut only after the grace, so it marks that as well.
+  - The pre-shell data and the second shell are asserted after a `round_trip`.
+  - The SFTP overflow is asserted once a line sent on the game channel after the flood has reached the game.
+  - The burst cap is asserted once a TUI line typed after the burst has. The connection's one command worker takes
+    its queue in order.
+  - `Term::read_until` keeps the terminal read while it waits for a hook.
+  - The host key path comes from `scratch_dir`.
+- **mush-sshdoorway's rig onto the kit.**
+  - `wait_for` is the kit's loop under its step limit, and `wait_for_secs` is gone.
+  - Every read and reply is under the step limit.
+  - The data directory comes from `scratch_dir`.
+  - The rig keeps the accept loop's task. **`Rig::stopped_serving`** awaits it: the event that the listener is
+    closed after `drain.begin()`.
+  - **`Rig::deadline_mark`** is the doorway's deadline mark, a client cut at its auth deadline. `cockpit.rs`
+    asserts "the shell outlives the idle grace" after a `round_trip` and that mark.
+- **The `span` counter**, in `wait_budget` and in `scripts/wait_audit.py --budget`, by one rule.
+  - A `Duration::from_<unit>(<number>)` counts when it is written in the argument list of a raw wait, or of a kit
+    wait (`wait_until`, `wait_for`, `within`, `within_for`, `at_most`, a method call included).
+  - It does not count inside a block passed among the arguments. The waits in the block count their own.
+  - A budget file written before the counter is baselined at its first bless and gains `# spans counted`.
+  - A crate with no file gets no baseline, so its spans rise from zero.
+  - Two unit tests: the rule, and the baseline once.
+
+**The counts.** These are `wait_budget`'s, and `scripts/wait_audit.py --budget` agrees with them file for file.
+
+| Story files of | Raw waits, before | after | Clock reads, before | after | Literal spans, before | after |
+|---|---:|---:|---:|---:|---:|---:|
+| mush-net-web | 33 | 1 | 3 | 3 | 32 | 0 |
+| mush-net-ssh | 25 | 7 | 1 | 0 | 31 | 2 |
+| mush-sshdoorway | 7 | 0 | 0 | 0 | 7 | 1 |
+| **the tree** | 608 | 551 | 78 | 77 | 488 | **421** |
+
+421 is the literal-span baseline that every budget file now carries. What stays, and why:
+
+- **mush-net-web's one wait** is the mock's `login_delay` sleep, the slow hook a request timeout is tested
+  against.
+- **Its three clock reads** set the world loop's last iteration to now, which `/healthz` compares with the wall
+  clock.
+- **mush-net-ssh's seven waits** are `Term`'s three needle reads, `read_to_end_or_reset`, `exec_result`'s bound,
+  the local `wait_until`'s poll, and the `^D` burst's read. Each is under one deadline.
+- **Its two spans** are the local `wait_until`'s 25-ms poll and the over-cap story's 6 s, the product's
+  five-second cut asserted as timing.
+- **The doorway's one span** is the flood's 40 s, under `at_most`.
+
+**Tests.** On conclav.dev, in a clone of `6b63cb8be` with the patch:
+
+- `cargo nextest run -p mush-storykit -p mush-net-web -p mush-net-ssh -p mush-sshdoorway`: 784 of 784.
+- `-p mush-net-web --features tls --test tls_serve`: 3 of 3.
+- `mush-contract-tests --test ci_policy`: 105 of 105 after the bless. That includes `wait_budget`, `panic_budget`,
+  `flaky_known`, and `restriction_lints` with the kit's `panic` count moved from 29 to 30, measured with clippy.
+- clippy with `-D warnings` over the five crates, every target, with `mush-net-web/tls` on.
+- `cargo fmt`, and the soak above.
+
+**Divergences.**
+
+1. **Not every bounded read moved, and no rig moved into `tests/support/`.** `loopback.rs` holds mush-net-ssh's
+   mock and `Term` in its own 3,900 lines. Moving them would make their waits rig waits and lower the count
+   without changing a wait, so the bounded reads stay, counted.
+2. **mush-net-ssh keeps its own `Term`.** Its stories reach into `term.channel` and `term.seen` about ninety times,
+   and its sessions authenticate four ways at 80 by 24. `one_reader` is not turned on for it; that would be a unit
+   of its own.
+3. **Three marks are a second connection.** `DeadlineMark` and `Rig::deadline_mark` lean on two facts: a deadline
+   starts at accept, and a server's timers fire in order. They give no bound tighter than the deadline, so "cut
+   within five seconds" stays a timing assertion with its literal.
+4. **The kit's waits poll at 200 ms**, where the net-web rig polled at 10 ms and the doorway's at 20. The summed
+   test time moved 0.8 s.
+5. **`round_trip` sends a request no server here grants.** If one ever granted `tcpip-forward`, the barrier would
+   still hold: a grant is an answer too.
+
+**Not built.**
+
+- The three crates in `scripts/soak.sh`'s list. Their stories now wait for events, and a pass is about 75 s
+  summed, so adding them is cheap. FL.10 can decide.
+- `one_reader` for mush-net-ssh (Divergences, 2).
+- mush-net-ssh's rig in `tests/support/`, which would let `market_screen.rs` and the other screen tests share its
+  mock.

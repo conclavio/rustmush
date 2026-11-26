@@ -1,31 +1,49 @@
 # mushd — the wait budget of its story files (doc 51 cut FL.1).
 #
 # `<counter> <budget> <low-water> <path>`: `wait` is a raw sleep or timeout,
-# `clock` a wall-clock read. A count may only fall. Regenerate with:
+# `clock` a wall-clock read, `span` a literal span passed to a wait (cut
+# FL.9). A count may only fall. Regenerate with:
 #   WAIT_BUDGET_BLESS=1 cargo test -p mush-contract-tests --test ci_policy wait_budget::
 # A raise carries a written reason; the prefer-instead is `mush-storykit`.
 #
-# total: 73 raw waits, 5 wall-clock reads
+# total: 73 raw waits, 5 wall-clock reads, 55 literal spans passed to a wait
+#
+# Literal spans are counted from their baseline (doc 51 cut FL.9).
+# spans counted
 wait 2 2 tests/durable_process/durability_e2e.rs
+span 6 6 tests/durable_process/durability_e2e.rs
 wait 5 5 tests/durable_process/load_soak.rs
 wait 15 15 tests/durable_process/persistence.rs
 clock 1 1 tests/durable_process/persistence.rs
+span 15 15 tests/durable_process/persistence.rs
 wait 4 4 tests/durable_process/relay_bridge.rs
+span 4 4 tests/durable_process/relay_bridge.rs
 wait 4 4 tests/durable_process/server.rs
+span 2 2 tests/durable_process/server.rs
 wait 2 2 tests/durable_process/world_fault.rs
+span 1 1 tests/durable_process/world_fault.rs
 wait 9 9 tests/sim_lenses/observer_rule.rs
+span 5 5 tests/sim_lenses/observer_rule.rs
 wait 2 2 tests/sim_lenses/sim_cockpit.rs
 wait 2 2 tests/sim_lenses/sim_net.rs
+span 1 1 tests/sim_lenses/sim_net.rs
 wait 2 2 tests/sim_lenses/sim_solo.rs
+span 2 2 tests/sim_lenses/sim_solo.rs
 wait 2 2 tests/sim_lenses/sim_units.rs
+span 1 1 tests/sim_lenses/sim_units.rs
 wait 2 2 tests/world_journeys/admin.rs
 clock 1 1 tests/world_journeys/admin.rs
 wait 5 5 tests/world_journeys/legal_action_web.rs
+span 5 5 tests/world_journeys/legal_action_web.rs
 wait 8 8 tests/world_journeys/mind_market_web.rs
+span 8 8 tests/world_journeys/mind_market_web.rs
 clock 1 1 tests/world_journeys/modules_e2e.rs
 wait 4 4 tests/world_journeys/ssh_e2e.rs
 clock 1 1 tests/world_journeys/ssh_e2e.rs
+span 2 2 tests/world_journeys/ssh_e2e.rs
 wait 1 1 tests/world_journeys/weather_e2e.rs
+span 1 1 tests/world_journeys/weather_e2e.rs
 wait 2 2 tests/world_journeys/web_bridge.rs
 clock 1 1 tests/world_journeys/web_bridge.rs
+span 2 2 tests/world_journeys/web_bridge.rs
 wait 2 2 tests/world_journeys/web_e2e.rs

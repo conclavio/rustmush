@@ -16,12 +16,14 @@ namespace TacSim.UI
         public readonly string SearchBlob;
         public readonly Action Execute;
 
-        public PaletteEntry(string category, string title, string subtitle, Action execute)
+        public PaletteEntry(string category, string title, string subtitle, Action execute, string extraKeywords = null)
         {
             Category = category ?? string.Empty;
             Title = title ?? string.Empty;
             Subtitle = subtitle ?? string.Empty;
-            SearchBlob = $"{Category} {Title} {Subtitle}".ToLowerInvariant();
+            SearchBlob = string.IsNullOrEmpty(extraKeywords)
+                ? $"{Category} {Title} {Subtitle}".ToLowerInvariant()
+                : $"{Category} {Title} {Subtitle} {extraKeywords}".ToLowerInvariant();
             Execute = execute;
         }
     }
@@ -29,17 +31,36 @@ namespace TacSim.UI
     /// <summary>
     /// Spotlight / VSCode / EVE-style `Ctrl+K` Fuzzy Command &amp; Fast-Travel Palette.
     /// Searches live 3D Station rooms &amp; Ship compartments (lighting up 3D Wayfinder trails),
-    /// Solar System ports, registered `mushd` verbs, and MMORPG UI modals with full keyboard control.
+    /// Solar System ports, live role-authorized `commands.list` server verbs, and MMORPG UI modals with full keyboard control.
     /// </summary>
     public sealed class TacSimCommandPalette : MonoBehaviour
     {
         public event Action<string> OnCommandRequested;
+        public event Action<string> OnPrefillCommandRequested;
         public event Action<string> OnPlotStationRoomRequested;
         public event Action<string> OnPlotShipCompartmentRequested;
         public event Action<string> OnInspectSolarPortRequested;
         public event Action<string> OnUiActionRequested;
 
         private const int MaxVisibleRows = 10;
+
+        private readonly struct ServerCommandInfo
+        {
+            public readonly string Name;
+            public readonly string Usage;
+            public readonly string Summary;
+            public readonly string Module;
+            public readonly string ExtraKeywords;
+
+            public ServerCommandInfo(string name, string usage, string summary, string module, string extraKeywords)
+            {
+                Name = name;
+                Usage = usage;
+                Summary = summary;
+                Module = module;
+                ExtraKeywords = extraKeywords;
+            }
+        }
 
         private sealed class PooledRow
         {
@@ -56,8 +77,9 @@ namespace TacSim.UI
         private Text _footerText;
         private readonly List<PooledRow> _rowPool = new List<PooledRow>(MaxVisibleRows);
 
-        private readonly List<PaletteEntry> _allEntries = new List<PaletteEntry>(96);
-        private readonly List<int> _filteredIndices = new List<int>(96);
+        private readonly List<PaletteEntry> _allEntries = new List<PaletteEntry>(256);
+        private readonly List<ServerCommandInfo> _serverCommands = new List<ServerCommandInfo>(160);
+        private readonly List<int> _filteredIndices = new List<int>(256);
         private int _selectedCursor;
 
         private StationWorldController _station;
@@ -67,11 +89,31 @@ namespace TacSim.UI
         public bool IsOpen => _modalRoot != null && _modalRoot.activeSelf;
         public bool IsSearchFocused => IsOpen && _searchInput != null && _searchInput.isFocused;
         public int FilteredMatchCount => _filteredIndices.Count;
+        public int ServerCommandCount => _serverCommands.Count;
         public int SelectedIndex => _selectedCursor;
         public string SelectedEntryTitle =>
             (_selectedCursor >= 0 && _selectedCursor < _filteredIndices.Count)
                 ? _allEntries[_filteredIndices[_selectedCursor]].Title
                 : string.Empty;
+
+        /// <summary>
+        /// Returns true when a server command's usage line shows required or optional arguments
+        /// (e.g. `&lt;target&gt;`, `[args]`, `=`), indicating the palette should pre-fill chat input instead of firing bare.
+        /// </summary>
+        public static bool CommandTakesArguments(string usage, string primaryVerb)
+        {
+            if (string.IsNullOrWhiteSpace(usage)) return false;
+            string trimmed = usage.Trim();
+            if (trimmed.IndexOf('<') >= 0 || trimmed.IndexOf('[') >= 0 || trimmed.IndexOf('=') >= 0)
+                return true;
+            if (!string.IsNullOrWhiteSpace(primaryVerb) && trimmed.Length > primaryVerb.Trim().Length + 1)
+            {
+                int sp = trimmed.IndexOf(' ');
+                if (sp > 0 && sp < trimmed.Length - 1)
+                    return true;
+            }
+            return false;
+        }
 
         private static readonly (string slug, string label)[] CorridorPorts =
         {
@@ -242,11 +284,77 @@ namespace TacSim.UI
 
         public void ToggleOpen() => SetOpen(!IsOpen);
 
-        public void ResetSessionState() => SetOpen(false);
+        public void ResetSessionState()
+        {
+            _serverCommands.Clear();
+            SetOpen(false);
+        }
+
+        /// <summary>
+        /// Hydrates the palette with the live role-authorized command table from `mushd` (`commands.list`).
+        /// </summary>
+        public void ApplyServerCommandsList(JsonNode data)
+        {
+            if (data == null || !data.IsObject) return;
+            var arr = data["commands"].AsArray();
+            if (arr == null) return;
+
+            _serverCommands.Clear();
+            int cap = Mathf.Min(arr.Count, 512);
+            for (int i = 0; i < cap; i++)
+            {
+                var c = arr[i];
+                if (!c.IsObject) continue;
+                string name = MushProtocol.StripControlChars(c.Str("name", string.Empty)).Trim();
+                if (string.IsNullOrEmpty(name)) continue;
+
+                string usage = MushProtocol.StripControlChars(c.Str("usage", string.Empty)).Trim();
+                string summary = MushProtocol.StripControlChars(c.Str("summary", string.Empty)).Trim();
+                string module = MushProtocol.StripControlChars(c.Str("module", string.Empty)).Trim();
+
+                var kwParts = new List<string>(8);
+                if (!string.IsNullOrEmpty(module)) kwParts.Add(module);
+                if (!string.IsNullOrEmpty(usage)) kwParts.Add(usage);
+
+                var aliases = c["aliases"].AsArray();
+                if (aliases != null)
+                {
+                    for (int j = 0; j < aliases.Count && j < 8; j++)
+                    {
+                        string al = MushProtocol.StripControlChars(aliases[j].AsString()).Trim();
+                        if (!string.IsNullOrEmpty(al)) kwParts.Add(al);
+                    }
+                }
+
+                var switches = c["switches"].AsArray();
+                if (switches != null)
+                {
+                    for (int j = 0; j < switches.Count && j < 12; j++)
+                    {
+                        string sw = MushProtocol.StripControlChars(switches[j].AsString()).Trim();
+                        if (!string.IsNullOrEmpty(sw)) kwParts.Add($"{name}/{sw}");
+                    }
+                }
+
+                _serverCommands.Add(new ServerCommandInfo(
+                    name,
+                    usage,
+                    summary,
+                    module,
+                    kwParts.Count > 0 ? string.Join(" ", kwParts) : string.Empty));
+            }
+
+            if (IsOpen)
+            {
+                RebuildCatalog();
+                SetQuery(_searchInput != null ? _searchInput.text : string.Empty);
+            }
+        }
 
         public void RebuildCatalog()
         {
             _allEntries.Clear();
+            var curatedVerbs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             // 1. UI Windows & Quick Controls
             _allEntries.Add(new PaletteEntry("UI", "Open Pilot & Vessel Dossier [C]", "Avatar swap, cargo, space fit & ground rigs", () => OnUiActionRequested?.Invoke("ui:sheet")));
@@ -254,10 +362,12 @@ namespace TacSim.UI
             _allEntries.Add(new PaletteEntry("UI", "Open Nav Directory & Room Roster [N]", "3D wayfinder directory, cast & active ops", () => OnUiActionRequested?.Invoke("ui:ops_dir")));
             _allEntries.Add(new PaletteEntry("UI", "Open Social, Online Pilots, IC Mail & Channels [O]", "Live WHO roster, @mail inbox/compose & comsys channels", () => OnUiActionRequested?.Invoke("ui:social")));
             _allEntries.Add(new PaletteEntry("UI", "Open Mission, Passage, Survey & Claims Journal [J]", "Active quests, passages, surveys, claims & HUD objective pin", () => OnUiActionRequested?.Invoke("ui:journal")));
+            _allEntries.Add(new PaletteEntry("UI", "Open RP Scene Tracker & Signal Contacts Intel [L]", "Active timestop scene turn order, recap & light-delay signal contacts", () => OnUiActionRequested?.Invoke("ui:scene_intel")));
             _allEntries.Add(new PaletteEntry("UI", "Open Controls, Keybinds & Macros [F1]", "Keybind reference & F5-F8 custom macros", () => OnUiActionRequested?.Invoke("ui:keybinds")));
             _allEntries.Add(new PaletteEntry("UI", "Open Port Commodity Exchange", "Live market book, cargo gauges & trade", () => OnCommandRequested?.Invoke("ui:open_exchange")));
             _allEntries.Add(new PaletteEntry("UI", "Open Sailing Plan Builder", "Plot corridor fuel burn & departure orders", () => OnCommandRequested?.Invoke("ui:open_sailing")));
-            _allEntries.Add(new PaletteEntry("UI", "Open Display & Graphics Options", "Window size, fullscreen & UI scale", () => OnUiActionRequested?.Invoke("ui:options")));
+            _allEntries.Add(new PaletteEntry("UI", "Open Display, Audio & Camera Options", "Window size, UI scale, audio mixer, camera FOV & HUD density", () => OnUiActionRequested?.Invoke("ui:options")));
+            _allEntries.Add(new PaletteEntry("UI", "Toggle Cinematic HUD Mode [F9]", "Hide/restore non-essential HUD chrome for clean immersion", () => OnUiActionRequested?.Invoke("ui:toggle_cinematic_hud")));
             _allEntries.Add(new PaletteEntry("UI", "Cycle Orbital / Vehicle Camera [V]", "Switch Bridge / Chase / Tactical High-Orbit", () => OnUiActionRequested?.Invoke("ui:cycle_cam")));
             _allEntries.Add(new PaletteEntry("UI", "Cycle 3D Bridge Holo-Table Mode", "Toggle Auto / Solar System / Local Tactical Bubble", () => OnUiActionRequested?.Invoke("ui:cycle_holo")));
             _allEntries.Add(new PaletteEntry("UI", "Toggle Tactical Overview Drawer [T]", "Live range-sorted space contacts, surface ore pockets & arena targets", () => OnUiActionRequested?.Invoke("ui:toggle_overview")));
@@ -288,30 +398,36 @@ namespace TacSim.UI
             }
 
             // 3. Verified Registered mushd Gameplay Commands
-            AddCmd("OPS", "Quests & Local Favors", "+quest");
-            AddCmd("OPS", "Passenger Fares & Bookings", "+passage");
-            AddCmd("OPS", "Survey Commissions", "+survey");
-            AddCmd("OPS", "Mining Claims Registry", "+claim/list");
-            AddCmd("OPS", "Haul Contracts", "+haul");
-            AddCmd("OPS", "Escort Contracts", "+escort");
-            AddCmd("OPS", "Open Job Tickets", "+jobs");
-            AddCmd("SHIP", "Ship Status & Telemetry", "+ship");
-            AddCmd("SHIP", "Cargo Hold Manifest", "+ship/hold");
-            AddCmd("SHIP", "Active Sailing Orders", "+ship/orders");
-            AddCmd("SHIP", "Co-op Charter Status", "+coop");
-            AddCmd("SHIP", "Co-op Financial Ledger", "+coop/statement");
-            AddCmd("SHIP", "Available Credits", "+credit");
-            AddCmd("SHIP", "Prospecting Licence", "+license");
-            AddCmd("SHIP", "Market Listings", "+market/list");
-            AddCmd("SPACE", "Helm Status", "+helm/status");
-            AddCmd("SPACE", "Tactical Sensor Scan", "+tac/scan");
-            AddCmd("SPACE", "Tactical Weapon Mounts", "+tac/status");
-            AddCmd("SPACE", "Ping Asteroid Cluster", "+mine/ping");
-            AddCmd("SPACE", "Solar Ephemeris Table", "+chart");
-            AddCmd("WORLD", "Step Out of Character", "+ooc");
-            AddCmd("WORLD", "Return In Character", "+ic");
-            AddCmd("WORLD", "Online Pilots", "WHO");
-            AddCmd("WORLD", "Look Around", "look");
+            AddCmd(curatedVerbs, "OPS", "Quests & Local Favors", "+quest");
+            AddCmd(curatedVerbs, "OPS", "Passenger Fares & Bookings", "+passage");
+            AddCmd(curatedVerbs, "OPS", "Survey Commissions", "+survey");
+            AddCmd(curatedVerbs, "OPS", "Mining Claims Registry", "+claim/list");
+            AddCmd(curatedVerbs, "OPS", "Haul Contracts", "+haul");
+            AddCmd(curatedVerbs, "OPS", "Escort Contracts", "+escort");
+            AddCmd(curatedVerbs, "OPS", "Open Job Tickets", "+jobs");
+            AddCmd(curatedVerbs, "SHIP", "Ship Status & Telemetry", "+ship");
+            AddCmd(curatedVerbs, "SHIP", "Cargo Hold Manifest", "+ship/hold");
+            AddCmd(curatedVerbs, "SHIP", "Active Sailing Orders", "+ship/orders");
+            AddCmd(curatedVerbs, "SHIP", "Co-op Charter Status", "+coop");
+            AddCmd(curatedVerbs, "SHIP", "Co-op Financial Ledger", "+coop/statement");
+            AddCmd(curatedVerbs, "SHIP", "Available Credits", "+credit");
+            AddCmd(curatedVerbs, "SHIP", "Prospecting Licence", "+license");
+            AddCmd(curatedVerbs, "SHIP", "Market Listings", "+market/list");
+            AddCmd(curatedVerbs, "SPACE", "Helm Status", "+helm/status");
+            AddCmd(curatedVerbs, "SPACE", "Tactical Sensor Scan", "+tac/scan");
+            AddCmd(curatedVerbs, "SPACE", "Tactical Weapon Mounts", "+tac/status");
+            AddCmd(curatedVerbs, "INTEL", "Signal Propagation Contacts", "+contacts");
+            AddCmd(curatedVerbs, "INTEL", "Active Tactical Orders", "+orders");
+            AddCmd(curatedVerbs, "RP", "Active Scene & Turn Order", "+scene");
+            AddCmd(curatedVerbs, "RP", "Scene Narrative Recap", "+recap");
+            AddCmd(curatedVerbs, "RP", "Start Room Timestop Scene", "+timestop");
+            AddCmd(curatedVerbs, "SPACE", "Ping Asteroid Cluster", "+mine/ping");
+            AddCmd(curatedVerbs, "SPACE", "Solar Ephemeris Table", "+chart");
+            AddCmd(curatedVerbs, "WORLD", "Step Out of Character", "+ooc");
+            AddCmd(curatedVerbs, "WORLD", "Return In Character", "+ic");
+            AddCmd(curatedVerbs, "ARENA", "Simulator Match History (Replay IDs)", "sim history");
+            AddCmd(curatedVerbs, "WORLD", "Online Pilots", "WHO");
+            AddCmd(curatedVerbs, "WORLD", "Look Around", "look");
 
             // 4. Corridor Solar Ports
             for (int i = 0; i < CorridorPorts.Length; i++)
@@ -320,10 +436,36 @@ namespace TacSim.UI
                 string label = CorridorPorts[i].label;
                 _allEntries.Add(new PaletteEntry("SOLAR PORT", $"Chart & Plan: {label}", $"Inspect {slug} in Solar Orrery [M]", () => OnInspectSolarPortRequested?.Invoke(slug)));
             }
+
+            // 5. Live Role-Authorized Server Commands (`commands.list` panel hydration)
+            for (int i = 0; i < _serverCommands.Count; i++)
+            {
+                var sc = _serverCommands[i];
+                if (curatedVerbs.Contains(sc.Name)) continue;
+
+                string verb = sc.Name;
+                bool takesArgs = CommandTakesArguments(sc.Usage, verb);
+                string title = !string.IsNullOrEmpty(sc.Usage) ? sc.Usage : verb;
+                if (title.Length > 48) title = title.Substring(0, 48) + "…";
+                string sub = !string.IsNullOrEmpty(sc.Summary)
+                    ? sc.Summary
+                    : (takesArgs ? "Pre-fill command in chat input" : "Execute live server command");
+                if (sub.Length > 68) sub = sub.Substring(0, 68) + "…";
+
+                _allEntries.Add(new PaletteEntry(
+                    takesArgs ? "SRV FILL" : "SRV CMD",
+                    title,
+                    sub,
+                    takesArgs
+                        ? (Action)(() => OnPrefillCommandRequested?.Invoke(verb + " "))
+                        : (Action)(() => OnCommandRequested?.Invoke(verb)),
+                    sc.ExtraKeywords));
+            }
         }
 
-        private void AddCmd(string cat, string title, string cmd)
+        private void AddCmd(HashSet<string> curatedVerbs, string cat, string title, string cmd)
         {
+            curatedVerbs?.Add(cmd);
             _allEntries.Add(new PaletteEntry(cat, title, cmd, () => OnCommandRequested?.Invoke(cmd)));
         }
 
@@ -408,7 +550,9 @@ namespace TacSim.UI
                         : new Color(0.06f, 0.11f, 0.17f, 0.90f);
                     string catColor = e.Category == "3D TRAIL" || e.Category == "SHIP TRAIL" ? "#66FFAA"
                                     : (e.Category == "SOLAR PORT" ? "#FFCC66"
-                                    : (e.Category == "SPACE" ? "#FF8866" : "#66CCFF"));
+                                    : (e.Category == "SPACE" ? "#FF8866"
+                                    : (e.Category == "SRV FILL" ? "#DDBBFF"
+                                    : (e.Category == "SRV CMD" ? "#77EEBB" : "#66CCFF"))));
                     row.Label.text = $"<color={catColor}>[{e.Category}]</color> <b>{MushProtocol.EscapeUnityRichText(e.Title)}</b>  <color=#88AAC8>— {MushProtocol.EscapeUnityRichText(e.Subtitle)}</color>";
                     row.Root.SetActive(true);
                 }
@@ -421,8 +565,9 @@ namespace TacSim.UI
 
             if (_footerText != null)
             {
+                string srvNote = _serverCommands.Count > 0 ? $" (+{_serverCommands.Count} live cmds)" : string.Empty;
                 _footerText.text = shown > 0
-                    ? $"Showing {shown} of {_filteredIndices.Count} matches  |  [Up/Down] Select  [Enter] Execute  [Esc] Close"
+                    ? $"Showing {shown} of {_filteredIndices.Count} matches{srvNote}  |  [Up/Down] Select  [Enter] Execute  [Esc] Close"
                     : "No preset match — press [Enter] to send directly to mushd, or [Esc] to close";
             }
         }

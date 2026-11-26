@@ -218,6 +218,8 @@ namespace TacSim.Core
             Hud.BindTradeState(TradeState);
             if (Hud.Overlays != null)
                 Hud.Overlays.BindControllers(SurfaceStage, ArenaStage, SpaceStage);
+            if (Hud.ReplayHud != null)
+                Hud.ReplayHud.BindArena(ArenaStage);
             if (Hud.Minimap != null)
                 Hud.Minimap.BindWorldSources(StationWorld, ShipInterior, SpaceStage, SurfaceStage, ArenaStage);
             if (Hud.CharacterSheet != null)
@@ -226,6 +228,8 @@ namespace TacSim.Core
                 Hud.TacticalBrackets.BindControllers(SpaceStage, SurfaceStage, ArenaStage);
             if (Hud.TacticalOverview != null)
                 Hud.TacticalOverview.BindControllers(SpaceStage, SurfaceStage, ArenaStage);
+            if (Hud.DisplayOptions != null)
+                Hud.DisplayOptions.BindSubsystems(Audio, CameraRig);
 
             if (Wayfinder == null)
             {
@@ -317,7 +321,7 @@ namespace TacSim.Core
             {
                 if (alert == ShipAlertLevel.RedAlert)
                 {
-                    Audio?.PlayRadarScanPing();
+                    Audio?.PlayRedAlertKlaxon();
                     Hud?.FloatingCallouts?.ShowCallout("RED ALERT — TORPEDO INBOUND!", new Color(1.0f, 0.24f, 0.18f, 1f), 2.4f);
                 }
                 else if (alert == ShipAlertLevel.Caution)
@@ -397,8 +401,36 @@ namespace TacSim.Core
                 if (_ws != null && _ws.IsConnected)
                     _ws.SendPanelSubscribe("arena.map");
             };
+            ArenaStage.OnRequestReplayDocumentSubscribe += () =>
+            {
+                if (_ws != null && _ws.IsConnected)
+                    _ws.SendPanelSubscribe("arena.replay");
+            };
+            ArenaStage.OnReplayStateChanged += () =>
+            {
+                if (ArenaStage != null && ArenaStage.IsSpectatorTheaterActive)
+                {
+                    _stageDirector?.SyncFrame(_isAboardShip, Hud != null && Hud.IsTextInputFocused);
+                    BindCameraToArenaRig();
+                    Hud?.ReplayHud?.RefreshView();
+                }
+            };
+            ArenaStage.OnReplayClosed += HandleReplayOrObserverClosed;
             ArenaStage.OnArenaCombatLog += ln => { if (Hud != null) Hud.AppendLogLine(ln); };
             ArenaStage.OnToggleCameraViewRequested += ToggleGroundVehicleCameraMode;
+
+            Hud.OnCloseReplayRequested += CloseActiveReplayOrObserver;
+            if (Hud.ReplayHud != null)
+            {
+                Hud.ReplayHud.OnCloseRequested += CloseActiveReplayOrObserver;
+                Hud.ReplayHud.OnStopLiveWatchRequested += () =>
+                {
+                    if (_ws != null && _ws.IsConnected)
+                        _ws.SendLine("@arena/watch off");
+                };
+                Hud.ReplayHud.OnToggleCameraModeRequested += ToggleGroundVehicleCameraMode;
+                Hud.ReplayHud.OnFocusUnitChanged += BindCameraToArenaRig;
+            }
 
             Hud.OnAuthSubmitted += HandleAuthSubmitted;
             Hud.OnCharacterSelected += HandleCharacterSelected;
@@ -418,6 +450,11 @@ namespace TacSim.Core
             Hud.OnCycleTargetRequested += HandleCycleTarget;
             Hud.OnCycleOrbitalCameraRequested += HandleCycleOrbitalCamera;
             Hud.OnSpaceQuickFireRequested += HandleSpaceQuickFire;
+            Hud.OnNarrativeBacklogRequested += beforeSeq =>
+            {
+                if (_ws != null && _ws.IsConnected)
+                    _ws.SendNarrativeBacklogQuery(beforeSeq, 30);
+            };
 
             if (Hud.Minimap != null)
             {
@@ -595,6 +632,7 @@ namespace TacSim.Core
             if (Hud.CommandPalette != null)
             {
                 Hud.CommandPalette.OnCommandRequested += ExecutePlayerCommand;
+                Hud.CommandPalette.OnPrefillCommandRequested += prefix => Hud?.PrefillChatInput(prefix);
                 Hud.CommandPalette.OnPlotStationRoomRequested += roomId => PlotStationWayfinderRoute(roomId, autoWalk: true);
                 Hud.CommandPalette.OnPlotShipCompartmentRequested += compId => PlotShipWayfinderRoute(compId, autoWalk: true);
                 Hud.CommandPalette.OnInspectSolarPortRequested += portSlug => Hud.SolarMap?.FocusPort(portSlug);
@@ -608,8 +646,10 @@ namespace TacSim.Core
                         case "ui:ops_dir": Hud.OpsDirectory?.SetOpen(true); break;
                         case "ui:social": Hud.SocialModal?.SetOpen(true); break;
                         case "ui:journal": Hud.QuestJournal?.SetOpen(true); break;
+                        case "ui:scene_intel": Hud.SceneIntelModal?.SetOpen(true); break;
                         case "ui:keybinds": Hud.KeybindHelp?.SetOpen(true); break;
                         case "ui:options": Hud.DisplayOptions?.SetOpen(true); break;
+                        case "ui:toggle_cinematic_hud": Hud.DisplayOptions?.ToggleCinematicHudMode(); break;
                         case "ui:cycle_cam": HandleCycleOrbitalCamera(); break;
                         case "ui:cycle_holo": CycleBridgeHoloTableMode(); break;
                         case "ui:toggle_overview": Hud.TacticalOverview?.ToggleVisible(); break;
@@ -641,19 +681,46 @@ namespace TacSim.Core
                 };
                 Hud.SocialModal.OnRefreshMailRequested += folder =>
                 {
-                    if (_ws != null && _ws.IsConnected && _ws.HasAdvertisedPanel("mail"))
+                    if (_ws != null && _ws.IsConnected &&
+                        (_ws.HasAdvertisedPanel("mail") || _ws.HasAdvertisedPanel("mail.list")))
                         _ws.SendMailListQuery(folder);
                 };
                 Hud.SocialModal.OnRefreshComsysRequested += () =>
                 {
-                    if (_ws != null && _ws.IsConnected && _ws.HasAdvertisedPanel("comsys"))
+                    if (_ws != null && _ws.IsConnected &&
+                        (_ws.HasAdvertisedPanel("comsys") || _ws.HasAdvertisedPanel("comsys.state")))
                         _ws.SendPanelSubscribe("comsys");
+                };
+                Hud.SocialModal.OnChannelBacklogRequested += channel =>
+                {
+                    if (_ws != null && _ws.IsConnected && !string.IsNullOrWhiteSpace(channel))
+                        _ws.SendChannelBacklogQuery(channel, limit: 40);
                 };
             }
 
             if (Hud.QuestJournal != null)
             {
                 Hud.QuestJournal.OnCommandRequested += ExecutePlayerCommand;
+            }
+
+            if (Hud.SceneIntelModal != null)
+            {
+                Hud.SceneIntelModal.OnCommandRequested += ExecutePlayerCommand;
+                Hud.SceneIntelModal.OnRefreshScenesRequested += () =>
+                {
+                    if (_ws != null && _ws.IsConnected && _ws.HasAdvertisedPanel("scenes"))
+                        _ws.SendPanelSubscribe("scenes");
+                };
+                Hud.SceneIntelModal.OnRefreshContactsRequested += () =>
+                {
+                    if (_ws != null && _ws.IsConnected && _ws.HasAdvertisedPanel("tactics.contacts"))
+                        _ws.SendPanelSubscribe("tactics.contacts");
+                };
+                Hud.SceneIntelModal.OnLocalPlayerTurnStarted += title =>
+                {
+                    Audio?.PlayMarketChime();
+                    Hud?.FloatingCallouts?.ShowCallout($"YOUR TURN: {title.ToUpperInvariant()} [L]", new Color(0.35f, 1f, 0.68f, 1f), 2.4f);
+                };
             }
 
             _contentSync.OnSyncLog += msg =>
@@ -669,9 +736,11 @@ namespace TacSim.Core
                 if (_ws.HasAdvertisedPanel("sky.chart"))
                     _ws.SendPanelSubscribe("sky.chart");
                 _ws.SendWhoQuery();
-                if (_ws.HasAdvertisedPanel("mail"))
+                _ws.SendCommandsQuery();
+                _ws.SendNarrativeBacklogQuery(null, 30);
+                if (_ws.HasAdvertisedPanel("mail") || _ws.HasAdvertisedPanel("mail.list"))
                     _ws.SendMailListQuery();
-                if (_ws.HasAdvertisedPanel("comsys"))
+                if (_ws.HasAdvertisedPanel("comsys") || _ws.HasAdvertisedPanel("comsys.state"))
                     _ws.SendPanelSubscribe("comsys");
             };
             _ws.OnWhoReceived += list => Hud?.SocialModal?.ApplyWhoEntries(list);
@@ -897,6 +966,12 @@ namespace TacSim.Core
                     }
                 }
             }
+            else if (ActiveStage == TacSimActiveStage.SimulatorArena && ArenaStage != null && ArenaStage.IsSpectatorTheaterActive)
+            {
+                ArenaStage.CycleReplayFocusUnit(+1);
+                BindCameraToArenaRig();
+                Hud?.ReplayHud?.RefreshView();
+            }
             else if (ActiveStage == TacSimActiveStage.SimulatorArena && ArenaStage?.State != null)
             {
                 var contacts = ArenaStage.State.Contacts;
@@ -936,14 +1011,18 @@ namespace TacSim.Core
                 else if (stage == TacSimActiveStage.PlanetarySurface && SurfaceStage?.RoverTransform != null)
                     yaw = SurfaceStage.RoverTransform.eulerAngles.y;
 
+                bool cinematicHud = TacSimDisplayOptions.CurrentHudDensity == TacSimHudDensityPreset.Cinematic;
+                bool compactHud = TacSimDisplayOptions.CurrentHudDensity == TacSimHudDensityPreset.Compact;
                 bool rightCornerBusy =
+                    cinematicHud ||
                     Hud.IsDockingHudVisible ||
                     (Hud.Overlays != null && Hud.Overlays.IsSpaceFireCardVisible) ||
                     stage == TacSimActiveStage.PlanetarySurface ||
                     stage == TacSimActiveStage.SimulatorArena;
 
                 Hud.Minimap.SyncMinimap(stage, pos, yaw, rightCornerBusy);
-                Hud.QuestJournal?.SyncTrackerVisibility(stage, rightCornerBusy);
+                Hud.QuestJournal?.SyncTrackerVisibility(stage, rightCornerBusy || compactHud);
+                Hud.SceneIntelModal?.SetBannerSuppressed(cinematicHud || stage == TacSimActiveStage.SimulatorArena || Hud.IsLoginOverlayVisible);
             }
 
             // Update 3D Holographic Wayfinder ribbon & compass banner every frame
@@ -959,10 +1038,12 @@ namespace TacSim.Core
             {
                 Camera activeCam = CameraRig != null && CameraRig.ControlledCamera != null ? CameraRig.ControlledCamera : Camera.main;
                 bool hideBrackets = Hud.IsLoginOverlayVisible || Hud.IsModalOpen ||
+                    TacSimDisplayOptions.CurrentHudDensity == TacSimHudDensityPreset.Cinematic ||
+                    (ArenaStage != null && ArenaStage.IsSpectatorTheaterActive) ||
                     (Hud.SolarMap != null && Hud.SolarMap.IsOpen) ||
                     (Hud.DisplayOptions != null && Hud.DisplayOptions.IsOpen);
                 Hud.TacticalBrackets.SyncBrackets(stage, activeCam, hideBrackets);
-                Hud.TacticalOverview?.SyncOverview(stage, hideBrackets);
+                Hud.TacticalOverview?.SyncOverview(stage, hideBrackets || TacSimDisplayOptions.CurrentHudDensity == TacSimHudDensityPreset.Compact);
             }
 
             if (Hud.UnitFrames == null) return;
@@ -1093,6 +1174,32 @@ namespace TacSim.Core
                 }
                 case TacSimActiveStage.SimulatorArena:
                 {
+                    if (ArenaStage != null && ArenaStage.IsSpectatorTheaterActive)
+                    {
+                        var doc = ArenaStage.ActiveReplayDoc;
+                        var frame = ArenaStage.LatestReplayFrame;
+                        int fIdx = ArenaStage.ReplayFocusUnitIndex;
+                        string focusCs = (doc != null && fIdx >= 0 && fIdx < doc.Roster.Count) ? doc.Roster[fIdx].Callsign : "ARENA";
+                        bool isBlue = doc != null && fIdx >= 0 && fIdx < doc.Roster.Count && doc.Roster[fIdx].IsBlue;
+                        bool isLive = ArenaStage.IsLiveObserverActive;
+                        float prog = (doc != null && doc.EndMs > 0) ? Mathf.Clamp01(ArenaStage.ReplayCursorMs / doc.EndMs) : 1f;
+                        int redAlive = frame != null ? frame.RedAliveCount : 0;
+                        int blueAlive = frame != null ? frame.BlueAliveCount : 0;
+                        Hud.UnitFrames.UpdatePlayerFrame(
+                            isLive ? "LIVE" : "TAPE",
+                            isBlue ? new Color(0.18f, 0.38f, 0.72f, 0.96f) : new Color(0.68f, 0.24f, 0.20f, 0.96f),
+                            $"CAM: {focusCs} (MATCH #{ArenaStage.ActiveSpectatorMatchId})",
+                            isLive ? "Staff Live Observer (1 Hz)" : $"Replay {ArenaStage.ReplayPlaybackSpeed:0.#}x | SPACE: Play/Pause",
+                            prog,
+                            isLive ? "LIVE FEED" : $"TAPE {TacSimArenaReplayModel.FormatClockText((long)ArenaStage.ReplayCursorMs)}",
+                            new Color(0.24f, 0.78f, 0.96f, 0.95f),
+                            (redAlive + blueAlive) > 0 ? redAlive / (float)(redAlive + blueAlive) : 0.5f,
+                            $"RED {redAlive} vs BLUE {blueAlive}",
+                            new Color(0.86f, 0.34f, 0.28f, 0.95f),
+                            "TAB: Next Unit | V: Cupola | ESC: Close");
+                        Hud.UnitFrames.ClearTarget();
+                        break;
+                    }
                     var st = ArenaStage?.State;
                     if (st != null)
                     {
@@ -2305,6 +2412,13 @@ namespace TacSim.Core
             if (rv.IcTime != null)
                 _currentClockStr = $"{rv.IcTime.Hour:D2}:{rv.IcTime.Minute:D2} IC ({rv.IcTime.TimeOfDay})";
 
+            if (Hud?.SceneIntelModal != null)
+            {
+                if (_ws?.ActiveCharacter != null)
+                    Hud.SceneIntelModal.SetLocalCharacter(_ws.ActiveCharacter.Id, _ws.ActiveCharacter.Name);
+                Hud.SceneIntelModal.ApplyRoomSceneGlance(rv.Scene);
+            }
+
             if (rv.TacSim != null)
             {
                 if (rv.TacSim.Stowage != null)
@@ -2737,6 +2851,7 @@ namespace TacSim.Core
                 Hud.AppendModalResponseLine(display);
             Hud.SocialModal?.IngestMailReadOutput(plainLine, richMarkup);
             Hud.QuestJournal?.IngestServerOutput(plainLine, richMarkup);
+            Hud.SceneIntelModal?.IngestServerOutput(plainLine, richMarkup);
 
             // Trigger surface/orbital action VFX only upon authoritative server outcome lines!
             if (!string.IsNullOrEmpty(plainLine))
@@ -2821,6 +2936,36 @@ namespace TacSim.Core
                 case "comsys":
                     Hud?.SocialModal?.ApplyComsysPanel(data);
                     break;
+                case "commands.list":
+                    Hud?.CommandPalette?.ApplyServerCommandsList(data);
+                    break;
+                case "narrative":
+                    Hud?.ApplyNarrativeBacklog(data);
+                    break;
+                case "npc.thinking":
+                    if (data != null && data.IsObject)
+                    {
+                        string npcId = data.Str("npc", string.Empty);
+                        string npcName = data.Str("name", string.Empty);
+                        bool active = data.Bool("active", false);
+                        if (_isAboardShip)
+                            ShipInterior?.SetActorThinking(npcId, npcName, active);
+                        else
+                            StationWorld?.SetActorThinking(npcId, npcName, active);
+                        Hud?.SetNpcModalThinking(npcName, active);
+                    }
+                    break;
+                case "scenes":
+                    if (Hud?.SceneIntelModal != null)
+                    {
+                        if (_ws?.ActiveCharacter != null)
+                            Hud.SceneIntelModal.SetLocalCharacter(_ws.ActiveCharacter.Id, _ws.ActiveCharacter.Name);
+                        Hud.SceneIntelModal.ApplyScenesPanel(data);
+                    }
+                    break;
+                case "tactics.contacts":
+                    Hud?.SceneIntelModal?.ApplySignalContactsPanel(data);
+                    break;
                 case "port.trade":
                 {
                     bool append = _awaitingAppendedTradePage;
@@ -2904,8 +3049,36 @@ namespace TacSim.Core
                     if (ArenaStage != null)
                     {
                         ArenaStage.ApplyLiveArenaMap(data);
-                        if (ArenaStage.IsArenaActive)
+                        if (ArenaStage.IsStageVisible)
                             BindCameraToArenaRig();
+                    }
+                    break;
+                case "arena.replay":
+                    if (ArenaStage != null)
+                    {
+                        ArenaStage.HandleReplayPanelFrame(data);
+                        if (ArenaStage.IsReplayModeActive)
+                        {
+                            _stageDirector?.SyncFrame(_isAboardShip, Hud != null && Hud.IsTextInputFocused);
+                            BindCameraToArenaRig();
+                            Hud.UpdateTopBar(
+                                $"3D ARENA REPLAY THEATER — MATCH #{ArenaStage.ActiveSpectatorMatchId}",
+                                "SPACE: Play/Pause | Left/Right: Keyframe | TAB: Follow Unit | ESC: Exit");
+                        }
+                    }
+                    break;
+                case "arena.observer":
+                    if (ArenaStage != null)
+                    {
+                        ArenaStage.HandleObserverPanelFrame(data);
+                        if (ArenaStage.IsLiveObserverActive)
+                        {
+                            _stageDirector?.SyncFrame(_isAboardShip, Hud != null && Hud.IsTextInputFocused);
+                            BindCameraToArenaRig();
+                            Hud.UpdateTopBar(
+                                $"3D ARENA LIVE OBSERVER — MATCH #{ArenaStage.ActiveSpectatorMatchId}",
+                                "LIVE 1 Hz STAFF FEED | TAB: Follow Unit | V: Cupola | ESC: Stop Watch");
+                        }
                     }
                     break;
                 case "arena.cockpit":
@@ -3047,11 +3220,40 @@ namespace TacSim.Core
             }
         }
 
+        private void CloseActiveReplayOrObserver()
+        {
+            if (ArenaStage == null || !ArenaStage.IsSpectatorTheaterActive) return;
+            bool wasLive = ArenaStage.IsLiveObserverActive;
+            ArenaStage.CloseReplayOrObserver();
+            if (wasLive && _ws != null && _ws.IsConnected)
+                _ws.SendLine("@arena/watch off");
+        }
+
+        private void HandleReplayOrObserverClosed()
+        {
+            if (ArenaStage != null && ArenaStage.IsArenaActive) return;
+            _stageDirector?.SyncFrame(_isAboardShip, Hud != null && Hud.IsTextInputFocused);
+            Hud?.ReplayHud?.RefreshView();
+            if (CameraRig != null)
+            {
+                CameraRig.SetMode(CameraRigMode.ThirdPersonWalk);
+                if (Player != null) CameraRig.SnapBehindTarget(Player.transform.eulerAngles.y);
+            }
+            Audio?.SetSoundscape(_isAboardShip ? AmbientSoundscape.ShipInterior : AmbientSoundscape.StationRing);
+            if (_lastRoomView != null && !string.IsNullOrEmpty(_lastRoomView.Name))
+                Hud?.UpdateTopBar(_lastRoomView.Name.ToUpperInvariant(), $"{_currentClockStr} | {_currentHullBadge}");
+            else
+                Hud?.UpdateTopBar("OOC SIMULATOR CENTRE", $"{_currentClockStr} | {_currentHullBadge}");
+        }
+
         private void BindCameraToArenaRig()
         {
-            if (ArenaStage?.PlayerVehicleTransform == null) return;
-            CameraRig.GroundVehicleTarget = ArenaStage.PlayerVehicleTransform;
-            CameraRig.GroundCupolaAnchor = ArenaStage.PlayerCupolaAnchor;
+            if (ArenaStage == null) return;
+            Transform target = ArenaStage.IsArenaActive ? ArenaStage.PlayerVehicleTransform : ArenaStage.SpectatorFocusTransform;
+            Transform cupola = ArenaStage.IsArenaActive ? ArenaStage.PlayerCupolaAnchor : ArenaStage.SpectatorFocusCupolaAnchor;
+            if (target == null) return;
+            CameraRig.GroundVehicleTarget = target;
+            CameraRig.GroundCupolaAnchor = cupola;
             if (CameraRig.Mode != CameraRigMode.GroundVehicleChase && CameraRig.Mode != CameraRigMode.GroundVehicleCupola)
                 CameraRig.SetMode(CameraRigMode.GroundVehicleChase);
         }

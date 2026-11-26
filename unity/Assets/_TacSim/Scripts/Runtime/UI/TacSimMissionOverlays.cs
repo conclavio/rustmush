@@ -662,9 +662,10 @@ namespace TacSim.UI
                 OnCommandRequested?.Invoke("board");
             });
 
-            // Row 6: Centre Management & Return IC
+            // Row 6: Centre Management, Match History & Return IC
             var mgmtRow = CreateRow(_arenaLobbyModal.transform, "SimMgmtRow", -478f, -432f);
             CreateBtn(mgmtRow, "SIM STATUS", new Color(0.16f, 0.28f, 0.40f), () => OnCommandRequested?.Invoke("sim status"));
+            CreateBtn(mgmtRow, "MATCH HISTORY", new Color(0.24f, 0.36f, 0.48f), () => OnCommandRequested?.Invoke("sim history"));
             CreateBtn(mgmtRow, "SIM LEAVE", new Color(0.38f, 0.24f, 0.20f), () => OnCommandRequested?.Invoke("sim leave"));
             CreateBtn(mgmtRow, "SIM ABORT", new Color(0.46f, 0.18f, 0.20f), () => OnCommandRequested?.Invoke("sim abort"));
             CreateBtn(mgmtRow, "RETURN TO IC PORT (+ic)", new Color(0.16f, 0.40f, 0.36f), () =>

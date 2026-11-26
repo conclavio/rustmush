@@ -100,6 +100,18 @@ namespace TacSim.Net
         public string TimeOfDay;
     }
 
+    public sealed class MushSceneAmbient
+    {
+        public long Id;
+        public string Title = string.Empty;
+        public string Kind = string.Empty;
+        public string Mode = string.Empty;
+        public string Status = string.Empty;
+        public int Round;
+        public int Turn;
+        public MushObjRef CurrentActor;
+    }
+
     public sealed class MushRoomView
     {
         public string Id;
@@ -112,6 +124,7 @@ namespace TacSim.Net
         public AtlasRoomAmbient Atlas;
         public TacSimRoomAmbient TacSim;
         public IcTimeAmbient IcTime;
+        public MushSceneAmbient Scene;
         public HashSet<string> NpcIds = new HashSet<string>(StringComparer.Ordinal);
         public HashSet<string> DormantNpcIds = new HashSet<string>(StringComparer.Ordinal);
         public HashSet<string> PlayerIds = new HashSet<string>(StringComparer.Ordinal);
@@ -702,6 +715,22 @@ namespace TacSim.Net
                 {
                     rv.WeatherLine = wx.Str("line", string.Empty);
                 }
+
+                var sc = amb["scene"];
+                if (sc.IsObject && sc.ContainsKey("id"))
+                {
+                    rv.Scene = new MushSceneAmbient
+                    {
+                        Id = sc.Long("id", 0),
+                        Title = sc.Str("title", string.Empty),
+                        Kind = sc.Str("kind", string.Empty),
+                        Mode = sc.Str("mode", string.Empty),
+                        Status = sc.Str("status", "active"),
+                        Round = sc.Int("round", 1),
+                        Turn = sc.Int("turn", 0),
+                        CurrentActor = ParseObjRef(sc["current_actor"])
+                    };
+                }
             }
 
             return rv;
@@ -977,6 +1006,68 @@ namespace TacSim.Net
             qd["folder"] = !string.IsNullOrWhiteSpace(folder)
                 ? JsonNode.FromString(folder.Trim().ToLowerInvariant())
                 : JsonNode.Null;
+            q["d"] = qd;
+            d["q"] = q;
+            obj["d"] = d;
+            return obj.ToJson();
+        }
+
+        /// <summary>
+        /// Builds canonical ClientCommand::Req with Query::Commands (`commands.list` panel keyframe):
+        /// {"t":"req","d":{"id":1,"q":{"t":"commands"}}}
+        /// </summary>
+        public static string BuildCommandsQueryCommand(ulong id)
+        {
+            var obj = JsonNode.NewObject();
+            obj["t"] = JsonNode.FromString("req");
+            var d = JsonNode.NewObject();
+            d["id"] = JsonNode.FromULong(id);
+            var q = JsonNode.NewObject();
+            q["t"] = JsonNode.FromString("commands");
+            d["q"] = q;
+            obj["d"] = d;
+            return obj.ToJson();
+        }
+
+        /// <summary>
+        /// Builds canonical ClientCommand::Req with Query::ChannelBacklog (`comsys` panel delta with `backlog`):
+        /// {"t":"req","d":{"id":1,"q":{"t":"channel_backlog","d":{"channel":"Public","before_seq":null,"limit":40}}}}
+        /// </summary>
+        public static string BuildChannelBacklogQueryCommand(ulong id, string channel, ulong? beforeSeq = null, int limit = 40)
+        {
+            var obj = JsonNode.NewObject();
+            obj["t"] = JsonNode.FromString("req");
+            var d = JsonNode.NewObject();
+            d["id"] = JsonNode.FromULong(id);
+            var q = JsonNode.NewObject();
+            q["t"] = JsonNode.FromString("channel_backlog");
+            var qd = JsonNode.NewObject();
+            qd["channel"] = JsonNode.FromString((channel ?? string.Empty).Trim());
+            if (beforeSeq.HasValue)
+                qd["before_seq"] = JsonNode.FromULong(beforeSeq.Value);
+            qd["limit"] = JsonNode.FromLong(Math.Max(1, Math.Min(200, limit)));
+            q["d"] = qd;
+            d["q"] = q;
+            obj["d"] = d;
+            return obj.ToJson();
+        }
+
+        /// <summary>
+        /// Builds canonical ClientCommand::Req with Query::NarrativeBacklog (`narrative` panel delta with `backlog`):
+        /// {"t":"req","d":{"id":1,"q":{"t":"narrative_backlog","d":{"before_seq":42,"limit":30}}}}
+        /// </summary>
+        public static string BuildNarrativeBacklogQueryCommand(ulong id, ulong? beforeSeq = null, int limit = 30)
+        {
+            var obj = JsonNode.NewObject();
+            obj["t"] = JsonNode.FromString("req");
+            var d = JsonNode.NewObject();
+            d["id"] = JsonNode.FromULong(id);
+            var q = JsonNode.NewObject();
+            q["t"] = JsonNode.FromString("narrative_backlog");
+            var qd = JsonNode.NewObject();
+            if (beforeSeq.HasValue)
+                qd["before_seq"] = JsonNode.FromULong(beforeSeq.Value);
+            qd["limit"] = JsonNode.FromLong(Math.Max(1, Math.Min(200, limit)));
             q["d"] = qd;
             d["q"] = q;
             obj["d"] = d;

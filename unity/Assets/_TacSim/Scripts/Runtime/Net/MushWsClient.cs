@@ -512,6 +512,29 @@ namespace TacSim.Net
             return id;
         }
 
+        public ulong SendCommandsQuery()
+        {
+            ulong id = _nextQueryId++;
+            EnqueueRaw(MushProtocol.BuildCommandsQueryCommand(id));
+            return id;
+        }
+
+        public ulong SendChannelBacklogQuery(string channel, ulong? beforeSeq = null, int limit = 40)
+        {
+            if (string.IsNullOrWhiteSpace(channel) || MushProtocol.ContainsControlChars(channel))
+                return 0;
+            ulong id = _nextQueryId++;
+            EnqueueRaw(MushProtocol.BuildChannelBacklogQueryCommand(id, channel, beforeSeq, limit));
+            return id;
+        }
+
+        public ulong SendNarrativeBacklogQuery(ulong? beforeSeq = null, int limit = 30)
+        {
+            ulong id = _nextQueryId++;
+            EnqueueRaw(MushProtocol.BuildNarrativeBacklogQueryCommand(id, beforeSeq, limit));
+            return id;
+        }
+
         public ulong SendMindMarketListings(string afterCode = null)
         {
             ulong id = _nextQueryId++;
@@ -699,7 +722,8 @@ namespace TacSim.Net
             foreach (string feed in _advertisedPanels)
             {
                 if (feed == "space.cockpit" || feed == "space.holotank" || feed == "space.docking" || feed == "sky.chart" ||
-                    feed == "tv.status" || feed == "arena.cockpit" || feed == "arena.observer" || feed == "arena.replay")
+                    feed == "tv.status" || feed == "arena.cockpit" || feed == "arena.observer" || feed == "arena.replay" ||
+                    feed == "scenes" || feed == "tactics.contacts")
                 {
                     SendPanelSubscribe(feed);
                 }
@@ -913,6 +937,15 @@ namespace TacSim.Net
 
             if (kind == "delta")
             {
+                // `Query::ChannelBacklog` (`comsys`) and `Query::NarrativeBacklog` (`narrative`)
+                // answer as `Panel { kind: "delta", data: { backlog: { ... } } }`.
+                // Forward backlog slices directly to panel subscribers without overwriting cached keyframes.
+                if ((feed == "comsys" || feed == "narrative") && payload != null && payload.IsObject && payload["backlog"].IsObject)
+                {
+                    OnPanelUpdated?.Invoke(feed, payload.Clone());
+                    return;
+                }
+
                 // Pulled TacSim panels emit full keyframes; if a feed signals a delta invalidation,
                 // request a fresh keyframe rather than applying an invented shallow object merge.
                 if (_advertisedPanels.Contains(feed))
