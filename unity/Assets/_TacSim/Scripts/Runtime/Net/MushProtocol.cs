@@ -144,6 +144,15 @@ namespace TacSim.Net
         public bool Active;
     }
 
+    public sealed class MushWhoEntry
+    {
+        public string Name = string.Empty;
+        public string Alias = string.Empty;
+        public int IdleSeconds;
+        public int ConnSeconds;
+        public string Doing = string.Empty;
+    }
+
     public sealed class MushRequestOption
     {
         public string Key;
@@ -907,6 +916,69 @@ namespace TacSim.Net
             obj["t"] = JsonNode.FromString("pong");
             var d = JsonNode.NewObject();
             d["nonce"] = JsonNode.FromULong(nonce);
+            obj["d"] = d;
+            return obj.ToJson();
+        }
+
+        public static List<MushWhoEntry> ParseWhoEntries(JsonNode d)
+        {
+            var result = new List<MushWhoEntry>();
+            if (d == null || !d.IsObject) return result;
+            var entries = d["entries"].AsArray() ?? d["players"].AsArray();
+            if (entries == null) return result;
+            for (int i = 0; i < entries.Count; i++)
+            {
+                var e = entries[i];
+                if (e == null || e.IsNull) continue;
+                if (e.Kind == JsonKind.String)
+                {
+                    string s = e.AsString(string.Empty).Trim();
+                    if (!string.IsNullOrEmpty(s))
+                        result.Add(new MushWhoEntry { Name = s });
+                    continue;
+                }
+                if (!e.IsObject) continue;
+                string nm = e.Str("name", e.Str("character", string.Empty)).Trim();
+                if (string.IsNullOrEmpty(nm)) continue;
+                result.Add(new MushWhoEntry
+                {
+                    Name = nm,
+                    Alias = e.Str("alias", string.Empty).Trim(),
+                    IdleSeconds = Math.Max(0, e.Int("idle_s", e.Int("idle", 0))),
+                    ConnSeconds = Math.Max(0, e.Int("conn_s", e.Int("conn", 0))),
+                    Doing = e.Str("doing", string.Empty).Trim()
+                });
+            }
+            return result;
+        }
+
+        public static string BuildWhoQueryCommand(ulong id)
+        {
+            var obj = JsonNode.NewObject();
+            obj["t"] = JsonNode.FromString("req");
+            var d = JsonNode.NewObject();
+            d["id"] = JsonNode.FromULong(id);
+            var q = JsonNode.NewObject();
+            q["t"] = JsonNode.FromString("who");
+            d["q"] = q;
+            obj["d"] = d;
+            return obj.ToJson();
+        }
+
+        public static string BuildMailListQueryCommand(ulong id, string folder = null)
+        {
+            var obj = JsonNode.NewObject();
+            obj["t"] = JsonNode.FromString("req");
+            var d = JsonNode.NewObject();
+            d["id"] = JsonNode.FromULong(id);
+            var q = JsonNode.NewObject();
+            q["t"] = JsonNode.FromString("mail_list");
+            var qd = JsonNode.NewObject();
+            qd["folder"] = !string.IsNullOrWhiteSpace(folder)
+                ? JsonNode.FromString(folder.Trim().ToLowerInvariant())
+                : JsonNode.Null;
+            q["d"] = qd;
+            d["q"] = q;
             obj["d"] = d;
             return obj.ToJson();
         }

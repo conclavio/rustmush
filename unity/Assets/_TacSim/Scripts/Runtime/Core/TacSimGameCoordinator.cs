@@ -224,6 +224,8 @@ namespace TacSim.Core
                 Hud.CharacterSheet.BindSources(TradeState, SpaceStage, SurfaceStage, ArenaStage);
             if (Hud.TacticalBrackets != null)
                 Hud.TacticalBrackets.BindControllers(SpaceStage, SurfaceStage, ArenaStage);
+            if (Hud.TacticalOverview != null)
+                Hud.TacticalOverview.BindControllers(SpaceStage, SurfaceStage, ArenaStage);
 
             if (Wayfinder == null)
             {
@@ -288,6 +290,41 @@ namespace TacSim.Core
             {
                 if (CameraRig != null && ShipInterior != null)
                     CameraRig.BridgeViewAnchor = ShipInterior.BridgeCameraAnchor;
+            };
+            ShipInterior.OnHoloContactClicked += (id, isRock) =>
+            {
+                if (!MushProtocol.TryValidateSafeCommandToken(id, out string safeId)) return;
+                if (Audio != null) Audio.PlayRadarScanPing();
+                if (isRock)
+                {
+                    SpaceStage?.NotifyApproachOrdered(safeId);
+                    Hud?.FloatingCallouts?.ShowCallout($"HOLO APPROACH: ROCK {safeId.ToUpperInvariant()}", new Color(1f, 0.80f, 0.32f, 1f), 1.5f);
+                    ExecutePlayerCommand($"+helm/approach {safeId}");
+                }
+                else
+                {
+                    Hud?.FloatingCallouts?.ShowCallout($"HOLO LOCK: {safeId.ToUpperInvariant()}", new Color(1f, 0.42f, 0.30f, 1f), 1.5f);
+                    ExecutePlayerCommand($"+tac/lock {safeId}");
+                }
+            };
+            ShipInterior.OnHoloPlanetClicked += bodyOrPortId =>
+            {
+                if (Audio != null) Audio.PlayUiClick();
+                Hud?.FloatingCallouts?.ShowCallout($"HOLO CHART: {bodyOrPortId.ToUpperInvariant()}", new Color(0.40f, 0.92f, 1f, 1f), 1.5f);
+                Hud?.SolarMap?.FocusPort(bodyOrPortId);
+            };
+            ShipInterior.OnAlertLevelChanged += alert =>
+            {
+                if (alert == ShipAlertLevel.RedAlert)
+                {
+                    Audio?.PlayRadarScanPing();
+                    Hud?.FloatingCallouts?.ShowCallout("RED ALERT — TORPEDO INBOUND!", new Color(1.0f, 0.24f, 0.18f, 1f), 2.4f);
+                }
+                else if (alert == ShipAlertLevel.Caution)
+                {
+                    Audio?.PlayRadarScanPing();
+                    Hud?.FloatingCallouts?.ShowCallout("YELLOW ALERT — HOSTILE CONTACT", new Color(1.0f, 0.76f, 0.24f, 1f), 2.0f);
+                }
             };
 
             StationWorld.OnPortalCrossed += HandleStationPortalCrossed;
@@ -474,6 +511,46 @@ namespace TacSim.Core
                 };
             }
 
+            if (Hud.TacticalOverview != null)
+            {
+                Hud.TacticalOverview.OnSpaceRowClicked += (id, isRock) =>
+                {
+                    if (!MushProtocol.TryValidateSafeCommandToken(id, out string safeId)) return;
+                    if (Audio != null) Audio.PlayRadarScanPing();
+                    if (isRock)
+                    {
+                        SpaceStage?.NotifyApproachOrdered(safeId);
+                        ExecutePlayerCommand($"+helm/approach {safeId}");
+                    }
+                    else
+                    {
+                        ExecutePlayerCommand($"+tac/lock {safeId}");
+                    }
+                };
+                Hud.TacticalOverview.OnSpaceRowSecondaryAct += (id, isRock) =>
+                {
+                    if (!MushProtocol.TryValidateSafeCommandToken(id, out string safeId)) return;
+                    if (isRock)
+                        ExecutePlayerCommand($"+helm/match {safeId}");
+                    else
+                        ExecutePlayerCommand("+tac/beam");
+                };
+                Hud.TacticalOverview.OnSurfaceBeaconDriveClicked += (sx, sy) =>
+                {
+                    if (SurfaceStage != null && _ws != null && _ws.IsConnected)
+                    {
+                        Audio?.PlayUiClick();
+                        Hud?.FloatingCallouts?.ShowCallout($"ROVER DRIVE -> ({sx},{sy})", new Color(0.32f, 0.96f, 1f, 1f), 1.5f);
+                        _ws.SendLine($"+tv/{SurfaceStage.AddressedRigSlot} drive {sx},{sy} go");
+                    }
+                };
+                Hud.TacticalOverview.OnArenaContactLockClicked += desig =>
+                {
+                    if (!MushProtocol.TryValidateSafeCommandToken(desig, out string safeDesig)) return;
+                    HandleArenaCockpitVerb($"lock {safeDesig}");
+                };
+            }
+
             if (Wayfinder != null)
             {
                 Wayfinder.OnArrivedAtDestination += destName =>
@@ -529,9 +606,13 @@ namespace TacSim.Core
                         case "ui:sheet": Hud.CharacterSheet?.SetOpen(true); break;
                         case "ui:solar_map": Hud.SolarMap?.SetOpen(true); break;
                         case "ui:ops_dir": Hud.OpsDirectory?.SetOpen(true); break;
+                        case "ui:social": Hud.SocialModal?.SetOpen(true); break;
+                        case "ui:journal": Hud.QuestJournal?.SetOpen(true); break;
                         case "ui:keybinds": Hud.KeybindHelp?.SetOpen(true); break;
                         case "ui:options": Hud.DisplayOptions?.SetOpen(true); break;
                         case "ui:cycle_cam": HandleCycleOrbitalCamera(); break;
+                        case "ui:cycle_holo": CycleBridgeHoloTableMode(); break;
+                        case "ui:toggle_overview": Hud.TacticalOverview?.ToggleVisible(); break;
                         case "ui:clear_wayfinder":
                             Wayfinder?.ClearRoute();
                             Hud.OpsDirectory?.SyncWayfinderBanner(ActiveStage);
@@ -550,6 +631,31 @@ namespace TacSim.Core
                 };
             }
 
+            if (Hud.SocialModal != null)
+            {
+                Hud.SocialModal.OnCommandRequested += ExecutePlayerCommand;
+                Hud.SocialModal.OnPrefillChatRequested += prefix => Hud?.PrefillChatInput(prefix);
+                Hud.SocialModal.OnRefreshWhoRequested += () =>
+                {
+                    if (_ws != null && _ws.IsConnected) _ws.SendWhoQuery();
+                };
+                Hud.SocialModal.OnRefreshMailRequested += folder =>
+                {
+                    if (_ws != null && _ws.IsConnected && _ws.HasAdvertisedPanel("mail"))
+                        _ws.SendMailListQuery(folder);
+                };
+                Hud.SocialModal.OnRefreshComsysRequested += () =>
+                {
+                    if (_ws != null && _ws.IsConnected && _ws.HasAdvertisedPanel("comsys"))
+                        _ws.SendPanelSubscribe("comsys");
+                };
+            }
+
+            if (Hud.QuestJournal != null)
+            {
+                Hud.QuestJournal.OnCommandRequested += ExecutePlayerCommand;
+            }
+
             _contentSync.OnSyncLog += msg =>
             {
                 if (Hud != null)
@@ -562,6 +668,18 @@ namespace TacSim.Core
                 _contentSync.RequestManifestOverWebSocket(_ws, Time.realtimeSinceStartup);
                 if (_ws.HasAdvertisedPanel("sky.chart"))
                     _ws.SendPanelSubscribe("sky.chart");
+                _ws.SendWhoQuery();
+                if (_ws.HasAdvertisedPanel("mail"))
+                    _ws.SendMailListQuery();
+                if (_ws.HasAdvertisedPanel("comsys"))
+                    _ws.SendPanelSubscribe("comsys");
+            };
+            _ws.OnWhoReceived += list => Hud?.SocialModal?.ApplyWhoEntries(list);
+            _ws.OnMailNoticeReceived += unread =>
+            {
+                Hud?.SocialModal?.ApplyMailNotice(unread);
+                if (unread > 0)
+                    Hud?.FloatingCallouts?.ShowCallout($"IC MAIL: {unread} UNREAD [O]", new Color(1f, 0.86f, 0.36f, 1f), 2.2f);
             };
             _ws.OnRoomReceived += HandleServerRoomView;
             _ws.OnNarrativeReceived += HandleServerNarrative;
@@ -736,6 +854,18 @@ namespace TacSim.Core
             Hud?.FloatingCallouts?.ShowCallout(lbl, new Color(0.38f, 0.92f, 1f, 1f), 1.6f);
         }
 
+        private void CycleBridgeHoloTableMode()
+        {
+            if (ShipInterior == null) return;
+            if (Audio != null) Audio.PlayUiClick();
+            var mode = ShipInterior.CycleHoloDisplayMode();
+            string shortLbl = mode == BridgeHoloMode.SolarSystem
+                ? "HOLO: SOLAR"
+                : (mode == BridgeHoloMode.LocalBubble ? "HOLO: LOCAL" : "HOLO: AUTO");
+            Hud?.UpdateBridgeHoloModeLabel(shortLbl);
+            Hud?.FloatingCallouts?.ShowCallout($"BRIDGE HOLO-TABLE: {shortLbl}", new Color(0.38f, 0.92f, 1f, 1f), 1.5f);
+        }
+
         private void HandleSpaceQuickFire()
         {
             if (ActiveStage != TacSimActiveStage.ShipHelmSeated || SpaceStage == null || SpaceStage.IsDockingActive)
@@ -813,6 +943,7 @@ namespace TacSim.Core
                     stage == TacSimActiveStage.SimulatorArena;
 
                 Hud.Minimap.SyncMinimap(stage, pos, yaw, rightCornerBusy);
+                Hud.QuestJournal?.SyncTrackerVisibility(stage, rightCornerBusy);
             }
 
             // Update 3D Holographic Wayfinder ribbon & compass banner every frame
@@ -831,6 +962,7 @@ namespace TacSim.Core
                     (Hud.SolarMap != null && Hud.SolarMap.IsOpen) ||
                     (Hud.DisplayOptions != null && Hud.DisplayOptions.IsOpen);
                 Hud.TacticalBrackets.SyncBrackets(stage, activeCam, hideBrackets);
+                Hud.TacticalOverview?.SyncOverview(stage, hideBrackets);
             }
 
             if (Hud.UnitFrames == null) return;
@@ -1867,6 +1999,11 @@ namespace TacSim.Core
                 OpenVisualTradeTerminal("SAILING PLAN & CORRIDOR ROUTE BUILDER", openSailingTab: true);
                 return;
             }
+            if (cmd == "ui:cycle_holo")
+            {
+                CycleBridgeHoloTableMode();
+                return;
+            }
             if (cmd == "seat:helm")
             {
                 if (Audio != null) Audio.PlayUiClick();
@@ -2577,6 +2714,7 @@ namespace TacSim.Core
             string safeSpeaker = MushProtocol.EscapeUnityRichText(ch.Actor?.Name ?? string.Empty);
             string body = !string.IsNullOrEmpty(ch.RichMarkup) ? ch.RichMarkup : MushProtocol.EscapeUnityRichText(ch.Text);
             Hud.AppendLogLine($"<color=#77DDAA>[{safeChan}]</color> {safeSpeaker}: {body}");
+            Hud.SocialModal?.IngestChannelMessage(ch);
         }
 
         private void HandleServerComposing(MushComposingEvent comp)
@@ -2597,6 +2735,8 @@ namespace TacSim.Core
             Hud.AppendLogLine(display);
             if (Hud.IsModalOpen)
                 Hud.AppendModalResponseLine(display);
+            Hud.SocialModal?.IngestMailReadOutput(plainLine, richMarkup);
+            Hud.QuestJournal?.IngestServerOutput(plainLine, richMarkup);
 
             // Trigger surface/orbital action VFX only upon authoritative server outcome lines!
             if (!string.IsNullOrEmpty(plainLine))
@@ -2674,6 +2814,12 @@ namespace TacSim.Core
             {
                 case "tacsim.content":
                     _contentSync?.HandleWebSocketContentPanel(_ws, data, Time.realtimeSinceStartup);
+                    break;
+                case "mail":
+                    Hud?.SocialModal?.ApplyMailPanel(data);
+                    break;
+                case "comsys":
+                    Hud?.SocialModal?.ApplyComsysPanel(data);
                     break;
                 case "port.trade":
                 {

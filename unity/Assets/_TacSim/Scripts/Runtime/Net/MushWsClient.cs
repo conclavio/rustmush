@@ -178,6 +178,8 @@ namespace TacSim.Net
         public event Action<MushNarrativeEvent> OnNarrativeReceived;
         public event Action<MushChannelEvent> OnChannelReceived;
         public event Action<MushComposingEvent> OnComposingReceived;
+        public event Action<List<MushWhoEntry>> OnWhoReceived;
+        public event Action<int> OnMailNoticeReceived;
         public event Action<string, string> OnSystemLineWithMarkupReceived; // (plainText, richMarkup)
         public event Action<string> OnSystemLineReceived;
         public event Action<string, JsonNode> OnPanelUpdated;
@@ -496,6 +498,20 @@ namespace TacSim.Net
             return id;
         }
 
+        public ulong SendWhoQuery()
+        {
+            ulong id = _nextQueryId++;
+            EnqueueRaw(MushProtocol.BuildWhoQueryCommand(id));
+            return id;
+        }
+
+        public ulong SendMailListQuery(string folder = null)
+        {
+            ulong id = _nextQueryId++;
+            EnqueueRaw(MushProtocol.BuildMailListQueryCommand(id, folder));
+            return id;
+        }
+
         public ulong SendMindMarketListings(string afterCode = null)
         {
             ulong id = _nextQueryId++;
@@ -801,6 +817,7 @@ namespace TacSim.Net
                 case "mail_notice":
                 {
                     int unread = d.Int("unread", d.Int("count", 0));
+                    OnMailNoticeReceived?.Invoke(unread);
                     string summary = MushProtocol.FlattenRichText(d["text"]);
                     string msg = !string.IsNullOrEmpty(summary)
                         ? $"[MAIL] {summary}"
@@ -813,16 +830,13 @@ namespace TacSim.Net
 
                 case "who":
                 {
-                    var entries = d["entries"].AsArray() ?? d["players"].AsArray();
-                    if (entries != null)
+                    var whoList = MushProtocol.ParseWhoEntries(d);
+                    OnWhoReceived?.Invoke(whoList);
+                    if (whoList.Count > 0 || (d != null && d.IsObject && (d["entries"].IsArray || d["players"].IsArray)))
                     {
-                        var names = new List<string>(entries.Count);
-                        for (int i = 0; i < entries.Count; i++)
-                        {
-                            var e = entries[i];
-                            string nm = e.IsObject ? e.Str("name", e.Str("character", string.Empty)) : e.AsString(string.Empty);
-                            if (!string.IsNullOrEmpty(nm)) names.Add(nm);
-                        }
+                        var names = new List<string>(whoList.Count);
+                        for (int i = 0; i < whoList.Count; i++)
+                            names.Add(whoList[i].Name);
                         string plain = $"[WHO] {names.Count} online" + (names.Count > 0 ? ": " + string.Join(", ", names) : ".");
                         string rich = $"<color=#99CCEE>{MushProtocol.EscapeUnityRichText(plain)}</color>";
                         OnSystemLineWithMarkupReceived?.Invoke(plain, rich);

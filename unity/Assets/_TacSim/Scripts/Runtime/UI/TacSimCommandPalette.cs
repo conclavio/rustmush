@@ -252,11 +252,15 @@ namespace TacSim.UI
             _allEntries.Add(new PaletteEntry("UI", "Open Pilot & Vessel Dossier [C]", "Avatar swap, cargo, space fit & ground rigs", () => OnUiActionRequested?.Invoke("ui:sheet")));
             _allEntries.Add(new PaletteEntry("UI", "Open Solar System Holo-Orrery [M]", "2D/3D heliocentric navigation chart", () => OnUiActionRequested?.Invoke("ui:solar_map")));
             _allEntries.Add(new PaletteEntry("UI", "Open Nav Directory & Room Roster [N]", "3D wayfinder directory, cast & active ops", () => OnUiActionRequested?.Invoke("ui:ops_dir")));
+            _allEntries.Add(new PaletteEntry("UI", "Open Social, Online Pilots, IC Mail & Channels [O]", "Live WHO roster, @mail inbox/compose & comsys channels", () => OnUiActionRequested?.Invoke("ui:social")));
+            _allEntries.Add(new PaletteEntry("UI", "Open Mission, Passage, Survey & Claims Journal [J]", "Active quests, passages, surveys, claims & HUD objective pin", () => OnUiActionRequested?.Invoke("ui:journal")));
             _allEntries.Add(new PaletteEntry("UI", "Open Controls, Keybinds & Macros [F1]", "Keybind reference & F5-F8 custom macros", () => OnUiActionRequested?.Invoke("ui:keybinds")));
             _allEntries.Add(new PaletteEntry("UI", "Open Port Commodity Exchange", "Live market book, cargo gauges & trade", () => OnCommandRequested?.Invoke("ui:open_exchange")));
             _allEntries.Add(new PaletteEntry("UI", "Open Sailing Plan Builder", "Plot corridor fuel burn & departure orders", () => OnCommandRequested?.Invoke("ui:open_sailing")));
             _allEntries.Add(new PaletteEntry("UI", "Open Display & Graphics Options", "Window size, fullscreen & UI scale", () => OnUiActionRequested?.Invoke("ui:options")));
             _allEntries.Add(new PaletteEntry("UI", "Cycle Orbital / Vehicle Camera [V]", "Switch Bridge / Chase / Tactical High-Orbit", () => OnUiActionRequested?.Invoke("ui:cycle_cam")));
+            _allEntries.Add(new PaletteEntry("UI", "Cycle 3D Bridge Holo-Table Mode", "Toggle Auto / Solar System / Local Tactical Bubble", () => OnUiActionRequested?.Invoke("ui:cycle_holo")));
+            _allEntries.Add(new PaletteEntry("UI", "Toggle Tactical Overview Drawer [T]", "Live range-sorted space contacts, surface ore pockets & arena targets", () => OnUiActionRequested?.Invoke("ui:toggle_overview")));
             _allEntries.Add(new PaletteEntry("UI", "Clear 3D Wayfinder Trail", "Hide active holographic floor ribbon", () => OnUiActionRequested?.Invoke("ui:clear_wayfinder")));
 
             // 2. Live 3D Station Rooms & Ship Compartments (Wayfinder Fast-Trail)

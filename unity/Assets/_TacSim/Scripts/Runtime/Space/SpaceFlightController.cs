@@ -149,6 +149,14 @@ namespace TacSim.Space
         private Transform _contactsContainer;
         private Transform _dockingCollarTarget;
         private readonly List<MeshRenderer> _gateRingRenderers = new List<MeshRenderer>();
+        private readonly List<Transform> _dockingGateFrames = new List<Transform>();
+        private readonly List<MeshRenderer> _dockingCorridorRails = new List<MeshRenderer>();
+        private Transform _dockingGhostSight;
+        private MeshRenderer _dockingGhostRenderer;
+        public int DockingCorridorGateCount => _dockingGateFrames.Count;
+        public int DockingCorridorRailCount => _dockingCorridorRails.Count;
+        public bool HasDockingGhostSight => _dockingGhostSight != null;
+        public int LastDockingGreenGateCount { get; private set; }
         private readonly Dictionary<string, Transform> _namedOrbitalTargets = new Dictionary<string, Transform>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, TextMeshPro> _targetLabelTexts = new Dictionary<string, TextMeshPro>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<string, string> _contactStyleKeys = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -257,6 +265,11 @@ namespace TacSim.Space
                 else DestroyImmediate(ch);
             }
             _gateRingRenderers.Clear();
+            _dockingGateFrames.Clear();
+            _dockingCorridorRails.Clear();
+            _dockingGhostSight = null;
+            _dockingGhostRenderer = null;
+            LastDockingGreenGateCount = 0;
             _namedOrbitalTargets.Clear();
             _targetLabelTexts.Clear();
             _contactStyleKeys.Clear();
@@ -1313,19 +1326,54 @@ namespace TacSim.Space
             CreateDockBox(_dockingCollarTarget, "StandoffCross_H", new Vector3(0f, 0f, 0.65f), new Vector3(0.75f, 0.04f, 0.04f), crossMat);
             CreateDockBox(_dockingCollarTarget, "StandoffCross_V", new Vector3(0f, 0f, 0.65f), new Vector3(0.04f, 0.75f, 0.04f), crossMat);
 
+            Material defaultGateMat = UrpMaterialFactory.GetHologramUnlit("DockGate_Amber", new Color(1.0f, 0.58f, 0.16f, 0.38f));
             for (int g = 0; g < 5; g++)
             {
-                var ring = GameObject.CreatePrimitive(PrimitiveType.Cube);
-                ring.name = $"ApproachGate_{g}";
-                ring.transform.SetParent(_dockingCollarTarget, false);
-                ring.transform.localPosition = new Vector3(0f, 0f, -(g + 1) * 0.48f);
-                ring.transform.localScale = new Vector3(0.55f + g * 0.14f, 0.55f + g * 0.14f, 0.02f);
-                var rc = ring.GetComponent<Collider>();
-                if (rc != null) { if (Application.isPlaying) Destroy(rc); else DestroyImmediate(rc); }
-                var mr = ring.GetComponent<MeshRenderer>();
-                mr.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("DockGate_Amber", new Color(1.0f, 0.58f, 0.16f, 0.18f));
-                _gateRingRenderers.Add(mr);
+                var gateRoot = new GameObject($"ApproachGate_{g}").transform;
+                gateRoot.SetParent(_dockingCollarTarget, false);
+                gateRoot.localPosition = new Vector3(0f, 0f, -(g + 1) * 0.48f);
+                float half = (0.58f + g * 0.14f) * 0.5f;
+                const float barT = 0.028f;
+                float span = half * 2f + barT;
+
+                var topBar = CreateDockBox(gateRoot, "TopRail", new Vector3(0f, half, 0f), new Vector3(span, barT, barT), defaultGateMat);
+                var botBar = CreateDockBox(gateRoot, "BotRail", new Vector3(0f, -half, 0f), new Vector3(span, barT, barT), defaultGateMat);
+                var leftBar = CreateDockBox(gateRoot, "LeftRail", new Vector3(-half, 0f, 0f), new Vector3(barT, span, barT), defaultGateMat);
+                var rightBar = CreateDockBox(gateRoot, "RightRail", new Vector3(half, 0f, 0f), new Vector3(barT, span, barT), defaultGateMat);
+
+                _gateRingRenderers.Add(topBar.GetComponent<MeshRenderer>());
+                _gateRingRenderers.Add(botBar.GetComponent<MeshRenderer>());
+                _gateRingRenderers.Add(leftBar.GetComponent<MeshRenderer>());
+                _gateRingRenderers.Add(rightBar.GetComponent<MeshRenderer>());
+                _dockingGateFrames.Add(gateRoot);
             }
+
+            // 4 longitudinal holographic corridor guide rails leading directly into the collar
+            Material railMat = UrpMaterialFactory.GetHologramUnlit("DockCorridorRail", new Color(0.32f, 0.82f, 1.0f, 0.25f));
+            float[] signs = { -1f, 1f };
+            for (int sx = 0; sx < 2; sx++)
+            {
+                for (int sy = 0; sy < 2; sy++)
+                {
+                    var rail = CreateDockBox(
+                        _dockingCollarTarget,
+                        $"CorridorGuideRail_{sx}_{sy}",
+                        new Vector3(signs[sx] * 0.52f, signs[sy] * 0.52f, -1.35f),
+                        new Vector3(0.018f, 0.018f, 2.55f),
+                        railMat);
+                    _dockingCorridorRails.Add(rail.GetComponent<MeshRenderer>());
+                }
+            }
+
+            // Live 3D bow alignment ghost reticle moving laterally across the collar plane
+            var ghostGo = CreateDockBox(
+                _dockingCollarTarget,
+                "BowAlignmentGhostSight",
+                new Vector3(0f, 0f, -0.14f),
+                new Vector3(0.16f, 0.16f, 0.02f),
+                UrpMaterialFactory.GetHologramUnlit("DockGhost_Amber", new Color(1.0f, 0.68f, 0.22f, 0.72f)));
+            _dockingGhostSight = ghostGo.transform;
+            _dockingGhostRenderer = ghostGo.GetComponent<MeshRenderer>();
 
             var flood = new GameObject("BowSpotLight");
             flood.transform.SetParent(dockRoot, false);
@@ -1992,16 +2040,48 @@ namespace TacSim.Space
             BowDockingCameraAnchor.localRotation = Quaternion.Euler(-pitchDeg, yawDeg, -rollDeg);
 
             var gates = ActiveDockingSession.EvaluateGates();
-            Material gateMat = gates.AllGreen
-                ? UrpMaterialFactory.GetHologramUnlit("DockGate_Green", new Color(0.2f, 1.0f, 0.55f, 0.34f))
-                : (gates.LateralOk && gates.AttitudeOk && gates.RollOk
-                    ? UrpMaterialFactory.GetHologramUnlit("DockGate_Cyan", new Color(0.35f, 0.88f, 1.0f, 0.26f))
-                    : UrpMaterialFactory.GetHologramUnlit("DockGate_Amber", new Color(1.0f, 0.58f, 0.16f, 0.18f)));
+            LastDockingGreenGateCount = gates.GreenCount;
 
-            for (int i = 0; i < _gateRingRenderers.Count; i++)
+            Material greenMat = UrpMaterialFactory.GetHologramUnlit("DockGate_Green", new Color(0.20f, 1.0f, 0.55f, 0.52f));
+            Material cyanMat = UrpMaterialFactory.GetHologramUnlit("DockGate_Cyan", new Color(0.35f, 0.88f, 1.0f, 0.36f));
+            Material amberMat = UrpMaterialFactory.GetHologramUnlit("DockGate_Amber", new Color(1.0f, 0.58f, 0.16f, 0.28f));
+            Material passedMat = UrpMaterialFactory.GetHologramUnlit("DockGate_Passed", new Color(0.22f, 0.65f, 0.52f, 0.10f));
+
+            Material activeGateMat = gates.AllGreen
+                ? greenMat
+                : (gates.LateralOk && gates.AttitudeOk && gates.RollOk ? cyanMat : amberMat);
+
+            for (int g = 0; g < _dockingGateFrames.Count; g++)
             {
-                if (_gateRingRenderers[i] != null && _gateRingRenderers[i].sharedMaterial != gateMat)
-                    _gateRingRenderers[i].sharedMaterial = gateMat;
+                float gateZ = -(g + 1) * 0.48f;
+                bool passedBehindBow = zM > gateZ + 0.08f;
+                Material chosen = passedBehindBow ? passedMat : activeGateMat;
+                int baseIdx = g * 4;
+                for (int r = 0; r < 4 && baseIdx + r < _gateRingRenderers.Count; r++)
+                {
+                    var mr = _gateRingRenderers[baseIdx + r];
+                    if (mr != null && mr.sharedMaterial != chosen)
+                        mr.sharedMaterial = chosen;
+                }
+            }
+
+            Material railMat = gates.AllGreen ? greenMat : cyanMat;
+            for (int i = 0; i < _dockingCorridorRails.Count; i++)
+            {
+                if (_dockingCorridorRails[i] != null && _dockingCorridorRails[i].sharedMaterial != railMat)
+                    _dockingCorridorRails[i].sharedMaterial = railMat;
+            }
+
+            if (_dockingGhostSight != null)
+            {
+                _dockingGhostSight.localPosition = new Vector3(Mathf.Clamp(xM, -0.75f, 0.75f), Mathf.Clamp(yM, -0.75f, 0.75f), -0.14f);
+                _dockingGhostSight.localRotation = Quaternion.Euler(0f, 0f, -rollDeg);
+                if (_dockingGhostRenderer != null)
+                {
+                    _dockingGhostRenderer.sharedMaterial = gates.LateralOk && gates.RollOk
+                        ? greenMat
+                        : amberMat;
+                }
             }
         }
 

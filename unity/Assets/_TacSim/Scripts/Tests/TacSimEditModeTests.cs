@@ -5490,5 +5490,393 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void SocialMailComsysAndQuestJournal_LivePanelsWhoMailChannelsAndPinnedObjectiveTracker()
+        {
+            // 1. Protocol builders & quick-mail validation
+            string whoReq = MushProtocol.BuildWhoQueryCommand(7UL);
+            StringAssert.Contains("\"who\"", whoReq);
+            string mailReq = MushProtocol.BuildMailListQueryCommand(8UL, "inbox");
+            StringAssert.Contains("\"mail_list\"", mailReq);
+            StringAssert.Contains("\"inbox\"", mailReq);
+
+            Assert.IsTrue(TacSim.UI.TacSimSocialAndMailModal.TryBuildQuickMailCommand("Voss", "Cargo Eta", "Arriving 14:00 UTC", out string mailCmd, out _));
+            Assert.AreEqual("@mail/quick Voss=Cargo Eta/Arriving 14:00 UTC", mailCmd);
+            Assert.IsFalse(TacSim.UI.TacSimSocialAndMailModal.TryBuildQuickMailCommand("Voss", "Bad/Subj", "Body", out _, out _));
+
+            var rootGo = new UnityEngine.GameObject("SocialAndJournalTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                Assert.IsNotNull(hud.SocialModal, "BuildHud must wire [O] Social/Mail/Comsys modal");
+                Assert.IsNotNull(hud.QuestJournal, "BuildHud must wire [J] Quest/Passage/Survey/Claims journal");
+
+                // 2. Live WHO, Mail & Comsys ingestion via MushWsClient events
+                using (var ws = new MushWsClient())
+                {
+                    List<MushWhoEntry> gotWho = null;
+                    int gotMailNotice = -1;
+                    ws.OnWhoReceived += list => gotWho = list;
+                    ws.OnMailNoticeReceived += u => gotMailNotice = u;
+
+                    ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{
+                        ""seq"": 1, ""t"": ""who"",
+                        ""d"": { ""entries"": [
+                            { ""name"": ""Kira"", ""alias"": ""KR"", ""idle_s"": 12, ""conn_s"": 720, ""doing"": ""Hauling volatiles"" },
+                            { ""name"": ""Soren"", ""idle_s"": 90, ""conn_s"": 3600 }
+                        ] }
+                    }"));
+                    ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{
+                        ""seq"": 2, ""t"": ""mail_notice"", ""d"": { ""unread"": 3 }
+                    }"));
+                    ws.PumpMainThread();
+
+                    Assert.IsNotNull(gotWho);
+                    Assert.AreEqual(2, gotWho.Count);
+                    Assert.AreEqual(3, gotMailNotice);
+
+                    hud.SocialModal.ApplyWhoEntries(gotWho);
+                    Assert.AreEqual(2, hud.SocialModal.OnlinePilotCount);
+                }
+
+                // 3. Mail panel keyframe & unread badge sync
+                int lastUnreadBadge = -1;
+                hud.SocialModal.OnUnreadMailCountChanged += u => lastUnreadBadge = u;
+                hud.SocialModal.ApplyMailPanel(JsonNode.Parse(@"{
+                    ""folder"": ""inbox"",
+                    ""folders"": [{""name"": ""inbox"", ""count"": 2, ""unread"": 1}, {""name"": ""sent"", ""count"": 1, ""unread"": 0}],
+                    ""entries"": [
+                        {""index"": 1, ""id"": 101, ""from"": {""id"": ""#4"", ""name"": ""Dockmaster""}, ""subject"": ""Berth fee"", ""status"": ""unread""},
+                        {""index"": 2, ""id"": 102, ""from"": {""id"": ""#9"", ""name"": ""Co-op""}, ""subject"": ""Charter"", ""status"": ""read""}
+                    ],
+                    ""quota"": {""used"": 3, ""max"": 200}
+                }"));
+                Assert.AreEqual(2, hud.SocialModal.MailEntryCount);
+                Assert.AreEqual(1, hud.SocialModal.UnreadMailCount);
+                Assert.AreEqual(1, lastUnreadBadge);
+
+                // 4. Comsys panel keyframe & live channel message ingestion
+                hud.SocialModal.ApplyComsysPanel(JsonNode.Parse(@"{
+                    ""channels"": [
+                        {""name"": ""Public"", ""alias"": ""pub"", ""ic"": false, ""gagged"": false},
+                        {""name"": ""Corridor"", ""alias"": ""cor"", ""ic"": true, ""gagged"": false}
+                    ]
+                }"));
+                Assert.AreEqual(2, hud.SocialModal.ChannelCount);
+                Assert.AreEqual("Public", hud.SocialModal.SelectedChannelName);
+                hud.SocialModal.IngestChannelMessage(new MushChannelEvent
+                {
+                    Channel = "Corridor",
+                    Actor = new MushObjRef { Id = "#7", Name = "Kira" },
+                    Text = "Clear approach to Stickney."
+                });
+
+                // 5. [J] Quest Journal capture, tab queries & Pinned Objective Tracker card
+                var journalCmds = new List<string>();
+                hud.QuestJournal.OnCommandRequested += journalCmds.Add;
+                hud.QuestJournal.SetOpen(true, TacSim.UI.QuestJournalTab.Quests);
+                Assert.IsTrue(hud.QuestJournal.IsOpen);
+                Assert.IsTrue(hud.IsModalOpen);
+                Assert.Contains("+quest", journalCmds);
+
+                Assert.IsTrue(hud.QuestJournal.IngestServerOutput("Deliver 10t volatiles to Stickney Yards", null));
+                Assert.IsTrue(hud.QuestJournal.IngestServerOutput("Reward: 4,200 cr", null));
+                Assert.AreEqual(2, hud.QuestJournal.GetTabLineCount(TacSim.UI.QuestJournalTab.Quests));
+
+                hud.QuestJournal.SelectTab(TacSim.UI.QuestJournalTab.Claims, queryServer: true);
+                Assert.Contains("+claim/list", journalCmds);
+
+                hud.QuestJournal.SelectTab(TacSim.UI.QuestJournalTab.Quests, queryServer: false);
+                hud.QuestJournal.PinActiveTabSummary();
+                Assert.IsTrue(hud.QuestJournal.HasPinnedObjective);
+                StringAssert.Contains("Stickney", hud.QuestJournal.PinnedTitle);
+
+                hud.QuestJournal.SyncTrackerVisibility(TacSim.Core.TacSimActiveStage.StationWalk, rightCornerBusy: false);
+                Assert.IsTrue(hud.QuestJournal.IsTrackerVisible, "Pinned objective card must show below minimap when right corner is free");
+                hud.QuestJournal.SyncTrackerVisibility(TacSim.Core.TacSimActiveStage.SimulatorArena, rightCornerBusy: true);
+                Assert.IsFalse(hud.QuestJournal.IsTrackerVisible, "Pinned objective card must hide in Arena / busy HUD");
+
+                // 6. ESC closes SocialModal then QuestJournal cleanly
+                hud.SocialModal.SetOpen(true);
+                Assert.IsTrue(hud.TryCloseTopmostModal());
+                Assert.IsFalse(hud.SocialModal.IsOpen);
+                Assert.IsTrue(hud.QuestJournal.IsOpen);
+                Assert.IsTrue(hud.TryCloseTopmostModal());
+                Assert.IsFalse(hud.QuestJournal.IsOpen);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
+
+        [Test]
+        public void BridgeHoloTableAndDockingCorridor_InteractiveHoloClickToggle3DGatesAnd6DofHudReticle()
+        {
+            // 1. Pure-math 6-DOF Docking Alignment HUD Reticle offsets
+            TacSim.UI.TacSimTacticalBrackets.ComputeDockingReticleOffsets(
+                dxMm: 150, dyMm: -150, yawMdeg: 3000, pitchMdeg: -3000, rollMdeg: 2500, vzMmps: 500,
+                out UnityEngine.Vector2 latPx, out UnityEngine.Vector2 attPx, out float rollDeg, out float closureNorm);
+            Assert.AreEqual(26f, latPx.x, 0.1f);
+            Assert.AreEqual(-26f, latPx.y, 0.1f);
+            Assert.AreEqual(24f, attPx.x, 0.1f);
+            Assert.AreEqual(24f, attPx.y, 0.1f);
+            Assert.AreEqual(-2.5f, rollDeg, 0.05f);
+            Assert.AreEqual(0.5f, closureNorm, 0.01f);
+
+            var rootGo = new UnityEngine.GameObject("BridgeHoloAndDockingTest");
+            try
+            {
+                // 2. Interactive 3D Bridge Holo-Table: clickable blips, clickable planets & mode switching
+                var shipGo = new UnityEngine.GameObject("ShipHoloTest");
+                shipGo.transform.SetParent(rootGo.transform, false);
+                var ship = shipGo.AddComponent<TacSim.World.ShipInteriorController>();
+                ship.BuildInterior(null, "dray");
+
+                var chart = TacSim.Space.TacSimSolarChartFrame.FromJson(JsonNode.Parse(@"{
+                    ""vantage"": ""ceres"",
+                    ""scale"": { ""r0_au"": 2.0, ""au_max"": 10.0 },
+                    ""bodies"": [
+                        { ""id"": ""ceres"", ""name"": ""Ceres"", ""x_au"": 2.7, ""y_au"": 0.1, ""z_au"": 0.0, ""here"": true },
+                        { ""id"": ""mars"", ""name"": ""Mars"", ""x_au"": 1.5, ""y_au"": 0.2, ""z_au"": 0.0 }
+                    ],
+                    ""routes"": [
+                        { ""to"": ""stickney"", ""label"": ""Stickney Yards"", ""body"": ""mars"", ""legs"": [{ ""from"": ""ceres"", ""to"": ""mars"" }] }
+                    ]
+                }"));
+                ship.ApplySolarChartFrame(chart);
+                Assert.IsTrue(ship.IsHoloShowingSolarSystem);
+                Assert.GreaterOrEqual(ship.ClickableHoloNodeCount, 2, "Solar bodies on Bridge Holo-Table must expose clickable BridgeHoloMarkers");
+
+                string clickedPlanet = null;
+                ship.OnHoloPlanetClicked += p => clickedPlanet = p;
+                var planetMarkers = ship.GetComponentsInChildren<TacSim.World.BridgeHoloMarker>(true);
+                Assert.GreaterOrEqual(planetMarkers.Length, 2);
+                Assert.IsTrue(ship.TryHandleHoloMarkerClick(planetMarkers[1]));
+                Assert.AreEqual("stickney", clickedPlanet, "Clicking Mars/Stickney holo body must emit its corridor port slug");
+
+                // Switch to live tactical contacts and verify mode toggling between Local Bubble and Solar System
+                ship.PopulateHoloBlips(JsonNode.Parse(@"{
+                    ""range_km"": 100,
+                    ""contacts"": [
+                        { ""id"": ""own"", ""you"": true, ""x_km"": 0, ""y_km"": 0, ""z_km"": 0 },
+                        { ""id"": ""C1"", ""x_km"": 20, ""y_km"": 5, ""z_km"": 3, ""relation"": ""hostile"" }
+                    ]
+                }"));
+                Assert.IsFalse(ship.IsHoloShowingSolarSystem);
+                string clickedContact = null;
+                bool clickedIsRock = true;
+                ship.OnHoloContactClicked += (id, rock) => { clickedContact = id; clickedIsRock = rock; };
+                var tacMarkers = ship.GetComponentsInChildren<TacSim.World.BridgeHoloMarker>(true);
+                Assert.AreEqual(1, tacMarkers.Length);
+                Assert.IsTrue(ship.TryHandleHoloMarkerClick(tacMarkers[0]));
+                Assert.AreEqual("C1", clickedContact);
+                Assert.IsFalse(clickedIsRock);
+
+                ship.SetHoloDisplayMode(TacSim.World.BridgeHoloMode.SolarSystem);
+                Assert.IsTrue(ship.IsHoloShowingSolarSystem, "Forcing SolarSystem mode must project the solar orrery even while contacts exist");
+                ship.SetHoloDisplayMode(TacSim.World.BridgeHoloMode.LocalBubble);
+                Assert.IsFalse(ship.IsHoloShowingSolarSystem, "Forcing LocalBubble mode must return to local tactical contacts");
+
+                // 3. 3D Illuminated Bow Docking Corridor + 6-DOF Alignment HUD Crosshair
+                var spaceGo = new UnityEngine.GameObject("SpaceDockCorridorTest");
+                spaceGo.transform.SetParent(rootGo.transform, false);
+                var space = spaceGo.AddComponent<TacSim.Space.SpaceFlightController>();
+                space.BuildSpaceStage(null);
+                Assert.AreEqual(5, space.DockingCorridorGateCount, "Bow docking corridor must build 5 open 4-rail alignment gates");
+                Assert.AreEqual(4, space.DockingCorridorRailCount, "Bow docking corridor must build 4 longitudinal guide rails");
+                Assert.IsTrue(space.HasDockingGhostSight, "Bow docking collar must build 3D lateral alignment ghost sight");
+
+                space.StartDockingFromFeed(JsonNode.Parse(@"{
+                    ""session_id"": ""dock.hud8"",
+                    ""target_label"": ""Ceres Bay 4"",
+                    ""start_pose"": { ""dx_mm"": 120, ""dy_mm"": -80, ""dz_mm"": 1800, ""vz_mmps"": 400, ""roll_mdeg"": 1500 }
+                }"));
+                Assert.IsTrue(space.IsDockingActive);
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.TacticalBrackets.BindControllers(space, null, null);
+                var camGo = new UnityEngine.GameObject("DockHudCam", typeof(UnityEngine.Camera));
+                camGo.transform.SetParent(rootGo.transform, false);
+                hud.TacticalBrackets.SyncBrackets(TacSim.Core.TacSimActiveStage.ShipHelmSeated, camGo.GetComponent<UnityEngine.Camera>());
+
+                Assert.IsTrue(hud.TacticalBrackets.IsDockingReticleVisible, "Active 6-DOF docking must activate center HUD alignment reticle");
+                Assert.AreEqual(0, hud.TacticalBrackets.ActiveBracketCount, "Normal space brackets must hide cleanly during 6-DOF docking");
+                Assert.AreEqual(-1.5f, hud.TacticalBrackets.DockingRollBarAngleDeg, 0.05f);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
+
+        [Test]
+        public void TacticalOverviewAndSurfaceScanner_RangeSortedContactsOreDriveToAndHoverHalo()
+        {
+            var rootGo = new UnityEngine.GameObject("TacticalOverviewAndSurfaceTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                Assert.IsNotNull(hud.TacticalOverview, "BuildHud must wire [T] Tactical Overview drawer");
+
+                var spaceGo = new UnityEngine.GameObject("SpaceOvTest");
+                spaceGo.transform.SetParent(rootGo.transform, false);
+                var space = spaceGo.AddComponent<TacSim.Space.SpaceFlightController>();
+                space.BuildSpaceStage(null);
+                space.ApplyHolotankFeed(JsonNode.Parse(@"{
+                    ""own"": { ""id"": ""own"", ""x_km"": 0, ""y_km"": 0, ""z_km"": 0 },
+                    ""contacts"": [
+                        { ""id"": ""FAR"", ""label"": ""Far Freighter"", ""x_km"": 80, ""y_km"": 0, ""z_km"": 0, ""iff"": ""neutral"" },
+                        { ""id"": ""NEAR"", ""label"": ""Near Raider"", ""x_km"": 12, ""y_km"": 0, ""z_km"": 0, ""iff"": ""hostile"", ""locked"": true }
+                    ],
+                    ""rocks"": [{ ""id"": ""A"", ""x_km"": 5, ""y_km"": 0, ""z_km"": 0 }]
+                }"));
+
+                var surfGo = new UnityEngine.GameObject("SurfOvTest");
+                surfGo.transform.SetParent(rootGo.transform, false);
+                var surf = surfGo.AddComponent<TacSim.Surface.SurfaceMiningController>();
+                surf.BuildSurfaceStage(null, "occator_rim");
+                surf.EnterSurfaceMode();
+                Assert.IsTrue(surf.HasHoverDriveCursor, "Surface stage must create 3D terrain hover drive cursor ring");
+                surf.ApplySiteMapFrame(JsonNode.Parse(@"{
+                    ""width"": 8, ""height"": 8,
+                    ""site"": {
+                        ""site"": ""Occator Rim"",
+                        ""grid"": { ""x0"": 0, ""y0"": 0, ""span"": 1, ""cell_cm"": 1000 },
+                        ""rigs"": [{ ""slot"": 1, ""cell"": [1, 1] }],
+                        ""readings"": [
+                            { ""cell"": [6, 6], ""text"": ""Trace silicates"" },
+                            { ""cell"": [2, 2], ""text"": ""Rich volatiles vein"" }
+                        ]
+                    },
+                    ""rows"": [""........"",""........"",""........"",""........"",""........"",""........"",""........"",""........""],
+                    ""you"": [1, 1]
+                }"));
+                Assert.AreEqual(2, surf.ActiveBeaconHaloCount, "Scanned ore pockets must spawn 3D beacon pillars with ground yield halo rings");
+
+                var arenaGo = new UnityEngine.GameObject("ArenaOvTest");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(null, null);
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""seated"": true, ""match"": 7, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""contacts"": [
+                        { ""designator"": ""B2"", ""party"": ""B"", ""relation"": ""hostile"", ""cell"": [22, 22], ""range_m"": 420 },
+                        { ""designator"": ""B1"", ""party"": ""B"", ""relation"": ""hostile"", ""cell"": [14, 14], ""range_m"": 180 }
+                    ]
+                }"));
+
+                hud.TacticalOverview.BindControllers(space, surf, arena);
+
+                // 1. Hidden in Station walk; visible & range-sorted in Space
+                hud.TacticalOverview.SyncOverview(TacSim.Core.TacSimActiveStage.StationWalk, forceImmediate: true);
+                Assert.IsFalse(hud.TacticalOverview.IsVisible);
+
+                hud.TacticalOverview.SyncOverview(TacSim.Core.TacSimActiveStage.ShipHelmSeated, forceImmediate: true);
+                Assert.IsTrue(hud.TacticalOverview.IsVisible);
+                Assert.AreEqual(3, hud.TacticalOverview.VisibleRowCount);
+                Assert.AreEqual("A", hud.TacticalOverview.FirstRowId, "Nearest rock (5 km) must sort first in All filter");
+
+                hud.TacticalOverview.SetFilter(TacSim.UI.TacticalOverviewFilter.Primary); // Ships only
+                Assert.AreEqual(2, hud.TacticalOverview.VisibleRowCount);
+                Assert.AreEqual("NEAR", hud.TacticalOverview.FirstRowId, "Nearest ship (12 km) must sort first in Ships filter");
+
+                string clickedSpaceId = null;
+                hud.TacticalOverview.OnSpaceRowClicked += (id, _) => clickedSpaceId = id;
+                Assert.IsTrue(hud.TacticalOverview.ClickRowByIndex(0));
+                Assert.AreEqual("NEAR", clickedSpaceId);
+
+                // 2. Surface stage lists scanned ore readings & dispatches rover drive coordinates
+                hud.TacticalOverview.SetFilter(TacSim.UI.TacticalOverviewFilter.All);
+                hud.TacticalOverview.SyncOverview(TacSim.Core.TacSimActiveStage.PlanetarySurface, forceImmediate: true);
+                Assert.IsTrue(hud.TacticalOverview.IsVisible);
+                Assert.AreEqual(2, hud.TacticalOverview.VisibleRowCount);
+                int driveX = -1, driveY = -1;
+                hud.TacticalOverview.OnSurfaceBeaconDriveClicked += (x, y) => { driveX = x; driveY = y; };
+                Assert.IsTrue(hud.TacticalOverview.ClickRowByIndex(0));
+                Assert.AreEqual(2, driveX);
+                Assert.AreEqual(2, driveY);
+
+                // 3. Arena stage sorts nearest hostile first & dispatches lock
+                hud.TacticalOverview.SyncOverview(TacSim.Core.TacSimActiveStage.SimulatorArena, forceImmediate: true);
+                Assert.AreEqual(2, hud.TacticalOverview.VisibleRowCount);
+                Assert.AreEqual("B1", hud.TacticalOverview.FirstRowId, "Nearest arena target (180m) must sort first");
+                string lockedArena = null;
+                hud.TacticalOverview.OnArenaContactLockClicked += d => lockedArena = d;
+                Assert.IsTrue(hud.TacticalOverview.ClickRowByIndex(0));
+                Assert.AreEqual("B1", lockedArena);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
+
+        [Test]
+        public void BridgeAlertLightingCanopyVistaAndQuickComms_ReactsToThreatsVantageAndPrefixBar()
+        {
+            var rootGo = new UnityEngine.GameObject("BridgeAlertVistaCommsTest");
+            try
+            {
+                // 1. Bridge exterior planetary vista & dynamic alert lighting states
+                var shipGo = new UnityEngine.GameObject("ShipAlertTest");
+                shipGo.transform.SetParent(rootGo.transform, false);
+                var ship = shipGo.AddComponent<TacSim.World.ShipInteriorController>();
+                ship.BuildInterior(null, "dray");
+
+                Assert.IsTrue(ship.HasBridgeExteriorPlanet, "Bridge forward canopy must spawn distant local planetary body");
+                Assert.AreEqual(TacSim.World.ShipAlertLevel.Normal, ship.ActiveAlertLevel);
+
+                var alerts = new List<TacSim.World.ShipAlertLevel>();
+                ship.OnAlertLevelChanged += alerts.Add;
+
+                // Hostile contact triggers Caution (Yellow Alert)
+                ship.PopulateHoloBlips(JsonNode.Parse(@"{
+                    ""range_km"": 100,
+                    ""contacts"": [
+                        { ""id"": ""own"", ""you"": true, ""x_km"": 0, ""y_km"": 0, ""z_km"": 0 },
+                        { ""id"": ""H1"", ""x_km"": 25, ""y_km"": 0, ""z_km"": 0, ""relation"": ""hostile"" }
+                    ]
+                }"));
+                Assert.AreEqual(TacSim.World.ShipAlertLevel.Caution, ship.ActiveAlertLevel);
+
+                // Live torpedo triggers RedAlert
+                ship.PopulateHoloBlips(JsonNode.Parse(@"{
+                    ""range_km"": 100,
+                    ""contacts"": [{ ""id"": ""own"", ""you"": true, ""x_km"": 0, ""y_km"": 0, ""z_km"": 0 }],
+                    ""torpedoes"": [{ ""id"": ""T1"", ""x_km"": 15, ""y_km"": 0, ""z_km"": 0, ""tti_s"": 8 }]
+                }"));
+                Assert.AreEqual(TacSim.World.ShipAlertLevel.RedAlert, ship.ActiveAlertLevel);
+
+                // Clear space returns to Normal
+                ship.PopulateHoloBlips(JsonNode.Parse(@"{ ""range_km"": 100, ""contacts"": [] }"));
+                Assert.AreEqual(TacSim.World.ShipAlertLevel.Normal, ship.ActiveAlertLevel);
+                Assert.AreEqual(3, alerts.Count);
+
+                // Port vantage theme updates exterior planet slug
+                ship.ApplyVistaPortTheme("stickney");
+                Assert.AreEqual("stickney", ship.ActiveVistaPortSlug);
+
+                // 2. Quick-Comms prefix strip exists inside CommsDrawer and pre-fills chat input
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                UnityEngine.Transform prefixBar = null;
+                var allTr = rootGo.GetComponentsInChildren<UnityEngine.Transform>(true);
+                for (int i = 0; i < allTr.Length; i++)
+                {
+                    if (allTr[i].name == "QuickCommsPrefixBar") { prefixBar = allTr[i]; break; }
+                }
+                Assert.IsNotNull(prefixBar, "CommsDrawer must build QuickCommsPrefixBar");
+                Assert.AreEqual(5, prefixBar.childCount, "Expected SAY / POSE / PAGE / WHO / CTRL+K prefix pills");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

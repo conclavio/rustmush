@@ -83,11 +83,11 @@ namespace TacSim.UI
                 "MMORPG INTERFACE & WINDOWS",
                 new Vector2(0f, 0.51f), new Vector2(0.495f, 1f),
                 "<b>[Ctrl+K]</b> Quick Command & Fast-Travel Palette\n" +
-                "<b>[C]</b> Pilot, Ship, Fit & Live Avatar Sheet\n" +
-                "<b>[M]</b> Solar System Holo-Orrery Chart\n" +
-                "<b>[N]</b> Deck Directory, Room Roster & Ops\n" +
-                "<b>[F10]</b> Minds & Sealing   <b>[F11]</b> Fullscreen\n" +
-                "<b>[Ctrl+M]</b> Mute Audio   <b>[Esc]</b> Close Modal");
+                "<b>[C]</b> Pilot/Ship Sheet   <b>[M]</b> Solar Holo-Orrery\n" +
+                "<b>[N]</b> 3D Wayfinder Directory & Room Roster\n" +
+                "<b>[O]</b> Social, Online WHO, IC Mail & Channels\n" +
+                "<b>[J]</b> Mission/Passage/Survey/Claims Journal\n" +
+                "<b>[F10]</b> Minds  <b>[F11]</b> Fullscreen  <b>[Esc]</b> Close");
 
             BuildKeybindCard(
                 grid.transform,
