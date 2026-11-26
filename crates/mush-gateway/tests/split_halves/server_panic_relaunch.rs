@@ -43,12 +43,10 @@ use mush_ipc::{
     ToGateway, ToServer, WireInbound, write_frame,
 };
 use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore};
-use russh::ChannelMsg;
 use tokio::sync::oneshot;
 
-use super::harness::ServerUnit;
+use super::harness::{HEAL, STEP_TIMEOUT, ServerUnit, Term, when_admitted};
 
-const STEP_TIMEOUT: Duration = Duration::from_secs(60);
 const GM_PASSWORD: &str = "gm-secret-1";
 
 /// The command line whose world turn is armed to panic. It is not a registered
@@ -406,102 +404,6 @@ async fn start_split(unit: &ServerUnit) -> SocketAddr {
         .expect("ssh addr")
 }
 
-struct AcceptAll;
-
-impl russh::client::Handler for AcceptAll {
-    type Error = russh::Error;
-
-    async fn check_server_key(
-        &mut self,
-        _key: &russh::keys::PublicKeyOrCertificate,
-    ) -> Result<bool, Self::Error> {
-        Ok(true)
-    }
-}
-
-fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                for f in chars.by_ref() {
-                    if ('\u{40}'..='\u{7e}').contains(&f) {
-                        break;
-                    }
-                }
-            }
-            continue;
-        }
-        out.push(c);
-    }
-    out
-}
-
-struct Term {
-    channel: russh::Channel<russh::client::Msg>,
-    seen: String,
-}
-
-impl Term {
-    fn mark(&self) -> usize {
-        self.seen.len()
-    }
-
-    async fn expect_after(&mut self, mark: usize, needle: &str) {
-        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
-        while !strip_ansi(&self.seen[mark..]).contains(needle) {
-            let msg = tokio::time::timeout_at(deadline, self.channel.wait())
-                .await
-                .unwrap_or_else(|_| {
-                    panic!("timeout waiting for {needle:?}; seen: {:?}", self.seen)
-                });
-            match msg {
-                Some(ChannelMsg::Data { data }) => {
-                    self.seen.push_str(&String::from_utf8_lossy(&data));
-                }
-                Some(_) => {}
-                None => panic!(
-                    "channel closed waiting for {needle:?}; seen: {:?}",
-                    self.seen
-                ),
-            }
-        }
-    }
-
-    async fn expect(&mut self, needle: &str) {
-        self.expect_after(0, needle).await;
-    }
-
-    async fn send_line(&mut self, line: &str) {
-        let bytes = format!("{line}\r").into_bytes();
-        self.channel.data(&bytes[..]).await.expect("send line");
-    }
-}
-
-async fn play_client(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Term) {
-    let config = Arc::new(russh::client::Config::default());
-    let mut handle = russh::client::connect(config, addr, AcceptAll)
-        .await
-        .expect("connect");
-    let auth = handle.authenticate_none("play").await.expect("auth-none");
-    assert!(auth.success(), "play must be accepted with no auth");
-    let channel = handle.channel_open_session().await.expect("open channel");
-    channel
-        .request_pty(true, "xterm-256color", 80, 24, 0, 0, &[])
-        .await
-        .expect("pty");
-    channel.request_shell(true).await.expect("shell");
-    (
-        handle,
-        Term {
-            channel,
-            seen: String::new(),
-        },
-    )
-}
-
 /// The heal (D2), end to end: a world panics under a supervised server, and
 /// the player never notices more than a blip. The server exits on its own, the
 /// keeper takes its down arm, the unit relaunches the server, the held
@@ -523,10 +425,13 @@ async fn a_faulted_world_is_relaunched_and_the_session_keeps_playing() {
     unit.start().await;
     let ssh_addr = start_split(&unit).await;
 
-    let (_g, mut god) = play_client(ssh_addr).await;
-    god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
-    god.expect("Connected as God (account boss, 1 connection).")
-        .await;
+    let (_g, mut god) = Term::play(ssh_addr).await;
+    when_admitted(
+        &mut god,
+        &format!("connect boss {GM_PASSWORD}"),
+        &["Connected as God (account boss, 1 connection)."],
+    )
+    .await;
     god.expect("Limbo #0").await;
 
     // Build something that must survive the fault.
@@ -546,14 +451,11 @@ async fn a_faulted_world_is_relaunched_and_the_session_keeps_playing() {
     unit.start().await;
 
     // The connection survives: restarting -> Reconnected -> a fresh look.
-    god.expect_after(fault_mark, "restarting").await;
-    god.expect_after(fault_mark, "Reconnected").await;
+    god.healed_after(fault_mark, HEAL).await;
     god.expect_after(fault_mark, "Limbo #0").await;
 
     // World intact and play continues on the relaunched half.
-    let after_restart = god.mark();
-    god.send_line("east").await;
-    god.expect_after(after_restart, "Vault").await;
+    god.say("east", "Vault").await;
 
     drop(god);
 }
@@ -676,10 +578,13 @@ async fn a_version_skewed_server_is_not_a_crash_and_heals_on_redeploy() {
     unit.start().await;
     let ssh_addr = start_split(&unit).await;
 
-    let (_g, mut god) = play_client(ssh_addr).await;
-    god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
-    god.expect("Connected as God (account boss, 1 connection).")
-        .await;
+    let (_g, mut god) = Term::play(ssh_addr).await;
+    when_admitted(
+        &mut god,
+        &format!("connect boss {GM_PASSWORD}"),
+        &["Connected as God (account boss, 1 connection)."],
+    )
+    .await;
     god.expect("Limbo #0").await;
 
     // The deploy: the operator stops the server half, and every replacement
@@ -708,20 +613,21 @@ async fn a_version_skewed_server_is_not_a_crash_and_heals_on_redeploy() {
     // the proof the keeper never gave up on the skew — a given-up gap would
     // still heal, but with the "staff have been paged" line in between, and
     // that line must never be said for an operator error.
-    god.expect_after(before_restart, "Reconnected").await;
+    god.healed_after(before_restart, HEAL).await;
     god.expect_after(before_restart, "Limbo #0").await;
 
-    let after_heal = god.mark();
-    god.send_line("@dig Vault = east;e, west;w").await;
-    god.expect_after(after_heal, "Vault created with room number")
-        .await;
+    god.say(
+        "@dig Vault = east;e, west;w",
+        "Vault created with room number",
+    )
+    .await;
 
     assert_eq!(
         (skewed_boots, unit.boots()),
         (SKEWED_BOOTS, 2),
         "boot 0, {SKEWED_BOOTS} skewed servers each refused and gone, the redeploy"
     );
-    let seen = strip_ansi(&god.seen[before_restart..]);
+    let seen = god.since(before_restart);
     assert!(
         !seen.contains("staff have been paged"),
         "a skew streak is a reachable server: the keeper must never give up on it; seen: \

@@ -17,6 +17,8 @@
 //! the module by name, and its Redis twins run alone, .config/nextest.toml).
 //! `flaky_known` (doc 51 unit FL.2) holds the known flaky tests and the one
 //! nextest retry they generate.
+//! `one_reader` (doc 51 unit FL.7) refuses a story reader of its own in a
+//! crate that has moved onto the story kit's.
 //!
 //! One module: `cargo nextest run -p mush-contract-tests --test ci_policy -E 'test(/^ci_gated_test_inventory::/)'`
 //! or `cargo test -p mush-contract-tests --test ci_policy ci_gated_test_inventory::` (a substring filter, so no
@@ -45,6 +47,8 @@ mod legacy_handler_allowlist;
 mod matcher_call_sites;
 #[path = "ci_policy/nightly_paths.rs"]
 mod nightly_paths;
+#[path = "ci_policy/one_reader.rs"]
+mod one_reader;
 #[path = "ci_policy/panic_budget.rs"]
 mod panic_budget;
 #[path = "ci_policy/process_fault_gate.rs"]

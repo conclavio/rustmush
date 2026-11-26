@@ -52,16 +52,16 @@ use std::time::Duration;
 
 use mush_core::{GOD, LIMBO, ObjId, ObjKind};
 use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore, WriteBatch};
-use russh::ChannelMsg;
 use tokio::sync::oneshot;
 
 use mush_config::accounts::hash_password;
 use mush_config::config::Config;
 use mush_gateway::GatewayOptions;
 
-use super::harness::ServerUnit;
+use super::harness::{
+    AcceptAll, BUSY, STEP_TIMEOUT, ServerUnit, Term, ask_whole, settled, wait_until, when_admitted,
+};
 
-const STEP_TIMEOUT: Duration = Duration::from_secs(60);
 const GM_PASSWORD: &str = "gm-secret-1";
 const PILOT_PASSWORD: &str = "pilot-secret-1";
 
@@ -71,22 +71,6 @@ const COMMIT_PENDING: &str = "please retry in a moment";
 const CONTROL_UNKNOWN: &str = "control state unknown";
 /// How many times a line is re-sent on a transient before the test gives up.
 const RETRY_BUDGET: usize = 40;
-
-/// **The gateway's answer while the server half is not admitting connections
-/// yet** (`ConnectErr::WorldGone`, `crates/mush-gateway/src/bridge_common.rs`).
-///
-/// This rig starts the two halves independently and then waits on ONE signal:
-/// the gateway's `ssh_ready` oneshot, which fires when the SSH listener binds.
-/// Nothing in it waits for the server half to admit a connection, and the
-/// server's own oneshot says only that its IPC socket is bound. So the very
-/// first `connect` can land in that window and be refused with this sentence,
-/// and a rig that sent it once would then sit out its whole `STEP_TIMEOUT` and
-/// fail a story it never got to tell. The first line is therefore re-sent for a
-/// few seconds while this exact sentence is the answer — a rig fix, not a
-/// product change; every assertion about the story itself is unchanged.
-const WORLD_NOT_UP: &str = "Connection failed: the game is shutting down";
-/// How long the first login waits for the server half, in 200 ms steps.
-const ADMISSION_TRIES: usize = 25;
 
 /// The two pilots and the bystander, seeded into the shared store's world before
 /// either half boots (see the module head), so their ids are known here.
@@ -156,8 +140,6 @@ const MAX_SHOTS: usize = 30;
 
 /// The line every witness in the centre reads when the match is settled.
 const OVER: &str = "is over (red)";
-/// The parser's refusal, which is the sentinel's answer.
-const HUH: &str = "Huh?";
 /// The one line the twelve cockpit selectors refuse with once the check-in has
 /// opened the hatches.
 const OUTSIDE_COCKPIT: &str = "You are not at the station of a deployed unit.";
@@ -295,19 +277,6 @@ async fn start_split(store: Arc<dyn ObjectStore>) -> SocketAddr {
         .expect("ssh addr")
 }
 
-struct AcceptAll;
-
-impl russh::client::Handler for AcceptAll {
-    type Error = russh::Error;
-
-    async fn check_server_key(
-        &mut self,
-        _key: &russh::keys::PublicKeyOrCertificate,
-    ) -> Result<bool, Self::Error> {
-        Ok(true)
-    }
-}
-
 /// **Whether a line names a side as a word** (16b cut F.3).
 ///
 /// The leak check forbids the substring `red` in a victim's own damage lines,
@@ -323,177 +292,37 @@ fn names_side(line: &str, side: &str) -> bool {
     })
 }
 
-fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                for f in chars.by_ref() {
-                    if ('\u{40}'..='\u{7e}').contains(&f) {
-                        break;
-                    }
-                }
+/// **`SIM REPORT`, read whole** (16b cut V.3), the in-process twin's
+/// device. The report is a deferred store read on the server half, so an
+/// early read can outrun the result batch's commit and answer `still being
+/// written`; the wait asks again, and once an end line has come the kit's
+/// `settled` brings in the rest.
+async fn sim_report(term: &mut Term, line: &str) -> String {
+    const ENDS: [&str; 3] = [
+        "the match was aborted.",
+        "the match ended: ",
+        "the match was voided.",
+    ];
+    let mut needles: Vec<&str> = ENDS.to_vec();
+    needles.extend(["still being written", "already being read"]);
+    needles.extend(BUSY);
+    let mut report = String::new();
+    wait_until(
+        STEP_TIMEOUT,
+        &format!("`{line}` to read a whole report"),
+        async || {
+            let mark = term.mark();
+            term.send_line(line).await;
+            if term.expect_one_of_after(mark, &needles).await >= ENDS.len() {
+                return false;
             }
-            continue;
-        }
-        out.push(c);
-    }
-    out
-}
-
-struct Term {
-    channel: russh::Channel<russh::client::Msg>,
-    seen: String,
-}
-
-impl Term {
-    fn mark(&self) -> usize {
-        self.seen.len()
-    }
-
-    async fn expect_after(&mut self, mark: usize, needle: &str) {
-        self.expect_one_of_after(mark, &[needle]).await;
-    }
-
-    async fn expect(&mut self, needle: &str) {
-        self.expect_after(0, needle).await;
-    }
-
-    async fn send_line(&mut self, line: &str) {
-        let bytes = format!("{line}\r").into_bytes();
-        self.channel.data(&bytes[..]).await.expect("send line");
-    }
-
-    async fn expect_one_of_after(&mut self, mark: usize, needles: &[&str]) -> usize {
-        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
-        loop {
-            let seen = strip_ansi(&self.seen[mark..]);
-            if let Some(index) = needles.iter().position(|needle| seen.contains(needle)) {
-                return index;
-            }
-            let msg = tokio::time::timeout_at(deadline, self.channel.wait())
-                .await
-                .unwrap_or_else(|_| {
-                    panic!(
-                        "timeout waiting for any of {needles:?}; seen: {:?}",
-                        self.seen
-                    )
-                });
-            match msg {
-                Some(ChannelMsg::Data { data }) => {
-                    self.seen.push_str(&String::from_utf8_lossy(&data));
-                }
-                Some(_) => {}
-                None => panic!(
-                    "channel closed waiting for any of {needles:?}; seen: {:?}",
-                    self.seen
-                ),
-            }
-        }
-    }
-
-    /// Run one line and wait for `needle`, retrying the two transients. The needle
-    /// must not appear in the line's own echo.
-    async fn say(&mut self, line: &str, needle: &str) {
-        assert!(
-            !line.contains(needle),
-            "`{needle}` appears in `{line}`'s own echo; pick a needle from the ANSWER"
-        );
-        for _ in 0..RETRY_BUDGET {
-            let mark = self.mark();
-            self.send_line(line).await;
-            match self
-                .expect_one_of_after(mark, &[needle, COMMIT_PENDING, CONTROL_UNKNOWN])
-                .await
-            {
-                0 => return,
-                _ => tokio::time::sleep(Duration::from_millis(200)).await,
-            }
-        }
-        panic!("`{line}` was refused as transient {RETRY_BUDGET} times running");
-    }
-
-    async fn ask(&mut self, line: &str, needle: &str) -> String {
-        let mark = self.mark();
-        self.say(line, needle).await;
-        strip_ansi(&self.seen[mark..])
-    }
-
-    /// **A whole answer, never half of one** — the in-process twin's device: a
-    /// nonsense line after the real one, and the slice runs to *its* refusal, so a
-    /// multi-line render is in the slice entire and nothing of it is still in
-    /// flight.
-    async fn ask_whole(&mut self, line: &str) -> String {
-        for _ in 0..RETRY_BUDGET {
-            let mark = self.mark();
-            self.send_line(line).await;
-            self.send_line(SENTINEL).await;
-            // The sentinel is a parser refusal and needs no authority, but it rides
-            // the same lane: a world mid-commit answers BOTH lines with the
-            // transient and the `Huh?` never comes. That is a retry, not a failure.
-            if self.expect_one_of_after(mark, &[HUH, COMMIT_PENDING]).await == 0 {
-                return strip_ansi(&self.seen[mark..]);
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-        panic!("`{line}` never produced a whole answer")
-    }
-
-    /// **`SIM REPORT`, read whole** (16b cut V.3) — the in-process twin's
-    /// device. The report is a deferred store read on the server half, so an
-    /// early read can outrun the result batch's commit and answer `still being
-    /// written`; the wait asks again, and once the end line has crossed a
-    /// sentinel read to its refusal brings in the rest.
-    async fn sim_report(&mut self, line: &str) -> String {
-        const ENDS: [&str; 3] = [
-            "the match was aborted.",
-            "the match ended: ",
-            "the match was voided.",
-        ];
-        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
-        loop {
-            let mark = self.mark();
-            self.send_line(line).await;
-            let mut needles: Vec<&str> = ENDS.to_vec();
-            needles.extend(["still being written", "already being read", COMMIT_PENDING]);
-            if self.expect_one_of_after(mark, &needles).await < ENDS.len() {
-                self.send_line(SENTINEL).await;
-                self.expect_after(mark, HUH).await;
-                return strip_ansi(&self.seen[mark..]);
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "`{line}` never read a whole report"
-            );
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-    }
-}
-
-const SENTINEL: &str = "zzq-split-story-sentinel";
-
-async fn play_client(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Term) {
-    let config = Arc::new(russh::client::Config::default());
-    let mut handle = russh::client::connect(config, addr, AcceptAll)
-        .await
-        .expect("connect");
-    let auth = handle.authenticate_none("play").await.expect("auth-none");
-    assert!(auth.success(), "play must be accepted with no auth");
-    let channel = handle.channel_open_session().await.expect("open channel");
-    channel
-        .request_pty(true, "xterm-256color", 80, 24, 0, 0, &[])
-        .await
-        .expect("pty");
-    channel.request_shell(true).await.expect("shell");
-    (
-        handle,
-        Term {
-            channel,
-            seen: String::new(),
+            settled(term).await;
+            report = term.since(mark);
+            true
         },
     )
+    .await;
+    report
 }
 
 async fn login(
@@ -502,24 +331,17 @@ async fn login(
     password: &str,
     character: &str,
 ) -> (russh::client::Handle<AcceptAll>, Term) {
-    let (handle, mut term) = play_client(addr).await;
+    let (handle, mut term) = Term::play(addr).await;
     let connected = format!("Connected as {character}");
-    // See `WORLD_NOT_UP`: the rig has no barrier against the server half still
-    // booting, so the first line waits it out rather than failing the story.
-    for _ in 0..ADMISSION_TRIES {
-        let mark = term.mark();
-        term.send_line(&format!("connect {account} {password}"))
-            .await;
-        if term
-            .expect_one_of_after(mark, &[&connected, WORLD_NOT_UP])
-            .await
-            == 0
-        {
-            return (handle, term);
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    panic!("the server half never admitted `{account}`");
+    // The rig has no barrier against the server half still booting, so
+    // the first line waits it out (`harness::when_admitted`).
+    when_admitted(
+        &mut term,
+        &format!("connect {account} {password}"),
+        &[&connected],
+    )
+    .await;
+    (handle, term)
 }
 
 /// The dbref `@find` printed beside `name`, as `<name>(#N)`.
@@ -666,7 +488,7 @@ async fn the_story_is_the_same_story_through_the_gateway() {
     for term in [&mut ada, &mut bo] {
         term.say("STARTUP", "Startup sequence").await;
         for _ in 0..RETRY_BUDGET {
-            if term.ask_whole("STATUS").await.contains("power online") {
+            if ask_whole(term, "STATUS").await.contains("power online") {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -675,7 +497,7 @@ async fn the_story_is_the_same_story_through_the_gateway() {
     let mut held = String::new();
     let mut held_unclassified = false;
     for _ in 0..RETRY_BUDGET {
-        let seen = ada.ask_whole("CONTACTS").await;
+        let seen = ask_whole(&mut ada, "CONTACTS").await;
         if let Some(id) = designator_of(&seen) {
             held_unclassified =
                 designator_classed(&seen, "unknown").as_deref() == Some(id.as_str());
@@ -692,7 +514,7 @@ async fn the_story_is_the_same_story_through_the_gateway() {
     let locked = {
         let mut seen = String::new();
         for _ in 0..RETRY_BUDGET {
-            seen = ada.ask_whole("WEAPONSTATUS").await;
+            seen = ask_whole(&mut ada, "WEAPONSTATUS").await;
             if seen.contains("Locked on") {
                 break;
             }
@@ -735,7 +557,7 @@ async fn the_story_is_the_same_story_through_the_gateway() {
     // 40251385032 looked for `Hit on X1: ` against `Hit on BA: hull.`).
     let mut classified = String::new();
     for _ in 0..RETRY_BUDGET {
-        let seen = ada.ask_whole("CONTACTS").await;
+        let seen = ask_whole(&mut ada, "CONTACTS").await;
         if let Some(id) = designator_classed(&seen, "blue") {
             classified = id;
             break;
@@ -749,7 +571,8 @@ async fn the_story_is_the_same_story_through_the_gateway() {
     if held_unclassified {
         let prefix = format!("Locked on {held}");
         let expected = format!("Locked on {held}.");
-        for line in strip_ansi(&ada.seen)
+        for line in ada
+            .since(0)
             .lines()
             .map(str::trim)
             .filter(|line| line.starts_with(&prefix))
@@ -766,7 +589,7 @@ async fn the_story_is_the_same_story_through_the_gateway() {
         let mut seen = String::new();
         let needle = format!("Locked on {classified}");
         for _ in 0..RETRY_BUDGET {
-            seen = ada.ask_whole("WEAPONSTATUS").await;
+            seen = ask_whole(&mut ada, "WEAPONSTATUS").await;
             if seen.contains(&needle) && seen.contains("% to hit") {
                 break;
             }
@@ -824,7 +647,7 @@ async fn the_story_is_the_same_story_through_the_gateway() {
         let mut cockpit = true;
         let mut confirmed = false;
         for _ in 0..16 {
-            let seen = ada.ask_whole("WEAPONSTATUS").await;
+            let seen = ask_whole(&mut ada, "WEAPONSTATUS").await;
             match cannon_rounds(&seen) {
                 Some(rounds) if rounds == want => {
                     readings.push((shots, rounds));
@@ -843,7 +666,7 @@ async fn the_story_is_the_same_story_through_the_gateway() {
             }
             tokio::time::sleep(Duration::from_millis(300)).await;
         }
-        if !cockpit || strip_ansi(&ada.seen[fight_mark..]).contains(OVER) {
+        if !cockpit || ada.since(fight_mark).contains(OVER) {
             break;
         }
         if !confirmed {
@@ -852,8 +675,7 @@ async fn the_story_is_the_same_story_through_the_gateway() {
     }
     assert!(shots > 0, "the red tank never got a shot away");
     assert!(
-        strip_ansi(&ada.seen[fight_mark..]).contains(OVER)
-            || strip_ansi(&ada.seen[fight_mark..]).contains(OUTSIDE_COCKPIT),
+        ada.since(fight_mark).contains(OVER) || ada.since(fight_mark).contains(OUTSIDE_COCKPIT),
         "{shots} rounds went into the blue tank and it is still fighting"
     );
     assert!(
@@ -880,11 +702,11 @@ async fn the_story_is_the_same_story_through_the_gateway() {
     cy.expect_after(bystander_mark, OVER).await;
 
     assert!(
-        ada.ask_whole("look").await.contains("Red Room"),
+        ask_whole(&mut ada, "look").await.contains("Red Room"),
         "the winner walked out"
     );
     assert!(
-        bo.ask_whole("look").await.contains("Blue Room"),
+        ask_whole(&mut bo, "look").await.contains("Blue Room"),
         "the loser walked out"
     );
     bo.say("WEAPONSTATUS", OUTSIDE_COCKPIT).await;
@@ -892,7 +714,7 @@ async fn the_story_is_the_same_story_through_the_gateway() {
     // **16b cut F.2**: the pilot notices cross the boundary too, and split the
     // same way they do in process — the shooter is told the round landed, the
     // victim is told where it landed and nothing about who fired.
-    let winner = strip_ansi(&ada.seen);
+    let winner = ada.since(0);
     assert!(
         // **16b cut Q.2**: the shooter's line names the section the round found
         // for a contact it has told apart, so the prefix is what crosses.
@@ -903,7 +725,7 @@ async fn the_story_is_the_same_story_through_the_gateway() {
     // The blue tank is beaten by a hull loss or (16b cut AP.2) a turret loss —
     // the loser's own line says which, exactly one of the two, because the
     // match is over at the first — and that section is the certain one.
-    let loser = strip_ansi(&bo.seen);
+    let loser = bo.since(0);
     let hull_went = loser.contains("The hull is destroyed: the tank is finished.");
     // 17b cut M3.6: the turret's line now ends with its core's words (was
     // "The turret is destroyed: its weapons are gone.").
@@ -946,7 +768,7 @@ async fn the_story_is_the_same_story_through_the_gateway() {
 
     // The bystander stood in the lobby for the whole match: the announcements
     // crossed and nothing of the arena did.
-    let bystander = strip_ansi(&cy.seen[bystander_mark..]);
+    let bystander = cy.since(bystander_mark);
     names_nothing(&bystander, red, blue, "the bystander's whole transcript");
     for leak in [
         held.as_str(),
@@ -974,7 +796,7 @@ async fn the_story_is_the_same_story_through_the_gateway() {
     // what this twin adds is that the deferred store read and the module's
     // completion work on the split server half, and that what crosses back is
     // the same public head and the pilot's own lines.
-    let report = ada.sim_report("SIM REPORT").await;
+    let report = sim_report(&mut ada, "SIM REPORT").await;
     let flat = report.split_whitespace().collect::<Vec<_>>().join(" ");
     // 16b cut AP.2: the kill line is the hull's; a turret ending is the shot's
     // own clause instead.

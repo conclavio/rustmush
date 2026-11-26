@@ -17,6 +17,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
+use super::harness::{AcceptAll, STEP_TIMEOUT, Term, strip_ansi};
 use fred::interfaces::KeysInterface as _;
 use mush_config::accounts::hash_password;
 use mush_config::config::Config;
@@ -34,10 +35,8 @@ use mush_store::{
     AccountRec, AuthoritativeStore, BundleStatus, CharacterRef, InMemoryStore, ObjectStore,
     RedisStore,
 };
-use russh::ChannelMsg;
 use tokio::sync::oneshot;
 
-const STEP_TIMEOUT: Duration = Duration::from_secs(60);
 const GM_PASSWORD: &str = "gm-secret-1";
 const WORKER_ENV: &str = "RUSTMUSH_K8_SERVER_WORKER";
 const CONFIG_ENV: &str = "RUSTMUSH_K8_SERVER_CONFIG";
@@ -324,105 +323,6 @@ async fn start_gateway(root: &Path, endpoint: SocketAddr) -> SocketAddr {
         .expect("gateway dropped SSH address")
 }
 
-struct AcceptAll;
-
-impl russh::client::Handler for AcceptAll {
-    type Error = russh::Error;
-
-    async fn check_server_key(
-        &mut self,
-        _key: &russh::keys::PublicKeyOrCertificate,
-    ) -> Result<bool, Self::Error> {
-        Ok(true)
-    }
-}
-
-struct Term {
-    channel: russh::Channel<russh::client::Msg>,
-    seen: String,
-}
-
-impl Term {
-    fn mark(&self) -> usize {
-        self.seen.len()
-    }
-
-    async fn send_line(&mut self, line: &str) {
-        self.channel
-            .data(format!("{line}\r").as_bytes())
-            .await
-            .unwrap();
-    }
-
-    async fn expect_after(&mut self, mark: usize, needle: &str) {
-        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
-        while !strip_ansi(&self.seen[mark..]).contains(needle) {
-            let message = tokio::time::timeout_at(deadline, self.channel.wait())
-                .await
-                .unwrap_or_else(|_| {
-                    panic!("timeout waiting for {needle:?}; seen: {:?}", self.seen)
-                });
-            match message {
-                Some(ChannelMsg::Data { data }) => {
-                    self.seen.push_str(&String::from_utf8_lossy(&data));
-                }
-                Some(_) => {}
-                None => panic!(
-                    "channel closed waiting for {needle:?}; seen: {:?}",
-                    self.seen
-                ),
-            }
-        }
-    }
-
-    async fn expect_one_of_after(&mut self, mark: usize, needles: &[&str]) -> usize {
-        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
-        loop {
-            let output = strip_ansi(&self.seen[mark..]);
-            if let Some((index, _)) = needles
-                .iter()
-                .enumerate()
-                .find(|(_, needle)| output.contains(**needle))
-            {
-                return index;
-            }
-            let message = tokio::time::timeout_at(deadline, self.channel.wait())
-                .await
-                .unwrap_or_else(|_| {
-                    panic!("timeout waiting for {needles:?}; seen: {:?}", self.seen)
-                });
-            match message {
-                Some(ChannelMsg::Data { data }) => {
-                    self.seen.push_str(&String::from_utf8_lossy(&data));
-                }
-                Some(_) => {}
-                None => panic!(
-                    "channel closed waiting for {needles:?}; seen: {:?}",
-                    self.seen
-                ),
-            }
-        }
-    }
-}
-
-fn strip_ansi(input: &str) -> String {
-    let mut output = String::with_capacity(input.len());
-    let mut characters = input.chars().peekable();
-    while let Some(character) = characters.next() {
-        if character == '\u{1b}' && characters.peek() == Some(&'[') {
-            characters.next();
-            for final_byte in characters.by_ref() {
-                if ('\u{40}'..='\u{7e}').contains(&final_byte) {
-                    break;
-                }
-            }
-        } else if character != '\u{1b}' {
-            output.push(character);
-        }
-    }
-    output
-}
-
 fn transaction_after(output: &str, mark: usize) -> String {
     let output = strip_ansi(&output[mark..]);
     let at = output
@@ -436,24 +336,7 @@ fn transaction_after(output: &str, mark: usize) -> String {
 }
 
 async fn connect(address: SocketAddr) -> (russh::client::Handle<AcceptAll>, Term) {
-    let config = Arc::new(russh::client::Config::default());
-    let mut handle = russh::client::connect(config, address, AcceptAll)
-        .await
-        .unwrap();
-    assert!(handle.authenticate_none("play").await.unwrap().success());
-    let channel = handle.channel_open_session().await.unwrap();
-    channel
-        .request_pty(true, "xterm-256color", 80, 24, 0, 0, &[])
-        .await
-        .unwrap();
-    channel.request_shell(true).await.unwrap();
-    (
-        handle,
-        Term {
-            channel,
-            seen: String::new(),
-        },
-    )
+    Term::play(address).await
 }
 
 async fn enter_when_boundary_is_ready(term: &mut Term) {
@@ -651,7 +534,7 @@ async fn run_process_cut(base_redis: &str, db: u32, cut: &'static str, owned_cut
         term.expect_after(action_mark, "Brace committed. Transaction:")
             .await;
     }
-    let transaction = transaction_after(&term.seen, action_mark);
+    let transaction = transaction_after(term.raw(), action_mark);
     let status_mark = term.mark();
     term.send_line(&format!("action/status {transaction}"))
         .await;

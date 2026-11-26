@@ -560,7 +560,13 @@ mod tests {
         let started = tokio::time::Instant::now();
         tokio::time::timeout(
             Duration::from_secs(10),
-            run_with_trigger(&mut sigs, &mut rx, &drain, &dir.join("draining-a"), &mut Quick),
+            run_with_trigger(
+                &mut sigs,
+                &mut rx,
+                &drain,
+                &dir.join("draining-a"),
+                &mut Quick,
+            ),
         )
         .await
         .unwrap();

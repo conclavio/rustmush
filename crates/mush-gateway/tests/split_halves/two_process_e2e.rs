@@ -31,13 +31,12 @@ use std::time::Duration;
 
 use mush_core::GOD;
 use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore};
-use russh::ChannelMsg;
 
+use super::harness::{AcceptAll, STEP_TIMEOUT, Term, when_admitted};
 use mush_config::accounts::hash_password;
 use mush_config::config::Config;
 use mush_gateway::GatewayOptions;
 
-const STEP_TIMEOUT: Duration = Duration::from_secs(60);
 const GM_PASSWORD: &str = "gm-secret-1";
 
 fn scratch_dir(tag: &str) -> PathBuf {
@@ -56,118 +55,6 @@ fn test_config(tag: &str) -> Config {
     cfg.ssh.listen = "127.0.0.1:0".to_string();
     cfg.ipc.listen = "127.0.0.1:0".to_string();
     cfg
-}
-
-struct AcceptAll;
-
-impl russh::client::Handler for AcceptAll {
-    type Error = russh::Error;
-
-    async fn check_server_key(
-        &mut self,
-        _key: &russh::keys::PublicKeyOrCertificate,
-    ) -> Result<bool, Self::Error> {
-        Ok(true)
-    }
-}
-
-fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                for f in chars.by_ref() {
-                    if ('\u{40}'..='\u{7e}').contains(&f) {
-                        break;
-                    }
-                }
-            }
-            continue;
-        }
-        out.push(c);
-    }
-    out
-}
-
-struct Term {
-    channel: russh::Channel<russh::client::Msg>,
-    seen: String,
-}
-
-impl Term {
-    fn mark(&self) -> usize {
-        self.seen.len()
-    }
-
-    async fn expect(&mut self, needle: &str) {
-        self.expect_after(0, needle).await;
-    }
-
-    async fn expect_after(&mut self, mark: usize, needle: &str) {
-        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
-        while !strip_ansi(&self.seen[mark..]).contains(needle) {
-            let msg = tokio::time::timeout_at(deadline, self.channel.wait())
-                .await
-                .unwrap_or_else(|_| {
-                    panic!("timeout waiting for {needle:?}; seen: {:?}", self.seen)
-                });
-            match msg {
-                Some(ChannelMsg::Data { data }) => {
-                    self.seen.push_str(&String::from_utf8_lossy(&data));
-                }
-                Some(_) => {}
-                None => panic!(
-                    "channel closed waiting for {needle:?}; seen: {:?}",
-                    self.seen
-                ),
-            }
-        }
-    }
-
-    async fn send_line(&mut self, line: &str) {
-        let bytes = format!("{line}\r").into_bytes();
-        self.channel.data(&bytes[..]).await.expect("send line");
-    }
-
-    async fn expect_close(&mut self) {
-        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
-        loop {
-            let msg = tokio::time::timeout_at(deadline, self.channel.wait())
-                .await
-                .expect("timeout waiting for close");
-            match msg {
-                None | Some(ChannelMsg::Close) => return,
-                Some(ChannelMsg::Data { data }) => {
-                    self.seen.push_str(&String::from_utf8_lossy(&data));
-                }
-                Some(_) => {}
-            }
-        }
-    }
-}
-
-async fn play_client(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Term) {
-    let config = Arc::new(russh::client::Config::default());
-    let mut handle = russh::client::connect(config, addr, AcceptAll)
-        .await
-        .expect("connect");
-    let auth = handle.authenticate_none("play").await.expect("auth-none");
-    assert!(auth.success(), "play must be accepted with no auth");
-    let channel = handle.channel_open_session().await.expect("open channel");
-    channel
-        .request_pty(true, "xterm-256color", 80, 24, 0, 0, &[])
-        .await
-        .expect("pty");
-    channel.request_shell(true).await.expect("shell");
-    (
-        handle,
-        Term {
-            channel,
-            seen: String::new(),
-        },
-    )
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -237,14 +124,17 @@ async fn two_process_connect_play_boot_disconnect() {
         .expect("ssh addr");
 
     // --- God connects and looks (server output crosses back to the gateway) ---
-    let (_g, mut god) = play_client(ssh_addr).await;
-    god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
-    god.expect("Connected as God (account boss, 1 connection).")
-        .await;
+    let (_g, mut god) = Term::play(ssh_addr).await;
+    when_admitted(
+        &mut god,
+        &format!("connect boss {GM_PASSWORD}"),
+        &["Connected as God (account boss, 1 connection)."],
+    )
+    .await;
     god.expect("Limbo #0").await;
 
     // --- Alice creates an account (CreatePlayer ServiceReq round-trips) ---
-    let (_a, mut alice) = play_client(ssh_addr).await;
+    let (_a, mut alice) = Term::play(ssh_addr).await;
     alice.expect("connect <account> <password>").await;
     alice.send_line("create Alice secret123").await;
     alice
@@ -376,11 +266,14 @@ async fn two_process_multiconnect_linkdead_and_newpassword() {
     let (ssh_addr, server_thread, gateway_thread) = boot_split(Arc::clone(&gw_store)).await;
 
     // --- God multi-connects: two independent SSH connections on one character. -
-    let (_g1, mut god1) = play_client(ssh_addr).await;
-    god1.send_line(&format!("connect boss {GM_PASSWORD}")).await;
-    god1.expect("Connected as God (account boss, 1 connection).")
-        .await;
-    let (_g2, mut god2) = play_client(ssh_addr).await;
+    let (_g1, mut god1) = Term::play(ssh_addr).await;
+    when_admitted(
+        &mut god1,
+        &format!("connect boss {GM_PASSWORD}"),
+        &["Connected as God (account boss, 1 connection)."],
+    )
+    .await;
+    let (_g2, mut god2) = Term::play(ssh_addr).await;
     god2.send_line(&format!("connect boss {GM_PASSWORD}")).await;
     // The second connection sees the session already has one live connection.
     god2.expect("Connected as God (account boss, 2 connections).")
@@ -389,7 +282,7 @@ async fn two_process_multiconnect_linkdead_and_newpassword() {
     // --- Alice creates and says: BOTH of God's connections hear it (the
     //     server resolves one SendTarget::Char(God), the gateway fans it out to
     //     both connections on its own SessionManager). ---
-    let (a_handle, mut alice) = play_client(ssh_addr).await;
+    let (a_handle, mut alice) = Term::play(ssh_addr).await;
     alice.expect("connect <account> <password>").await;
     alice.send_line("create Alice secret123").await;
     alice
@@ -578,10 +471,13 @@ async fn split_siteban_reaches_the_gateway_without_a_restart() {
     let (ssh_addr, server_thread, gateway_thread) =
         boot_split_sharing_store("siteban", Arc::clone(&store), BAN_REFRESH).await;
 
-    let (_g, mut god) = play_client(ssh_addr).await;
-    god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
-    god.expect("Connected as God (account boss, 1 connection).")
-        .await;
+    let (_g, mut god) = Term::play(ssh_addr).await;
+    when_admitted(
+        &mut god,
+        &format!("connect boss {GM_PASSWORD}"),
+        &["Connected as God (account boss, 1 connection)."],
+    )
+    .await;
 
     // Every client in this rig speaks from loopback, so staff ban themselves
     // along with everyone else — which is exactly what makes the eject limb
@@ -621,10 +517,13 @@ async fn split_siteban_reaches_the_gateway_without_a_restart() {
     wait_front_door(ssh_addr, true, BAN_REFRESH, "re-admit the lifted address").await;
 
     // ...and the front door is a real front door again.
-    let (_g2, mut god2) = play_client(ssh_addr).await;
-    god2.send_line(&format!("connect boss {GM_PASSWORD}")).await;
-    god2.expect("Connected as God (account boss, 1 connection).")
-        .await;
+    let (_g2, mut god2) = Term::play(ssh_addr).await;
+    when_admitted(
+        &mut god2,
+        &format!("connect boss {GM_PASSWORD}"),
+        &["Connected as God (account boss, 1 connection)."],
+    )
+    .await;
 
     drop(god);
     drop(god2);

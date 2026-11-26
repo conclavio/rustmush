@@ -74,6 +74,8 @@ mush-server = { workspace = true, features = ["fault-injection"] }
 # the seam on.
 tacsim = { workspace = true, features = ["fault-injection"] }
 mush-testkit.workspace = true
+# Doc 51 (FL.7): the story kit's one `Term`, its barriers and its limits.
+mush-storykit.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 reqwest.workspace = true
 tokio-tungstenite.workspace = true

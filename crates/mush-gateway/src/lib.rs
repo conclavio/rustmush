@@ -2226,10 +2226,10 @@ const SERVER_UNREACHABLE_AFTER: Duration = Duration::from_secs(60);
 const KEEPER_STOP_WAIT: Duration = Duration::from_secs(2);
 /// **The longest the keeper takes to heal a gap once a server is bound and
 /// answering**, on an unloaded box (doc 51 unit FL.7): the old link's writer
-/// awaited ([`KEEPER_STOP_WAIT`]), at most one paced pause after an attempt
-/// that failed ([`BACKOFF_CAP`]), one dial and handshake
-/// ([`RECONNECT_TIMEOUT`]), and the resync to its barrier
-/// ([`RESYNC_TIMEOUT`]). An attempt against a server that is not up yet
+/// awaited (`KEEPER_STOP_WAIT`), at most one paced pause after an attempt
+/// that failed (`BACKOFF_CAP`), one dial and handshake
+/// (`RECONNECT_TIMEOUT`), and the resync to its barrier
+/// (`RESYNC_TIMEOUT`). An attempt against a server that is not up yet
 /// polls for its whole budget, so the bind ends it rather than waiting it out.
 ///
 /// It is the schedule's figure, not a promise about a loaded box. A story's

@@ -5,19 +5,19 @@
 #   WAIT_BUDGET_BLESS=1 cargo test -p mush-contract-tests --test ci_policy wait_budget::
 # A raise carries a written reason; the prefer-instead is `mush-storykit`.
 #
-# total: 86 raw waits, 2 wall-clock reads
-wait 7 7 tests/split_halves/arena_custody_split.rs
-wait 13 13 tests/split_halves/arena_story_split.rs
-wait 9 9 tests/split_halves/authoritative_process_kill.rs
-wait 5 5 tests/split_halves/front_door_split.rs
+# total: 55 raw waits, 2 wall-clock reads
+wait 2 2 tests/split_halves/arena_custody_split.rs
+wait 8 8 tests/split_halves/arena_story_split.rs
+wait 7 7 tests/split_halves/authoritative_process_kill.rs
+wait 1 1 tests/split_halves/front_door_split.rs
 wait 3 3 tests/split_halves/gateway_generations.rs
-wait 5 5 tests/split_halves/restart_survival.rs
-wait 8 8 tests/split_halves/server_panic_relaunch.rs
-wait 4 4 tests/split_halves/server_unit.rs
-wait 4 4 tests/split_halves/tui_split.rs
-wait 4 4 tests/split_halves/two_gateways.rs
-wait 9 9 tests/split_halves/two_process_e2e.rs
+wait 3 3 tests/split_halves/restart_survival.rs
+wait 7 7 tests/split_halves/server_panic_relaunch.rs
+wait 2 2 tests/split_halves/server_unit.rs
+wait 1 1 tests/split_halves/tui_split.rs
+wait 2 2 tests/split_halves/two_gateways.rs
+wait 7 7 tests/split_halves/two_process_e2e.rs
 clock 2 2 tests/split_halves/two_process_e2e.rs
-wait 7 7 tests/split_halves/two_process_llm.rs
+wait 4 4 tests/split_halves/two_process_llm.rs
 wait 2 2 tests/split_halves/web_restart_survival.rs
 wait 6 6 tests/split_halves/web_split_e2e.rs

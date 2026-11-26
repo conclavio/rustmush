@@ -2448,6 +2448,7 @@ dependencies = [
  "mush-session",
  "mush-sshdoorway-proto",
  "mush-store",
+ "mush-storykit",
  "mush-testkit",
  "rand 0.9.5",
  "reqwest",
@@ -2996,6 +2997,7 @@ version = "0.1.0"
 dependencies = [
  "mush-content",
  "mush-core",
+ "russh",
  "serde_json",
  "tacsim",
  "tokio",
