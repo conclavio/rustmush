@@ -2101,7 +2101,8 @@ impl Task {
     /// **Whether the IC field this task hosts has disengaged** (doc 32 cut
     /// CF.2; Q-CF-20): under [`FieldTerms`], not yet ended or stopping, no round
     /// in flight, and no `Engaged` trigger for `disengage_ms` of arena time —
-    /// counted from the later of the last trigger and the task's first moment.
+    /// counted from the later of the last trigger and the task's first moment —
+    /// and no unit still on its way home ([`crate::arena::state::Arena::homeward_under_way`]).
     /// Never for a match.
     ///
     /// **Doc 36 cut GC.2** (Q-36-5): or no **shot** for `idle_demote_ms`, counted
@@ -2118,7 +2119,10 @@ impl Task {
             let since = last.map_or(self.quiet_from_ms, |last| last.max(self.quiet_from_ms));
             self.arena.now_ms.saturating_sub(since)
         };
-        quiet_for(self.arena.clock.last_engaged_signal_ms()) >= i64::from(terms.disengage_ms)
+        // A unit still driving home holds the quiet rule (`Arena::homeward_under_way`), never
+        // the idle bound below.
+        (quiet_for(self.arena.clock.last_engaged_signal_ms()) >= i64::from(terms.disengage_ms)
+            && !self.arena.homeward_under_way())
             || quiet_for(self.arena.clock.last_shot_ms()) >= i64::from(terms.idle_demote_ms)
     }
 
@@ -5481,6 +5485,84 @@ mod tests {
             ..tank(id, team, at)
         }
         .sealed()
+    }
+
+    /// **A quiet field does not disengage while a unit is on its way home** (doc 36a lane 3's
+    /// branch, found by #799): a mind holding a WITHDRAW, under its own power, holds the quiet
+    /// rule, so the close cannot stand the hull on the ground short of its ramp. An absent
+    /// player's unit (a house mind's WITHDRAW, MW.7) and one that can no longer drive hold
+    /// nothing, and the idle bound still closes the field whatever is under way.
+    #[test]
+    fn a_field_does_not_disengage_under_a_unit_on_its_way_home() {
+        use crate::arena::perception::{FrameOrder, MindObjective};
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .expect("runtime");
+        let _guard = rt.enter();
+        let (mut task, _world, _senders) = minded_task(Gated::closed(), 5_000);
+        task.arena.end = crate::arena::party::EndCondition::Host;
+        task.terms = Some(FieldTerms {
+            disengage_ms: 10_000,
+            idle_demote_ms: 600_000,
+        });
+        task.arena.now_ms = 20_000;
+        assert!(
+            task.disengaged(),
+            "quiet past the window, nobody going home"
+        );
+
+        let home = FrameOrder {
+            identity: None,
+            squad: SmolStr::new("red-1"),
+            objective: MindObjective::Withdraw,
+            hold_fire: false,
+            max_range_band: None,
+            expires_ms: i64::MAX,
+        };
+        task.arena
+            .minds
+            .get_mut(&RED)
+            .expect("red's mind row")
+            .order = Some(home);
+        assert!(task.arena.homeward_under_way());
+        assert!(
+            !task.disengaged(),
+            "a unit driving home holds the quiet close"
+        );
+
+        // An absent player's unit, flown home by its house mind, holds nothing.
+        task.arena.unit_mut(RED).expect("red").absent = true;
+        assert!(
+            task.disengaged(),
+            "an absent player's WITHDRAW holds nothing"
+        );
+        task.arena.unit_mut(RED).expect("red").absent = false;
+
+        // Nor does a hull that can no longer drive.
+        task.arena
+            .unit_mut(RED)
+            .expect("red")
+            .limits
+            .motion_disabled = true;
+        assert!(
+            task.disengaged(),
+            "a hull that cannot drive is not under way"
+        );
+        task.arena
+            .unit_mut(RED)
+            .expect("red")
+            .limits
+            .motion_disabled = false;
+
+        // The idle bound closes the field whatever is under way.
+        assert!(!task.disengaged());
+        task.arena.now_ms = 600_000;
+        assert!(
+            task.disengaged(),
+            "the idle bound is not held by a withdrawal"
+        );
     }
 
     #[test]
