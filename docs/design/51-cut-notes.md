@@ -945,9 +945,18 @@ session's soak held cores 0 to 23 for part of the time; where this unit's runs u
 
 | | Cells | Passes | Failed passes | Tests that failed | A pass, wall |
 |---|---:|---:|---:|---|---:|
-@@ROWS@@
+| Before, main `0e3a26804` | 2, then 6 | 48 | 0 | none | 130 to 207 s |
+| The stories converted and the drain fixed, the keeper unchanged | 4 | 24 | 3 | `restart_survival::reply_settings_…`, `::server_self_exit_…`, `::client_disconnect_during_gap_…`, each once: `Reconnected` never came | 146 to 207 s |
+| After, this unit | 2, then 6 | 48 | 0 | none | 116 to 223 s |
 
-The middle row is the converted stories on the old product. It is how the keeper fault was found (Rows).
+The middle row is how the keeper fault was found (Rows). **The rates do not prove the fix by themselves.**
+
+- **Load.** The middle soak ran while other sessions built on the box (load up to 22 on 32 cores). The other four
+  ran on a quiet box (load at most 7.65).
+- **Main did not reproduce the fault** in 48 quiet passes, and neither did the fix.
+- **The case for the fix** is the trace, the unit test that hangs without it, and CI's record. Row 12's five tests
+  and the self-exit story failed or retried about once each in the 1,000 runs. Whether the conversion itself made
+  the window wider, or only the load did, is not known.
 
 **Survey.**
 
