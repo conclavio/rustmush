@@ -41,6 +41,52 @@ use mush_ipc::IpcEndpoint;
 use mush_store::ObjectStore;
 use tokio::sync::{mpsc, oneshot};
 
+pub use mush_storykit::{
+    AcceptAll, BUSY_NEEDLES, STEP_TIMEOUT, Term, ask_whole, settled, strip_ansi, wait_until,
+};
+
+/// **The gateway's own heal figure** (`mush_gateway::HEAL_WITHIN`, doc 51
+/// unit FL.7): the longest its keeper takes to re-attach a held session once
+/// the server half has bound. A story's wait for `Reconnected` is this under
+/// the kit's load factor ([`Term::across_restart`], [`Term::healed_after`]),
+/// never a span written at the call.
+pub const HEAL: Duration = mush_gateway::HEAL_WITHIN;
+
+/// **The gateway's answers while its server half is not admitting yet**
+/// (`ConnectErr::WorldGone`, `crates/mush-gateway/src/bridge_common.rs`). A
+/// rig that starts the two halves independently waits on the gateway's
+/// listener, and nothing there says the server half has been wired, so the
+/// first login can land in that window.
+pub const WORLD_NOT_UP: [&str; 2] = [
+    "Connection failed: the game is shutting down",
+    "character creation failed: the world is shutting down",
+];
+
+/// **Type `line` until it is answered by one of `answers`**, typing it again
+/// while the gateway says its server half is not up yet ([`WORLD_NOT_UP`]),
+/// under [`STEP_TIMEOUT`]. Answers which of `answers` came. Each try waits
+/// for an answer, so the retry is paced by the gateway, not by a sleep.
+pub async fn when_admitted(term: &mut Term, line: &str, answers: &[&str]) -> usize {
+    let mut needles: Vec<&str> = answers.to_vec();
+    needles.extend(WORLD_NOT_UP);
+    let mut which = None;
+    mush_storykit::wait_until(
+        STEP_TIMEOUT,
+        &format!("the server half to admit `{line}`"),
+        async || {
+            let mark = term.mark();
+            term.send_line(line).await;
+            let index = term.expect_one_of_after(mark, &needles).await;
+            if index < answers.len() {
+                which = Some(index);
+            }
+            which.is_some()
+        },
+    )
+    .await;
+    which.unwrap_or_else(|| unreachable!("wait_until returned without an answer"))
+}
+
 /// A boot that has not bound inside this is a failed boot, not a slow one.
 const BIND_TIMEOUT: Duration = Duration::from_secs(60);
 /// A server asked to stop that has not exited inside this has hung.

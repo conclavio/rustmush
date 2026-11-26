@@ -14,11 +14,11 @@ publish = false
 #
 # It depends on what its helpers need and no more. Unit FL.3 added tacsim (the
 # content packs and the arena's draws, for `Figures`) and mush-core (the ids
-# the catalog is keyed by). Doc 51's later units add russh (`Term`) with the
-# helper that needs it.
+# the catalog is keyed by). Unit FL.7 added russh, for `Term`'s SSH client.
 
 [dependencies]
 mush-core.workspace = true
+russh.workspace = true
 tacsim.workspace = true
 tokio.workspace = true
 

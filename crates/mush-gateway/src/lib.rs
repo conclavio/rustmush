@@ -1845,7 +1845,16 @@ async fn connect_with_retry(
 ) -> Result<(BoxRead, BoxWrite), BoundaryFailure> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
-        match mush_ipc::connect(endpoint).await {
+        // One dial is held to the attempt's deadline too: a connect that
+        // stalls must not hold the attempt past its budget (doc 51 FL.7).
+        let dial = match tokio::time::timeout_at(deadline, mush_ipc::connect(endpoint)).await {
+            Ok(dial) => dial,
+            Err(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "the dial did not complete inside the attempt's budget",
+            )),
+        };
+        match dial {
             Ok(pair) => return Ok(pair),
             Err(e) => {
                 if tokio::time::Instant::now() >= deadline {
@@ -1981,17 +1990,32 @@ async fn connect_and_wire(
     env: &BoundaryEnv,
 ) -> Result<WiredBoundary, BoundaryFailure> {
     let manifest = &env.manifest;
+    // The whole handshake, dial and both Hellos, is held to the attempt's one
+    // budget (doc 51 unit FL.7). A peer that accepts and never greets (a
+    // server half stopping, or one whose handshake is wedged) used to hold
+    // the attempt for ever, and the keeper with it: the held players sat in
+    // the gap after the next server had bound. Expiry is `Unreachable`, as a
+    // server that is not there, so the next attempt follows at once. Nothing
+    // is spawned until the handshake is done, so dropping the attempt here
+    // drops its socket and nothing else.
+    let deadline = tokio::time::Instant::now() + connect_timeout;
     let (reader_half, mut writer_half) = connect_with_retry(endpoint, connect_timeout).await?;
+    let unanswered = || {
+        BoundaryFailure::Unreachable(format!(
+            "the server at {} accepted but did not complete the handshake within {} ms",
+            endpoint.describe(),
+            connect_timeout.as_millis()
+        ))
+    };
 
     // Handshake: the server greets with Hello before anything else. Capture its
     // panel manifest into the shared cache so `serve` can build the web client's
     // WebConfig (and a restart's fresh Hello refreshes it here again).
     let mut reader = FrameReader::new(reader_half);
-    match reader
-        .read::<ToGateway>()
+    let hello = tokio::time::timeout_at(deadline, reader.read::<ToGateway>())
         .await
-        .map_err(|e| format!("reading Hello: {e}"))?
-    {
+        .map_err(|_| unanswered())?;
+    match hello.map_err(|e| format!("reading Hello: {e}"))? {
         Some(ToGateway::Hello {
             proto,
             min_proto,
@@ -2020,14 +2044,18 @@ async fn connect_and_wire(
     // on the raw half before the writer task owns it, so nothing precedes it,
     // and only after the window check, so a server this gateway refuses never
     // receives a frame it may not decode.
-    mush_ipc::write_frame(
-        &mut writer_half,
-        &ToServer::Hello {
-            proto: IPC_VERSION,
-            min_proto: IPC_MIN_PROTO,
-        },
+    tokio::time::timeout_at(
+        deadline,
+        mush_ipc::write_frame(
+            &mut writer_half,
+            &ToServer::Hello {
+                proto: IPC_VERSION,
+                min_proto: IPC_MIN_PROTO,
+            },
+        ),
     )
     .await
+    .map_err(|_| unanswered())?
     .map_err(|e| format!("sending Hello: {e}"))?;
 
     let (raw_tx, to_server_rx) = mpsc::unbounded_channel::<ToServer>();
@@ -2196,6 +2224,21 @@ const RESYNC_TIMEOUT: Duration = Duration::from_secs(10);
 const SERVER_UNREACHABLE_AFTER: Duration = Duration::from_secs(60);
 /// How long a stopping gateway waits for a closed boundary's reader to end.
 const KEEPER_STOP_WAIT: Duration = Duration::from_secs(2);
+/// **The longest the keeper takes to heal a gap once a server is bound and
+/// answering**, on an unloaded box (doc 51 unit FL.7): the old link's writer
+/// awaited (`KEEPER_STOP_WAIT`), at most one paced pause after an attempt
+/// that failed (`BACKOFF_CAP`), one dial and handshake
+/// (`RECONNECT_TIMEOUT`), and the resync to its barrier
+/// (`RESYNC_TIMEOUT`). An attempt against a server that is not up yet
+/// polls for its whole budget, so the bind ends it rather than waiting it out.
+///
+/// It is the schedule's figure, not a promise about a loaded box. A story's
+/// wait for `Reconnected` after its server half has bound is this under the
+/// story kit's load factor, so the limit moves when the schedule does.
+pub const HEAL_WITHIN: Duration = KEEPER_STOP_WAIT
+    .saturating_add(BACKOFF_CAP)
+    .saturating_add(RECONNECT_TIMEOUT)
+    .saturating_add(RESYNC_TIMEOUT);
 /// Correlation id reserved for the keeper's private resync barrier. The
 /// ordinary monotonic allocator can advance TO `u64::MAX`, but then refuses its
 /// next allocation, so it never returns this value as a live request id.
@@ -3087,6 +3130,66 @@ mod tests {
         }));
         assert!(!handle.is_restarting());
         assert!(!handle.server_unreachable());
+    }
+
+    /// Doc 51 FL.7: a peer that accepts and never greets cannot hold an
+    /// attempt past its budget. The soak caught the keeper parked on the
+    /// Hello read of a socket the stopping server half had taken, after the
+    /// next server had bound, so the held players never heard `Reconnected`.
+    #[tokio::test]
+    async fn a_peer_that_never_says_hello_ends_the_attempt_inside_its_budget() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = IpcEndpoint::Tcp(listener.local_addr().unwrap());
+        // Accept, hold the socket, and write nothing.
+        let silent = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+            drop(socket);
+        });
+        let metrics = Arc::new(Metrics::new());
+        let env = BoundaryEnv {
+            manifest: Arc::new(Mutex::new(HelloManifest::default())),
+            lifecycle: Arc::new(Mutex::new(LifecycleCustody::new(16))),
+            input_custody: Arc::new(Mutex::new(InputCustody::default())),
+            controls: Arc::new(controls::GatewayControls::default()),
+            tuning: BoundaryTuning {
+                metrics,
+                to_server_cap: 16,
+                high_water_pct: 80,
+                write_timeout: Duration::from_secs(1),
+            },
+        };
+        let sessions = Arc::new(SessionManager::new());
+        let budget = Duration::from_millis(300);
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(10),
+            connect_and_wire(&endpoint, &sessions, budget, &env),
+        )
+        .await
+        .expect("the attempt must end inside its budget, not wait on the Hello for ever");
+        assert!(
+            matches!(outcome, Err(BoundaryFailure::Unreachable(_))),
+            "a peer that never greets is a server that is not there, retried at once"
+        );
+        silent.abort();
+    }
+
+    #[test]
+    fn the_heal_figure_covers_every_step_of_one_heal() {
+        // Doc 51 FL.7: the stories' restart limit is this figure, so it must
+        // hold each step a heal can take once a server answers.
+        for step in [
+            KEEPER_STOP_WAIT,
+            backoff(u32::MAX),
+            RECONNECT_TIMEOUT,
+            RESYNC_TIMEOUT,
+        ] {
+            assert!(HEAL_WITHIN > step, "{HEAL_WITHIN:?} must exceed {step:?}");
+        }
+        assert_eq!(
+            HEAL_WITHIN,
+            KEEPER_STOP_WAIT + BACKOFF_CAP + RECONNECT_TIMEOUT + RESYNC_TIMEOUT
+        );
     }
 
     /// The pause between attempts of one kind grows and caps (the shape the

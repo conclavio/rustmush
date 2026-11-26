@@ -51,45 +51,23 @@ use std::time::Duration;
 
 use mush_core::{GOD, LIMBO, ObjId, ObjKind};
 use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore, WriteBatch};
-use russh::ChannelMsg;
 use tokio::sync::oneshot;
 
 use mush_config::accounts::hash_password;
 use mush_config::config::Config;
 use mush_gateway::GatewayOptions;
 
-use super::harness::ServerUnit;
+use super::harness::{
+    BUSY_NEEDLES, HEAL, STEP_TIMEOUT, ServerUnit, Term, wait_until, when_admitted,
+};
 
-const STEP_TIMEOUT: Duration = Duration::from_secs(60);
 const GM_PASSWORD: &str = "gm-secret-1";
-/// The world's transient authoritative refusal (`mush_server`'s
-/// `RefusalReason::CommitPending`): a commit is in flight, so try again.
-const COMMIT_PENDING: &str = "please retry in a moment";
-/// How many times a line is re-sent on that refusal before the test gives up.
-const RETRY_BUDGET: usize = 8;
 /// **16b cut U.4**: the pilots' password, for the sibling that seats two of them.
 const PILOT_PASSWORD: &str = "pilot-secret-1";
-/// `BOARD`'s one transient: the control-lease mirror is a 1 Hz projection.
-const CONTROL_UNKNOWN: &str = "control state unknown";
 /// The two pilots the sibling seeds, in the order `load_or_seed_world` hands out
 /// ids after Limbo #0 and God #1.
 const ADA: ObjId = ObjId(2);
 const BO: ObjId = ObjId(3);
-
-/// **The gateway's answer while the server half is not admitting connections
-/// yet** (`ConnectErr::WorldGone`, `crates/mush-gateway/src/bridge_common.rs`).
-///
-/// This rig starts the two halves independently and then waits on ONE signal:
-/// the gateway's `ssh_ready` oneshot, which fires when the SSH listener binds.
-/// Nothing in it waits for the server half to admit a connection. So the very
-/// first `connect` can land in that window and be refused with this sentence,
-/// and a rig that sent it once would then sit out its whole `STEP_TIMEOUT`. The
-/// first line is therefore re-sent for a few seconds while this exact sentence
-/// is the answer — a rig fix, not a product change, and nothing the lens
-/// asserts about custody is weakened.
-const WORLD_NOT_UP: &str = "Connection failed: the game is shutting down";
-/// How long the first login waits for the server half, in 200 ms steps.
-const ADMISSION_TRIES: usize = 25;
 
 // ---------------------------------------------------------------------------
 // The split rig — `restart_survival.rs`'s, because `crates/mush-gateway/tests`
@@ -214,204 +192,10 @@ async fn start_split_with(gw_store: Arc<dyn ObjectStore>, unit: &ServerUnit) -> 
         .expect("ssh addr")
 }
 
-struct AcceptAll;
-
-impl russh::client::Handler for AcceptAll {
-    type Error = russh::Error;
-
-    async fn check_server_key(
-        &mut self,
-        _key: &russh::keys::PublicKeyOrCertificate,
-    ) -> Result<bool, Self::Error> {
-        Ok(true)
-    }
-}
-
-fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                for f in chars.by_ref() {
-                    if ('\u{40}'..='\u{7e}').contains(&f) {
-                        break;
-                    }
-                }
-            }
-            continue;
-        }
-        out.push(c);
-    }
-    out
-}
-
-struct Term {
-    channel: russh::Channel<russh::client::Msg>,
-    seen: String,
-}
-
-impl Term {
-    fn mark(&self) -> usize {
-        self.seen.len()
-    }
-
-    async fn expect_after(&mut self, mark: usize, needle: &str) {
-        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
-        while !strip_ansi(&self.seen[mark..]).contains(needle) {
-            let msg = tokio::time::timeout_at(deadline, self.channel.wait())
-                .await
-                .unwrap_or_else(|_| {
-                    panic!("timeout waiting for {needle:?}; seen: {:?}", self.seen)
-                });
-            match msg {
-                Some(ChannelMsg::Data { data }) => {
-                    self.seen.push_str(&String::from_utf8_lossy(&data));
-                }
-                Some(_) => {}
-                None => panic!(
-                    "channel closed waiting for {needle:?}; seen: {:?}",
-                    self.seen
-                ),
-            }
-        }
-    }
-
-    async fn expect(&mut self, needle: &str) {
-        self.expect_after(0, needle).await;
-    }
-
-    async fn send_line(&mut self, line: &str) {
-        let bytes = format!("{line}\r").into_bytes();
-        self.channel.data(&bytes[..]).await.expect("send line");
-    }
-
-    /// Log in, waiting out a server half that is still booting. See
-    /// [`WORLD_NOT_UP`] for why this one line retries and no other does.
-    async fn connect_when_admitted(&mut self, account: &str, password: &str, connected: &str) {
-        for _ in 0..ADMISSION_TRIES {
-            let mark = self.mark();
-            self.send_line(&format!("connect {account} {password}"))
-                .await;
-            if self
-                .expect_one_of_after(mark, &[connected, WORLD_NOT_UP])
-                .await
-                == 0
-            {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-        panic!("the server half never admitted `{account}`");
-    }
-
-    /// Run one line and wait for `needle` on the same span, retrying while the
-    /// world answers the **transient** authoritative refusal.
-    ///
-    /// `@arena`'s switches are on the authoritative lane (they check units out
-    /// and hand an arena custody), and that lane answers "the world is
-    /// committing another action; please retry in a moment" when a commit is in
-    /// flight. That is a real answer a real client retries, not a failure, so a
-    /// test that drives the lane retries it too.
-    ///
-    /// The needle must not appear in the line's own echo, or it would match
-    /// before the world had even seen the command.
-    async fn say(&mut self, line: &str, needle: &str) {
-        assert!(
-            !line.contains(needle),
-            "`{needle}` appears in `{line}`'s own echo; pick a needle from the ANSWER"
-        );
-        for _ in 0..RETRY_BUDGET {
-            let mark = self.mark();
-            self.send_line(line).await;
-            let which = self
-                .expect_one_of_after(mark, &[needle, COMMIT_PENDING])
-                .await;
-            if which == 0 {
-                return;
-            }
-        }
-        panic!("`{line}` was refused as commit-pending {RETRY_BUDGET} times running");
-    }
-
-    /// Wait for whichever of `needles` arrives first, answering its index.
-    /// Run one line, wait for `needle`, and hand back everything the world said
-    /// since — the one place this lens has to *read* an answer rather than
-    /// assert on it, because the arena's twelve tanks are made by a content pack
-    /// and their dbrefs are the pack's to choose (16b cut C.2).
-    async fn ask(&mut self, line: &str, needle: &str) -> String {
-        let mark = self.mark();
-        self.say(line, needle).await;
-        strip_ansi(&self.seen[mark..])
-    }
-
-    async fn expect_one_of_after(&mut self, mark: usize, needles: &[&str]) -> usize {
-        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
-        loop {
-            let seen = strip_ansi(&self.seen[mark..]);
-            if let Some(index) = needles.iter().position(|needle| seen.contains(needle)) {
-                return index;
-            }
-            let msg = tokio::time::timeout_at(deadline, self.channel.wait())
-                .await
-                .unwrap_or_else(|_| {
-                    panic!(
-                        "timeout waiting for any of {needles:?}; seen: {:?}",
-                        self.seen
-                    )
-                });
-            match msg {
-                Some(ChannelMsg::Data { data }) => {
-                    self.seen.push_str(&String::from_utf8_lossy(&data));
-                }
-                Some(_) => {}
-                None => panic!(
-                    "channel closed waiting for any of {needles:?}; seen: {:?}",
-                    self.seen
-                ),
-            }
-        }
-    }
-}
-
-async fn play_client(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Term) {
-    let config = Arc::new(russh::client::Config::default());
-    let mut handle = russh::client::connect(config, addr, AcceptAll)
-        .await
-        .expect("connect");
-    let auth = handle.authenticate_none("play").await.expect("auth-none");
-    assert!(auth.success(), "play must be accepted with no auth");
-    let channel = handle.channel_open_session().await.expect("open channel");
-    channel
-        .request_pty(true, "xterm-256color", 80, 24, 0, 0, &[])
-        .await
-        .expect("pty");
-    channel.request_shell(true).await.expect("shell");
-    (
-        handle,
-        Term {
-            channel,
-            seen: String::new(),
-        },
-    )
-}
-
-/// **Wait until `check` answers `true`**, polling every 200 ms, or fail naming
-/// `label` (16b cut M.1). `crates/mushd/tests/support::wait_until`'s shape (cut L,
-/// `T-41`): `crates/mush-gateway/tests` has no shared support module, so this file
-/// carries its own copy, as it carries the rest of its rig.
-async fn wait_until(bound: Duration, label: &str, mut check: impl AsyncFnMut() -> bool) {
-    tokio::time::timeout(bound, async {
-        loop {
-            if check().await {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-    })
-    .await
-    .unwrap_or_else(|_| panic!("{label} did not happen within {bound:?}"));
+/// Log in, waiting out a server half that is still booting
+/// (`harness::when_admitted`).
+async fn connect_when_admitted(term: &mut Term, account: &str, password: &str, connected: &str) {
+    when_admitted(term, &format!("connect {account} {password}"), &[connected]).await;
 }
 
 /// Whether `unit`'s authoritative record carries a `deployed` marker, as the
@@ -481,7 +265,7 @@ fn flat(text: &str) -> String {
 /// How many times `needle` appears in what `term` received since `mark`, both
 /// flattened.
 fn count_since(term: &Term, mark: usize, needle: &str) -> usize {
-    flat(&strip_ansi(&term.seen[mark..]))
+    flat(&term.since(mark))
         .matches(flat(needle).as_str())
         .count()
 }
@@ -505,8 +289,9 @@ async fn the_arena_surface_survives_the_split_and_a_server_restart() {
     unit.start().await;
     let ssh_addr = start_split_with(seeded_gw_store().await, &unit).await;
 
-    let (_handle, mut god) = play_client(ssh_addr).await;
-    god.connect_when_admitted(
+    let (_handle, mut god) = Term::play(ssh_addr).await;
+    connect_when_admitted(
+        &mut god,
         "boss",
         GM_PASSWORD,
         "Connected as God (account boss, 1 connection).",
@@ -577,8 +362,7 @@ async fn the_arena_surface_survives_the_split_and_a_server_restart() {
     let before_crash = god.mark();
     crash_now(&unit).await;
 
-    god.expect_after(before_crash, "restarting").await;
-    god.expect_after(before_crash, "Reconnected").await;
+    god.healed_after(before_crash, HEAL).await;
     god.expect_after(before_crash, "Limbo #0").await;
 
     // --- (4) the match resumed -------------------------------------------
@@ -669,9 +453,9 @@ async fn claim_and_board(ada: &mut Term, bo: &mut Term, board: &[usize]) {
         wait_until(STEP_TIMEOUT, "a pilot to board", async || {
             let mark = term.mark();
             term.send_line("BOARD").await;
-            term.expect_one_of_after(mark, &["climb into", CONTROL_UNKNOWN, COMMIT_PENDING])
-                .await
-                == 0
+            let mut answers = vec!["climb into"];
+            answers.extend(BUSY_NEEDLES);
+            term.expect_one_of_after(mark, &answers).await == 0
         })
         .await;
     }
@@ -708,9 +492,8 @@ async fn crash_now(unit: &ServerUnit) {
 async fn a_pilot_in_a_pod_across_a_server_restart_boards_the_resumed_match() {
     let store = shared_store().await;
     let (ssh_addr, unit) = crashable_split(&store).await;
-    let (_g, mut god) = play_client(ssh_addr).await;
-    god.connect_when_admitted("boss", GM_PASSWORD, "Connected as God")
-        .await;
+    let (_g, mut god) = Term::play(ssh_addr).await;
+    connect_when_admitted(&mut god, "boss", GM_PASSWORD, "Connected as God").await;
     let red = dbref_of(
         &god.ask("@find Red Tank 1", "END OF LIST").await,
         "Red Tank 1",
@@ -719,12 +502,10 @@ async fn a_pilot_in_a_pod_across_a_server_restart_boards_the_resumed_match() {
         &god.ask("@find Blue Tank 1", "END OF LIST").await,
         "Blue Tank 1",
     );
-    let (_a, mut ada) = play_client(ssh_addr).await;
-    ada.connect_when_admitted("ada", PILOT_PASSWORD, "Connected as Ada")
-        .await;
-    let (_b, mut bo) = play_client(ssh_addr).await;
-    bo.connect_when_admitted("bo", PILOT_PASSWORD, "Connected as Bo")
-        .await;
+    let (_a, mut ada) = Term::play(ssh_addr).await;
+    connect_when_admitted(&mut ada, "ada", PILOT_PASSWORD, "Connected as Ada").await;
+    let (_b, mut bo) = Term::play(ssh_addr).await;
+    connect_when_admitted(&mut bo, "bo", PILOT_PASSWORD, "Connected as Bo").await;
     claim_and_board(&mut ada, &mut bo, &[0, 1]).await;
     ada.expect("Good hunting").await;
     wait_until(
@@ -749,7 +530,7 @@ async fn a_pilot_in_a_pod_across_a_server_restart_boards_the_resumed_match() {
         // Y.3's line (`… is flying on doctrine; …` until 17b cut M5.3, one
         // word for every sealed mind since).
         let on_its_mind = format!("{tank} is flying on its mind; BOARD takes it back.");
-        term.expect_after(mark, "Reconnected").await;
+        term.healed_after(mark, HEAL).await;
         term.expect_after(mark, &on_its_mind).await;
         // Two more boarding ticks: nothing is said again.
         tokio::time::sleep(Duration::from_millis(2_500)).await;
@@ -760,7 +541,7 @@ async fn a_pilot_in_a_pod_across_a_server_restart_boards_the_resumed_match() {
             1,
             "the reconnect line, once"
         );
-        let seen = flat(&strip_ansi(&term.seen[mark..]));
+        let seen = flat(&term.since(mark));
         assert!(
             seen.find(flat(resumed).as_str()) < seen.find(flat(&on_its_mind).as_str()),
             "the resume line first: {seen}"
@@ -771,17 +552,9 @@ async fn a_pilot_in_a_pod_across_a_server_restart_boards_the_resumed_match() {
         wait_until(STEP_TIMEOUT, "the tank to come back", async || {
             let at = term.mark();
             term.send_line("BOARD").await;
-            term.expect_one_of_after(
-                at,
-                &[
-                    "yours again where it stands",
-                    "still being handed over",
-                    CONTROL_UNKNOWN,
-                    COMMIT_PENDING,
-                ],
-            )
-            .await
-                == 0
+            let mut answers = vec!["yours again where it stands", "still being handed over"];
+            answers.extend(BUSY_NEEDLES);
+            term.expect_one_of_after(at, &answers).await == 0
         })
         .await;
         term.expect_after(mark, "Back aboard").await;
@@ -801,9 +574,8 @@ async fn a_pilot_in_a_pod_across_a_server_restart_boards_the_resumed_match() {
 async fn a_pilot_in_a_pod_across_a_boarding_crash_reads_the_hatch_line() {
     let store = shared_store().await;
     let (ssh_addr, unit) = crashable_split(&store).await;
-    let (_g, mut god) = play_client(ssh_addr).await;
-    god.connect_when_admitted("boss", GM_PASSWORD, "Connected as God")
-        .await;
+    let (_g, mut god) = Term::play(ssh_addr).await;
+    connect_when_admitted(&mut god, "boss", GM_PASSWORD, "Connected as God").await;
     let red = dbref_of(
         &god.ask("@find Red Tank 1", "END OF LIST").await,
         "Red Tank 1",
@@ -812,12 +584,10 @@ async fn a_pilot_in_a_pod_across_a_boarding_crash_reads_the_hatch_line() {
         &god.ask("@find Blue Tank 1", "END OF LIST").await,
         "Blue Tank 1",
     );
-    let (_a, mut ada) = play_client(ssh_addr).await;
-    ada.connect_when_admitted("ada", PILOT_PASSWORD, "Connected as Ada")
-        .await;
-    let (_b, mut bo) = play_client(ssh_addr).await;
-    bo.connect_when_admitted("bo", PILOT_PASSWORD, "Connected as Bo")
-        .await;
+    let (_a, mut ada) = Term::play(ssh_addr).await;
+    connect_when_admitted(&mut ada, "ada", PILOT_PASSWORD, "Connected as Ada").await;
+    let (_b, mut bo) = Term::play(ssh_addr).await;
+    connect_when_admitted(&mut bo, "bo", PILOT_PASSWORD, "Connected as Bo").await;
     // Ada boards; Bo does not, so the match is still `Boarding`.
     claim_and_board(&mut ada, &mut bo, &[0]).await;
     assert!(!deployed(&store, red).await && !deployed(&store, blue).await);
@@ -825,7 +595,7 @@ async fn a_pilot_in_a_pod_across_a_boarding_crash_reads_the_hatch_line() {
     let ada_mark = ada.mark();
     crash_now(&unit).await;
 
-    ada.expect_after(ada_mark, "Reconnected").await;
+    ada.healed_after(ada_mark, HEAL).await;
     ada.expect_after(ada_mark, "The hatch of").await;
     ada.expect_after(ada_mark, "swings open.").await;
     assert!(!deployed(&store, red).await, "no red marker");

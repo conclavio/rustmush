@@ -50,28 +50,15 @@ use std::time::Duration;
 
 use mush_core::{GOD, LIMBO, ObjId, ObjKind};
 use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore, WriteBatch};
-use russh::ChannelMsg;
 use tokio::sync::oneshot;
 
+use super::harness::{AcceptAll, Term, when_admitted};
 use mush_config::accounts::hash_password;
 use mush_config::config::Config;
 use mush_gateway::GatewayOptions;
 
-const STEP_TIMEOUT: Duration = Duration::from_secs(60);
 const GM_PASSWORD: &str = "gm-secret-1";
 const PILOT_PASSWORD: &str = "pilot-secret-1";
-
-/// The world's transient authoritative refusal: a commit is in flight.
-const COMMIT_PENDING: &str = "please retry in a moment";
-/// `BOARD`'s one transient: the control-lease mirror is a 1 Hz projection.
-const CONTROL_UNKNOWN: &str = "control state unknown";
-/// How many times a line is re-sent on a transient before the test gives up.
-const RETRY_BUDGET: usize = 40;
-/// The gateway's answer while the server half is not admitting connections yet
-/// (`arena_story_split.rs` explains the window); the first `connect` waits it out.
-const WORLD_NOT_UP: &str = "Connection failed: the game is shutting down";
-/// How long the first login waits for the server half, in 200 ms steps.
-const ADMISSION_TRIES: usize = 25;
 
 /// The one pilot, seeded into the shared store's world before either half boots.
 const ADA: ObjId = ObjId(2);
@@ -259,147 +246,18 @@ async fn boot_split(
 // The terminal — `arena_story_split.rs`' `Term`, trimmed to what one pilot says
 // ---------------------------------------------------------------------------
 
-struct AcceptAll;
-
-impl russh::client::Handler for AcceptAll {
-    type Error = russh::Error;
-
-    async fn check_server_key(
-        &mut self,
-        _key: &russh::keys::PublicKeyOrCertificate,
-    ) -> Result<bool, Self::Error> {
-        Ok(true)
-    }
-}
-
-fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                for f in chars.by_ref() {
-                    if ('\u{40}'..='\u{7e}').contains(&f) {
-                        break;
-                    }
-                }
-            }
-            continue;
-        }
-        out.push(c);
-    }
-    out
-}
-
-struct Term {
-    channel: russh::Channel<russh::client::Msg>,
-    seen: String,
-}
-
-impl Term {
-    fn mark(&self) -> usize {
-        self.seen.len()
-    }
-
-    async fn send_line(&mut self, line: &str) {
-        let bytes = format!("{line}\r").into_bytes();
-        self.channel.data(&bytes[..]).await.expect("send line");
-    }
-
-    async fn expect_one_of_after(&mut self, mark: usize, needles: &[&str]) -> usize {
-        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
-        loop {
-            let seen = strip_ansi(&self.seen[mark..]);
-            if let Some(index) = needles.iter().position(|needle| seen.contains(needle)) {
-                return index;
-            }
-            let msg = tokio::time::timeout_at(deadline, self.channel.wait())
-                .await
-                .unwrap_or_else(|_| {
-                    panic!(
-                        "timeout waiting for any of {needles:?}; seen: {:?}",
-                        self.seen
-                    )
-                });
-            match msg {
-                Some(ChannelMsg::Data { data }) => {
-                    self.seen.push_str(&String::from_utf8_lossy(&data));
-                }
-                Some(_) => {}
-                None => panic!(
-                    "channel closed waiting for any of {needles:?}; seen: {:?}",
-                    self.seen
-                ),
-            }
-        }
-    }
-
-    async fn expect(&mut self, needle: &str) {
-        self.expect_one_of_after(0, &[needle]).await;
-    }
-
-    /// Run one line and wait for `needle`, retrying the two transients. The needle
-    /// must not appear in the line's own echo.
-    async fn say(&mut self, line: &str, needle: &str) {
-        assert!(
-            !line.contains(needle),
-            "`{needle}` appears in `{line}`'s own echo; pick a needle from the ANSWER"
-        );
-        for _ in 0..RETRY_BUDGET {
-            let mark = self.mark();
-            self.send_line(line).await;
-            match self
-                .expect_one_of_after(mark, &[needle, COMMIT_PENDING, CONTROL_UNKNOWN])
-                .await
-            {
-                0 => return,
-                _ => tokio::time::sleep(Duration::from_millis(200)).await,
-            }
-        }
-        panic!("`{line}` was refused as transient {RETRY_BUDGET} times running");
-    }
-}
-
-async fn play_client(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Term) {
-    let config = Arc::new(russh::client::Config::default());
-    let mut handle = russh::client::connect(config, addr, AcceptAll)
-        .await
-        .expect("connect");
-    let auth = handle.authenticate_none("play").await.expect("auth-none");
-    assert!(auth.success(), "play must be accepted with no auth");
-    let channel = handle.channel_open_session().await.expect("open channel");
-    channel
-        .request_pty(true, "xterm-256color", 80, 24, 0, 0, &[])
-        .await
-        .expect("pty");
-    channel.request_shell(true).await.expect("shell");
-    (
-        handle,
-        Term {
-            channel,
-            seen: String::new(),
-        },
-    )
-}
-
 /// `connect ada <pw>`, re-sent while the server half is not admitting yet.
 async fn login_ada(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Term) {
-    let (handle, mut term) = play_client(addr).await;
-    for _ in 0..ADMISSION_TRIES {
-        let mark = term.mark();
-        term.send_line(&format!("connect ada {PILOT_PASSWORD}"))
-            .await;
-        if term
-            .expect_one_of_after(mark, &["Connected as Ada", WORLD_NOT_UP])
-            .await
-            == 0
-        {
-            return (handle, term);
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    panic!("the server half never admitted `ada`");
+    let (handle, mut term) = Term::play(addr).await;
+    // The rig has no barrier against the server half still booting, so
+    // the first line waits it out (`harness::when_admitted`).
+    when_admitted(
+        &mut term,
+        &format!("connect ada {PILOT_PASSWORD}"),
+        &["Connected as Ada"],
+    )
+    .await;
+    (handle, term)
 }
 
 // ---------------------------------------------------------------------------

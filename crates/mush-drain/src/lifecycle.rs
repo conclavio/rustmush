@@ -296,7 +296,14 @@ async fn run_with_trigger_and_hard_exit<S: Session>(
     let mut trigger_open = true;
     let mut hard_exit: Option<tokio::time::Instant> = None;
     loop {
-        let stopping = work.is_stopping();
+        // An empty generation ends the run, but never while the drain's own
+        // task still runs: that task may be inside its close, which empties
+        // the generation as it queues each close and then waits out the
+        // flush window. The task ends at once when the generation empties
+        // before its close (`Drain::run`, `Drain::finish_now`), and its close
+        // is bounded, so waiting for it costs a clean exit nothing (doc 51
+        // unit FL.7).
+        let stopping = work.is_stopping() && !matches!(work, WorkState::Running(_));
         let empty = async {
             if stopping {
                 drain.wait_empty().await;
@@ -505,6 +512,83 @@ mod tests {
         assert_eq!(host.stopped, 1, "the host hears it once");
         assert_eq!(drain.phase(), crate::drain::Phase::Draining);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A session whose close drops its own live guard there and then, as the
+    /// gateway's does: it leaves the live set when its close is queued, long
+    /// before the transport has written it.
+    struct DropsOnClose(std::sync::Mutex<Option<crate::drain::LiveGuard<DropsOnClose>>>);
+
+    impl crate::drain::Session for DropsOnClose {
+        fn inject<'a>(&'a self, _line: &'a str) -> futures::future::BoxFuture<'a, ()> {
+            Box::pin(async {})
+        }
+        fn close(&self) -> futures::future::BoxFuture<'_, ()> {
+            Box::pin(async move {
+                drop(self.0.lock().unwrap().take());
+            })
+        }
+    }
+
+    /// Run the lifecycle on one [`DropsOnClose`] session after `trigger`, and
+    /// answer whether the close had finished, its flush window waited out,
+    /// when the run returned. A loaded box can only make the run slower, so
+    /// the answer can be wrongly yes, never wrongly no.
+    async fn the_close_finished_before_the_run_returned(trigger: Trigger) -> bool {
+        struct Quick;
+        impl Host for Quick {
+            fn drain_config(&self) -> DrainConfig {
+                DrainConfig {
+                    grace: Duration::ZERO,
+                    warnings: vec![],
+                    ..short()
+                }
+            }
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "mush-drain-flush-{}-{}",
+            std::process::id(),
+            rand_tag()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let drain = Drain::<DropsOnClose>::new();
+        let guard = drain.enter(1);
+        drain.register(1, DropsOnClose(std::sync::Mutex::new(Some(guard))));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut sigs = Signals::install().unwrap();
+        tx.send(trigger).unwrap();
+        let started = tokio::time::Instant::now();
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            run_with_trigger(
+                &mut sigs,
+                &mut rx,
+                &drain,
+                &dir.join("draining-a"),
+                &mut Quick,
+            ),
+        )
+        .await
+        .unwrap();
+        let took = started.elapsed();
+        std::fs::remove_dir_all(&dir).ok();
+        took >= crate::drain::CLOSE_FLUSH
+    }
+
+    /// Doc 51 unit FL.7: a finish's close runs to its end before the run
+    /// returns. The generation empties as the close is queued; ending on that
+    /// cut the flush window, the gateway's runtime dropped with the close
+    /// reason still unwritten, and the player never read why the line went.
+    #[tokio::test]
+    async fn a_finish_lets_its_close_flush_before_the_run_returns() {
+        assert!(the_close_finished_before_the_run_returned(Trigger::Finish).await);
+    }
+
+    /// The same at a drain's deadline, where `Drain::run` raced its own
+    /// close against the generation emptying.
+    #[tokio::test]
+    async fn a_drain_lets_its_close_flush_before_the_run_returns() {
+        assert!(the_close_finished_before_the_run_returned(Trigger::Drain).await);
     }
 
     /// A closed trigger channel is not an event: the run keeps serving the

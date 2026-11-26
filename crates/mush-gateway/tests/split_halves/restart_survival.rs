@@ -31,21 +31,15 @@ use std::time::Duration;
 
 use mush_core::GOD;
 use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore};
-use russh::ChannelMsg;
 use tokio::sync::oneshot;
 
 use mush_config::accounts::hash_password;
 use mush_config::config::Config;
 use mush_gateway::GatewayOptions;
 
-use super::harness::ServerUnit;
+use super::harness::{HEAL, ServerUnit, Term, when_admitted};
 
-const STEP_TIMEOUT: Duration = Duration::from_secs(60);
 const GM_PASSWORD: &str = "gm-secret-1";
-/// The world's TRANSIENT authoritative refusal: a commit is in flight.
-const COMMIT_PENDING: &str = "please retry in a moment";
-/// How many times a mutating line is re-sent on that refusal.
-const COMMIT_RETRIES: usize = 8;
 
 fn scratch_dir(tag: &str) -> PathBuf {
     // A UNIQUE dir per call (not just per PID+tag): every server launch — across
@@ -133,155 +127,6 @@ async fn start_split(unit: &ServerUnit) -> SocketAddr {
         .expect("ssh addr")
 }
 
-struct AcceptAll;
-
-impl russh::client::Handler for AcceptAll {
-    type Error = russh::Error;
-
-    async fn check_server_key(
-        &mut self,
-        _key: &russh::keys::PublicKeyOrCertificate,
-    ) -> Result<bool, Self::Error> {
-        Ok(true)
-    }
-}
-
-fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                for f in chars.by_ref() {
-                    if ('\u{40}'..='\u{7e}').contains(&f) {
-                        break;
-                    }
-                }
-            }
-            continue;
-        }
-        out.push(c);
-    }
-    out
-}
-
-struct Term {
-    channel: russh::Channel<russh::client::Msg>,
-    seen: String,
-}
-
-impl Term {
-    fn mark(&self) -> usize {
-        self.seen.len()
-    }
-
-    async fn expect_after(&mut self, mark: usize, needle: &str) {
-        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
-        while !strip_ansi(&self.seen[mark..]).contains(needle) {
-            let msg = tokio::time::timeout_at(deadline, self.channel.wait())
-                .await
-                .unwrap_or_else(|_| {
-                    panic!("timeout waiting for {needle:?}; seen: {:?}", self.seen)
-                });
-            match msg {
-                Some(ChannelMsg::Data { data }) => {
-                    self.seen.push_str(&String::from_utf8_lossy(&data));
-                }
-                Some(_) => {}
-                None => panic!(
-                    "channel closed waiting for {needle:?}; seen: {:?}",
-                    self.seen
-                ),
-            }
-        }
-    }
-
-    async fn expect(&mut self, needle: &str) {
-        self.expect_after(0, needle).await;
-    }
-
-    async fn send_line(&mut self, line: &str) {
-        let bytes = format!("{line}\r").into_bytes();
-        self.channel.data(&bytes[..]).await.expect("send line");
-    }
-
-    /// Run one line and wait for `needle`, **retrying while the world answers
-    /// the transient authoritative refusal**.
-    ///
-    /// A mutating verb rides the authoritative lane, and that lane answers
-    /// `mush_server`'s `RefusalReason::CommitPending` — "the world is committing
-    /// another action; please retry in a moment" — whenever a commit is in
-    /// flight. It is a real answer a real client retries, not a failure, and
-    /// under a loaded `cargo test --workspace` it lands often enough to make a
-    /// one-shot `send_line` + `expect_after` racy.
-    async fn say(&mut self, line: &str, needle: &str) {
-        for _ in 0..COMMIT_RETRIES {
-            let mark = self.mark();
-            self.send_line(line).await;
-            if self
-                .expect_one_of_after(mark, &[needle, COMMIT_PENDING])
-                .await
-                == 0
-            {
-                return;
-            }
-        }
-        panic!("`{line}` was refused as commit-pending {COMMIT_RETRIES} times running");
-    }
-
-    /// Wait for whichever of `needles` arrives first, answering its index.
-    async fn expect_one_of_after(&mut self, mark: usize, needles: &[&str]) -> usize {
-        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
-        loop {
-            let seen = strip_ansi(&self.seen[mark..]);
-            if let Some(index) = needles.iter().position(|needle| seen.contains(needle)) {
-                return index;
-            }
-            let msg = tokio::time::timeout_at(deadline, self.channel.wait())
-                .await
-                .unwrap_or_else(|_| {
-                    panic!(
-                        "timeout waiting for any of {needles:?}; seen: {:?}",
-                        self.seen
-                    )
-                });
-            match msg {
-                Some(ChannelMsg::Data { data }) => {
-                    self.seen.push_str(&String::from_utf8_lossy(&data));
-                }
-                Some(_) => {}
-                None => panic!(
-                    "channel closed waiting for any of {needles:?}; seen: {:?}",
-                    self.seen
-                ),
-            }
-        }
-    }
-}
-
-async fn play_client(addr: std::net::SocketAddr) -> (russh::client::Handle<AcceptAll>, Term) {
-    let config = Arc::new(russh::client::Config::default());
-    let mut handle = russh::client::connect(config, addr, AcceptAll)
-        .await
-        .expect("connect");
-    let auth = handle.authenticate_none("play").await.expect("auth-none");
-    assert!(auth.success(), "play must be accepted with no auth");
-    let channel = handle.channel_open_session().await.expect("open channel");
-    channel
-        .request_pty(true, "xterm-256color", 80, 24, 0, 0, &[])
-        .await
-        .expect("pty");
-    channel.request_shell(true).await.expect("shell");
-    (
-        handle,
-        Term {
-            channel,
-            seen: String::new(),
-        },
-    )
-}
-
 /// The whole point (R1/R2/R3/R5): connect, play, RESTART the server, and prove
 /// the connections survive with world state intact and play continuing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -339,16 +184,22 @@ async fn server_restart_keeps_connections_and_world() {
         .expect("ssh addr");
 
     // --- God connects on TWO connections (multi-connect) and plays. ---
-    let (_g1, mut god1) = play_client(ssh_addr).await;
-    god1.send_line(&format!("connect boss {GM_PASSWORD}")).await;
-    god1.expect("Connected as God (account boss, 1 connection).")
-        .await;
+    let (_g1, mut god1) = Term::play(ssh_addr).await;
+    when_admitted(
+        &mut god1,
+        &format!("connect boss {GM_PASSWORD}"),
+        &["Connected as God (account boss, 1 connection)."],
+    )
+    .await;
     god1.expect("Limbo #0").await;
 
-    let (_g2, mut god2) = play_client(ssh_addr).await;
-    god2.send_line(&format!("connect boss {GM_PASSWORD}")).await;
-    god2.expect("Connected as God (account boss, 2 connections).")
-        .await;
+    let (_g2, mut god2) = Term::play(ssh_addr).await;
+    when_admitted(
+        &mut god2,
+        &format!("connect boss {GM_PASSWORD}"),
+        &["Connected as God (account boss, 2 connections)."],
+    )
+    .await;
     god2.expect("Limbo #0").await;
 
     // A mutating command that must survive the restart: dig a room with an exit.
@@ -368,6 +219,8 @@ async fn server_restart_keeps_connections_and_world() {
     let restart_mark1 = god1.mark();
     let restart_mark2 = god2.mark();
     unit.restart().await;
+    god1.healed_after(restart_mark1, HEAL).await;
+    god2.healed_after(restart_mark2, HEAL).await;
 
     // Both connections are told the game is restarting, are pushed a fresh
     // room render from the reloaded world, then are told reconnected only after
@@ -375,30 +228,23 @@ async fn server_restart_keeps_connections_and_world() {
     // (R1/R3). The gateway generates the system lines; the look comes from the
     // new server. We search from one mark because transport scheduling need not
     // impose a presentation order between the replay render and final notice.
-    god1.expect_after(restart_mark1, "restarting").await;
-    god1.expect_after(restart_mark1, "Reconnected").await;
     god1.expect_after(restart_mark1, "Limbo #0").await;
-    god2.expect_after(restart_mark2, "restarting").await;
-    god2.expect_after(restart_mark2, "Reconnected").await;
     god2.expect_after(restart_mark2, "Limbo #0").await;
 
     // --- World state INTACT (R1): the room @dug before the restart is still
     //     there. Walk east into the Vault, then back. ---
-    let after_restart = god1.mark();
-    god1.send_line("east").await;
-    god1.expect_after(after_restart, "Vault").await;
+    god1.say("east", "Vault").await;
 
     // --- Play CONTINUES after the restart: speech still round-trips, and the
     //     second connection (still in Limbo) hears it — both connections are
     //     live and the world loop is running. ---
     let after_move = god2.mark();
-    let before_west = god1.mark();
-    god1.send_line("west").await; // back to Limbo with god2
-    // Command output is acknowledgement-gated. Wait for west's room render
-    // before issuing another action; firing `say` immediately would correctly
-    // receive typed CommitPending Busy while west's receipt is outstanding.
-    god1.expect_after(before_west, "Limbo #0").await;
-    god1.send_line("say post-restart").await;
+    // Back to Limbo with god2. Command output is acknowledgement-gated, so a
+    // line typed while the last one's receipt is outstanding is answered
+    // "please retry"; `say` types it again.
+    god1.say("west", "Limbo #0").await;
+    god1.say("say post-restart", "God says, \"post-restart\"")
+        .await;
     god2.expect_after(after_move, "God says, \"post-restart\"")
         .await;
 
@@ -417,10 +263,13 @@ async fn restart_mid_scene_resumes_in_current_room() {
     unit.start().await;
     let ssh_addr = start_split(&unit).await;
 
-    let (_g, mut god) = play_client(ssh_addr).await;
-    god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
-    god.expect("Connected as God (account boss, 1 connection).")
-        .await;
+    let (_g, mut god) = Term::play(ssh_addr).await;
+    when_admitted(
+        &mut god,
+        &format!("connect boss {GM_PASSWORD}"),
+        &["Connected as God (account boss, 1 connection)."],
+    )
+    .await;
     god.expect("Limbo #0").await;
 
     // Build a room, then WALK INTO it — the player is now mid-scene in Vault.
@@ -429,24 +278,21 @@ async fn restart_mid_scene_resumes_in_current_room() {
         "Vault created with room number",
     )
     .await;
-    let before_move = god.mark();
-    god.send_line("east").await;
-    god.expect_after(before_move, "Vault").await;
+    god.say("east", "Vault").await;
 
     // RESTART while standing in Vault.
-    let restart_mark = god.mark();
-    unit.restart().await;
+    let restart_mark = god
+        .across_restart(HEAL, async {
+            unit.restart().await;
+        })
+        .await;
 
     // The connection survives, and the re-attach look renders VAULT (the current
     // room), not Limbo — proving per-session current-room render on re-attach.
-    god.expect_after(restart_mark, "restarting").await;
-    god.expect_after(restart_mark, "Reconnected").await;
     god.expect_after(restart_mark, "Vault").await;
 
     // Play continues from Vault: walk back west to Limbo.
-    let after_restart = god.mark();
-    god.send_line("west").await;
-    god.expect_after(after_restart, "Limbo #0").await;
+    god.say("west", "Limbo #0").await;
 
     drop(god);
 }
@@ -463,10 +309,13 @@ async fn a_server_that_stays_away_keeps_the_player_held_and_input_refused() {
     unit.start().await;
     let ssh_addr = start_split(&unit).await;
 
-    let (_g, mut god) = play_client(ssh_addr).await;
-    god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
-    god.expect("Connected as God (account boss, 1 connection).")
-        .await;
+    let (_g, mut god) = Term::play(ssh_addr).await;
+    when_admitted(
+        &mut god,
+        &format!("connect boss {GM_PASSWORD}"),
+        &["Connected as God (account boss, 1 connection)."],
+    )
+    .await;
     god.expect("Limbo #0").await;
 
     // The unit goes down and nothing brings it back for a while.
@@ -489,11 +338,9 @@ async fn a_server_that_stays_away_keeps_the_player_held_and_input_refused() {
     // The unit is back: the gateway heals on its own, nobody is asked.
     let heal_mark = god.mark();
     unit.start().await;
-    god.expect_after(heal_mark, "Reconnected").await;
+    god.healed_after(mark, HEAL).await;
     god.expect_after(heal_mark, "Limbo #0").await;
-    let after = god.mark();
-    god.send_line("say back").await;
-    god.expect_after(after, "God says, \"back\"").await;
+    god.say("say back", "God says, \"back\"").await;
 
     drop(god);
 }
@@ -513,10 +360,13 @@ async fn server_self_exit_auto_restarts_without_dropping_players() {
     unit.start().await;
     let ssh_addr = start_split(&unit).await;
 
-    let (_g, mut god) = play_client(ssh_addr).await;
-    god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
-    god.expect("Connected as God (account boss, 1 connection).")
-        .await;
+    let (_g, mut god) = Term::play(ssh_addr).await;
+    when_admitted(
+        &mut god,
+        &format!("connect boss {GM_PASSWORD}"),
+        &["Connected as God (account boss, 1 connection)."],
+    )
+    .await;
     god.expect("Limbo #0").await;
 
     // Build something that must survive the auto-restart.
@@ -533,18 +383,15 @@ async fn server_self_exit_auto_restarts_without_dropping_players() {
     let crash_mark = god.mark();
     unit.stop().await;
     unit.start().await;
+    god.healed_after(crash_mark, HEAL).await;
 
     // The connection survives the self-exit: restarting → Reconnected → fresh
     // look, never dropped (R1). Before the fix the keeper panicked re-polling
     // the completed down-handle and this hung until the step timeout.
-    god.expect_after(crash_mark, "restarting").await;
-    god.expect_after(crash_mark, "Reconnected").await;
     god.expect_after(crash_mark, "Limbo #0").await;
 
     // World intact + play continues after an AUTO restart.
-    let after_restart = god.mark();
-    god.send_line("east").await;
-    god.expect_after(after_restart, "Vault").await;
+    god.say("east", "Vault").await;
 
     drop(god);
 }
@@ -561,16 +408,22 @@ async fn client_disconnect_during_gap_leaves_survivor_intact() {
     let ssh_addr = start_split(&unit).await;
 
     // Two connections on the same character (multi-connect).
-    let (_s1, mut god1) = play_client(ssh_addr).await;
-    god1.send_line(&format!("connect boss {GM_PASSWORD}")).await;
-    god1.expect("Connected as God (account boss, 1 connection).")
-        .await;
+    let (_s1, mut god1) = Term::play(ssh_addr).await;
+    when_admitted(
+        &mut god1,
+        &format!("connect boss {GM_PASSWORD}"),
+        &["Connected as God (account boss, 1 connection)."],
+    )
+    .await;
     god1.expect("Limbo #0").await;
 
-    let (s2, mut god2) = play_client(ssh_addr).await;
-    god2.send_line(&format!("connect boss {GM_PASSWORD}")).await;
-    god2.expect("Connected as God (account boss, 2 connections).")
-        .await;
+    let (s2, mut god2) = Term::play(ssh_addr).await;
+    when_admitted(
+        &mut god2,
+        &format!("connect boss {GM_PASSWORD}"),
+        &["Connected as God (account boss, 2 connections)."],
+    )
+    .await;
     god2.expect("Limbo #0").await;
 
     // Something to prove the world is intact afterward.
@@ -589,15 +442,12 @@ async fn client_disconnect_during_gap_leaves_survivor_intact() {
 
     // The SURVIVING connection rides the restart: restarting → Reconnected →
     // fresh look, never dropped.
-    god1.expect_after(restart_mark, "restarting").await;
-    god1.expect_after(restart_mark, "Reconnected").await;
+    god1.healed_after(restart_mark, HEAL).await;
     god1.expect_after(restart_mark, "Limbo #0").await;
 
     // And it keeps playing — the world (the room it dug) is intact, and a command
     // still works after a peer dropped mid-restart.
-    let after_restart = god1.mark();
-    god1.send_line("east").await;
-    god1.expect_after(after_restart, "Vault").await;
+    god1.say("east", "Vault").await;
 
     drop(god1);
 }
@@ -610,13 +460,21 @@ async fn reply_settings_survive_restart_and_remain_connection_local() {
     let unit = unit(store);
     unit.start().await;
     let addr = start_split(&unit).await;
-    let (_a, mut a) = play_client(addr).await;
-    a.send_line(&format!("connect boss {GM_PASSWORD}")).await;
-    a.expect("Connected as God").await;
+    let (_a, mut a) = Term::play(addr).await;
+    when_admitted(
+        &mut a,
+        &format!("connect boss {GM_PASSWORD}"),
+        &["Connected as God"],
+    )
+    .await;
     a.expect("Limbo #0").await;
-    let (_b, mut b) = play_client(addr).await;
-    b.send_line(&format!("connect boss {GM_PASSWORD}")).await;
-    b.expect("Connected as God").await;
+    let (_b, mut b) = Term::play(addr).await;
+    when_admitted(
+        &mut b,
+        &format!("connect boss {GM_PASSWORD}"),
+        &["Connected as God"],
+    )
+    .await;
     b.expect("Limbo #0").await;
     let mark = a.mark();
     a.send_line("OUTPUTSUFFIX __END__").await;
@@ -628,7 +486,7 @@ async fn reply_settings_survive_restart_and_remain_connection_local() {
     let mark = a.mark();
     a.send_line("think before-restart").await;
     a.expect_after(mark, "\n__END__\r\n").await;
-    let text = strip_ansi(&a.seen[mark..]);
+    let text = a.since(mark);
     assert!(
         text.find("__BEGIN__").unwrap() < text.rfind("before-restart").unwrap(),
         "{text}"
@@ -640,19 +498,21 @@ async fn reply_settings_survive_restart_and_remain_connection_local() {
     let peer = b.mark();
     b.send_line("think peer-unframed").await;
     b.expect_after(peer, "\npeer-unframed\r\n").await;
-    let text = strip_ansi(&b.seen[peer..]);
+    let text = b.since(peer);
     assert!(
         !text.contains("__BEGIN__") && !text.contains("__END__"),
         "{text}"
     );
 
+    // No sentinel after the heal: this session frames every reply, and the
+    // sentinel's framed answer would land inside the next read.
     let mark = a.mark();
     unit.restart().await;
-    a.expect_after(mark, "Reconnected").await;
+    a.reconnected_after(mark, HEAL).await;
     let mark = a.mark();
     a.send_line("think after-restart").await;
     a.expect_after(mark, "\n__END__\r\n").await;
-    let text = strip_ansi(&a.seen[mark..]);
+    let text = a.since(mark);
     assert!(
         text.find("__BEGIN__").unwrap() < text.rfind("after-restart").unwrap(),
         "{text}"
@@ -665,9 +525,9 @@ async fn reply_settings_survive_restart_and_remain_connection_local() {
     let mark = a.mark();
     a.send_line("OUTPUTSUFFIX __NEW_END__").await;
     a.expect_after(mark, "\n__NEW_END__\r\n").await;
-    assert!(strip_ansi(&a.seen[mark..]).contains("__BEGIN__"));
+    assert!(a.since(mark).contains("__BEGIN__"));
     let mark = a.mark();
     a.send_line("think restored-prefix").await;
     a.expect_after(mark, "\n__NEW_END__\r\n").await;
-    assert!(strip_ansi(&a.seen[mark..]).contains("__BEGIN__"));
+    assert!(a.since(mark).contains("__BEGIN__"));
 }

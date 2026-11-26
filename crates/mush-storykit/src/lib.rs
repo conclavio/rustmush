@@ -65,6 +65,17 @@
 //!   in place of a sleep or a count of yields that let the world take what was
 //!   sent to it. An absence is asserted after it.
 //!
+//! Added by unit FL.7, for the stories that talk to a server over SSH:
+//!
+//! - [`Term`]: the one terminal, a line-mode SSH session and its transcript,
+//!   with the needle reads, [`Term::say`]'s busy retry, and the [`Session`]
+//!   the barriers read through. [`strip_ansi`] is its one copy of the
+//!   terminal-to-text rule, and [`AcceptAll`] its client handler. The
+//!   `one_reader` gate refuses a second `struct Term`, `ask_whole` or
+//!   `strip_ansi` in a crate that has moved onto these.
+//! - [`Term::across_restart`]: a held session's side of a restart, bounded
+//!   by the restarted half's own heal schedule (rule P).
+//!
 //! **Dev-only.** This crate is a `[dev-dependencies]` entry and nothing else:
 //! its helpers panic by design, as a failed assertion does. The panic budget's
 //! `no_production_crate_links_an_excluded_crate` test refuses a normal or a
@@ -91,6 +102,7 @@ mod paused;
 mod phase;
 mod reply;
 mod scratch;
+mod term;
 mod wait;
 
 pub use barrier::{
@@ -109,6 +121,7 @@ pub use phase::{
 };
 pub use reply::{Reply, ask};
 pub use scratch::scratch_dir;
+pub use term::{AcceptAll, BUSY_RETRIES, COLS, RECONNECTED, RESTARTING, ROWS, Term, strip_ansi};
 pub use wait::{
     LOAD_FACTOR, POLL_INTERVAL, STEP_TIMEOUT, STEP_UNLOADED, loaded, wait_for, wait_until,
 };

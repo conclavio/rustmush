@@ -53,11 +53,9 @@ use mush_ipc::{
 use mush_proto::SmolStr;
 use mush_server::IPC_DUPLICATE_CONN_ID_MARKER;
 use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore};
-use russh::ChannelMsg;
 
-use super::harness::{GatewayUnit, ServerUnit};
+use super::harness::{AcceptAll, GatewayUnit, STEP_TIMEOUT, ServerUnit, Term, when_admitted};
 
-pub(super) const STEP_TIMEOUT: Duration = Duration::from_secs(60);
 pub(super) const GM_PASSWORD: &str = "gm-secret-1";
 /// The server's own link-dead grace (`[game].linkdead_grace_s`): short, so the
 /// server-side reaper for a dead link's actors is seen inside the proof.
@@ -131,156 +129,33 @@ async fn gateway(
     GatewayUnit::start(gateway_config(unit), Arc::clone(store), generation).await
 }
 
-pub(super) struct AcceptAll;
-
-impl russh::client::Handler for AcceptAll {
-    type Error = russh::Error;
-
-    async fn check_server_key(
-        &mut self,
-        _key: &russh::keys::PublicKeyOrCertificate,
-    ) -> Result<bool, Self::Error> {
-        Ok(true)
-    }
-}
-
-pub(super) fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                for f in chars.by_ref() {
-                    if ('\u{40}'..='\u{7e}').contains(&f) {
-                        break;
-                    }
-                }
-            }
-            continue;
-        }
-        out.push(c);
-    }
-    out
-}
-
-pub(super) struct Term {
-    channel: russh::Channel<russh::client::Msg>,
-    seen: String,
-}
-
-impl Term {
-    /// A terminal over an opened channel (a shell with a pty requested).
-    #[cfg_attr(not(unix), allow(dead_code))]
-    pub(super) fn new(channel: russh::Channel<russh::client::Msg>) -> Term {
-        Term {
-            channel,
-            seen: String::new(),
-        }
-    }
-
-    pub(super) fn mark(&self) -> usize {
-        self.seen.len()
-    }
-
-    /// Everything seen since `mark`, ANSI stripped.
-    pub(super) fn since(&self, mark: usize) -> String {
-        strip_ansi(&self.seen[mark..])
-    }
-
-    pub(super) async fn expect(&mut self, needle: &str) {
-        self.expect_after(0, needle).await;
-    }
-
-    pub(super) async fn expect_after(&mut self, mark: usize, needle: &str) {
-        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
-        while !strip_ansi(&self.seen[mark..]).contains(needle) {
-            let msg = tokio::time::timeout_at(deadline, self.channel.wait())
-                .await
-                .unwrap_or_else(|_| {
-                    panic!("timeout waiting for {needle:?}; seen: {:?}", self.seen)
-                });
-            match msg {
-                Some(ChannelMsg::Data { data }) => {
-                    self.seen.push_str(&String::from_utf8_lossy(&data));
-                }
-                Some(_) => {}
-                None => panic!(
-                    "channel closed waiting for {needle:?}; seen: {:?}",
-                    self.seen
-                ),
-            }
-        }
-    }
-
-    pub(super) async fn send_line(&mut self, line: &str) {
-        let bytes = format!("{line}\r").into_bytes();
-        self.channel.data(&bytes[..]).await.expect("send line");
-    }
-
-    /// `say` something and wait for the echo: the player is live, and every
-    /// frame the server addressed to this connection before the say has
-    /// arrived (one FIFO per link).
-    pub(super) async fn say_and_hear(&mut self, text: &str) -> usize {
-        let mark = self.mark();
-        self.send_line(&format!("say {text}")).await;
-        self.expect_after(mark, &format!(" says, \"{text}\"")).await;
-        mark
-    }
-
-    pub(super) async fn expect_close(&mut self) {
-        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
-        loop {
-            let msg = tokio::time::timeout_at(deadline, self.channel.wait())
-                .await
-                .expect("timeout waiting for close");
-            match msg {
-                None | Some(ChannelMsg::Close) => return,
-                Some(ChannelMsg::Data { data }) => {
-                    self.seen.push_str(&String::from_utf8_lossy(&data));
-                }
-                Some(_) => {}
-            }
-        }
-    }
-}
-
-pub(super) async fn play_client(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Term) {
-    let config = Arc::new(russh::client::Config::default());
-    let mut handle = russh::client::connect(config, addr, AcceptAll)
-        .await
-        .expect("connect");
-    let auth = handle.authenticate_none("play").await.expect("auth-none");
-    assert!(auth.success(), "play must be accepted with no auth");
-    let channel = handle.channel_open_session().await.expect("open channel");
-    channel
-        .request_pty(true, "xterm-256color", 120, 40, 0, 0, &[])
-        .await
-        .expect("pty");
-    channel.request_shell(true).await.expect("shell");
-    (
-        handle,
-        Term {
-            channel,
-            seen: String::new(),
-        },
-    )
-}
-
 /// God logs in on `addr` and is shown Limbo.
+/// `say` something and wait for its echo: the player is live, and every
+/// frame the server addressed to this connection before the say has arrived
+/// (one FIFO per link).
+pub(super) async fn say_and_hear(term: &mut Term, text: &str) -> usize {
+    let mark = term.mark();
+    term.send_line(&format!("say {text}")).await;
+    term.expect_after(mark, &format!(" says, \"{text}\"")).await;
+    mark
+}
+
 pub(super) async fn god_on(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Term) {
-    let (handle, mut god) = play_client(addr).await;
+    let (handle, mut god) = Term::play(addr).await;
     god.expect("connect <account> <password>").await;
-    god.send_line(&format!("connect boss {GM_PASSWORD}")).await;
-    god.expect("Connected as God (account boss, 1 connection).")
-        .await;
+    when_admitted(
+        &mut god,
+        &format!("connect boss {GM_PASSWORD}"),
+        &["Connected as God (account boss, 1 connection)."],
+    )
+    .await;
     god.expect("Limbo #0").await;
     (handle, god)
 }
 
 /// Alice creates her account on `addr` and is shown Limbo.
 pub(super) async fn alice_creates_on(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Term) {
-    let (handle, mut alice) = play_client(addr).await;
+    let (handle, mut alice) = Term::play(addr).await;
     alice.expect("connect <account> <password>").await;
     alice.send_line("create Alice secret123").await;
     alice
@@ -292,7 +167,7 @@ pub(super) async fn alice_creates_on(addr: SocketAddr) -> (russh::client::Handle
 
 /// Alice logs back in on `addr` (her account exists in the shared store).
 pub(super) async fn alice_returns_on(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Term) {
-    let (handle, mut alice) = play_client(addr).await;
+    let (handle, mut alice) = Term::play(addr).await;
     alice.expect("connect <account> <password>").await;
     alice.send_line("connect Alice secret123").await;
     alice
@@ -358,7 +233,7 @@ async fn two_gateways_share_one_world_and_one_leaving_costs_only_its_own_connect
     drop(alice);
     god.expect_after(mark, "Alice has gone link-dead.").await;
     god.expect_after(mark, "Alice has disconnected.").await;
-    god.say_and_hear("still here on gateway b").await;
+    say_and_hear(&mut god, "still here on gateway b").await;
     let line = ipc_boundary_line(&mut god).await;
     assert!(line.contains("1 gateway link;"), "one link left: {line}");
     assert_eq!(unit.boots(), 1, "the server unit never restarted");
@@ -555,7 +430,7 @@ async fn a_second_link_sees_its_own_connections_output_and_every_characters() {
     // God's attach look on a is addressed to a's connection: it never reaches
     // link b, while God's `say` (a character's) does. ---
     let (_g, mut god) = god_on(gw_a.ssh_addr()).await;
-    god.say_and_hear("over to link b").await;
+    say_and_hear(&mut god, "over to link b").await;
     let up_to_say = b
         .read_until("the say on link b", |f| mentions(f, "over to link b"))
         .await;
@@ -599,7 +474,7 @@ async fn a_second_link_sees_its_own_connections_output_and_every_characters() {
         up_to_reply.last().is_some_and(|f| mentions(f, "Limbo")),
         "the reply is the room; seen: {up_to_reply:?}"
     );
-    god.say_and_hear("did the room stay on b").await;
+    say_and_hear(&mut god, "did the room stay on b").await;
     assert!(
         !god.since(mark).contains("Limbo"),
         "link b's room never reaches God on gateway a; seen: {:?}",
@@ -638,7 +513,7 @@ async fn a_second_link_sees_its_own_connections_output_and_every_characters() {
     // --- Link b ends: its connection is detached, God (still on a) plays on,
     // and the server counts one link again. ---
     drop(b);
-    god.say_and_hear("link b is gone and I am not").await;
+    say_and_hear(&mut god, "link b is gone and I am not").await;
     let line = ipc_boundary_line(&mut god).await;
     assert!(line.contains("1 gateway link;"), "one link left: {line}");
 }
@@ -705,7 +580,7 @@ async fn a_duplicate_connection_id_across_links_is_refused_loudly() {
     // Alice on b is connection 1 on link b: the same id on a second live
     // link. Her announcement is refused and her connection closed; God's is
     // the owner and stays.
-    let (_a, mut alice) = play_client(gw_b.ssh_addr()).await;
+    let (_a, mut alice) = Term::play(gw_b.ssh_addr()).await;
     alice.expect("connect <account> <password>").await;
     alice.send_line("create Alice secret123").await;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
@@ -786,7 +661,7 @@ async fn a_duplicate_connection_id_across_links_is_refused_loudly() {
 
     // The owner plays on, on its own link, and every link is still attached:
     // a refused connection is not a refused gateway.
-    god.say_and_hear("the owner keeps the id").await;
+    say_and_hear(&mut god, "the owner keeps the id").await;
     let boundary = ipc_boundary_line(&mut god).await;
     assert!(
         boundary.contains("3 gateway links;"),

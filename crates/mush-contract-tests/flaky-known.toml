@@ -38,43 +38,12 @@
 
 [[flaky]]
 binary = "mush-gateway::split_halves"
-test = "restart_survival::restart_mid_scene_resumes_in_current_room"
-class = "process"
-row = 12
-listed = "2026-11-23"
-expires = "2026-12-07"
-
-[[flaky]]
-binary = "mush-gateway::split_halves"
-test = "restart_survival::client_disconnect_during_gap_leaves_survivor_intact"
-class = "process"
-row = 12
-listed = "2026-11-23"
-expires = "2026-12-07"
-
-[[flaky]]
-binary = "mush-gateway::split_halves"
-test = "gateway_generations::a_finish_warns_once_closes_after_the_grace_and_leaves_no_marker"
-class = "process"
-row = 12
-listed = "2026-11-23"
-expires = "2026-12-07"
-
-[[flaky]]
-binary = "mush-gateway::split_halves"
 test = "gateway_generations::a_drains_while_b_serves_and_every_session_is_warned_then_moved"
 class = "process"
 row = 12
 listed = "2026-11-23"
 expires = "2026-12-07"
-
-[[flaky]]
-binary = "mush-gateway::split_halves"
-test = "server_unit::a_gateway_started_before_its_server_serves_the_gap_then_heals"
-class = "process"
-row = 12
-listed = "2026-11-23"
-expires = "2026-12-07"
+note = "kept by FL.7, not renewed: its channel-closed shape is the drain fault FL.7 fixed; its other shape, the queued-connection burst answered 15 of 16 (run 43258253021, 2026-11-12, a branch), is the kernel's listener migration and is not explained"
 
 [[flaky]]
 binary = "mushd::world_journeys"
@@ -85,30 +54,12 @@ listed = "2026-11-23"
 expires = "2026-12-07"
 note = "on watch; the class is doc 51's likely reading, the cause is not known"
 
-[[flaky]]
-binary = "mush-gateway::split_halves"
-test = "arena_custody_split::the_arena_surface_survives_the_split_and_a_server_restart"
-class = "process"
-row = 15
-listed = "2026-11-23"
-expires = "2026-12-07"
-note = "on watch; the class is doc 51's likely reading, the cause is not known"
-
-[[flaky]]
-binary = "mush-gateway::split_halves"
-test = "arena_custody_split::a_pilot_in_a_pod_across_a_boarding_crash_reads_the_hatch_line"
-class = "process"
-row = 15
-listed = "2026-11-23"
-expires = "2026-12-07"
-note = "on watch; the class is doc 51's likely reading, the cause is not known"
-
 # --- Carried over from the `load-sensitive` retry: no failure on record -----
 #
 # The entries of the old filter that match no row of the record: eighteen at
-# FL.2, fifteen since doc 51 unit FL.6 closed mush-server's three. Two are
-# narrowed to the one test a cut note names; the rest keep the scope the
-# filter gave them.
+# FL.2, fifteen since doc 51 unit FL.6 closed mush-server's three; unit FL.7
+# closed four of mush-gateway's five. Two are narrowed to the one test a cut
+# note names; the rest keep the scope the filter gave them.
 
 [[flaky]]
 binary = "mushd::world_journeys"
@@ -160,44 +111,13 @@ expires = "2026-12-07"
 
 [[flaky]]
 binary = "mush-gateway::split_halves"
-module = "two_process_e2e"
-class = "unclassed"
-carried = "the load-sensitive retry of cut T.1 (16b's list)"
-listed = "2026-11-23"
-expires = "2026-12-07"
-
-[[flaky]]
-binary = "mush-gateway::split_halves"
-module = "server_panic_relaunch"
-class = "unclassed"
-carried = "the load-sensitive retry of cut T.1 (16b's list)"
-listed = "2026-11-23"
-expires = "2026-12-07"
-
-[[flaky]]
-binary = "mush-gateway::split_halves"
 module = "arena_story_split"
 class = "unclassed"
 carried = "the load-sensitive retry of cut T.1 (16b's list)"
 listed = "2026-11-23"
 expires = "2026-12-07"
 
-[[flaky]]
-binary = "mush-gateway::split_halves"
-module = "two_gateways"
-class = "unclassed"
-carried = "the load-sensitive retry of cut T.1 (16b's list)"
-listed = "2026-11-23"
-expires = "2026-12-07"
-
-[[flaky]]
-binary = "mush-gateway::split_halves"
-module = "gateway_generations_unit"
-class = "unclassed"
-carried = "the load-sensitive retry of cut T.1 (16b's list)"
-listed = "2026-11-23"
-expires = "2026-12-07"
-
+note = "kept by FL.7, not renewed: one failure at 54 s in a 480-test run of the unit's merged tree, its message not kept; the 10 runs after it and 96 soak passes before it passed"
 [[flaky]]
 binary = "mush-worldgen::plan"
 whole_binary = true

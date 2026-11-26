@@ -59,10 +59,11 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
-use super::harness::{GatewaySpec, GatewayUnit, ServerUnit};
+use super::harness::{
+    AcceptAll, GatewaySpec, GatewayUnit, STEP_TIMEOUT, ServerUnit, Term, when_admitted,
+};
 use super::two_gateways::{
-    AcceptAll, GM_PASSWORD, STEP_TIMEOUT, Term, booted_unit, gateway_config, god_on, play_client,
-    seeded_gw_store,
+    GM_PASSWORD, booted_unit, gateway_config, god_on, say_and_hear, seeded_gw_store,
 };
 
 type Ws = WebSocketStream<MaybeTlsStream<TcpStream>>;
@@ -258,8 +259,12 @@ async fn create_at(term: &mut Term, name: &str, password: &str) {
 /// answered.
 async fn god_at(term: &mut Term) {
     term.expect("connect <account> <password>").await;
-    term.send_line(&format!("connect boss {GM_PASSWORD}")).await;
-    term.expect("Connected as God").await;
+    when_admitted(
+        term,
+        &format!("connect boss {GM_PASSWORD}"),
+        &["Connected as God"],
+    )
+    .await;
     term.expect("Limbo #0").await;
 }
 
@@ -500,7 +505,7 @@ async fn a_drains_while_b_serves_and_every_session_is_warned_then_moved() {
 
     // --- Meanwhile new connections are b's: a new public login, and a new
     // trusted session through the re-pointed link. ---
-    let (_bob_handle, mut bob) = play_client(a.ssh_addr()).await;
+    let (_bob_handle, mut bob) = Term::play(a.ssh_addr()).await;
     create_at(&mut bob, "Bob", "secret123").await;
     let (_g2, mut god_b) = trusted_client(&rig.link()).await;
     god_at(&mut god_b).await;
@@ -539,8 +544,8 @@ async fn a_drains_while_b_serves_and_every_session_is_warned_then_moved() {
     expect_text(&mut tab, "Limbo").await;
 
     // --- b plays on with everyone who landed on it. ---
-    bob.say_and_hear("still here on b").await;
-    god_b.say_and_hear("the doorway follows the link").await;
+    say_and_hear(&mut bob, "still here on b").await;
+    say_and_hear(&mut god_b, "the doorway follows the link").await;
     god_b.expect("Bob says, \"still here on b\"").await;
 
     // --- a, restarted by its unit, finds its marker: ready, exit 0. ---

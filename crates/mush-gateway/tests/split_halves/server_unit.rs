@@ -31,12 +31,10 @@ use mush_config::config::Config;
 use mush_core::GOD;
 use mush_gateway::GatewayOptions;
 use mush_store::{AccountRec, CharacterRef, InMemoryStore, ObjectStore};
-use russh::ChannelMsg;
 use tokio::sync::oneshot;
 
-use super::harness::ServerUnit;
+use super::harness::{HEAL, STEP_TIMEOUT, ServerUnit, Term, wait_until};
 
-const STEP_TIMEOUT: Duration = Duration::from_secs(60);
 const GM_PASSWORD: &str = "gm-secret-1";
 /// The shortened give-up bound: long enough that "restarting" is read first,
 /// short enough that the proof is not a minute of waiting.
@@ -158,154 +156,38 @@ async fn healthz(web: SocketAddr) -> serde_json::Value {
     resp.json().await.expect("/healthz is JSON")
 }
 
-struct AcceptAll;
-
-impl russh::client::Handler for AcceptAll {
-    type Error = russh::Error;
-
-    async fn check_server_key(
-        &mut self,
-        _key: &russh::keys::PublicKeyOrCertificate,
-    ) -> Result<bool, Self::Error> {
-        Ok(true)
-    }
-}
-
-fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                for f in chars.by_ref() {
-                    if ('\u{40}'..='\u{7e}').contains(&f) {
-                        break;
-                    }
-                }
-            }
-            continue;
-        }
-        out.push(c);
-    }
-    out
-}
-
-struct Term {
-    channel: russh::Channel<russh::client::Msg>,
-    seen: String,
-}
-
-impl Term {
-    fn mark(&self) -> usize {
-        self.seen.len()
-    }
-
-    async fn expect_after(&mut self, mark: usize, needle: &str) {
-        assert_eq!(
-            self.expect_one_of_after(mark, &[needle]).await,
-            0,
-            "one needle"
-        );
-    }
-
-    async fn send_line(&mut self, line: &str) {
-        let bytes = format!("{line}\r").into_bytes();
-        self.channel.data(&bytes[..]).await.expect("send line");
-    }
-
-    /// Wait for whichever of `needles` arrives first, answering its index.
-    async fn expect_one_of_after(&mut self, mark: usize, needles: &[&str]) -> usize {
-        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
-        loop {
-            let seen = strip_ansi(&self.seen[mark..]);
-            if let Some(index) = needles.iter().position(|needle| seen.contains(needle)) {
-                return index;
-            }
-            let msg = tokio::time::timeout_at(deadline, self.channel.wait())
-                .await
-                .unwrap_or_else(|_| {
-                    panic!(
-                        "timeout waiting for any of {needles:?}; seen: {:?}",
-                        self.seen
-                    )
-                });
-            match msg {
-                Some(ChannelMsg::Data { data }) => {
-                    self.seen.push_str(&String::from_utf8_lossy(&data));
-                }
-                Some(_) => {}
-                None => panic!(
-                    "channel closed waiting for any of {needles:?}; seen: {:?}",
-                    self.seen
-                ),
-            }
-        }
-    }
-
-    /// `connect` as the staff account; answer what the gateway said: `Ok(())`
-    /// for a login, `Err(what it said)` for a `Connection failed:` line or
-    /// the login rate limit.
-    async fn try_connect(&mut self) -> Result<(), String> {
-        let mark = self.mark();
-        self.send_line(&format!("connect boss {GM_PASSWORD}")).await;
-        match self
-            .expect_one_of_after(
-                mark,
-                &[
-                    "Connected as God",
-                    "Connection failed:",
-                    "You're doing that too fast.",
-                ],
-            )
-            .await
-        {
-            0 => {
-                self.expect_after(mark, "Limbo #0").await;
-                Ok(())
-            }
-            _ => Err(strip_ansi(&self.seen[mark..])),
-        }
-    }
-
-    /// `connect` until the gateway lets the staff account in, through the
-    /// gap's refusals and the login rate limit. Panics past `STEP_TIMEOUT`.
-    async fn connect_when_admitted(&mut self) {
-        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
-        loop {
-            if self.try_connect().await.is_ok() {
-                return;
-            }
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "the gateway never admitted the login; seen: {:?}",
-                self.seen
-            );
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
-    }
-}
-
-async fn play_client(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Term) {
-    let config = Arc::new(russh::client::Config::default());
-    let mut handle = russh::client::connect(config, addr, AcceptAll)
+/// `connect` as the staff account; answer what the gateway said: `Ok(())`
+/// for a login, `Err(what it said)` for a `Connection failed:` line or the
+/// login rate limit.
+async fn try_connect(term: &mut Term) -> Result<(), String> {
+    let mark = term.mark();
+    term.send_line(&format!("connect boss {GM_PASSWORD}")).await;
+    match term
+        .expect_one_of_after(
+            mark,
+            &[
+                "Connected as God",
+                "Connection failed:",
+                "You're doing that too fast.",
+            ],
+        )
         .await
-        .expect("connect");
-    let auth = handle.authenticate_none("play").await.expect("auth-none");
-    assert!(auth.success(), "play must be accepted with no auth");
-    let channel = handle.channel_open_session().await.expect("open channel");
-    channel
-        .request_pty(true, "xterm-256color", 120, 40, 0, 0, &[])
-        .await
-        .expect("pty");
-    channel.request_shell(true).await.expect("shell");
-    (
-        handle,
-        Term {
-            channel,
-            seen: String::new(),
-        },
-    )
+    {
+        0 => {
+            term.expect_after(mark, "Limbo #0").await;
+            Ok(())
+        }
+        _ => Err(term.since(mark)),
+    }
+}
+
+/// `connect` until the gateway lets the staff account in, through the gap's
+/// refusals and the login rate limit, under the kit's step limit.
+async fn connect_when_admitted(term: &mut Term) {
+    wait_until(STEP_TIMEOUT, "the gateway to admit the login", async || {
+        try_connect(term).await.is_ok()
+    })
+    .await;
 }
 
 /// A gateway started before its server unit boots into the gap, refuses the
@@ -321,10 +203,9 @@ async fn a_gateway_started_before_its_server_serves_the_gap_then_heals() {
         "the unit has not booted; the gateway is up anyway"
     );
 
-    let (_g, mut god) = play_client(ssh_addr).await;
+    let (_g, mut god) = Term::play(ssh_addr).await;
     god.expect_after(0, "connect <account> <password>").await;
-    let refused = god
-        .try_connect()
+    let refused = try_connect(&mut god)
         .await
         .expect_err("no server: the login is refused, not admitted");
     assert!(
@@ -339,7 +220,7 @@ async fn a_gateway_started_before_its_server_serves_the_gap_then_heals() {
 
     // The unit comes up. Nothing is asked of the gateway or the client.
     unit.start().await;
-    god.connect_when_admitted().await;
+    connect_when_admitted(&mut god).await;
 
     // ... and the world is the one the unit booted.
     let mark = god.mark();
@@ -360,8 +241,8 @@ async fn a_server_down_past_the_bound_is_announced_and_the_heal_clears_it() {
     unit.start().await;
     let (ssh_addr, web_addr) = start_gateway(&unit, Some(GIVE_UP_AFTER)).await;
 
-    let (_g, mut god) = play_client(ssh_addr).await;
-    god.connect_when_admitted().await;
+    let (_g, mut god) = Term::play(ssh_addr).await;
+    connect_when_admitted(&mut god).await;
     assert_eq!(healthz(web_addr).await["server_ok"], true);
 
     // The unit goes down and stays down.
@@ -370,7 +251,7 @@ async fn a_server_down_past_the_bound_is_announced_and_the_heal_clears_it() {
     god.expect_after(down_mark, "restarting").await;
     // Past the bound: the give-up notice, in the gap's own voice.
     god.expect_after(down_mark, "staff have been paged").await;
-    let seen = strip_ansi(&god.seen[down_mark..]);
+    let seen = god.since(down_mark);
     assert!(
         seen.find("restarting") < seen.find("staff have been paged"),
         "restarting is said first, the give-up after the bound; seen: {seen:?}"
@@ -389,10 +270,9 @@ async fn a_server_down_past_the_bound_is_announced_and_the_heal_clears_it() {
     let health = healthz(web_addr).await;
     assert_eq!(health["server_ok"], false, "{health}");
     assert_eq!(health["ok"], false, "{health}");
-    let (_l, mut late) = play_client(ssh_addr).await;
+    let (_l, mut late) = Term::play(ssh_addr).await;
     late.expect_after(0, "connect <account> <password>").await;
-    let refused = late
-        .try_connect()
+    let refused = try_connect(&mut late)
         .await
         .expect_err("a login while the server is down is refused");
     assert!(
@@ -404,14 +284,12 @@ async fn a_server_down_past_the_bound_is_announced_and_the_heal_clears_it() {
     // is reconnected into the reloaded world and the probe clears.
     let heal_mark = god.mark();
     unit.start().await;
-    god.expect_after(heal_mark, "Reconnected").await;
+    god.healed_after(down_mark, HEAL).await;
     god.expect_after(heal_mark, "Limbo #0").await;
     assert_eq!(healthz(web_addr).await["server_ok"], true);
-    let mark = god.mark();
-    god.send_line("say back again").await;
-    god.expect_after(mark, "God says, \"back again\"").await;
+    god.say("say back again", "God says, \"back again\"").await;
     // The refused late login gets in now, too.
-    late.connect_when_admitted().await;
+    connect_when_admitted(&mut late).await;
 
     // The unit's second boot is the one that healed it: nothing else did.
     assert_eq!(unit.boots(), 2);
