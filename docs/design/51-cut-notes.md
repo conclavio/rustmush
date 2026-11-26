@@ -1473,7 +1473,8 @@ entries for `split_halves`). It is larger than `docs/flaky-tests.md`'s count, wh
 ## FL.9
 
 The small crates. Built 2026-11-25 on `6b63cb8be` (FL.7's branch, PR #806, with main merged in), stacked on FL.7
-by the owner's word of 2026-11-26. It adds one module to `mush-storykit` (`step.rs`), moves the stories of
+by the owner's word of 2026-11-26; #806 merged before this unit's pull request opened, and main was merged in
+(it brought only Unity files). It adds one module to `mush-storykit` (`step.rs`), moves the stories of
 mush-net-web, mush-net-ssh and mush-sshdoorway onto the kit, and builds the `span` counter of `wait_budget`, which
 FL.1 left a stub. **It changes no product code.** None of the three crates had a row in `flaky-known.toml`, so no
 row closes.
