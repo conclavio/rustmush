@@ -124,7 +124,7 @@ pub const BUSY_NEEDLES: [&str; BUSY_SENTENCES.len()] = {
 };
 
 /// [`BUSY_NEEDLES`] as a list, to extend a reader's own needles with, and
-/// the flood bucket's refusal ([`crate::readout::FLOODED`], unit FL.8), which
+/// the flood bucket's refusal ([`crate::FLOODED`], unit FL.8), which
 /// the kit's readers also type a line again after.
 #[must_use]
 pub fn busy_needles() -> Vec<&'static str> {

@@ -7782,6 +7782,10 @@ async fn af3_the_resume_names_nothing_a_pilot_or_a_bystander_may_not_read() {
     }
     let (_a, mut ada) = login(first.addr, "ada", PILOT_PASSWORD, "Ada").await;
     let (_b, mut bo) = login(first.addr, "bo", PILOT_PASSWORD, "Bo").await;
+    // Bo's `has connected.` is on its way to Ada once Bo is in, and could land
+    // after the echo of her next line, inside the refusal read below (CI run
+    // 45426726188, 2026-11-24). Everything said to her before now is in first.
+    settled(&mut ada).await;
     let refused_before = ada.ask_settled("@arena/status", "Permission denied.").await;
     take_off(&mut ada, &mut bo).await;
     let store = Arc::clone(&first.store);

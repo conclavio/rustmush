@@ -255,7 +255,7 @@ impl Term {
     }
 
     /// **Type `line` and wait for `needle`**, typing it again while the
-    /// server gives a busy answer (a sentence of [`BUSY_NEEDLES`], the kit's
+    /// server gives a busy answer (a sentence of [`crate::BUSY_NEEDLES`], the kit's
     /// one table): a commit in flight, the engine's queue, the control lease's
     /// 1 Hz mirror. Those are real answers a real client retries, not
     /// failures. A needle read: it waits, it returns nothing to parse.

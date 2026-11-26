@@ -131,7 +131,7 @@ pub use phase::{
     BEFORE_DAY_TURN, BEFORE_MONTH_TURN_DAYS, Calendar, IC_DAY, IC_HOUR, IC_MONTH, PHASE_TESTS,
     PHASE_VAR, Phase, STORY_EPOCH,
 };
-pub use readout::{TICK_MARK, after_ticks};
+pub use readout::{FLOODED, TICK_MARK, after_ticks};
 pub use reply::{Reply, ask};
 pub use scratch::scratch_dir;
 pub use term::{AcceptAll, BUSY_RETRIES, COLS, RECONNECTED, RESTARTING, ROWS, Term, strip_ansi};

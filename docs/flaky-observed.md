@@ -4,10 +4,10 @@
 
 # Flaky tests observed
 
-*Generated 2026-11-26 02:12 UTC. What was seen, by the rule of [flaky-tests.md](flaky-tests.md), which stays the hand-written record of causes. A test here whose Record is `none` is the work queue. The columns: Class and Known list are the list's (crates/mush-contract-tests/flaky-known.toml); Record is the row of flaky-tests.md that names the test; 14 d and 30 d count the runs or passes in which the test failed or passed on retry; Soak is failed passes over passes; a Why of branches alone is a lead to read, not a finding.*
+*Generated 2026-11-26 05:53 UTC. What was seen, by the rule of [flaky-tests.md](flaky-tests.md), which stays the hand-written record of causes. A test here whose Record is `none` is the work queue. The columns: Class and Known list are the list's (crates/mush-contract-tests/flaky-known.toml); Record is the row of flaky-tests.md that names the test; 14 d and 30 d count the runs or passes in which the test failed or passed on retry; Soak is failed passes over passes; a Why of branches alone is a lead to read, not a finding.*
 
 
-Sources: ci.yml, the last 14 day(s); 724 run(s) listed, 108 with reports read (the shards with a failed job).
+Sources: ci.yml, the last 14 day(s); 729 run(s) listed, 107 with reports read (the shards with a failed job).
 
 | Test | Binary | Class | Known list | Record | First seen | Last seen | 14 d | 30 d | Soak | Why | Last three |
 |---|---|---|---|---|---|---|---:|---:|---|---|---|
@@ -24,8 +24,8 @@ Sources: ci.yml, the last 14 day(s); 724 run(s) listed, 108 with reports read (t
 | `a_captain_and_its_escort_fight_the_raider_in_an_ic_field` | `mush-bot::mining_cohort` |  | **NOT LISTED** | row 6 | 2026-11-16 | 2026-11-21 | 6 | 6 |  | same head x2, 5 branches | [44855837690 a1 bot-stories](https://github.com/conclavio/rustmush/actions/runs/44855837690/attempts/1), [44831679416 a1 bot-stories](https://github.com/conclavio/rustmush/actions/runs/44831679416/attempts/1), [44713758290 a1 bot-stories](https://github.com/conclavio/rustmush/actions/runs/44713758290/attempts/1) |
 | `ic_slice_loop::ic12_part_one_a_leg_by_hand` | `mush-server::commerce_composition` |  | **NOT LISTED** | row 7 | 2026-11-18 | 2026-11-20 | 6 | 6 |  | same head x2, 6 branches | [44746071191 a1 rest-server](https://github.com/conclavio/rustmush/actions/runs/44746071191/attempts/1), [44720446968 a1 rest-server](https://github.com/conclavio/rustmush/actions/runs/44720446968/attempts/1), [44638631607 a1 rest-server](https://github.com/conclavio/rustmush/actions/runs/44638631607/attempts/1) |
 | `client_verbs::every_command_a_client_emits_is_a_registered_verb` | `mush-contract-tests::engine_contracts` |  | **NOT LISTED** | none | 2026-11-18 | 2026-11-25 | 5 | 5 |  | 5 branches (to read) | [45716528303 a1 rest-libs](https://github.com/conclavio/rustmush/actions/runs/45716528303/attempts/1), [45715653248 a1 rest-libs](https://github.com/conclavio/rustmush/actions/runs/45715653248/attempts/1), [45712587723 a1 rest-libs](https://github.com/conclavio/rustmush/actions/runs/45712587723/attempts/1) |
-| `world_task::submission_disposition::tests::player_market_commands::rate_queues_and_cancels_a_genuine_registry_preparation` | `mush-server` |  | **NOT LISTED** | row 8 | 2026-11-12 | 2026-11-20 | 5 | 5 |  | same head x2, 5 branches | [44682623819 a1 rest-server](https://github.com/conclavio/rustmush/actions/runs/44682623819/attempts/1), [44677295753 a1 rest-server](https://github.com/conclavio/rustmush/actions/runs/44677295753/attempts/1), [43490068651 a1 rest-server](https://github.com/conclavio/rustmush/actions/runs/43490068651/attempts/1) |
 | `a_bot_hires_launches_mines_recovers_and_sells_with_a_detachment` | `mush-bot::mining_cohort` |  | **NOT LISTED** | row 5 | 2026-11-17 | 2026-11-20 | 4 | 4 |  | same head x3, 4 branches | [44713758290 a1 bot-stories](https://github.com/conclavio/rustmush/actions/runs/44713758290/attempts/1), [44392895915 a1 bot-stories](https://github.com/conclavio/rustmush/actions/runs/44392895915/attempts/1), [44204468078 a1 bot-stories](https://github.com/conclavio/rustmush/actions/runs/44204468078/attempts/1) |
+| `world_task::submission_disposition::tests::player_market_commands::rate_queues_and_cancels_a_genuine_registry_preparation` | `mush-server` |  | **NOT LISTED** | row 8 | 2026-11-12 | 2026-11-20 | 4 | 4 |  | same head x1, 4 branches | [44682623819 a1 rest-server](https://github.com/conclavio/rustmush/actions/runs/44682623819/attempts/1), [44677295753 a1 rest-server](https://github.com/conclavio/rustmush/actions/runs/44677295753/attempts/1), [43490068651 a1 rest-server](https://github.com/conclavio/rustmush/actions/runs/43490068651/attempts/1) |
 | `dt_preparation_plans::ic_field_a_dt_recover_whose_carrier_is_lost_keeps_the_unit_in_the_field` | `mush-server::split_boundary` |  | **NOT LISTED** | row 1 | 2026-11-21 | 2026-11-22 | 4 | 4 |  | same head x2, 4 branches | [45040138145 a1 rest-server-boundary](https://github.com/conclavio/rustmush/actions/runs/45040138145/attempts/1), [44973893275 a1 rest-server-boundary](https://github.com/conclavio/rustmush/actions/runs/44973893275/attempts/1), [44968629541 a1 rest-server-boundary](https://github.com/conclavio/rustmush/actions/runs/44968629541/attempts/1) |
 | `sim_range::one_pilot_on_the_range_hits_its_target_and_reads_her_own_rate` | `mushd::sim_lenses` |  | **NOT LISTED** | row 9 | 2026-11-18 | 2026-11-19 | 4 | 4 |  | same head x2, 4 branches | [44492764822 a1 rest-mushd](https://github.com/conclavio/rustmush/actions/runs/44492764822/attempts/1), [44481987537 a1 rest-mushd](https://github.com/conclavio/rustmush/actions/runs/44481987537/attempts/1), [44297480334 a1 rest-mushd](https://github.com/conclavio/rustmush/actions/runs/44297480334/attempts/1) |
 | `ic_slice_loop::ic12_part_two_the_queue_runs_the_return` | `mush-server::commerce_composition` |  | **NOT LISTED** | row 7 | 2026-11-19 | 2026-11-20 | 3 | 3 |  | same head x1, 3 branches | [44746071191 a1 rest-server](https://github.com/conclavio/rustmush/actions/runs/44746071191/attempts/1), [44720446968 a1 rest-server](https://github.com/conclavio/rustmush/actions/runs/44720446968/attempts/1), [44444459400 a1 rest-server](https://github.com/conclavio/rustmush/actions/runs/44444459400/attempts/1) |
@@ -64,18 +64,11 @@ Sources: ci.yml, the last 14 day(s); 724 run(s) listed, 108 with reports read (t
 
 65 more test(s) failed on one branch or one head only and are that branch's own by the rule; `--run <id>` names them for a run.
 
-**The known list:** 15 row(s), 0 seen in these sources, 0 past expiry.
+**The known list:** 8 row(s), 0 seen in these sources, 0 past expiry.
 
 Listed and not seen (no evidence here to renew on):
 
 - `mush-gateway::split_halves` `gateway_generations::a_drains_while_b_serves_and_every_session_is_warned_then_moved`, process, expires 2026-12-07
-- `mushd::world_journeys` `web_e2e::spa_if_built_and_healthz_are_served`, process, expires 2026-12-07
-- `mushd::world_journeys` `scripting_e2e::*`, unclassed, expires 2026-12-07
-- `mushd::sim_lenses` `sim_reflex::*`, unclassed, expires 2026-12-07
-- `mushd::durable_process` `load_soak::*`, unclassed, expires 2026-12-07
-- `mushd::durable_process` `world_fault::*`, unclassed, expires 2026-12-07
-- `mushd::durable_process` `relay_bridge::r6b_real_bridge_delivers_only_to_arrived_observers_and_deduplicates_provider_retries`, unclassed, expires 2026-12-07
-- `mushd::sim_lenses` `arena_story::two_pilots_walk_in_fight_and_one_tank_is_destroyed`, unclassed, expires 2026-12-07
 - `mush-gateway::split_halves` `arena_story_split::*`, unclassed, expires 2026-12-07
 - `mush-worldgen::plan` (the whole binary), unclassed, expires 2026-12-07
 - `mush-worldgen::review_plan` (the whole binary), unclassed, expires 2026-12-07
