@@ -6,9 +6,25 @@ using TacSim.Net;
 using TacSim.Space;
 using TMPro;
 using UnityEngine;
+using UnityEngine.EventSystems;
 
 namespace TacSim.World
 {
+    public enum BridgeHoloMode
+    {
+        Auto = 0,
+        LocalBubble = 1,
+        SolarSystem = 2
+    }
+
+    public sealed class BridgeHoloMarker : MonoBehaviour
+    {
+        public string TargetId = string.Empty;
+        public string DisplayLabel = string.Empty;
+        public bool IsSolarBody;
+        public bool IsRock;
+    }
+
     /// <summary>
     /// Builds and drives the walkable multi-deck ship interior
     /// (Airlock, Central Passage, Bridge, Crew Compartment, Cargo Hold, Engineering Access, and Dray-P Vehicle Bay)
@@ -29,6 +45,8 @@ namespace TacSim.World
         public event Action<WorldInteractable> OnInteractableTriggered;
         public event Action<ExitPortalTrigger, string, string> OnPortalCrossed;
         public event Action OnInteriorRebuilt;
+        public event Action<string, bool> OnHoloContactClicked; // (contactOrRockId, isRock)
+        public event Action<string> OnHoloPlanetClicked;        // (bodyOrPortId)
 
         private readonly Dictionary<string, TextMeshPro> _gaugeDisplays = new Dictionary<string, TextMeshPro>(StringComparer.Ordinal);
         private readonly Dictionary<string, List<string>> _gaugeLines = new Dictionary<string, List<string>>(StringComparer.Ordinal);
@@ -37,16 +55,20 @@ namespace TacSim.World
         private readonly Dictionary<string, string> _crewDisplayNames = new Dictionary<string, string>(StringComparer.Ordinal);
         private readonly Dictionary<string, Vector3> _crewTargetPositions = new Dictionary<string, Vector3>(StringComparer.Ordinal);
         private readonly Dictionary<string, WorldBillboard> _crewBillboards = new Dictionary<string, WorldBillboard>(StringComparer.Ordinal);
+        private readonly List<BridgeHoloMarker> _holoClickNodes = new List<BridgeHoloMarker>();
         private Transform _crewActorsContainer;
         private string _crewActorsCompartmentId;
         private Transform _holotankBlipsRoot;
         private Transform _cargoPalletsRoot;
         private WorldInteractable _airlockLeaveInteractable;
         private float _holoSpinDeg;
+        private JsonNode _lastHolotankFeed;
         private TacSimSolarChartFrame _lastSolarChart;
         private bool _holoShowingTacticalContacts;
 
+        public BridgeHoloMode ActiveHoloMode { get; private set; } = BridgeHoloMode.Auto;
         public bool IsHoloShowingSolarSystem => !_holoShowingTacticalContacts && _lastSolarChart != null && _lastSolarChart.Bodies.Count > 0;
+        public int ClickableHoloNodeCount => _holoClickNodes.Count;
 
         // Companionway stairwell openings in ship local X/Z so climbing between Passage (Y=0),
         // Bridge (Y=+3.4m), and Cargo Hold (Y=-3.6m) has full head & capsule clearance.
@@ -801,6 +823,22 @@ namespace TacSim.World
             {
                 _holoSpinDeg = (_holoSpinDeg + Time.deltaTime * 16f) % 360f;
                 _holotankBlipsRoot.localRotation = Quaternion.Euler(0f, _holoSpinDeg, 0f);
+
+                bool overUi = EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
+                if (!overUi && Input.GetMouseButtonDown(0) && _holoClickNodes.Count > 0)
+                {
+                    Camera cam = Camera.main;
+                    if (cam != null && Vector3.Distance(cam.transform.position, _holotankBlipsRoot.position) < 16f)
+                    {
+                        Ray ray = cam.ScreenPointToRay(Input.mousePosition);
+                        if (Physics.Raycast(ray, out RaycastHit hit, 18f))
+                        {
+                            var marker = hit.transform.GetComponentInParent<BridgeHoloMarker>();
+                            if (marker != null)
+                                TryHandleHoloMarkerClick(marker);
+                        }
+                    }
+                }
             }
 
             float dt = Mathf.Max(0.001f, Time.deltaTime);
@@ -1151,7 +1189,44 @@ namespace TacSim.World
             }
         }
 
+        public bool TryHandleHoloMarkerClick(BridgeHoloMarker marker)
+        {
+            if (marker == null || string.IsNullOrWhiteSpace(marker.TargetId))
+                return false;
+            if (!MushProtocol.TryValidateSafeCommandToken(marker.TargetId, out string safeId))
+                return false;
+
+            if (marker.IsSolarBody)
+            {
+                OnHoloPlanetClicked?.Invoke(safeId);
+                return true;
+            }
+            OnHoloContactClicked?.Invoke(safeId, marker.IsRock);
+            return true;
+        }
+
+        public void SetHoloDisplayMode(BridgeHoloMode mode)
+        {
+            ActiveHoloMode = mode;
+            RebuildHoloTankProjection();
+        }
+
+        public BridgeHoloMode CycleHoloDisplayMode()
+        {
+            BridgeHoloMode next = ActiveHoloMode == BridgeHoloMode.Auto
+                ? BridgeHoloMode.SolarSystem
+                : (ActiveHoloMode == BridgeHoloMode.SolarSystem ? BridgeHoloMode.LocalBubble : BridgeHoloMode.Auto);
+            SetHoloDisplayMode(next);
+            return next;
+        }
+
         public void PopulateHoloBlips(JsonNode holoFeed)
+        {
+            _lastHolotankFeed = holoFeed != null ? holoFeed.Clone() : null;
+            RebuildHoloTankProjection();
+        }
+
+        private void RebuildHoloTankProjection()
         {
             if (_holotankBlipsRoot == null) return;
             for (int i = _holotankBlipsRoot.childCount - 1; i >= 0; i--)
@@ -1160,15 +1235,26 @@ namespace TacSim.World
                 if (Application.isPlaying) Destroy(ch);
                 else DestroyImmediate(ch);
             }
+            _holoClickNodes.Clear();
+
+            if (ActiveHoloMode == BridgeHoloMode.SolarSystem && _lastSolarChart != null && _lastSolarChart.Bodies.Count > 0)
+            {
+                _holoShowingTacticalContacts = false;
+                RenderSolarSystemHoloIntoTank(_lastSolarChart);
+                return;
+            }
+
+            JsonNode holoFeed = _lastHolotankFeed;
 
             Material selfMat = UrpMaterialFactory.GetHologramUnlit("BlipSelf", new Color(0.25f, 1.0f, 0.7f, 0.85f));
             Material friendlyMat = UrpMaterialFactory.GetHologramUnlit("BlipFriend", new Color(0.35f, 0.8f, 1.0f, 0.8f));
             Material hostileMat = UrpMaterialFactory.GetHologramUnlit("BlipHostile", new Color(1.0f, 0.35f, 0.3f, 0.9f));
             Material rockMat = UrpMaterialFactory.GetHologramUnlit("BlipRock", new Color(1.0f, 0.78f, 0.3f, 0.85f));
             Material torpMat = UrpMaterialFactory.GetHologramUnlit("BlipTorpedo", new Color(1.0f, 0.55f, 0.15f, 0.95f));
+            Material stemMat = UrpMaterialFactory.GetHologramUnlit("HoloStem", new Color(0.35f, 0.86f, 1.0f, 0.35f));
 
-            // Center own-ship marker
-            CreateHoloSphere(_holotankBlipsRoot, Vector3.zero, 0.11f, selfMat);
+            // Center own-ship marker (always index 0)
+            CreateHoloSphere(_holotankBlipsRoot, Vector3.zero, 0.11f, selfMat, clickableId: null, isSolar: false, isRock: false, stemMat: null);
 
             var contacts = holoFeed != null && holoFeed.IsObject ? holoFeed["contacts"].AsArray() : null;
             var torpedoes = holoFeed != null && holoFeed.IsObject ? holoFeed["torpedoes"].AsArray() : null;
@@ -1219,8 +1305,10 @@ namespace TacSim.World
                     Vector3 blipPos = MapToHoloDisc(c.Double("x_km", 0.0), c.Double("y_km", 0.0), c.Double("z_km", 0.0));
                     string kind = c.Str("kind", "ship");
                     string rel = c.Str("relation", "neutral");
-                    Material m = (kind == "asteroid" || kind == "rock") ? rockMat : (rel == "hostile" ? hostileMat : friendlyMat);
-                    CreateHoloSphere(_holotankBlipsRoot, blipPos, 0.08f, m);
+                    bool isRock = kind == "asteroid" || kind == "rock";
+                    string cid = c.Str("designator", c.Str("id", string.Empty));
+                    Material m = isRock ? rockMat : (rel == "hostile" ? hostileMat : friendlyMat);
+                    CreateHoloSphere(_holotankBlipsRoot, blipPos, 0.08f, m, clickableId: cid, isSolar: false, isRock: isRock, stemMat: stemMat);
                     renderedAny = true;
                 }
             }
@@ -1232,23 +1320,30 @@ namespace TacSim.World
                     var t = torpedoes[i];
                     if (!t.IsObject) continue;
                     Vector3 blipPos = MapToHoloDisc(t.Double("x_km", 0.0), t.Double("y_km", 0.0), t.Double("z_km", 0.0));
-                    CreateHoloSphere(_holotankBlipsRoot, blipPos, 0.055f, torpMat);
+                    CreateHoloSphere(_holotankBlipsRoot, blipPos, 0.055f, torpMat, clickableId: null, isSolar: false, isRock: false, stemMat: stemMat);
                     renderedAny = true;
                 }
             }
 
-            if (!renderedAny)
+            if (!renderedAny && ActiveHoloMode != BridgeHoloMode.LocalBubble)
             {
                 _holoShowingTacticalContacts = false;
                 if (_lastSolarChart != null && _lastSolarChart.Bodies.Count > 0)
                 {
+                    for (int i = _holotankBlipsRoot.childCount - 1; i >= 0; i--)
+                    {
+                        var ch = _holotankBlipsRoot.GetChild(i).gameObject;
+                        if (Application.isPlaying) Destroy(ch);
+                        else DestroyImmediate(ch);
+                    }
+                    _holoClickNodes.Clear();
                     RenderSolarSystemHoloIntoTank(_lastSolarChart);
                 }
                 else
                 {
                     // Ambient Ceres / waypoint markers when docked before first sky.chart frame
-                    CreateHoloSphere(_holotankBlipsRoot, new Vector3(0.42f, 0.12f, 0.28f), 0.14f, friendlyMat);
-                    CreateHoloSphere(_holotankBlipsRoot, new Vector3(-0.35f, -0.08f, 0.38f), 0.07f, rockMat);
+                    CreateHoloSphere(_holotankBlipsRoot, new Vector3(0.42f, 0.12f, 0.28f), 0.14f, friendlyMat, clickableId: "ceres", isSolar: true, isRock: false, stemMat: stemMat);
+                    CreateHoloSphere(_holotankBlipsRoot, new Vector3(-0.35f, -0.08f, 0.38f), 0.07f, rockMat, clickableId: null, isSolar: false, isRock: true, stemMat: stemMat);
                 }
             }
             else
@@ -1259,23 +1354,19 @@ namespace TacSim.World
 
         /// <summary>
         /// Projects live `sky.chart` solar system bodies, orbital inclination stems, and cleared route beams
-        /// onto the 3D Bridge Holo-Tank whenever docked or when no active tactical contacts are present.
+        /// onto the 3D Bridge Holo-Tank whenever docked, in Solar mode, or when no active tactical contacts are present.
         /// </summary>
         public void ApplySolarChartFrame(TacSimSolarChartFrame chart)
         {
             _lastSolarChart = chart;
             if (_holotankBlipsRoot == null || chart == null || chart.Bodies.Count == 0)
                 return;
-            if (_holoShowingTacticalContacts)
+            if (ActiveHoloMode == BridgeHoloMode.LocalBubble)
+                return;
+            if (ActiveHoloMode == BridgeHoloMode.Auto && _holoShowingTacticalContacts)
                 return;
 
-            for (int i = _holotankBlipsRoot.childCount - 1; i >= 0; i--)
-            {
-                var ch = _holotankBlipsRoot.GetChild(i).gameObject;
-                if (Application.isPlaying) Destroy(ch);
-                else DestroyImmediate(ch);
-            }
-            RenderSolarSystemHoloIntoTank(chart);
+            RebuildHoloTankProjection();
         }
 
         private void RenderSolarSystemHoloIntoTank(TacSimSolarChartFrame chart)
@@ -1284,9 +1375,10 @@ namespace TacSim.World
             Material hereMat = UrpMaterialFactory.GetHologramUnlit("HoloHereBody", new Color(0.25f, 1.0f, 0.72f, 0.92f));
             Material bodyMat = UrpMaterialFactory.GetHologramUnlit("HoloPlanet", new Color(0.42f, 0.82f, 1.0f, 0.82f));
             Material routeMat = UrpMaterialFactory.GetHologramUnlit("HoloRouteArc", new Color(1.0f, 0.76f, 0.26f, 0.65f));
+            Material stemMat = UrpMaterialFactory.GetHologramUnlit("HoloStem", new Color(0.35f, 0.86f, 1.0f, 0.35f));
 
             // Glowing central Sun
-            CreateHoloSphere(_holotankBlipsRoot, Vector3.zero, 0.13f, sunMat);
+            CreateHoloSphere(_holotankBlipsRoot, Vector3.zero, 0.13f, sunMat, clickableId: null, isSolar: false, isRock: false, stemMat: null);
 
             var bodyPositions = new Dictionary<string, Vector3>(StringComparer.OrdinalIgnoreCase);
             for (int i = 0; i < chart.Bodies.Count; i++)
@@ -1295,7 +1387,9 @@ namespace TacSim.World
                 if (!string.IsNullOrEmpty(b.ParentId)) continue;
                 Vector3 pos = chart.ProjectBodyToBridgeHoloTank(b, maxRadiusM: 0.68f, maxVertM: 0.28f);
                 bodyPositions[b.Id] = pos;
-                CreateHoloSphere(_holotankBlipsRoot, pos, b.Here ? 0.095f : 0.06f, b.Here ? hereMat : bodyMat);
+                var route = chart.FindRouteForBodyOrPort(b.Id);
+                string clickSlug = route != null && !string.IsNullOrEmpty(route.To) ? route.To : b.Id;
+                CreateHoloSphere(_holotankBlipsRoot, pos, b.Here ? 0.095f : 0.06f, b.Here ? hereMat : bodyMat, clickableId: clickSlug, isSolar: true, isRock: false, stemMat: stemMat);
             }
 
             // Route beams between cleared corridor bodies
@@ -1326,6 +1420,46 @@ namespace TacSim.World
             var col = s.GetComponent<Collider>();
             if (col != null) { if (Application.isPlaying) Destroy(col); else DestroyImmediate(col); }
             s.GetComponent<MeshRenderer>().sharedMaterial = mat;
+        }
+
+        private void CreateHoloSphere(Transform parent, Vector3 localPos, float diameter, Material mat, string clickableId, bool isSolar, bool isRock, Material stemMat)
+        {
+            var s = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            s.transform.SetParent(parent, false);
+            s.transform.localPosition = localPos;
+            s.transform.localScale = Vector3.one * diameter;
+            s.GetComponent<MeshRenderer>().sharedMaterial = mat;
+
+            if (!string.IsNullOrWhiteSpace(clickableId))
+            {
+                var sc = s.GetComponent<SphereCollider>();
+                if (sc != null) sc.radius = 0.85f; // Generous hit volume for effortless 3D bridge clicking
+                var marker = s.AddComponent<BridgeHoloMarker>();
+                marker.TargetId = clickableId.Trim();
+                marker.DisplayLabel = clickableId.Trim();
+                marker.IsSolarBody = isSolar;
+                marker.IsRock = isRock;
+                _holoClickNodes.Add(marker);
+            }
+            else
+            {
+                var col = s.GetComponent<Collider>();
+                if (col != null) { if (Application.isPlaying) Destroy(col); else DestroyImmediate(col); }
+            }
+
+            // Vertical altitude drop stem kept as a child of the blip so parent childCount & indices stay exact!
+            if (stemMat != null && Mathf.Abs(localPos.y) > 0.02f && diameter > 0.01f)
+            {
+                float invScale = 1f / diameter;
+                var stem = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+                stem.name = "HoloAltitudeStem";
+                stem.transform.SetParent(s.transform, false);
+                stem.transform.localPosition = new Vector3(0f, -localPos.y * 0.5f * invScale, 0f);
+                stem.transform.localScale = new Vector3(0.08f, Mathf.Abs(localPos.y) * 0.5f * invScale, 0.08f);
+                var stCol = stem.GetComponent<Collider>();
+                if (stCol != null) { if (Application.isPlaying) Destroy(stCol); else DestroyImmediate(stCol); }
+                stem.GetComponent<MeshRenderer>().sharedMaterial = stemMat;
+            }
         }
 
         private static GameObject CreateLocalBox(Transform parent, string name, Vector3 localPos, Vector3 scale, Material mat, bool collider)

@@ -194,6 +194,7 @@ namespace TacSim.UI
         private readonly List<Action> _quickSlotActions = new List<Action>();
         private GameObject _helmFlightBar;
         private Text _helmStatusLabel;
+        private Text _holoModeBtnLabel;
 
         // Tabbed Comms / Combat Log & Command History
         private RectTransform _commsPanelRect;
@@ -756,8 +757,16 @@ namespace TacSim.UI
             CreateButton(controlsRow.transform, "GHOST", new Color(0.18f, 0.28f, 0.42f), () => OnCommandSubmitted?.Invoke("+helm/emcon ghost"));
             CreateButton(controlsRow.transform, "STD", new Color(0.16f, 0.34f, 0.38f), () => OnCommandSubmitted?.Invoke("+helm/emcon standard"));
             CreateButton(controlsRow.transform, "SCAN", new Color(0.16f, 0.44f, 0.34f), () => OnCommandSubmitted?.Invoke("+tac/scan"));
+            var holoBtn = CreateButton(controlsRow.transform, "HOLO: AUTO", new Color(0.18f, 0.36f, 0.56f), () => OnCommandSubmitted?.Invoke("ui:cycle_holo"));
+            _holoModeBtnLabel = holoBtn.GetComponentInChildren<Text>();
 
             _helmFlightBar.SetActive(false);
+        }
+
+        public void UpdateBridgeHoloModeLabel(string modeLabel)
+        {
+            if (_holoModeBtnLabel != null)
+                _holoModeBtnLabel.text = string.IsNullOrEmpty(modeLabel) ? "HOLO: AUTO" : modeLabel;
         }
 
         private void BuildTradeAndSailingTerminal(Transform parent)

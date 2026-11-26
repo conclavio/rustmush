@@ -289,6 +289,28 @@ namespace TacSim.Core
                 if (CameraRig != null && ShipInterior != null)
                     CameraRig.BridgeViewAnchor = ShipInterior.BridgeCameraAnchor;
             };
+            ShipInterior.OnHoloContactClicked += (id, isRock) =>
+            {
+                if (!MushProtocol.TryValidateSafeCommandToken(id, out string safeId)) return;
+                if (Audio != null) Audio.PlayRadarScanPing();
+                if (isRock)
+                {
+                    SpaceStage?.NotifyApproachOrdered(safeId);
+                    Hud?.FloatingCallouts?.ShowCallout($"HOLO APPROACH: ROCK {safeId.ToUpperInvariant()}", new Color(1f, 0.80f, 0.32f, 1f), 1.5f);
+                    ExecutePlayerCommand($"+helm/approach {safeId}");
+                }
+                else
+                {
+                    Hud?.FloatingCallouts?.ShowCallout($"HOLO LOCK: {safeId.ToUpperInvariant()}", new Color(1f, 0.42f, 0.30f, 1f), 1.5f);
+                    ExecutePlayerCommand($"+tac/lock {safeId}");
+                }
+            };
+            ShipInterior.OnHoloPlanetClicked += bodyOrPortId =>
+            {
+                if (Audio != null) Audio.PlayUiClick();
+                Hud?.FloatingCallouts?.ShowCallout($"HOLO CHART: {bodyOrPortId.ToUpperInvariant()}", new Color(0.40f, 0.92f, 1f, 1f), 1.5f);
+                Hud?.SolarMap?.FocusPort(bodyOrPortId);
+            };
 
             StationWorld.OnPortalCrossed += HandleStationPortalCrossed;
             ShipInterior.OnPortalCrossed += HandleShipPortalCrossed;
@@ -534,6 +556,7 @@ namespace TacSim.Core
                         case "ui:keybinds": Hud.KeybindHelp?.SetOpen(true); break;
                         case "ui:options": Hud.DisplayOptions?.SetOpen(true); break;
                         case "ui:cycle_cam": HandleCycleOrbitalCamera(); break;
+                        case "ui:cycle_holo": CycleBridgeHoloTableMode(); break;
                         case "ui:clear_wayfinder":
                             Wayfinder?.ClearRoute();
                             Hud.OpsDirectory?.SyncWayfinderBanner(ActiveStage);
@@ -773,6 +796,18 @@ namespace TacSim.Core
                 ? "CAMERA: TACTICAL HIGH-ORBIT"
                 : (next == CameraRigMode.OrbitalExterior ? "CAMERA: ORBITAL CHASE" : "CAMERA: BRIDGE HOLO-TANK");
             Hud?.FloatingCallouts?.ShowCallout(lbl, new Color(0.38f, 0.92f, 1f, 1f), 1.6f);
+        }
+
+        private void CycleBridgeHoloTableMode()
+        {
+            if (ShipInterior == null) return;
+            if (Audio != null) Audio.PlayUiClick();
+            var mode = ShipInterior.CycleHoloDisplayMode();
+            string shortLbl = mode == BridgeHoloMode.SolarSystem
+                ? "HOLO: SOLAR"
+                : (mode == BridgeHoloMode.LocalBubble ? "HOLO: LOCAL" : "HOLO: AUTO");
+            Hud?.UpdateBridgeHoloModeLabel(shortLbl);
+            Hud?.FloatingCallouts?.ShowCallout($"BRIDGE HOLO-TABLE: {shortLbl}", new Color(0.38f, 0.92f, 1f, 1f), 1.5f);
         }
 
         private void HandleSpaceQuickFire()
@@ -1905,6 +1940,11 @@ namespace TacSim.Core
             {
                 if (Audio != null) Audio.PlayUiClick();
                 OpenVisualTradeTerminal("SAILING PLAN & CORRIDOR ROUTE BUILDER", openSailingTab: true);
+                return;
+            }
+            if (cmd == "ui:cycle_holo")
+            {
+                CycleBridgeHoloTableMode();
                 return;
             }
             if (cmd == "seat:helm")
