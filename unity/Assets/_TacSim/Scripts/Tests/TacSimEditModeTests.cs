@@ -6713,5 +6713,137 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ArenaDetachmentCommandDeck_ValidatesProjectionPrefillsSlotsAndDispatchesWilcoNegative()
+        {
+            // 1. Strict decoder parity with `web/src/lib/detachment.ts` & `crates/tacsim/src/detachment/live.rs`
+            var validJson = JsonNode.Parse(@"{
+                ""id"": ""42"", ""revision"": ""7"", ""term"": ""3"", ""leader_slot"": 1,
+                ""all_order_prefill"": ""ORDER DT:42:7:3 ALL "",
+                ""slots"": [
+                    { ""slot"": 2, ""callsign"": ""R2"", ""pilot"": ""Ada"", ""controller"": ""player"", ""order_prefill"": ""ORDER DT:42:7:3 2 "" },
+                    { ""slot"": 1, ""callsign"": ""R1"", ""pilot"": null, ""controller"": ""npc"", ""order_prefill"": ""ORDER DT:42:7:3 1 "" }
+                ],
+                ""my_order"": { ""sequence"": ""9"", ""from"": ""R1"", ""objective"": ""Hold ridge A"", ""response"": null },
+                ""wilco_command"": ""WILCO DT:42:7 9"",
+                ""negative_command"": ""NEGATIVE DT:42:7 9""
+            }");
+            Assert.IsTrue(TacSim.Arena.ArenaDetachmentState.TryDecode(validJson, out var det));
+            Assert.AreEqual("42", det.Id);
+            Assert.AreEqual(2, det.Slots.Count);
+            Assert.AreEqual(1, det.Slots[0].Slot, "Slots must be sorted ascending by slot number");
+            Assert.AreEqual("R1", det.Slots[0].Callsign);
+            Assert.AreEqual(2, det.Slots[1].Slot);
+            Assert.AreEqual("WILCO DT:42:7 9", det.WilcoCommand);
+
+            // Tampered / trimmed / mismatched projected commands MUST reject the entire projection!
+            var badPrefillJson = JsonNode.Parse(@"{
+                ""id"": ""42"", ""revision"": ""7"", ""term"": ""3"", ""leader_slot"": 1,
+                ""all_order_prefill"": ""ORDER DT:42:7:3 ALL"",
+                ""slots"": [ { ""slot"": 1, ""callsign"": ""R1"", ""pilot"": null, ""controller"": ""player"", ""order_prefill"": ""ORDER DT:42:7:3 1 "" } ],
+                ""my_order"": null, ""wilco_command"": null, ""negative_command"": null
+            }");
+            Assert.IsFalse(TacSim.Arena.ArenaDetachmentState.TryDecode(badPrefillJson, out _), "Missing trailing space in all_order_prefill must invalidate projection");
+
+            var badWilcoJson = JsonNode.Parse(@"{
+                ""id"": ""42"", ""revision"": ""7"", ""term"": ""3"", ""leader_slot"": 1,
+                ""all_order_prefill"": ""ORDER DT:42:7:3 ALL "",
+                ""slots"": [ { ""slot"": 1, ""callsign"": ""R1"", ""pilot"": null, ""controller"": ""player"", ""order_prefill"": ""ORDER DT:42:7:3 1 "" } ],
+                ""my_order"": { ""sequence"": ""9"", ""from"": ""R1"", ""objective"": ""Hold ridge A"", ""response"": null },
+                ""wilco_command"": ""WILCO DT:42:7 99"",
+                ""negative_command"": ""NEGATIVE DT:42:7 9""
+            }");
+            Assert.IsFalse(TacSim.Arena.ArenaDetachmentState.TryDecode(badWilcoJson, out _), "Mismatched wilco_command sequence must invalidate projection");
+
+            // 2. End-to-end OocArenaController + TacSimMissionOverlays Detachment Command Deck wiring
+            var rootGo = new UnityEngine.GameObject("Wave4PR2_DetachmentTest");
+            try
+            {
+                var catalog = TacSimAssetCatalog.LoadOrDefault();
+                var arenaGo = new UnityEngine.GameObject("Arena");
+                arenaGo.transform.SetParent(rootGo.transform);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(catalog, TacSimTerrainDecoder.LoadStaticArena("proving_ground"));
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.Overlays.BindControllers(null, arena, null);
+
+                int newOrderEvents = 0;
+                arena.OnNewDetachmentOrderReceived += _ => newOrderEvents++;
+
+                string lastVerb = null;
+                string lastPrefill = null;
+                hud.Overlays.OnArenaCockpitVerbRequested += v => lastVerb = v;
+                hud.Overlays.OnPrefillChatRequested += p => lastPrefill = p;
+
+                var frame = JsonNode.Parse(@"{
+                    ""match"": 77, ""seated"": true, ""callsign"": ""R2"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""mode"": ""skirmish"", ""power"": ""online"",
+                    ""x_cm"": 24000, ""y_cm"": 128000, ""heading_deg"": 90, ""speed_kph"": 12,
+                    ""weapons"": [], ""contacts"": [],
+                    ""detachment"": {
+                        ""id"": ""42"", ""revision"": ""7"", ""term"": ""3"", ""leader_slot"": 1,
+                        ""all_order_prefill"": ""ORDER DT:42:7:3 ALL "",
+                        ""slots"": [
+                            { ""slot"": 1, ""callsign"": ""R1"", ""pilot"": ""Rex"", ""controller"": ""player"", ""order_prefill"": ""ORDER DT:42:7:3 1 "" },
+                            { ""slot"": 2, ""callsign"": ""R2"", ""pilot"": ""Ada"", ""controller"": ""player"", ""order_prefill"": ""ORDER DT:42:7:3 2 "" }
+                        ],
+                        ""my_order"": { ""sequence"": ""9"", ""from"": ""R1"", ""objective"": ""Flank North Ridge"", ""response"": null },
+                        ""wilco_command"": ""WILCO DT:42:7 9"",
+                        ""negative_command"": ""NEGATIVE DT:42:7 9""
+                    }
+                }");
+
+                arena.ApplyLiveCockpitFrame(frame);
+                Assert.AreEqual(1, newOrderEvents, "New unacknowledged detachment order must fire OnNewDetachmentOrderReceived once");
+                // Applying the same sequence again must NOT duplicate notifications
+                arena.ApplyLiveCockpitFrame(frame);
+                Assert.AreEqual(1, newOrderEvents, "Repeated cockpit ticks for the same order sequence must not re-fire alert");
+
+                Assert.IsTrue(hud.Overlays.IsDetachmentBarVisible);
+                Assert.IsTrue(hud.Overlays.IsDetachmentOrderBannerVisible);
+                Assert.AreEqual(3, hud.Overlays.VisibleDetachmentSlotButtonCount, "ALL + 2 detachment slots must be visible");
+                StringAssert.Contains("Flank North Ridge", hud.Overlays.DetachmentOrderText);
+
+                // Prefill ALL and Slot 2 commands into chat
+                hud.Overlays.PrefillDetachmentSlot(0);
+                Assert.AreEqual("ORDER DT:42:7:3 ALL ", lastPrefill);
+                hud.Overlays.PrefillDetachmentSlot(2);
+                Assert.AreEqual("ORDER DT:42:7:3 2 ", lastPrefill);
+
+                // Squad advance routes through exact AllOrderPrefill when detachment projection is valid
+                string advCmd = hud.Overlays.ResolveSquadAdvanceCommand();
+                StringAssert.StartsWith("ORDER DT:42:7:3 ALL advance ", advCmd);
+
+                // WILCO & NEGATIVE dispatch exact server-projected commands
+                hud.Overlays.DispatchDetachmentWilco();
+                Assert.AreEqual("WILCO DT:42:7 9", lastVerb);
+                hud.Overlays.DispatchDetachmentNegative();
+                Assert.AreEqual("NEGATIVE DT:42:7 9", lastVerb);
+
+                // Invalid detachment projection disables slot/order controls cleanly
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 77, ""seated"": true, ""callsign"": ""R2"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""mode"": ""skirmish"", ""power"": ""online"",
+                    ""weapons"": [], ""contacts"": [],
+                    ""detachment"": { ""id"": ""bad"", ""revision"": ""7"", ""term"": ""3"", ""slots"": [] }
+                }"));
+                Assert.IsNull(arena.State.Detachment);
+                Assert.IsTrue(arena.State.DetachmentProjectionInvalid);
+                Assert.IsTrue(hud.Overlays.IsDetachmentBarVisible);
+                Assert.IsFalse(hud.Overlays.IsDetachmentOrderBannerVisible);
+                Assert.AreEqual(0, hud.Overlays.VisibleDetachmentSlotButtonCount);
+                StringAssert.StartsWith("order all advance ", hud.Overlays.ResolveSquadAdvanceCommand());
+
+                arena.ResetSessionState();
+                Assert.IsNull(arena.State.Detachment);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
