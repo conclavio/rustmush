@@ -175,17 +175,27 @@ namespace TacSim.UI
             actHlg.childControlHeight = true;
             actHlg.childForceExpandWidth = true;
 
-            CreateButton(actRow.transform, "CREDITS (+credit)", new Color(0.16f, 0.44f, 0.38f), () => OnCommandRequested?.Invoke("+credit"));
+            CreateButton(actRow.transform, "CREDITS", new Color(0.16f, 0.44f, 0.38f), () => OnCommandRequested?.Invoke("+credit"));
             CreateButton(actRow.transform, "CO-OP LEDGER", new Color(0.18f, 0.38f, 0.54f), () => OnCommandRequested?.Invoke("+coop/statement"));
             CreateButton(actRow.transform, "PORT EXCHANGE", new Color(0.20f, 0.46f, 0.52f), () =>
             {
                 SetOpen(false);
                 OnOpenTradeTerminalRequested?.Invoke();
             });
-            CreateButton(actRow.transform, "SOLAR CHART [M]", new Color(0.18f, 0.34f, 0.58f), () =>
+            CreateButton(actRow.transform, "SOLAR CHART", new Color(0.18f, 0.34f, 0.58f), () =>
             {
                 SetOpen(false);
                 OnOpenSolarChartRequested?.Invoke();
+            });
+            CreateButton(actRow.transform, "STEP OOC (+ooc)", new Color(0.32f, 0.24f, 0.46f), () =>
+            {
+                SetOpen(false);
+                OnCommandRequested?.Invoke("+ooc");
+            });
+            CreateButton(actRow.transform, "RETURN IC (+ic)", new Color(0.18f, 0.46f, 0.32f), () =>
+            {
+                SetOpen(false);
+                OnCommandRequested?.Invoke("+ic");
             });
         }
 
@@ -401,7 +411,7 @@ namespace TacSim.UI
                 MushProtocol.EscapeUnityRichText(_hullBadge),
                 MushProtocol.EscapeUnityRichText(hullRef));
             sb.AppendFormat("<color=#66FFAA><b>AVAILABLE CREDITS:</b></color> <b>{0}</b>\n", MushProtocol.EscapeUnityRichText(credits));
-            sb.Append("<color=#88AAC8>Shortcuts: [C] Sheet   [M] Solar Chart   [Tab] Cycle Target   [1-9] Hotbar   [F10] Minds   [F11] Fullscreen</color>");
+            sb.Append("<color=#88AAC8>Shortcuts: [Ctrl+K] Palette  [F1] Keys/Macros  [C] Sheet  [M] Chart  [N] Nav  [Tab] Target  [1-9] Hotbar</color>");
             _pilotSummaryText.text = sb.ToString();
         }
 
