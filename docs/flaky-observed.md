@@ -4,10 +4,10 @@
 
 # Flaky tests observed
 
-*Generated 2026-11-26 00:17 UTC. What was seen, by the rule of [flaky-tests.md](flaky-tests.md), which stays the hand-written record of causes. A test here whose Record is `none` is the work queue. The columns: Class and Known list are the list's (crates/mush-contract-tests/flaky-known.toml); Record is the row of flaky-tests.md that names the test; 14 d and 30 d count the runs or passes in which the test failed or passed on retry; Soak is failed passes over passes; a Why of branches alone is a lead to read, not a finding.*
+*Generated 2026-11-26 00:57 UTC. What was seen, by the rule of [flaky-tests.md](flaky-tests.md), which stays the hand-written record of causes. A test here whose Record is `none` is the work queue. The columns: Class and Known list are the list's (crates/mush-contract-tests/flaky-known.toml); Record is the row of flaky-tests.md that names the test; 14 d and 30 d count the runs or passes in which the test failed or passed on retry; Soak is failed passes over passes; a Why of branches alone is a lead to read, not a finding.*
 
 
-Sources: ci.yml, the last 14 day(s); 744 run(s) listed, 109 with reports read (the shards with a failed job).
+Sources: ci.yml, the last 14 day(s); 735 run(s) listed, 109 with reports read (the shards with a failed job).
 
 | Test | Binary | Class | Known list | Record | First seen | Last seen | 14 d | 30 d | Soak | Why | Last three |
 |---|---|---|---|---|---|---|---:|---:|---|---|---|
@@ -56,7 +56,7 @@ Sources: ci.yml, the last 14 day(s); 744 run(s) listed, 109 with reports read (t
 | `world_task::submission_disposition::tests::player_market_typed::typed_refusals_are_the_line_refusals_byte_for_byte` | `mush-server` |  | **NOT LISTED** | none | 2026-11-20 | 2026-11-20 | 2 | 2 |  | 2 branches (to read) | [44682623819 a1 rest-server](https://github.com/conclavio/rustmush/actions/runs/44682623819/attempts/1), [44677295753 a1 rest-server](https://github.com/conclavio/rustmush/actions/runs/44677295753/attempts/1) |
 | `observer_rule::o3_the_range_is_public_in_selection_and_the_report_is_the_pilots_own` | `mushd::sim_lenses` |  | **NOT LISTED** | row 3 | 2026-11-19 | 2026-11-20 | 2 | 2 |  | retry x1, same head x1 | [44732844605 a1 rest-mushd](https://github.com/conclavio/rustmush/actions/runs/44732844605/attempts/1), [44481987537 a2 rest-mushd](https://github.com/conclavio/rustmush/actions/runs/44481987537/attempts/2) |
 | `gateway_generations::a_finish_warns_once_closes_after_the_grace_and_leaves_no_marker` | `mush-gateway::split_halves` |  | **NOT LISTED** | row 12 | 2026-11-20 | 2026-11-20 | 1 | 1 |  | retry x1 | [44774353324 a1 rest-gateway](https://github.com/conclavio/rustmush/actions/runs/44774353324/attempts/1) |
-| `restart_survival::server_self_exit_auto_restarts_without_dropping_players` | `mush-gateway::split_halves` |  | **NOT LISTED** | none | 2026-11-23 | 2026-11-23 | 1 | 1 |  | same head x1 | [45277135577 a1 rest-gateway](https://github.com/conclavio/rustmush/actions/runs/45277135577/attempts/1) |
+| `restart_survival::server_self_exit_auto_restarts_without_dropping_players` | `mush-gateway::split_halves` |  | **NOT LISTED** | row 12 | 2026-11-23 | 2026-11-23 | 1 | 1 |  | same head x1 | [45277135577 a1 rest-gateway](https://github.com/conclavio/rustmush/actions/runs/45277135577/attempts/1) |
 | `boot_parity::stop_ledger_archive_joins_the_pass_rather_than_detaching_it` | `mush-server::split_boundary` | clock | row 10, to 2026-12-07 | row 10 | 2026-11-20 | 2026-11-20 | 1 | 1 |  | same head x1 | [44713758290 a1 rest-server-boundary](https://github.com/conclavio/rustmush/actions/runs/44713758290/attempts/1) |
 | `ipc_teardown::wedged_gateway_is_torn_down_by_write_timeout` | `mush-server::split_boundary` |  | **NOT LISTED** | row 11 | 2026-11-16 | 2026-11-16 | 1 | 1 |  | same head x1 | [43794967993 a1 rest-server-boundary](https://github.com/conclavio/rustmush/actions/runs/43794967993/attempts/1) |
 | `observer_rule::af3_the_resume_names_nothing_a_pilot_or_a_bystander_may_not_read` | `mushd::sim_lenses` |  | **NOT LISTED** | none | 2026-11-24 | 2026-11-24 | 1 | 1 |  | same head x1 | [45426726188 a1 rest-mushd](https://github.com/conclavio/rustmush/actions/runs/45426726188/attempts/1) |
