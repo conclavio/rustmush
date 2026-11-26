@@ -7088,5 +7088,85 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ArenaPredictiveHelmAndCoalescedThrottle_MatchesTuiWebPhysicsAndLeash()
+        {
+            // 1. Predictive Helm: 1-deg tap precision, continuous turn rate, ORDER_GAP_MS lead orders, and leash clamp
+            var helm = new TacSim.Arena.ArenaPredictiveHelm();
+            helm.Observe(new TacSim.Arena.ArenaHelmFrame
+            {
+                TMs = 1_000,
+                HeadingMdeg = 90_000,
+                Tempo = "alert",
+                TurnRateMdegS = 30_000,
+                CanTurn = true
+            }, nowMs: 1_000);
+            Assert.AreEqual(90f, helm.PredictedHeadingDeg(1_000).Value, 0.01f);
+
+            // Short tap right (50ms) orders exactly 1 degree (HEADING 91 QUIET) and holds 91
+            helm.Start(+1, 1_000);
+            var tapOrders = helm.TakeOrders();
+            CollectionAssert.AreEqual(new[] { "HEADING 91 QUIET" }, tapOrders);
+            helm.Stop(1_050);
+            Assert.AreEqual(91_000, helm.OrderedMdeg, "Releasing inside first degree must preserve the 1-deg tap");
+
+            // Held turn right swings smoothly at 30 deg/s after TAP_MS and emits lead orders every ORDER_GAP_MS
+            helm.Observe(new TacSim.Arena.ArenaHelmFrame
+            {
+                TMs = 2_000,
+                HeadingMdeg = 91_000,
+                Tempo = "engaged",
+                TurnRateMdegS = 30_000,
+                CanTurn = true
+            }, nowMs: 2_000);
+            helm.Start(+1, 2_000);
+            helm.TakeOrders();
+            helm.Tick(2_250);
+            var holdOrders = helm.TakeOrders();
+            Assert.AreEqual(1, holdOrders.Count, "Tick at ORDER_GAP_MS must emit a lead HEADING QUIET order");
+            StringAssert.StartsWith("HEADING ", holdOrders[0]);
+            StringAssert.EndsWith(" QUIET", holdOrders[0]);
+
+            // Leash prevents predicted heading from outrunning the last server frame beyond 1.5 pulses
+            float farPred = helm.PredictedHeadingDeg(6_000).Value;
+            float deltaFromSeen = System.Math.Abs(TacSim.Arena.ArenaPredictiveHelm.ArcMdeg(91_000, UnityEngine.Mathf.RoundToInt(farPred * 1000f))) * 0.001f;
+            Assert.LessOrEqual(deltaFromSeen, 23.0f, "Engaged tempo (500ms) 1.5-pulse leash at 30 deg/s must clamp <= 22.5 deg");
+            helm.Stop(6_000);
+
+            // Immobile/wrecked hull cannot turn
+            helm.Reset();
+            helm.Observe(new TacSim.Arena.ArenaHelmFrame
+            {
+                TMs = 1_000,
+                HeadingMdeg = 180_000,
+                Tempo = "alert",
+                TurnRateMdegS = 30_000,
+                CanTurn = false
+            }, nowMs: 1_000);
+            helm.Start(+1, 1_000);
+            Assert.AreEqual(180f, helm.PredictedHeadingDeg(1_500).Value, 0.01f, "Immobile hull must not visually swing");
+
+            // 2. Coalesced Throttle: 10% step, 250ms coalescing, reverse clamp, immediate SPEED 0 QUIET
+            var thr = new TacSim.Arena.ArenaCoalescedThrottle();
+            thr.Observe(new TacSim.Arena.ArenaThrottleFrame { SpeedKph = 0, MaxKph = 54, ReverseKph = 20, Stuck = false });
+            thr.Bump(+1, 1_000); // step = round(5.4) = 5 kph, sent immediately
+            CollectionAssert.AreEqual(new[] { "SPEED 5 QUIET" }, thr.TakeOrders());
+
+            // Rapid bumps inside 250ms coalesce into one order when the gap opens!
+            thr.Bump(+1, 1_050); // 10
+            thr.Bump(+1, 1_100); // 15
+            Assert.AreEqual(0, thr.TakeOrders().Count, "Bumps inside SPEED_COALESCE_MS must coalesce");
+            thr.Tick(1_250);
+            CollectionAssert.AreEqual(new[] { "SPEED 15 QUIET" }, thr.TakeOrders());
+
+            // All-stop bypasses coalesce gap immediately
+            thr.Stop(1_260);
+            CollectionAssert.AreEqual(new[] { "SPEED 0 QUIET" }, thr.TakeOrders());
+
+            // Reverse clamping
+            thr.Set(-99, 2_000);
+            CollectionAssert.AreEqual(new[] { "SPEED -20 QUIET" }, thr.TakeOrders());
+        }
     }
 }
