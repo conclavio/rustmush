@@ -528,6 +528,13 @@ namespace TacSim.Net
             return id;
         }
 
+        public ulong SendNarrativeBacklogQuery(ulong? beforeSeq = null, int limit = 30)
+        {
+            ulong id = _nextQueryId++;
+            EnqueueRaw(MushProtocol.BuildNarrativeBacklogQueryCommand(id, beforeSeq, limit));
+            return id;
+        }
+
         public ulong SendMindMarketListings(string afterCode = null)
         {
             ulong id = _nextQueryId++;
@@ -930,9 +937,10 @@ namespace TacSim.Net
 
             if (kind == "delta")
             {
-                // `Query::ChannelBacklog` answers as `Panel { feed: "comsys", kind: "delta", data: { backlog: { ... } } }`.
-                // Forward backlog slices directly to panel subscribers without overwriting the cached `comsys` keyframe.
-                if (feed == "comsys" && payload != null && payload.IsObject && payload["backlog"].IsObject)
+                // `Query::ChannelBacklog` (`comsys`) and `Query::NarrativeBacklog` (`narrative`)
+                // answer as `Panel { kind: "delta", data: { backlog: { ... } } }`.
+                // Forward backlog slices directly to panel subscribers without overwriting cached keyframes.
+                if ((feed == "comsys" || feed == "narrative") && payload != null && payload.IsObject && payload["backlog"].IsObject)
                 {
                     OnPanelUpdated?.Invoke(feed, payload.Clone());
                     return;
