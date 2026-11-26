@@ -24,6 +24,12 @@ re-described: both were two product faults, not the rig's wall-clock limits. A r
 attempt could wait for ever on a server's Hello, and a drain's close was cut before it reached
 the wire. The [cut note](51-cut-notes.md) has the soaks.
 
+**FL.9 is cut and built** (2026-11-25, recorded here without a new draft number; stacked on
+FL.7 by the owner's word of 2026-11-26). §5 marks the row and §3.9 says how the literal-span
+counter was built. The small crates' stories wait for what their server does, and an absence is
+asserted between two marks the server gives. No product code changed. The
+[cut note](51-cut-notes.md) has the counts and the soak.
+
 **The questions, each ruled at its default** (each in full in §6, with the alternative it was
 weighed against and the reason):
 
@@ -556,6 +562,10 @@ that needs a written reason, and a bless variable.
    the rig files' share, taken at the unit.
 3. **Literal spans passed to a wait:** `Duration::from_*(<number>)` on a line that calls a wait
    primitive or a kit helper. Baselined after FL.3, when there is a helper to move to.
+   **As built (FL.9):** a literal counts when it is written in the argument list of a raw wait
+   or of one of the kit's waits (`wait_until`, `wait_for`, `within`, `within_for`, `at_most`),
+   and not inside a block passed among the arguments. Every budget file was baselined at
+   FL.9's bless and carries `# spans counted`; 421 spans across the tree.
 
 What it does not count: rig files (a path with `/support/`, `harness.rs`, and the kit itself),
 where the primitives belong; and a site inside a `start_paused` test, which drives its own
@@ -719,7 +729,7 @@ for the suite. FL.0 is this document and its script, merged as #771.
 | **FL.6 mush-server's lib and boundary** | row 10 and its neighbors onto the paused clock with `TimeSource::Tokio`; the in-`src` `world_task` tests' drain windows (row 8's kind) onto `settled`-style barriers; the `--src` scope added to `wait_budget` for mush-server | mush-server | M | 15 |
 | **FL.7 the gateway's stories** (cut 2026-11-25, built) | the ten `Term` copies replaced by the kit's; `across_restart`; restart limits from the gateway's own schedule; rows 12 and 15 closed or re-described; `one_reader` turned on for mush-gateway | mush-gateway tests, mush-storykit, mush-contract-tests | M | 8 |
 | **FL.8 mushd's readers** | the 15 `say`, 12 `ask` and 10 `ask_whole` definitions in `sim_lenses` replaced by the kit's; every parse after a needle read moved to `ask_whole`; `after_tick`; row 14; `one_reader` turned on for mushd | mushd tests, mush-storykit, mush-contract-tests | L, mechanical | 3 |
-| **FL.9 the small crates** | mush-net-web's and mush-net-ssh's bare sleeps onto barriers and absence-between-marks; mush-sshdoorway's rig onto the kit; the literal-span counter baselined | mush-net-web, mush-net-ssh, mush-sshdoorway, mush-contract-tests | M | |
+| **FL.9 the small crates** (cut 2026-11-25, built) | mush-net-web's and mush-net-ssh's bare sleeps onto barriers and absence-between-marks; mush-sshdoorway's rig onto the kit; the literal-span counter baselined | mush-net-web, mush-net-ssh, mush-sshdoorway, mush-contract-tests | M | |
 | **FL.10 close-out** | budgets re-blessed down and the totals recorded; `docs/flaky-tests.md` rows closed against the soak's record; doc 43 §2.3 gains rules F, D, C, S, P and T as #16 to #21; what the soak found that no rule covers | docs, mush-contract-tests | S | |
 
 **Order.** FL.1 and FL.2 first and together (both cut); they share no file. FL.1 stops the

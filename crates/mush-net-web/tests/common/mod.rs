@@ -121,15 +121,26 @@ impl MockWebHooks {
         self.state.lock().unwrap()
     }
 
-    /// Polls until `pred` holds (10 ms cadence, 3 s deadline).
+    /// Polls until `pred` holds, through the story kit's one wait loop under
+    /// its one step limit (doc 51 §3.7).
     pub async fn wait_for(&self, what: &str, pred: impl Fn(&MockState) -> bool) {
-        for _ in 0..300 {
-            if pred(&self.state()) {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        panic!("timed out waiting for: {what}");
+        mush_storykit::wait_until(mush_storykit::STEP_TIMEOUT, what, async || {
+            pred(&self.state())
+        })
+        .await;
+    }
+
+    /// **The mark an absence is asserted after** (doc 51 §3.3): `n` web
+    /// sockets have given back their connection slot.
+    ///
+    /// The slot's guard is the last thing a socket task drops: `ws_route`'s
+    /// refusals return with it, and `handle_socket` holds it past its one
+    /// `disconnected` call. So once a socket's slot is back, everything that
+    /// socket would report has been reported, and "no disconnect was
+    /// reported" is a fact, not a sleep's hope.
+    pub async fn sockets_ended(&self, n: usize) {
+        self.wait_for("the socket tasks to end", |st| st.conn_closes.len() >= n)
+            .await;
     }
 }
 

@@ -303,8 +303,9 @@ async fn draining_warns_on_schedule_and_closes_at_the_deadline() {
             .run(Duration::from_millis(2500), &warnings, &msg)
             .await;
     });
-    // New connections are no longer accepted.
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    // New connections are no longer accepted: the accept loop has returned
+    // and dropped its listener.
+    t.stopped_serving().await;
     assert!(t.try_client().await.is_err());
 
     let out = read_to_close(&mut ch).await;
@@ -315,10 +316,7 @@ async fn draining_warns_on_schedule_and_closes_at_the_deadline() {
         .find("reconnect within the next 1s.")
         .expect("the 1s warning");
     assert!(first < second, "{out}");
-    tokio::time::timeout(Duration::from_secs(5), run)
-        .await
-        .unwrap()
-        .unwrap();
+    within("the drain's end", run).await.unwrap();
     wait_for(|| t.door.drain.live() == 0).await;
 }
 
@@ -404,10 +402,7 @@ async fn a_drain_warns_a_shell_and_writes_nothing_into_an_exec() {
         "no drain warning in an exec's output: {out:?}"
     );
 
-    tokio::time::timeout(Duration::from_secs(10), run)
-        .await
-        .unwrap()
-        .unwrap();
+    within("the drain's end", run).await.unwrap();
     wait_for(|| t.door.drain.live() == 0).await;
 }
 
@@ -424,12 +419,14 @@ async fn a_client_that_stops_reading_is_cut_off_and_memory_stays_bounded() {
     let ch = shell(&h).await;
     wait_for(|| !t.hooks.connected().is_empty()).await;
     // Flood output and never read it: the instance's 5 s write timeout or the
-    // doorway's 10 s one ends the session either way.
+    // doorway's 10 s one ends the session either way. The flood's own end is
+    // not the point (it may run until its writer is cut), so it gets a span,
+    // not a step limit.
     let flood = t.hooks.flood(64 * 1024, 4000);
     let started = std::time::Instant::now();
-    let _ = tokio::time::timeout(Duration::from_secs(40), flood).await;
+    let _ = mush_storykit::at_most(Duration::from_secs(40), flood).await;
     drop(ch);
-    wait_for_secs(30, || t.door.drain.live() == 0).await;
+    wait_for(|| t.door.drain.live() == 0).await;
     assert!(started.elapsed() < Duration::from_secs(60));
 }
 
@@ -494,10 +491,7 @@ async fn the_upstream_reply_is_honoured_for_pty_and_shell() {
     ch.request_shell(true).await.unwrap();
     let mut replies = Vec::new();
     while replies.len() < 2 {
-        match tokio::time::timeout(Duration::from_secs(10), ch.wait())
-            .await
-            .unwrap()
-        {
+        match within("a channel request's reply", ch.wait()).await {
             Some(ChannelMsg::Success) => replies.push(true),
             Some(ChannelMsg::Failure) => replies.push(false),
             Some(_) => {}
@@ -519,7 +513,7 @@ async fn an_authenticated_session_that_never_opens_a_channel_is_closed() {
     assert!(spliced.authenticate_none("dev1").await.unwrap().success());
     // Held with no channel: both are cut at the second deadline, so neither
     // a slot nor a drain is held forever.
-    wait_for_secs(10, || t.door.drain.live() == 0).await;
+    wait_for(|| t.door.drain.live() == 0).await;
     assert!(menu.is_closed() && spliced.is_closed());
 }
 
@@ -663,7 +657,7 @@ async fn kex_stall_after_ssh_banner_is_aborted_and_releases_slot() {
     wait_for(|| t.door.limits.live() == 1 && t.door.drain.live() == 1).await;
     // Hold `raw` open so the client never sends EOF; the watchdog must abort
     // the underlying Killable<TcpStream> even while `kex.active()` is true.
-    wait_for_secs(6, || t.door.limits.live() == 0 && t.door.drain.live() == 0).await;
+    wait_for(|| t.door.limits.live() == 0 && t.door.drain.live() == 0).await;
     drop(raw);
 }
 
@@ -695,7 +689,7 @@ async fn over_cap_banner_slots_are_bounded_and_aborted_when_half_open() {
     // Refuse `b` and leave both `b` and `_c` open without disconnecting from
     // the client side; the doorway aborts both within a few seconds.
     assert!(refused(b.authenticate_none("dev1").await));
-    wait_for_secs(8, || t.door.limits.live() == 1).await;
+    wait_for(|| t.door.limits.live() == 1).await;
 }
 
 /// The owner's bot fleet: many sessions from one exempt address pass the
@@ -748,7 +742,7 @@ async fn menu_invalid_submission_flood_is_capped_and_closed() {
     let _ = ch.data(&payload[..]).await;
     let out = read_to_close(&mut ch).await;
     assert!(out.contains("Too many invalid choices."), "{out}");
-    wait_for_secs(6, || t.door.drain.live() == 0).await;
+    wait_for(|| t.door.drain.live() == 0).await;
 }
 
 /// Regression test for F-4: repeated public-key offers against a blocked
@@ -865,15 +859,12 @@ async fn menu_and_notice_drop_prior_unauthenticated_upstream() {
     assert_eq!(t.hooks.open_now(), 1, "password dial opened upstream");
 
     assert!(h.authenticate_none("nick").await.unwrap().success());
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    while t.hooks.open_now() > 0 && tokio::time::Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert_eq!(
-        t.hooks.open_now(),
-        0,
-        "Route::Menu must drop the orphaned unauthenticated upstream session"
-    );
+    wait_until(
+        STEP_TIMEOUT,
+        "Route::Menu dropping the orphaned unauthenticated upstream session",
+        async || t.hooks.open_now() == 0,
+    )
+    .await;
     let _ = h.disconnect(russh::Disconnect::ByApplication, "", "").await;
 
     // 2. Failed password dial -> trigger `Conn::tell` (front door on an unreachable service).
@@ -891,15 +882,12 @@ async fn menu_and_notice_drop_prior_unauthenticated_upstream() {
     // `Conn::tell` while still holding `Up::Ssh` to `dev1`.
     t2.connector.fail_next();
     assert!(h2.authenticate_none("hidden").await.unwrap().success());
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
-    while t2.hooks.open_now() > 0 && tokio::time::Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert_eq!(
-        t2.hooks.open_now(),
-        0,
-        "Conn::tell must drop any prior unauthenticated upstream session"
-    );
+    wait_until(
+        STEP_TIMEOUT,
+        "Conn::tell dropping any prior unauthenticated upstream session",
+        async || t2.hooks.open_now() == 0,
+    )
+    .await;
     let _ = h2
         .disconnect(russh::Disconnect::ByApplication, "", "")
         .await;

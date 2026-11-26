@@ -8,10 +8,62 @@ use std::sync::Arc;
 
 use common::{ACCOUNT, MockWebHooks, PASSWORD, TOKEN, spawn_server, test_config};
 use mush_net_web::{LoginErr, LoginOk, LogoutErr, RegisterErr, WebConfig};
+use mush_storykit::{STEP_TIMEOUT, wait_until, within};
 use serde_json::{Value, json};
 
 fn client() -> reqwest::Client {
     reqwest::Client::new()
+}
+
+/// Whether a fresh connection to `addr` is served: `/healthz` answers 200.
+/// Over a connection cap the server drops the socket unanswered, so `false`
+/// is "no slot free yet", and the caller asks again.
+async fn served(addr: std::net::SocketAddr) -> bool {
+    client()
+        .get(format!("http://{addr}/healthz"))
+        .send()
+        .await
+        .is_ok_and(|resp| resp.status() == 200)
+}
+
+/// **A slot is free** (doc 51 §3.5): wait for the fact, a fresh connection
+/// served, not for a span after a socket was dropped. A dropped socket's slot
+/// comes back when the server's connection task sees the end of it, which no
+/// client can time.
+async fn until_served(addr: std::net::SocketAddr, what: &str) {
+    wait_until(STEP_TIMEOUT, what, async || served(addr).await).await;
+}
+
+/// Reads frames until the server's first keepalive ping and hands it back.
+/// The ping is the server's own mark of time: the pump sends it one
+/// `ping_interval_ms` after the socket was attached, so a ping read proves the
+/// socket was open that long, with no span chosen by the story.
+async fn first_ping<S>(ws: &mut S) -> mush_proto::Envelope
+where
+    S: futures::Stream<
+            Item = Result<
+                tokio_tungstenite::tungstenite::Message,
+                tokio_tungstenite::tungstenite::Error,
+            >,
+        > + Unpin,
+{
+    use tokio_tungstenite::tungstenite::Message;
+    loop {
+        let frame = within("the first keepalive ping", futures::StreamExt::next(ws))
+            .await
+            .expect("the socket ended before its first ping")
+            .expect("ws error before the first ping");
+        match frame {
+            Message::Text(text) => {
+                let env: mush_proto::Envelope = serde_json::from_str(text.as_str()).unwrap();
+                if matches!(env.event, mush_proto::OutputEvent::Ping { .. }) {
+                    return env;
+                }
+            }
+            Message::Close(close) => panic!("closed before the first ping: {close:?}"),
+            _ => {}
+        }
+    }
 }
 
 async fn post_json(url: &str, body: Value) -> reqwest::Response {
@@ -586,7 +638,6 @@ async fn register_rate_limited_maps_to_429() {
 
 #[tokio::test]
 async fn slowloris_headers_time_out_and_close_connection() {
-    use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
 
@@ -604,9 +655,7 @@ async fn slowloris_headers_time_out_and_close_connection() {
         .await
         .unwrap();
     let mut buf = [0u8; 64];
-    let res = tokio::time::timeout(Duration::from_secs(2), partial.read(&mut buf))
-        .await
-        .expect("server must close Slowloris socket promptly");
+    let res = within("the Slowloris socket's close", partial.read(&mut buf)).await;
     assert!(
         matches!(res, Ok(0) | Err(_)),
         "expected EOF or reset on timed-out partial headers, got {res:?}"
@@ -614,9 +663,7 @@ async fn slowloris_headers_time_out_and_close_connection() {
 
     // Case 2: 0-byte idle TCP connect.
     let mut idle = TcpStream::connect(addr).await.unwrap();
-    let res2 = tokio::time::timeout(Duration::from_secs(2), idle.read(&mut buf))
-        .await
-        .expect("server must close 0-byte idle socket promptly");
+    let res2 = within("the 0-byte idle socket's close", idle.read(&mut buf)).await;
     assert!(
         matches!(res2, Ok(0) | Err(_)),
         "expected EOF or reset on 0-byte idle socket, got {res2:?}"
@@ -625,7 +672,6 @@ async fn slowloris_headers_time_out_and_close_connection() {
 
 #[tokio::test]
 async fn global_tcp_connection_cap_drops_excess_sockets() {
-    use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
 
@@ -648,8 +694,11 @@ async fn global_tcp_connection_cap_drops_excess_sockets() {
     let mut held2 = TcpStream::connect(addr).await.unwrap();
     held1.write_all(b"GET ").await.unwrap();
     held2.write_all(b"GET ").await.unwrap();
-    // Give the accept loop a moment to acquire both permits.
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // No wait for the permits. One accept loop takes the listener's sockets in
+    // the order their handshakes completed and acquires a socket's permit
+    // before it accepts the next, and `connect` returns once the handshake is
+    // done. So the third socket below is accepted after both held ones hold
+    // their permits.
 
     // Third socket must be dropped immediately without an HTTP response.
     let mut excess = TcpStream::connect(addr).await.unwrap();
@@ -657,9 +706,7 @@ async fn global_tcp_connection_cap_drops_excess_sockets() {
         .write_all(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n")
         .await;
     let mut buf = [0u8; 64];
-    let read_res = tokio::time::timeout(Duration::from_secs(2), excess.read(&mut buf))
-        .await
-        .expect("excess socket should close quickly");
+    let read_res = within("the excess socket's close", excess.read(&mut buf)).await;
     assert!(
         matches!(read_res, Ok(0) | Err(_)),
         "excess socket must not receive an HTTP response while cap is saturated: {read_res:?}"
@@ -667,13 +714,11 @@ async fn global_tcp_connection_cap_drops_excess_sockets() {
 
     // Releasing one held socket restores capacity.
     drop(held1);
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    let resp = client()
-        .get(format!("http://{addr}/healthz"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
+    until_served(
+        addr,
+        "a fresh connection served once a held socket is dropped",
+    )
+    .await;
     drop(held2);
 }
 
@@ -687,8 +732,12 @@ async fn request_timeout_returns_408_without_cutting_ws() {
     hooks.state().login_delay = Some(Duration::from_millis(400));
     let config = WebConfig {
         request_timeout_ms: 150,
+        // The socket's first ping comes at twice the request timeout: the
+        // mark that it outlived it.
+        ping_interval_ms: 300,
         ..test_config()
     };
+    assert!(config.ping_interval_ms > config.request_timeout_ms);
     let addr = spawn_server(hooks, config).await;
 
     // Slow non-upgrade HTTP request times out with 408.
@@ -708,17 +757,15 @@ async fn request_timeout_returns_408_without_cutting_ws() {
         HeaderValue::from_str(&format!("rustmush.v1.{TOKEN}")).unwrap(),
     );
     let (mut ws, _) = tokio_tungstenite::connect_async(ws_req).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let hello = futures::StreamExt::next(&mut ws).await;
-    assert!(
-        hello.is_some_and(|frame| frame.is_ok()),
+    let ping = first_ping(&mut ws).await;
+    assert_eq!(
+        ping.seq, 0,
         "WS connection must survive past request_timeout_ms"
     );
 }
 
 #[tokio::test]
 async fn p2_edge_2_per_ip_cap_blocked_all_routes_and_keepalive_limits_preserve_ws() {
-    use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpStream;
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
@@ -738,8 +785,12 @@ async fn p2_edge_2_per_ip_cap_blocked_all_routes_and_keepalive_limits_preserve_w
         max_http_conn_age_ms: 400,
         header_read_timeout_ms: 5_000,
         metrics_enabled: true,
+        // The upgraded socket's first ping comes half again past the HTTP
+        // connection age: the mark that the age did not cut it.
+        ping_interval_ms: 600,
         ..test_config()
     };
+    assert!(config.ping_interval_ms > config.max_http_conn_age_ms);
     let addr = spawn_server(hooks.clone(), config).await;
 
     // 1. Per-IP cap (2) drops 3rd socket even though global max_connections is 16.
@@ -747,22 +798,25 @@ async fn p2_edge_2_per_ip_cap_blocked_all_routes_and_keepalive_limits_preserve_w
     let mut held2 = TcpStream::connect(addr).await.unwrap();
     held1.write_all(b"GET ").await.unwrap();
     held2.write_all(b"GET ").await.unwrap();
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    // No wait for the slots: the accept loop takes sockets in handshake order
+    // (as in `global_tcp_connection_cap_drops_excess_sockets`).
 
     let mut excess = TcpStream::connect(addr).await.unwrap();
     let _ = excess
         .write_all(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n")
         .await;
     let mut buf = [0u8; 64];
-    let res = tokio::time::timeout(Duration::from_secs(2), excess.read(&mut buf))
-        .await
-        .expect("3rd socket from same IP must close promptly");
+    let res = within("the 3rd socket's close", excess.read(&mut buf)).await;
     assert!(
         matches!(res, Ok(0) | Err(_)),
         "per-IP cap must drop 3rd socket before HTTP response: {res:?}"
     );
     drop((held1, held2));
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    until_served(
+        addr,
+        "a fresh connection served once both held sockets are dropped",
+    )
+    .await;
 
     // 2. max_keepalive_requests (2) sends Connection: close on the 2nd response
     //    and closes the socket rather than allowing indefinite keep-alive pinning.
@@ -774,9 +828,8 @@ async fn p2_edge_2_per_ip_cap_blocked_all_routes_and_keepalive_limits_preserve_w
         let mut resp_bytes = Vec::new();
         let mut chunk = [0u8; 1024];
         loop {
-            let n = tokio::time::timeout(Duration::from_secs(2), ka.read(&mut chunk))
+            let n = within("a healthz response", ka.read(&mut chunk))
                 .await
-                .expect("healthz response")
                 .unwrap();
             assert!(n > 0, "unexpected EOF on request {i}");
             resp_bytes.extend_from_slice(&chunk[..n]);
@@ -792,9 +845,11 @@ async fn p2_edge_2_per_ip_cap_blocked_all_routes_and_keepalive_limits_preserve_w
             }
         }
     }
-    let eof = tokio::time::timeout(Duration::from_secs(2), ka.read(&mut buf))
-        .await
-        .expect("keep-alive socket must close after max_keepalive_requests");
+    let eof = within(
+        "the keep-alive socket's close after max_keepalive_requests",
+        ka.read(&mut buf),
+    )
+    .await;
     assert!(matches!(eof, Ok(0) | Err(_)), "expected EOF: {eof:?}");
 
     // 3. WebSocket upgrade survives well past max_http_conn_age_ms (400ms).
@@ -806,14 +861,13 @@ async fn p2_edge_2_per_ip_cap_blocked_all_routes_and_keepalive_limits_preserve_w
         HeaderValue::from_str(&format!("rustmush.v1.{TOKEN}")).unwrap(),
     );
     let (mut ws, _) = tokio_tungstenite::connect_async(ws_req).await.unwrap();
-    tokio::time::sleep(Duration::from_millis(600)).await;
-    let frame = futures::StreamExt::next(&mut ws).await;
-    assert!(
-        frame.is_some_and(|f| f.is_ok()),
+    let ping = first_ping(&mut ws).await;
+    assert_eq!(
+        ping.seq, 0,
         "upgraded WebSocket must not be cut by max_http_conn_age_ms"
     );
     drop(ws);
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    until_served(addr, "a fresh connection served once the socket is dropped").await;
 
     // 4. is_ip_blocked is enforced across ALL routes, not just /api/auth/*.
     hooks

@@ -1,22 +1,38 @@
 # tacsim — the wait budget of its story files (doc 51 cut FL.1).
 #
 # `<counter> <budget> <low-water> <path>`: `wait` is a raw sleep or timeout,
-# `clock` a wall-clock read. A count may only fall. Regenerate with:
+# `clock` a wall-clock read, `span` a literal span passed to a wait (cut
+# FL.9). A count may only fall. Regenerate with:
 #   WAIT_BUDGET_BLESS=1 cargo test -p mush-contract-tests --test ci_policy wait_budget::
 # A raise carries a written reason; the prefer-instead is `mush-storykit`.
 #
-# total: 94 raw waits, 0 wall-clock reads
+# total: 94 raw waits, 0 wall-clock reads, 89 literal spans passed to a wait
+#
+# Literal spans are counted from their baseline (doc 51 cut FL.9).
+# spans counted
 wait 7 7 tests/domain_arena/arena_task.rs
+span 6 6 tests/domain_arena/arena_task.rs
 wait 44 44 tests/domain_arena/cockpit.rs
+span 43 43 tests/domain_arena/cockpit.rs
 wait 18 18 tests/domain_arena/match_lifecycle.rs
+span 18 18 tests/domain_arena/match_lifecycle.rs
 wait 1 1 tests/domain_arena/match_lifecycle/resume_watch.rs
+span 1 1 tests/domain_arena/match_lifecycle/resume_watch.rs
 wait 1 1 tests/domain_arena/minds_pool.rs
 wait 2 2 tests/domain_arena/resolution.rs
+span 2 2 tests/domain_arena/resolution.rs
 wait 3 3 tests/domain_field/c4_filed_mind_field.rs
+span 3 3 tests/domain_field/c4_filed_mind_field.rs
 wait 5 5 tests/domain_field/c4_story_kit.rs
+span 5 5 tests/domain_field/c4_story_kit.rs
 wait 2 2 tests/domain_field/field_mw14c.rs
+span 2 2 tests/domain_field/field_mw14c.rs
 wait 1 1 tests/domain_field/ic_sortie_surface.rs
+span 1 1 tests/domain_field/ic_sortie_surface.rs
 wait 4 4 tests/domain_field/m8_world.rs
+span 4 4 tests/domain_field/m8_world.rs
 wait 3 3 tests/domain_field/mw21_completion.rs
+span 3 3 tests/domain_field/mw21_completion.rs
 wait 2 2 tests/domain_world/minds_at_size.rs
 wait 1 1 tests/domain_world/voyage.rs
+span 1 1 tests/domain_world/voyage.rs
