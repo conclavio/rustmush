@@ -627,6 +627,7 @@ namespace TacSim.Core
             if (Hud.CommandPalette != null)
             {
                 Hud.CommandPalette.OnCommandRequested += ExecutePlayerCommand;
+                Hud.CommandPalette.OnPrefillCommandRequested += prefix => Hud?.PrefillChatInput(prefix);
                 Hud.CommandPalette.OnPlotStationRoomRequested += roomId => PlotStationWayfinderRoute(roomId, autoWalk: true);
                 Hud.CommandPalette.OnPlotShipCompartmentRequested += compId => PlotShipWayfinderRoute(compId, autoWalk: true);
                 Hud.CommandPalette.OnInspectSolarPortRequested += portSlug => Hud.SolarMap?.FocusPort(portSlug);
@@ -675,13 +676,20 @@ namespace TacSim.Core
                 };
                 Hud.SocialModal.OnRefreshMailRequested += folder =>
                 {
-                    if (_ws != null && _ws.IsConnected && _ws.HasAdvertisedPanel("mail"))
+                    if (_ws != null && _ws.IsConnected &&
+                        (_ws.HasAdvertisedPanel("mail") || _ws.HasAdvertisedPanel("mail.list")))
                         _ws.SendMailListQuery(folder);
                 };
                 Hud.SocialModal.OnRefreshComsysRequested += () =>
                 {
-                    if (_ws != null && _ws.IsConnected && _ws.HasAdvertisedPanel("comsys"))
+                    if (_ws != null && _ws.IsConnected &&
+                        (_ws.HasAdvertisedPanel("comsys") || _ws.HasAdvertisedPanel("comsys.state")))
                         _ws.SendPanelSubscribe("comsys");
+                };
+                Hud.SocialModal.OnChannelBacklogRequested += channel =>
+                {
+                    if (_ws != null && _ws.IsConnected && !string.IsNullOrWhiteSpace(channel))
+                        _ws.SendChannelBacklogQuery(channel, limit: 40);
                 };
             }
 
@@ -723,9 +731,10 @@ namespace TacSim.Core
                 if (_ws.HasAdvertisedPanel("sky.chart"))
                     _ws.SendPanelSubscribe("sky.chart");
                 _ws.SendWhoQuery();
-                if (_ws.HasAdvertisedPanel("mail"))
+                _ws.SendCommandsQuery();
+                if (_ws.HasAdvertisedPanel("mail") || _ws.HasAdvertisedPanel("mail.list"))
                     _ws.SendMailListQuery();
-                if (_ws.HasAdvertisedPanel("comsys"))
+                if (_ws.HasAdvertisedPanel("comsys") || _ws.HasAdvertisedPanel("comsys.state"))
                     _ws.SendPanelSubscribe("comsys");
             };
             _ws.OnWhoReceived += list => Hud?.SocialModal?.ApplyWhoEntries(list);
@@ -2920,6 +2929,22 @@ namespace TacSim.Core
                     break;
                 case "comsys":
                     Hud?.SocialModal?.ApplyComsysPanel(data);
+                    break;
+                case "commands.list":
+                    Hud?.CommandPalette?.ApplyServerCommandsList(data);
+                    break;
+                case "npc.thinking":
+                    if (data != null && data.IsObject)
+                    {
+                        string npcId = data.Str("npc", string.Empty);
+                        string npcName = data.Str("name", string.Empty);
+                        bool active = data.Bool("active", false);
+                        if (_isAboardShip)
+                            ShipInterior?.SetActorThinking(npcId, npcName, active);
+                        else
+                            StationWorld?.SetActorThinking(npcId, npcName, active);
+                        Hud?.SetNpcModalThinking(npcName, active);
+                    }
                     break;
                 case "scenes":
                     if (Hud?.SceneIntelModal != null)

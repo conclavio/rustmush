@@ -295,10 +295,12 @@ namespace TacSim.UI
         private InputField _npcSayInput;
         private Text _npcSayPlaceholderText;
         private string _activeNpcTargetName;
+        private bool _modalNpcThinking;
         private string _modalCommandPrefix;
         private MushServerRequest _activeServerRequest;
         private string _modalBaseIntro = string.Empty;
         private readonly List<string> _modalResponseLines = new List<string>();
+        public bool IsNpcModalThinking => _modalNpcThinking;
 
         // 6-DOF Docking Telemetry Panel
         private GameObject _dockingPanel;
@@ -463,6 +465,7 @@ namespace TacSim.UI
         {
             _activeServerRequest = null;
             _activeNpcTargetName = null;
+            _modalNpcThinking = false;
             _modalCommandPrefix = null;
             _modalBaseIntro = string.Empty;
             _modalResponseLines.Clear();
@@ -2421,6 +2424,7 @@ namespace TacSim.UI
             if (_modalPanel != null)
                 _modalPanel.SetActive(false);
             _activeNpcTargetName = null;
+            _modalNpcThinking = false;
             _modalCommandPrefix = null;
             if (cancelServerRequest && _activeServerRequest != null)
             {
@@ -2449,6 +2453,7 @@ namespace TacSim.UI
             _modalHeaderText.text = header;
             _modalBaseIntro = body ?? string.Empty;
             _modalResponseLines.Clear();
+            _modalNpcThinking = false;
             _modalBodyText.text = _modalBaseIntro;
             LayoutRebuilder.ForceRebuildLayoutImmediate(_modalBodyText.rectTransform);
             if (_modalScrollRect != null)
@@ -2475,6 +2480,35 @@ namespace TacSim.UI
                     CreateButton(_modalButtonsRoot, item.label, new Color(0.14f, 0.38f, 0.48f), () => act?.Invoke());
                 }
             }
+        }
+
+        public void SetNpcModalThinking(string npcName, bool thinking)
+        {
+            if (_modalPanel == null || !_modalPanel.activeSelf || string.IsNullOrWhiteSpace(_activeNpcTargetName))
+                return;
+            if (!string.IsNullOrWhiteSpace(npcName) &&
+                !string.Equals(npcName.Trim(), _activeNpcTargetName.Trim(), StringComparison.OrdinalIgnoreCase))
+                return;
+            if (_modalNpcThinking == thinking) return;
+            _modalNpcThinking = thinking;
+            RenderModalBodyText();
+        }
+
+        private void RenderModalBodyText()
+        {
+            if (_modalBodyText == null) return;
+            string body = _modalResponseLines.Count == 0
+                ? _modalBaseIntro
+                : $"{_modalBaseIntro}\n\n{string.Join("\n", _modalResponseLines)}";
+            if (_modalNpcThinking && !string.IsNullOrWhiteSpace(_activeNpcTargetName))
+            {
+                string safeNpc = MushProtocol.EscapeUnityRichText(_activeNpcTargetName);
+                body = $"{body}\n\n<color=#FFCC66><i>{safeNpc} is thinking...</i></color>";
+            }
+            _modalBodyText.text = body;
+            LayoutRebuilder.ForceRebuildLayoutImmediate(_modalBodyText.rectTransform);
+            if (_modalScrollRect != null)
+                _modalScrollRect.verticalNormalizedPosition = 0f;
         }
 
         private static bool IsRoomSpeechLine(string line)
@@ -2528,6 +2562,11 @@ namespace TacSim.UI
 
             if (!string.IsNullOrWhiteSpace(richLine))
             {
+                if (_modalNpcThinking && !string.IsNullOrWhiteSpace(_activeNpcTargetName) &&
+                    richLine.IndexOf(_activeNpcTargetName, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    _modalNpcThinking = false;
+                }
                 foreach (string sub in richLine.Split('\n'))
                 {
                     if (string.IsNullOrWhiteSpace(sub)) continue;
@@ -2537,18 +2576,7 @@ namespace TacSim.UI
                     _modalResponseLines.RemoveAt(0);
             }
 
-            if (_modalResponseLines.Count == 0)
-            {
-                _modalBodyText.text = _modalBaseIntro;
-            }
-            else
-            {
-                _modalBodyText.text = $"{_modalBaseIntro}\n\n{string.Join("\n", _modalResponseLines)}";
-            }
-
-            LayoutRebuilder.ForceRebuildLayoutImmediate(_modalBodyText.rectTransform);
-            if (_modalScrollRect != null)
-                _modalScrollRect.verticalNormalizedPosition = 0f;
+            RenderModalBodyText();
         }
 
         public void ShowServerRequestModal(MushServerRequest req)

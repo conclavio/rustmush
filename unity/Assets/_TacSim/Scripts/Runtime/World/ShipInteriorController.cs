@@ -1275,11 +1275,32 @@ namespace TacSim.World
 
         public void SetActorComposing(string actorId, string actorName, bool composing)
         {
+            SetActorTransientBubble(actorId, actorName, composing, "...", 8.5f);
+        }
+
+        public void SetActorThinking(string actorId, string actorName, bool thinking)
+        {
+            SetActorTransientBubble(actorId, actorName, thinking, "thinking...", 18.0f);
+        }
+
+        public string GetActorSpeechText(string actorId)
+        {
+            if (!string.IsNullOrEmpty(actorId) &&
+                _crewBillboards.TryGetValue(actorId, out var bb) &&
+                bb != null && bb.IsSpeechActive)
+            {
+                return bb.CurrentSpeechText;
+            }
+            return string.Empty;
+        }
+
+        private void SetActorTransientBubble(string actorId, string actorName, bool active, string marker, float durationSec)
+        {
             if (!string.IsNullOrEmpty(actorId) && _crewBillboards.TryGetValue(actorId, out var bb) && bb != null)
             {
-                if (composing)
-                    bb.ShowSpeech("...");
-                else if (bb.SpeechBubbleText != null && bb.SpeechBubbleText.text == "...")
+                if (active)
+                    bb.ShowSpeech(marker, durationSec);
+                else if (bb.SpeechBubbleText != null && bb.SpeechBubbleText.text == marker)
                     bb.SpeechBubbleText.gameObject.SetActive(false);
                 return;
             }
@@ -1292,8 +1313,8 @@ namespace TacSim.World
                     {
                         if (_crewBillboards.TryGetValue(kv.Key, out var b2) && b2 != null)
                         {
-                            if (composing) b2.ShowSpeech("...");
-                            else if (b2.SpeechBubbleText != null && b2.SpeechBubbleText.text == "...") b2.SpeechBubbleText.gameObject.SetActive(false);
+                            if (active) b2.ShowSpeech(marker, durationSec);
+                            else if (b2.SpeechBubbleText != null && b2.SpeechBubbleText.text == marker) b2.SpeechBubbleText.gameObject.SetActive(false);
                         }
                         break;
                     }
