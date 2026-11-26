@@ -533,9 +533,12 @@ async fn take_off(ada: &mut Term, bo: &mut Term) {
     ada.say("SIM START", "is boarding").await;
     ada.say("red", "Red Room").await;
     bo.say("blue", "Blue Room").await;
+    let ada_mark = ada.mark();
+    let bo_mark = bo.mark();
     ada.say("BOARD", "climb into").await;
     bo.say("BOARD", "climb into").await;
-    ada.expect("Good hunting").await;
+    ada.expect_after(ada_mark, "Good hunting").await;
+    bo.expect_after(bo_mark, "Good hunting").await;
 }
 
 /// Walk one pilot from a team room back to the lobby.
@@ -814,9 +817,12 @@ async fn two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_s
     ada.say("SIM START", "is boarding").await;
     ada.say("red", "Red Room").await;
     bo.say("blue", "Blue Room").await;
+    let ada_mark = ada.mark();
+    let bo_mark = bo.mark();
     ada.say("BOARD", "climb into").await;
     bo.say("BOARD", "climb into").await;
-    ada.expect("Good hunting").await;
+    ada.expect_after(ada_mark, "Good hunting").await;
+    bo.expect_after(bo_mark, "Good hunting").await;
     let blue_two = support::drawn_callsigns(&server.store, 2).await[&blue].clone();
 
     // The cockpits: the arena opened on the pack's own muster, not on the kill

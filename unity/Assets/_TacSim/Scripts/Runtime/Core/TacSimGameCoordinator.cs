@@ -422,6 +422,12 @@ namespace TacSim.Core
             };
             ArenaStage.OnReplayClosed += HandleReplayOrObserverClosed;
             ArenaStage.OnArenaCombatLog += ln => { if (Hud != null) Hud.AppendLogLine(ln); };
+            ArenaStage.OnNewDetachmentOrderReceived += ord =>
+            {
+                if (ord == null) return;
+                Audio?.PlayMarketChime();
+                Hud?.FloatingCallouts?.ShowCallout($"ORDER FROM {ord.From.ToUpperInvariant()}: {ord.Objective}", new Color(1.0f, 0.86f, 0.34f, 1f), 2.8f);
+            };
             ArenaStage.OnToggleCameraViewRequested += ToggleGroundVehicleCameraMode;
 
             Hud.OnCloseReplayRequested += CloseActiveReplayOrObserver;
@@ -490,6 +496,7 @@ namespace TacSim.Core
                 Hud.Overlays.OnExitSurfaceExcursionRequested += ExitPlanetarySurfaceStage;
                 Hud.Overlays.OnOpenGroundChartRequested += () => Hud.GroundChart?.SetOpen(true);
                 Hud.Overlays.OnArenaCockpitVerbRequested += HandleArenaCockpitVerb;
+                Hud.Overlays.OnPrefillChatRequested += prefix => Hud?.PrefillChatInput(prefix);
                 Hud.Overlays.OnToggleVehicleCameraViewRequested += ToggleGroundVehicleCameraMode;
             }
 
