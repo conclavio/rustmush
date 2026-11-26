@@ -4,10 +4,10 @@
 
 # Flaky tests observed
 
-*Generated 2026-11-26 02:03 UTC. What was seen, by the rule of [flaky-tests.md](flaky-tests.md), which stays the hand-written record of causes. A test here whose Record is `none` is the work queue. The columns: Class and Known list are the list's (crates/mush-contract-tests/flaky-known.toml); Record is the row of flaky-tests.md that names the test; 14 d and 30 d count the runs or passes in which the test failed or passed on retry; Soak is failed passes over passes; a Why of branches alone is a lead to read, not a finding.*
+*Generated 2026-11-26 02:12 UTC. What was seen, by the rule of [flaky-tests.md](flaky-tests.md), which stays the hand-written record of causes. A test here whose Record is `none` is the work queue. The columns: Class and Known list are the list's (crates/mush-contract-tests/flaky-known.toml); Record is the row of flaky-tests.md that names the test; 14 d and 30 d count the runs or passes in which the test failed or passed on retry; Soak is failed passes over passes; a Why of branches alone is a lead to read, not a finding.*
 
 
-Sources: ci.yml, the last 14 day(s); 723 run(s) listed, 108 with reports read (the shards with a failed job).
+Sources: ci.yml, the last 14 day(s); 724 run(s) listed, 108 with reports read (the shards with a failed job).
 
 | Test | Binary | Class | Known list | Record | First seen | Last seen | 14 d | 30 d | Soak | Why | Last three |
 |---|---|---|---|---|---|---|---:|---:|---|---|---|
@@ -64,10 +64,11 @@ Sources: ci.yml, the last 14 day(s); 723 run(s) listed, 108 with reports read (t
 
 65 more test(s) failed on one branch or one head only and are that branch's own by the rule; `--run <id>` names them for a run.
 
-**The known list:** 14 row(s), 0 seen in these sources, 0 past expiry.
+**The known list:** 15 row(s), 0 seen in these sources, 0 past expiry.
 
 Listed and not seen (no evidence here to renew on):
 
+- `mush-gateway::split_halves` `gateway_generations::a_drains_while_b_serves_and_every_session_is_warned_then_moved`, process, expires 2026-12-07
 - `mushd::world_journeys` `web_e2e::spa_if_built_and_healthz_are_served`, process, expires 2026-12-07
 - `mushd::world_journeys` `scripting_e2e::*`, unclassed, expires 2026-12-07
 - `mushd::sim_lenses` `sim_reflex::*`, unclassed, expires 2026-12-07

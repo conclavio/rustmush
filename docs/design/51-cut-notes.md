@@ -1280,7 +1280,7 @@ paused), one in `boot_store`. The `src/` sites: three in `world_task/tests.rs` (
 
 The gateway's stories. Built 2026-11-25 on `0e3a26804`. It adds one module to `mush-storykit` (`term.rs`, the one
 `Term`), moves mush-gateway's `split_halves` stories onto it, turns on `one_reader` for mush-gateway, and closes
-eleven of mush-gateway's twelve rows in `flaky-known.toml`; the twelfth stays, not renewed (Rows). **It changes
+ten of mush-gateway's twelve rows in `flaky-known.toml`; two stay, not renewed (Rows). **It changes
 product code in two places.** Rows 12 and 15 were not the rig's wall-clock limits. They were two product faults,
 and the restart stories found both once their waits were bounded by the gateway's own schedule.
 
@@ -1301,9 +1301,25 @@ The middle row is how the keeper fault was found (Rows). **The rates do not prov
 - **Load.** The middle soak ran while other sessions built on the box (load up to 22 on 32 cores). The other four
   ran on a quiet box (load at most 7.65).
 - **Main did not reproduce the fault** in 48 quiet passes, and neither did the fix.
-- **The case for the fix** is the trace, the unit test that hangs without it, and CI's record. Row 12's five tests
-  and the self-exit story failed or retried about once each in the 1,000 runs. Whether the conversion itself made
-  the window wider, or only the load did, is not known.
+- **The case for the fix** is the trace, the unit test that hangs without it, and CI's record. Whether the
+  conversion itself made the window wider, or only the load did, is not known.
+
+**CI's record, read whole** (every `rest-gateway` JUnit report of `ci.yml`, 2026-11-04 to 11-25: 1,122 runs, 106
+entries for `split_halves`). It is larger than `docs/flaky-tests.md`'s count, which read 120 green runs:
+
+- **Restarts that never healed:** 15 entries, all ending at the gateway's `restarting` line and timing out after
+  about 61 s. They cover `restart_survival`'s five restart stories and both of row 15's stories, five of the 15 on
+  main.
+- **A drain that closed before its reason:** 83 entries. `a_finish_warns_once…` alone has 81, all at the same
+  read, 60 of them on 11-04 and 21 in the 875 runs after it. `a_drains_while_b_serves…` has two.
+- **The skewed-server story** (`server_panic_relaunch::a_version_skewed…`): three entries, all on main, where the
+  skewed server waited for the gateway to hang up on it and it never did. That is read as the keeper fault: an
+  attempt parked on the server it dialed before never reaches the next one. It is a reading, not reproduced.
+- **`server_unit::a_gateway_started…`**: one entry, its channel closed after a gap refusal and a second `connect`.
+  It is not explained.
+- **`a_drains_while_b_serves…`, once more** (43258253021, 2026-11-12, a branch): a queued-connection burst answered
+  15 of 16. That count is the kernel's listener migration (`tcp_migrate_req`), not the drain.
+- **`arena_story_split`**: two entries, one of them the security branch's double failure.
 
 **Survey.**
 
@@ -1377,7 +1393,7 @@ The middle row is how the keeper fault was found (Rows). **The rates do not prov
 | `struct Term` definitions under `crates/mush-gateway/tests/` | 11 | 0 |
 | `strip_ansi` definitions there | 11 | 0 |
 | `ask_whole` definitions there | 1 | 0 |
-| mush-gateway's rows in `flaky-known.toml` | 12 | 1, carried and not renewed |
+| mush-gateway's rows in `flaky-known.toml` | 12 | 2, not renewed |
 
 `scripts/wait_audit.py` agrees with the budget: 55 waits and 2 wall-clock reads in mush-gateway's story files.
 
@@ -1387,8 +1403,8 @@ The middle row is how the keeper fault was found (Rows). **The rates do not prov
   - `restart_survival`'s two and `server_unit`'s heal are the keeper fault.
   - `gateway_generations::a_finish_warns_once…` is the drain fault. CI's one failure of it carries the drain's
     message, and its retried pass came from the same run.
-  - Its twin, `a_drains_while_b_serves…`, had a retried pass in the record with no message kept. It drains the same
-    way.
+  - Its twin, `a_drains_while_b_serves…`, keeps its row, not renewed. Two of its three entries are the drain
+    fault. The third, the burst of 15 of 16, is not explained.
 - **Row 15, two tests, read as row 12's first fault.** `timeout waiting for "Reconnected"` after a restart is what
   the keeper fault prints, and the converted soak printed it in this binary's restart stories. Its two runs are
   from 2026-11-06 and their logs are gone, so that is a reading of the symptom, not a reproduction.
@@ -1396,7 +1412,8 @@ The middle row is how the keeper fault was found (Rows). **The rates do not prov
   failed once and passed on its same head on 2026-11-23 (run 45277135577). It failed in the converted soak the
   same way.
 - **Four of the five carried module rows are deleted** (`two_process_e2e`, `server_panic_relaunch`, `two_gateways`,
-  `gateway_generations_unit`). They had no failure on record and passed in every soak pass above.
+  `gateway_generations_unit`). They passed in every soak pass above. `server_panic_relaunch`'s three CI entries are
+  read as the keeper fault (the record, above).
 - **`arena_story_split::*` keeps its carried row, not renewed** (it expires 2026-12-07 with the rest).
   - Its one story, `the_story_is_the_same_story_through_the_gateway`, passed all 96 soak passes.
   - It then failed once, at 54 s, in one 480-test run of the tree merged with main `ecc6887b8`, beside
@@ -1405,7 +1422,7 @@ The middle row is how the keeper fault was found (Rows). **The rates do not prov
   - Its cause is not known, so the row stays for the soak to name one. The row says so in its note.
 - **Not a flake:** `arena_story_split::the_story_is_the_same_story_through_the_gateway` failed both tries in run
   44774353324, at a security branch's head (`fix/security-tier1d-tacsim-highs`), and nowhere else.
-- **Eleven of the twelve rows are deleted.** None is renewed.
+- **Ten of the twelve rows are deleted.** The two kept are not renewed; both expire 2026-12-07.
 
 **Tests.**
 

@@ -37,6 +37,15 @@
 # --- Rows of docs/flaky-tests.md that are open, covered or on watch ---------
 
 [[flaky]]
+binary = "mush-gateway::split_halves"
+test = "gateway_generations::a_drains_while_b_serves_and_every_session_is_warned_then_moved"
+class = "process"
+row = 12
+listed = "2026-11-23"
+expires = "2026-12-07"
+note = "kept by FL.7, not renewed: its channel-closed shape is the drain fault FL.7 fixed; its other shape, the queued-connection burst answered 15 of 16 (run 43258253021, 2026-11-12, a branch), is the kernel's listener migration and is not explained"
+
+[[flaky]]
 binary = "mushd::world_journeys"
 test = "web_e2e::spa_if_built_and_healthz_are_served"
 class = "process"
