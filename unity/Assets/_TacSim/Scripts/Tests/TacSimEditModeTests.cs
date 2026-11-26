@@ -8235,5 +8235,107 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void Arena3DVehicleRecoilHitFlashBeaconAndMindRulesDrawer_AnimatesRecoilFlashesHitsAndRemovesStandingRules()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave8PR2_RecoilFlashRulesDrawerTest");
+            try
+            {
+                var catalog = TacSimAssetCatalog.LoadOrDefault();
+
+                // 1. Procedural 3D Rig: turret recoil kickback spring, impact hit-flash burst, and operational status beacon
+                var rig = TacSimVehicleVisualFactory.SpawnArenaCombatUnit(
+                    null, rootGo.transform, "tacsim.unit.line_tank", "R1", "R", UnityEngine.Vector3.zero, 90f);
+                Assert.IsNotNull(rig.HitFlashVisual, "Arena rig must include a 3D hit-flash visual");
+                Assert.IsNotNull(rig.StatusBeaconRenderer, "Arena rig must include an operational hull status beacon LED");
+                Assert.IsFalse(rig.IsHitFlashActive);
+
+                rig.PlayWeaponRecoil();
+                Assert.Greater(rig.CurrentRecoilKickOffset, 0.4f, "PlayWeaponRecoil must apply local-Z recoil kickback even on procedural rigs");
+                rig.UpdateArticulation(0.40f, 0f, null);
+                Assert.AreEqual(0f, rig.CurrentRecoilKickOffset, 0.01f, "Recoil spring must recover smoothly to rest");
+
+                rig.TriggerHitFlash(isCrit: true);
+                Assert.IsTrue(rig.IsHitFlashActive, "TriggerHitFlash must illuminate the impact burst");
+                rig.UpdateArticulation(0.35f, 0f, null);
+                Assert.IsFalse(rig.IsHitFlashActive, "Hit-flash burst must extinguish cleanly after duration");
+
+                // 2. Full live arena integration: hit notice flashes struck contact, mind sealed_rules & order decode, Rules drawer deletes rule slots
+                var arenaGo = new UnityEngine.GameObject("Arena");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(catalog, TacSimTerrainDecoder.LoadStaticArena("proving_ground"));
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.Overlays.BindControllers(null, arena, null);
+
+                var emitted = new List<string>();
+                arena.OnLiveCockpitVerbRequested += emitted.Add;
+                hud.Overlays.OnArenaCockpitVerbRequested += v => arena.ExecuteCockpitAction(v);
+
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 125, ""seated"": true, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""mode"": ""hold"", ""power"": ""online"",
+                    ""x_cm"": 10000, ""y_cm"": 10000, ""heading_deg"": 90, ""speed_kph"": 15,
+                    ""heat"": { ""heat"": 990, ""max"": 1000, ""overheated"": true },
+                    ""rules"": [
+                        { ""slot"": 1, ""action"": ""lock"" },
+                        { ""slot"": 3, ""action"": ""fire"", ""weapon"": ""main_gun"", ""percent"": 60 }
+                    ],
+                    ""order"": {
+                        ""squad"": ""red"", ""objective"": ""advance"", ""to"": [140, 110],
+                        ""hold_fire"": true, ""expires_in_ms"": 45000
+                    },
+                    ""mind"": {
+                        ""name"": ""Standard Doctrine"",
+                        ""card"": { ""schema"": ""doctrine.v1"", ""values"": {} },
+                        ""sealed_rules"": [""LOCK nearest WHEN nolock"", ""FIRE ALL WHEN odds >= 60""],
+                        ""profiles"": [""Sniper"", ""Line""],
+                        ""active"": 0, ""class"": ""I"", ""core"": ""II"",
+                        ""channels"": [""helm"", ""sensors"", ""fire""], ""off"": false
+                    },
+                    ""contacts"": [
+                        { ""designator"": ""B1"", ""class"": ""line_tank"", ""party"": ""B"", ""friendly"": false, ""cell"": [115, 100], ""range_m"": 150, ""bearing_deg"": 90, ""facing"": ""front"", ""health"": ""scarred"" }
+                    ],
+                    ""notices"": [
+                        { ""kind"": ""hit"", ""weapon"": ""main_gun"", ""designator"": ""B1"", ""section"": ""turret"", ""text"": ""Hit B1 turret."" }
+                    ]
+                }"));
+                hud.Overlays.RefreshArenaHud();
+
+                // Contact B1 flashed on hit notice!
+                Assert.IsTrue(arena.TryGetContactRig("B1", out var b1Rig));
+                Assert.IsTrue(b1Rig.IsHitFlashActive, "Hit notice on B1 must flash B1's 3D hit-impact shell");
+
+                // Decoded sealed_rules, card schema, and standing order
+                Assert.IsNotNull(arena.State.Mind);
+                Assert.AreEqual("doctrine.v1", arena.State.Mind.CardSchema);
+                Assert.AreEqual(2, arena.State.Mind.SealedRules.Count);
+                Assert.IsNotNull(arena.State.StandingOrder);
+                Assert.AreEqual("advance", arena.State.StandingOrder.Objective);
+                Assert.IsTrue(arena.State.StandingOrder.HoldFire);
+                Assert.AreEqual(140, arena.State.StandingOrder.ToCellX);
+
+                // Toggle Rules & Mind Inspector drawer open -> shows 2 standing rule chips, sealed rules, and active order!
+                Assert.IsFalse(hud.Overlays.IsRulesDrawerOpen);
+                hud.Overlays.ToggleRulesDrawerForTests();
+                Assert.IsTrue(hud.Overlays.IsRulesDrawerOpen);
+                Assert.AreEqual(2, hud.Overlays.VisibleStandingRulePillCount, "Rules drawer must render one clickable removal pill per active standing rule");
+                StringAssert.Contains("LOCK nearest WHEN nolock", hud.Overlays.RulesDrawerSnapshot);
+                StringAssert.Contains("ADVANCE", hud.Overlays.RulesDrawerSnapshot);
+                StringAssert.Contains("HOLD FIRE", hud.Overlays.RulesDrawerSnapshot);
+
+                // Clicking standing rule pill #1 (slot 3) emits exact verified `MIND RULE 3 OFF`!
+                emitted.Clear();
+                hud.Overlays.ClickRemoveStandingRulePillForTests(1);
+                CollectionAssert.AreEqual(new[] { "MIND RULE 3 OFF" }, emitted);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

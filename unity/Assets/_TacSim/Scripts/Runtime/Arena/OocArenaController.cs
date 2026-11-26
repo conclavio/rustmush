@@ -226,6 +226,21 @@ namespace TacSim.Arena
     {
         public int Slot;
         public string Action = string.Empty; // "fire" | "hold" | "lock"
+        public string Weapon = string.Empty;
+        public string Target = string.Empty;
+        public int MinPercent;
+    }
+
+    public sealed class ArenaStandingOrderState
+    {
+        public string Squad = string.Empty;
+        public string Objective = string.Empty;
+        public string Target = string.Empty;
+        public bool HasToCell;
+        public int ToCellX;
+        public int ToCellY;
+        public bool HoldFire;
+        public long ExpiresInMs;
     }
 
     /// <summary>
@@ -253,7 +268,9 @@ namespace TacSim.Arena
     public sealed class ArenaMindState
     {
         public string Name = string.Empty; // empty when custom/unnamed -> display "OWN MIND"
+        public string CardSchema = string.Empty;
         public readonly List<string> Profiles = new List<string>(4);
+        public readonly List<string> SealedRules = new List<string>(8);
         public int ActiveIndex;
         public string ClassWord = string.Empty;
         public string CoreWord = string.Empty;
@@ -323,6 +340,7 @@ namespace TacSim.Arena
         public ArenaDetachmentState Detachment;
         public bool DetachmentProjectionInvalid;
         public ArenaMindState Mind;
+        public ArenaStandingOrderState StandingOrder;
         public bool HasReceivedCatchup;
         public long LastCatchupAwaySec;
         public string MotorGoal = string.Empty;
@@ -587,6 +605,13 @@ namespace TacSim.Arena
             if (string.Equals(State.Posture, low, StringComparison.OrdinalIgnoreCase))
                 return false;
             OnLiveCockpitVerbRequested?.Invoke($"MIND POSTURE {low}");
+            return true;
+        }
+
+        public bool ClearStandingRuleSlot(int slot)
+        {
+            if (slot <= 0 || slot > 32) return false;
+            OnLiveCockpitVerbRequested?.Invoke($"MIND RULE {slot} OFF");
             return true;
         }
 
@@ -1706,6 +1731,19 @@ namespace TacSim.Arena
                         : (long?)null,
                     IsOff = mindNode.Bool("off", false)
                 };
+                var cardObj = mindNode["card"];
+                if (cardObj != null && cardObj.IsObject)
+                    ms.CardSchema = cardObj.Str("schema", string.Empty);
+                var srArr = mindNode["sealed_rules"].AsArray();
+                if (srArr != null)
+                {
+                    int srCap = Math.Min(srArr.Count, 12);
+                    for (int sIdx = 0; sIdx < srCap; sIdx++)
+                    {
+                        string sr = srArr[sIdx].AsString(string.Empty);
+                        if (!string.IsNullOrEmpty(sr)) ms.SealedRules.Add(sr);
+                    }
+                }
                 var profArr = mindNode["profiles"].AsArray();
                 if (profArr != null)
                 {
@@ -1731,6 +1769,31 @@ namespace TacSim.Arena
             else if (d.ContainsKey("mind"))
             {
                 State.Mind = null;
+            }
+
+            var ordNode = d["order"];
+            if (ordNode != null && ordNode.IsObject)
+            {
+                var stOrd = new ArenaStandingOrderState
+                {
+                    Squad = ordNode.Str("squad", string.Empty),
+                    Objective = ordNode.Str("objective", string.Empty),
+                    Target = ordNode["target"].IsNull ? string.Empty : ordNode.Str("target", string.Empty),
+                    HoldFire = ordNode.Bool("hold_fire", false),
+                    ExpiresInMs = Math.Max(0L, ordNode.Long("expires_in_ms", 0))
+                };
+                var toArr = ordNode["to"].AsArray();
+                if (toArr != null && toArr.Count >= 2)
+                {
+                    stOrd.HasToCell = true;
+                    stOrd.ToCellX = toArr[0].AsInt(0);
+                    stOrd.ToCellY = toArr[1].AsInt(0);
+                }
+                State.StandingOrder = stOrd;
+            }
+            else if (d.ContainsKey("order"))
+            {
+                State.StandingOrder = null;
             }
 
             var catchupNode = d["catchup"];
@@ -1759,7 +1822,16 @@ namespace TacSim.Arena
                     int slot = r.Int("slot", 0);
                     string action = r.Str("action", string.Empty);
                     if (slot > 0 && !string.IsNullOrEmpty(action))
-                        State.Rules.Add(new ArenaStandingRule { Slot = slot, Action = action });
+                    {
+                        State.Rules.Add(new ArenaStandingRule
+                        {
+                            Slot = slot,
+                            Action = action,
+                            Weapon = r["weapon"].IsNull ? string.Empty : r.Str("weapon", string.Empty),
+                            Target = r["target"].IsNull ? string.Empty : r.Str("target", string.Empty),
+                            MinPercent = r.Int("percent", 0)
+                        });
+                    }
                 }
             }
 
@@ -2112,19 +2184,27 @@ namespace TacSim.Arena
                         OnArenaCombatLog?.Invoke($"<color=#FFCC66>[COCKPIT]</color> {TacSim.Net.MushProtocol.EscapeUnityRichText(txt)}");
 
                     if (kind == "hit" || kind == "miss" || kind == "kill" || kind == "slot_fired" ||
-                        kind.Contains("fire") || kind.Contains("shot"))
+                        kind == "target_section_lost" || kind.Contains("fire") || kind.Contains("shot"))
                     {
                         bool isLaser = weapon.IndexOf("laser", StringComparison.OrdinalIgnoreCase) >= 0 ||
                                        txt.IndexOf("laser", StringComparison.OrdinalIgnoreCase) >= 0;
-                        OnWeaponShotFired?.Invoke(isLaser);
-                        TriggerPlayerMuzzleFlash(isLaser);
                         string tgtDesig = !string.IsNullOrEmpty(desig) ? desig : State.LockedDesignator;
-                        if (_contactRigs.TryGetValue(tgtDesig, out var tgtRig) && PlayerRig?.MuzzlePoint != null && tgtRig?.Root != null)
+                        if (kind != "target_section_lost")
                         {
-                            Vector3 tgtPt = tgtRig.Root.transform.position + Vector3.up * 1.5f;
-                            if (kind == "miss")
-                                tgtPt += tgtRig.Root.transform.right * 6.5f;
-                            SpawnShotTracer(PlayerRig.MuzzlePoint.position, tgtPt, isLaser);
+                            OnWeaponShotFired?.Invoke(isLaser);
+                            TriggerPlayerMuzzleFlash(isLaser);
+                        }
+                        if (_contactRigs.TryGetValue(tgtDesig, out var tgtRig) && tgtRig?.Root != null)
+                        {
+                            if (kind == "hit" || kind == "target_section_lost" || kind == "kill")
+                                tgtRig.TriggerHitFlash(isCrit: kind == "target_section_lost" || kind == "kill");
+                            if (kind != "target_section_lost" && PlayerRig?.MuzzlePoint != null)
+                            {
+                                Vector3 tgtPt = tgtRig.Root.transform.position + Vector3.up * 1.5f;
+                                if (kind == "miss")
+                                    tgtPt += tgtRig.Root.transform.right * 6.5f;
+                                SpawnShotTracer(PlayerRig.MuzzlePoint.position, tgtPt, isLaser);
+                            }
                         }
                     }
 
@@ -2179,6 +2259,7 @@ namespace TacSim.Arena
             {
                 int reportDelta = bestDrop > 0 ? bestDrop : dInt;
                 OnPlayerArmorDamaged?.Invoke(bestFacet, reportDelta, internalHit);
+                PlayerRig?.TriggerHitFlash(internalHit);
                 if (PlayerRig?.Root != null)
                 {
                     Vector3 hullHit = PlayerRig.Root.transform.position + Vector3.up * 1.8f;
@@ -2739,6 +2820,7 @@ namespace TacSim.Arena
                         ? "scarred"
                         : "intact";
             PlayerRig.SetDamageState(ownHealthWord, State.IsWreck);
+            PlayerRig.SetOperationalBeacon(State.Overheated, State.Immobile, State.IsWreck);
 
             float? aimYaw = null;
             if (!string.IsNullOrEmpty(State.LockedDesignator) && _contactRigs.TryGetValue(State.LockedDesignator, out var lockedRig) && lockedRig?.Root != null)
