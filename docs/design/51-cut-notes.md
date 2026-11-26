@@ -1805,3 +1805,139 @@ wait. The span count is by this unit's counter, run at the base.
 - `one_reader` for mush-net-ssh (Divergences, 2).
 - mush-net-ssh's rig in `tests/support/`, which would let `market_screen.rs` and the other screen tests share its
   mock.
+
+## FL.10
+
+The close-out. Built 2026-11-26 on `63cf3252f` (FL.8's branch, PR #817, with main merged in, so FL.1 to FL.9 are
+all in), stacked on #817 by the owner's word of 2026-11-26. It writes doc 51's rules into doc 43, closes the record
+against the soak, empties `flaky-known.toml`, and writes the soak's first nights here. **It changes no product
+code and no story.** Two test files change: the `flaky_known` gate's own proofs, which doctored the real list
+and now doctor a fixed one, and one test of `flake_report.py` that wanted the list non-empty (Divergences, 1).
+
+**The soak's first week, as far as it has run.** `soak.yml`, dispatched by the timer at 23:17 Pacific, six cells of
+four cores on cores 0 to 23, 180 minutes, no retry. FL.2's "Not built" asks for this record. Three nights had run
+when this unit was built; the four after them are owed (Not built).
+
+| Night | Run | Main | `state` | Passes: mushd, mush-gateway, mush-server, mush-bot | Test runs | Failed passes | Least free memory | Highest load |
+|---|---|---|---|---|---:|---:|---:|---:|
+| 2026-11-24 | 45346792443 | `9de381e74` | ran | 36, 35, 36, 36 (143) | 24,001 | 2 | 56,298 MB | 19.40 |
+| 2026-11-25 | 45566917887 | `0ae636469` | ran | 37, 35, 36, 36 (144) | 24,285 | 2 | 56,554 MB | 21.72 |
+| 2026-11-26 | 45774164707 | `2f3101aec` | ran | 34, 35, 36, 36 (141) | 23,577 | 0 | 56,435 MB | 19.88 |
+
+No night yielded or was stopped. **Every test the soak named**, with its rate over the passes of its package:
+
+| Test | Row | Rate | On the list that night | Since |
+|---|---:|---:|---|---|
+| `restart_survival::restart_mid_scene_resumes_in_current_room` | 12 | 1 / 35 (night 1) | yes | fixed by FL.7's keeper fix (#806) |
+| `restart_survival::client_disconnect_during_gap_leaves_survivor_intact` | 12 | 1 / 35 (night 1) | yes | the same |
+| `arena_custody_split::the_arena_surface_survives_the_split_and_a_server_restart` | 15 | 1 / 35 (night 2) | yes | the same |
+| `the_opening_reads_the_ground_at_the_muster` | 20 | 1 / 36 (night 2) | no: new | fixed by FL.5 (#805) |
+
+Over the three nights those are 1 in 105, 1 in 105, 1 in 105 and 1 in 108. All three gateway failures end
+`timeout waiting for "Reconnected"`, the keeper fault's print. Both fixes merged before the third night, which
+failed nothing. **No failure was the soak's own**: none came from two cells at once or from the box, whose memory
+never fell below 56 GB. `scripts/flake_report.py --ci-days 14` over the same three nights and CI's last 14 days
+(736 runs) found no flake the record lacks. Its rows with no record are the red-main windows the record lists,
+census gaps (`mine::minds::tests::*_census`), and branch-own failures: Unity branches whose clients typed verbs the
+registry lacked (`client_verbs`), one doc 50 branch pair's `player_market*` tests, and FL.9's `port_walk`.
+
+**The rows of `flaky-known.toml`, decided.** Eight rows were left. All eight are deleted; none is renewed.
+
+| Row | Its record | The evidence | Decision |
+|---|---|---|---|
+| `mush-worldgen::plan`, `::review_plan`, `::s8_authority` (whole binaries, carried) | no failure on record | not in the nightly soak. By hand on conclav.dev: 250 passes of the three binaries' 17 tests, no retry, 4,250 runs, none failed. Each drives the world through a mock LLM provider and reads no clock | deleted |
+| mush-sim `journey::tests::e7c6_b2_*` (three tests, carried) | no failure on record | the same 250 passes: 750 runs, none failed. Each is a pure function of its inputs: no clock, no thread, no I/O | deleted |
+| `arena_story_split::*` (module, carried) | FL.7's one failure in a 480-test run of its merged tree, its message not kept | 105 of 105 nightly soak passes; 48 of 48 by hand (below); 96 of 96 in FL.7's soaks. No cause is written down, and a row is renewed on evidence only | deleted |
+| `gateway_generations::a_drains_while_b_serves…` (row 12, process) | two drain-fault failures (fixed by FL.7) and one burst answered 15 of 16 (2026-11-12, a branch) | 105 of 105 nightly soak passes, which never ran the burst check: the story runs it only when `net.ipv4.tcp_migrate_req` is 1, and conclav.dev's is 0. In a network namespace with it set to 1: 301 of 301, every burst answered 16 of 16 | deleted; the burst's shape is on WATCH in row 12 |
+
+**The by-hand soak** for the last two rows: conclav.dev, a clone of FL.8's `42c9d1dfa` (FL.7 in; this unit's base
+adds FL.9's kit module and the Unity merges, neither of which these binaries reach). One network namespace with
+`tcp_migrate_req = 1` and the loopback up. Inside it, `scripts/soak.sh` with `SOAK_PACKAGES=mush-gateway`, six
+cells of four cores, eight rounds: 48 passes of `split_halves`' 47 tests, 2,256 runs, none failed, least free
+memory 56,757 MB, highest load 4.33. Then `a_drains_while_b_serves…` alone, four at once on four cores each: 200
+runs, every one passed and printed `queued-connection migration: 16/16`. An earlier attempt gave 53 more runs of
+it (all 16 of 16) and the worldgen and mush-sim passes above; its other cells are not counted (Divergences, 2).
+
+**`docs/flaky-tests.md`, closed against the soak.** A new section after the list gives the three nights and each
+row's count. Rows 1 and 6 keep their WATCH, with no retry: row 1's second window and row 6's stall have not fired
+in 108 passes each. Row 12's last test leaves the list, its burst shape on WATCH. The header says the list is
+empty and what a new row is. `server_panic_relaunch`'s stale "COVERED" (its row went in FL.7) is mended.
+
+**Doc 43 §2.3 gains rules 16 to 21**: F, D, C, S, P and T, each with its helper in `mush-storykit` and the rows
+that taught it, under a preface that names the ratchet, `one_reader`, and "a class and a fix in the shared
+helper, never a longer timeout". Rule 6, which still described the hand-kept retry, now says the retry is
+generated from the list.
+
+**The budgets, re-blessed.** `WAIT_BUDGET_BLESS=1` on this unit's base moves no file: FL.8's merge had already
+blessed the tree to its counts. `scripts/wait_audit.py --budget` agrees.
+
+| Story files, the tree | FL.1's baseline (2026-11-22) | FL.9 (2026-11-26) | FL.10: all units in |
+|---|---:|---:|---:|
+| Raw waits | 526 | 551 | **519** |
+| Wall-clock reads | 63 | 77 | **77** |
+| Literal spans passed to a wait | not counted | 421 | **396** |
+
+The counts rose between FL.1 and FL.9 because FL.6 put mush-server's test code under `src/` into scope (a
+baseline, not new waits) and because stories landed meanwhile; every unit's own files fell. By crate at FL.10,
+waits, clock reads and spans: mushd 73, 5, 55; mush-gateway 55, 2, 42; mush-server 205, 37, 139 (its `src/` scope
+in); mush-bot 73, 28, 59; tacsim 94, 0, 89; the other seven crates 19, 5, 12. `flaky-known.toml` went from 36
+rows at FL.2 to none.
+
+**What the soak and the units found that no rule covers.** The six rules make a story's wait honest. These are
+what was left once they did.
+
+1. **Product faults with a story's symptom.** Row 1's owed write staged after `exit::forget`; FL.7's reconnect
+   attempt parked on a Hello; FL.7's drain close cut before its flush; row 17's clerks acting on the day's turn.
+   Each read as a timeout or a flake until the waits were bounded by the product's own figures. No class names
+   them. Rule 7 ("a flake is investigated, not discarded") is the one that applies, since a test-side fix would
+   have hidden each. Row 1's product side is still the owner's design call.
+2. **A check the host can switch off.** `a_drains_while_b_serves…` checks a queued-connection burst only where
+   `tcp_migrate_req` is 1. The soak's box has it at 0, so 105 nightly passes never ran the one check its row was
+   kept for, and nothing said so but an `eprintln`. The rule would be: a check that skips on a host setting is
+   reported as skipped, and the soak runs where it does not skip. It is not built (Not built).
+3. **The product's own rate limits meet a rig.** FL.8's whole reads typed two lines where a needle read typed
+   one, and the session's flood bucket refused the sentinel. The kit's readers now know `FLOODED`, which is rule
+   S's busy table. That a rig must type within the server's limits is written nowhere else.
+4. **The kernel's ordering.** The burst of 15 of 16 is attributed to the kernel's listener migration and is not
+   explained. (Row 18's line-editor echo, the terminal's ordering, is rule S's.)
+5. **A failure with no message kept.** `arena_story_split`'s one failure in FL.7 kept no output, so its row could
+   be neither fixed nor renewed. The soak keeps every JUnit; a by-hand run keeps only what its script keeps.
+
+**Tests.**
+
+- `mush-contract-tests`' `ci_policy` whole after the bless, 105 passed and 8 ignored (its `flaky_known` and
+  `wait_budget` modules 21 of 21, the rewritten proofs among them), and `engine_contracts` whole, 92 of 92.
+- `cargo fmt`, clippy with `-D warnings` over `mush-contract-tests`, rustdoc, and the contract guards (census,
+  panic budget, lints, help lint).
+- `scripts/test_flake_report.py`, 17 of 17.
+- `scripts/flake_report.py --ci-days 14 --write`, and the by-hand soak above.
+
+**Divergences.**
+
+1. **Two test files change.** Six of the `flaky_known` gate's proofs took "the first row of the real list" to
+   doctor, and one counted the real list's retry, so an empty list failed them all ("the list has a row to
+   doctor"). They now doctor `FIXTURE`: three rows in the test, one of each kind the list allows, each naming a
+   test, module or binary the tree holds. The two tests that read the real list still check it whole. In
+   `scripts/test_flake_report.py`, the shipped list must parse; it need not hold a row.
+2. **The first by-hand attempt broke its own gateway cells.** It ran `cargo nextest run` in six cells at once
+   against one target directory, and cargo relinked `split_halves` while other cells were running it (`failed to
+   exec … No such file or directory`). That is why `soak.sh` runs its cells from one build's metadata (FL.2). The
+   gateway figures above are from the second attempt, through `soak.sh`. From the first, only the drain story's
+   lone runs and the worldgen and mush-sim passes are counted, since they ran binaries no other cell rebuilt.
+3. **Three nights, not seven.** Every row expired on 2026-12-07, before a full week of nights could be read and
+   the pull request merged. The decisions rest on the three nights, the by-hand soak and CI's 14 days.
+4. **`flake_report.py`'s sources line names a `--junit` directory by its base name.** The three nights'
+   `soak-junit` directories printed as 143, 1 and 0 reports, though the table's rates pooled all 428. The record
+   above is counted from the reports directly. The script is not changed here.
+
+**Not built.**
+
+- **Nights four to seven** (2026-11-27 to 30). Whoever reads them adds them to the first table. A failure there of
+  a test with no row is a new flake: a row in the record and in the list, with its class, and a fix in the shared
+  helper.
+- **The burst check in the soak** (finding 2): conclav.dev's `tcp_migrate_req` set to 1, or the soak's cells run
+  in a network namespace that sets it, as the by-hand soak did. A sysctl on the owner's box is his call.
+- **FL.9's three crates in `soak.sh`'s list.** FL.9 left it to this unit. Decided: not now. They had no flake in
+  CI's record or in 48 passes by hand, and mush-net-web's `tls_serve` needs a feature set of its own, so a fifth
+  package build a night buys little.
+- **`flake_report.py`'s sources line** (Divergences, 4).

@@ -189,8 +189,9 @@ class TheList(unittest.TestCase):
         self.assertIn("2 branches (to read)", text)
 
     def test_the_shipped_list_parses_and_every_row_has_a_binary_and_a_date(self):
+        # The list may be empty (doc 51 unit FL.10 emptied it): it must parse.
         rows = report.read_known(report.KNOWN)
-        self.assertTrue(rows)
+        self.assertIsInstance(rows, list)
         for one in rows:
             self.assertIn("binary", one)
             datetime.date.fromisoformat(one["expires"])

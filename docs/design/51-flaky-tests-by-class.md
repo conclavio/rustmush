@@ -30,6 +30,13 @@ counter was built. The small crates' stories wait for what their server does, an
 asserted between two marks the server gives. No product code changed. The
 [cut note](51-cut-notes.md) has the counts and the soak.
 
+**FL.10 is cut and built** (2026-11-26, recorded here without a new draft number; stacked on
+FL.8 by the owner's word of 2026-11-26). It closes the programme. Doc 43 §2.3 holds rules F, D, C,
+S, P and T as its rules 16 to 21. `flaky-known.toml` is empty: its last eight rows were deleted on
+the soak's record and a by-hand soak, none renewed. `docs/flaky-tests.md` is closed against the
+soak's first three nights. The [cut note](51-cut-notes.md) has the nights, the budgets' totals,
+and what the soak found that no rule covers.
+
 **The questions, each ruled at its default** (each in full in §6, with the alternative it was
 weighed against and the reason):
 
@@ -730,7 +737,7 @@ for the suite. FL.0 is this document and its script, merged as #771.
 | **FL.7 the gateway's stories** (cut 2026-11-25, built) | the ten `Term` copies replaced by the kit's; `across_restart`; restart limits from the gateway's own schedule; rows 12 and 15 closed or re-described; `one_reader` turned on for mush-gateway | mush-gateway tests, mush-storykit, mush-contract-tests | M | 8 |
 | **FL.8 mushd's readers** (cut 2026-11-25, built) | the 15 `say`, 12 `ask` and 10 `ask_whole` definitions in `sim_lenses` replaced by the kit's; every parse after a needle read moved to `ask_whole`; `after_tick`; row 14; `one_reader` turned on for mushd | mushd tests, mush-storykit, mush-contract-tests | L, mechanical | 3 |
 | **FL.9 the small crates** (cut 2026-11-25, built) | mush-net-web's and mush-net-ssh's bare sleeps onto barriers and absence-between-marks; mush-sshdoorway's rig onto the kit; the literal-span counter baselined | mush-net-web, mush-net-ssh, mush-sshdoorway, mush-contract-tests | M | |
-| **FL.10 close-out** | budgets re-blessed down and the totals recorded; `docs/flaky-tests.md` rows closed against the soak's record; doc 43 §2.3 gains rules F, D, C, S, P and T as #16 to #21; what the soak found that no rule covers | docs, mush-contract-tests | S | |
+| **FL.10 close-out** (cut 2026-11-25, built) | budgets re-blessed down and the totals recorded; `docs/flaky-tests.md` rows closed against the soak's record; doc 43 §2.3 gains rules F, D, C, S, P and T as #16 to #21; what the soak found that no rule covers | docs, mush-contract-tests | S | |
 
 **Order.** FL.1 and FL.2 first and together (both cut); they share no file. FL.1 stops the
 counts rising while the rest lands, and FL.2 is how each later unit proves itself (its note

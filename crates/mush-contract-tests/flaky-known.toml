@@ -34,77 +34,15 @@
 # refreshes docs/flaky-observed.md (ruling Q-51-8: in the pull request that
 # adds or closes a row).
 
-# --- Rows of docs/flaky-tests.md that are open, covered or on watch ---------
-
-[[flaky]]
-binary = "mush-gateway::split_halves"
-test = "gateway_generations::a_drains_while_b_serves_and_every_session_is_warned_then_moved"
-class = "process"
-row = 12
-listed = "2026-11-23"
-expires = "2026-12-07"
-note = "kept by FL.7, not renewed: its channel-closed shape is the drain fault FL.7 fixed; its other shape, the queued-connection burst answered 15 of 16 (run 43258253021, 2026-11-12, a branch), is the kernel's listener migration and is not explained"
-
-# --- Carried over from the `load-sensitive` retry: no failure on record -----
+# --- The list is empty (doc 51 unit FL.10, 2026-11-26) -----------------------
 #
-# The entries of the old filter that match no row of the record: eighteen at
-# FL.2, fifteen since doc 51 unit FL.6 closed mush-server's three; unit FL.7
-# closed four of mush-gateway's five; unit FL.8 closed mushd's six. The rest keep
-# the scope the filter gave them.
-
-[[flaky]]
-binary = "mush-gateway::split_halves"
-module = "arena_story_split"
-class = "unclassed"
-carried = "the load-sensitive retry of cut T.1 (16b's list)"
-listed = "2026-11-23"
-expires = "2026-12-07"
-
-note = "kept by FL.7, not renewed: one failure at 54 s in a 480-test run of the unit's merged tree, its message not kept; the 10 runs after it and 96 soak passes before it passed"
-[[flaky]]
-binary = "mush-worldgen::plan"
-whole_binary = true
-class = "unclassed"
-carried = "the load-sensitive retry of cut T.1 (16b's list)"
-listed = "2026-11-23"
-expires = "2026-12-07"
-
-[[flaky]]
-binary = "mush-worldgen::review_plan"
-whole_binary = true
-class = "unclassed"
-carried = "the load-sensitive retry of cut T.1 (16b's list)"
-listed = "2026-11-23"
-expires = "2026-12-07"
-
-[[flaky]]
-binary = "mush-worldgen::s8_authority"
-whole_binary = true
-class = "unclassed"
-carried = "the load-sensitive retry of cut T.1 (16b's list)"
-listed = "2026-11-23"
-expires = "2026-12-07"
-
-[[flaky]]
-binary = "mush-sim"
-test = "journey::tests::e7c6_b2_the_leg_cursor_is_the_idempotency_key"
-class = "unclassed"
-carried = "the load-sensitive retry of cut T.1, written there as test(~e7c6_b2)"
-listed = "2026-11-23"
-expires = "2026-12-07"
-
-[[flaky]]
-binary = "mush-sim"
-test = "journey::tests::e7c6_b2_a_leg_boundary_overflow_is_visible_not_silent"
-class = "unclassed"
-carried = "the load-sensitive retry of cut T.1, written there as test(~e7c6_b2)"
-listed = "2026-11-23"
-expires = "2026-12-07"
-
-[[flaky]]
-binary = "mush-sim"
-test = "journey::tests::e7c6_b2_the_wire_re_runs_max_legs_and_every_invariant"
-class = "unclassed"
-carried = "the load-sensitive retry of cut T.1, written there as test(~e7c6_b2)"
-listed = "2026-11-23"
-expires = "2026-12-07"
+# FL.10 closed the last eight rows on the soak's record: row 12's
+# `a_drains_while_b_serves…` (its burst check run where the kernel migrates a
+# closing listener's queue), the carried `arena_story_split` module, and the
+# carried mush-worldgen binaries and mush-sim `e7c6_b2` tests. None was
+# renewed. Doc 51's cut note for FL.10 has each one's count.
+#
+# A new row is a test that failed, then passed at one head, with its class and
+# the row of docs/flaky-tests.md that says why. It lives fourteen days while
+# the fix lands in the shared helper (doc 43 §2.3 rules 16 to 21), never
+# behind a longer timeout.

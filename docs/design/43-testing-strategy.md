@@ -126,9 +126,10 @@ lint path, a quiet skip in a deploy script) are cut TS.0's; nothing else here re
 5. **Stories grow, at both sizes.** The cut that first makes a step pass adds the step; the story's last cut
    runs it whole at 256 and at 512 (doc 36 §7).
 6. **Nextest, one process a test.** The in-binary locks are restated in `.config/nextest.toml` (five binaries
-   run alone; every `REDIS_URL` reader in a group of one; the load-sensitive suites two at a time with one
-   retry reported FLAKY, never silently); a hung test dies at 20 min; JUnit per cell is the data for the next
-   rebalance.
+   run alone; every `REDIS_URL` reader in a group of one; the load-sensitive suites two at a time). Since doc
+   51 FL.2 the one retry, reported FLAKY, is generated from `crates/mush-contract-tests/flaky-known.toml`,
+   one expiring row a test, and nothing else is retried. A hung test dies at 20 min; JUnit per cell is the
+   data for the next rebalance.
 7. **A flake is investigated, not discarded** (16b cut L: "passed alone twice" is the rule for the list, and the
    first failure is preserved). The record bears it out: the `Locked on` and `CONTACTS` races were a stale-row
    class in the harness, the paid_purchase Busy was the first Timer wake after a boot, the M7 story's missing
@@ -173,6 +174,40 @@ lint path, a quiet skip in a deploy script) are cut TS.0's; nothing else here re
       pins; no pull-request run ever exercised them.
     - **The map is the paths the stories' pins move with, not everything they run.** A nightly that breaks
       on a path the map did not name widens its line in the PR that fixes the nightly.
+
+Rules 16 to 21 are doc 51's classes of flaky test (§3, written in here by its unit FL.10, 2026-11-26). Each
+names the class's helper in `mush-storykit`, the dev-only crate every story rig re-exports. The ratchet
+(`ci_policy::wait_budget`) counts a story file's raw waits, wall-clock reads and literal spans passed to a
+wait, and a count may only fall; `ci_policy::one_reader` refuses a private `Term`, `ask_whole` or
+`strip_ansi` in a converted crate. A new flake gets a class and a fix in the shared helper, never a longer
+timeout, and a row in `flaky-known.toml` only while it is fixed (rule 7 and doc 51 §4.3).
+
+16. **F, figures: a wait is derived, never written.** A span, a distance or a count that follows from a game
+    figure is computed from that figure at run time, through `Figures` (the cycle, the flight, the load, the
+    pulse), and a limit carries `LOAD_FACTOR`. The story waits for the event and the figure is only its
+    bound, so a tuning change makes it slower, never red (doc 51 rows 2, 3, 9 and 20: a cannon's cycle moved
+    to 15 s under a 12-s wait; a 20-m bound written by hand held a 22-m step).
+17. **D, dice: an outcome is certain, or its odds are written down.** A story's assertions do not depend on a
+    draw: it pins `ArenaConfig::seed`, stands where the rules make the result certain, or picks a seed with
+    `draw_permille`. A story whose point is chance states `Odds` and fails at its top when luck alone would
+    fail it more than once in 1,000,000 runs (Q-51-3); one that cannot meet that runs on the dispatch tier
+    (rows 2, 13 and 16).
+18. **C, clock: a barrier, not a sleep.** A story never sleeps to let the server get somewhere. It waits for
+    the server to say it is there (`settled`, `arena_wake`, `arena_seconds`, `after_ticks`, the paused
+    clock's `idle` in-process), and an absence is asserted between two barriers, never after a sleep (rows
+    8 and 10, and mush-net-web's thirteen sleeps).
+19. **S, stream: parse only a reply known to be whole.** A read that stops at a needle may be used to wait,
+    never to parse. `Term::ask_whole` and `ask_settled` end a reply at the sentinel's refusal, and every
+    reader retries on the one busy table (`BUSY_SENTENCES` and `FLOODED`), never a private list (rows 5, 13,
+    18, 19 and 21: a lock's confirmation, a peer's `has connected.` and a line editor's echo inside the read).
+20. **P, process: wait for the fact, in the rig.** A start, a bind, an exit or a heal is awaited as an event
+    from the rig, under the rig's one limit (`STEP_TIMEOUT`, `StoryBudget`, `Term::healed_after` under the
+    product's own `HEAL_WITHIN`). A story does not poll a log or sleep through a restart (rows 12, 14 and
+    15). Every wait in a story fits inside nextest's terminate (`StoryBudget`, row 6).
+21. **T, clock phase: a rig boots at a named instant.** No test reads the wall clock to place itself in the
+    IC calendar. A rig boots at `STORY_EPOCH`; a story about anything scheduled on the game clock runs at
+    the named phases (`phases!`) and pins the phase a failure names. The soak draws `STORY_PHASE=random`
+    and prints what it drew (rows 7 and 17).
 
 ### 2.4 The numbers, dated
 

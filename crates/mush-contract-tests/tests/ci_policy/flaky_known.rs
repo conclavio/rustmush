@@ -90,12 +90,51 @@ fn the_retry_filter_is_exactly_what_the_list_generates() {
 }
 
 // The gate's own proofs: each failure the module doc promises, on a doctored
-// copy of the real list or the real configuration.
+// copy of a fixed list or of the real configuration. The list is its own
+// (FIXTURE), not the real one, which doc 51 unit FL.10 emptied: a proof must
+// not depend on what is flaky this fortnight.
 
 const TODAY: &str = "2026-11-23";
 
+/// One row of each kind the list allows, each naming a test, module or binary
+/// the tree holds, and a row of the record that names it.
+const FIXTURE: &str = r#"
+[[flaky]]
+binary = "mush-gateway::split_halves"
+test = "gateway_generations::a_drains_while_b_serves_and_every_session_is_warned_then_moved"
+class = "process"
+row = 12
+listed = "2026-11-23"
+expires = "2026-12-07"
+
+[[flaky]]
+binary = "mush-gateway::split_halves"
+module = "arena_story_split"
+class = "unclassed"
+carried = "the load-sensitive retry of cut T.1 (16b's list)"
+listed = "2026-11-23"
+expires = "2026-12-07"
+
+[[flaky]]
+binary = "mush-worldgen::plan"
+whole_binary = true
+class = "unclassed"
+carried = "the load-sensitive retry of cut T.1 (16b's list)"
+listed = "2026-11-23"
+expires = "2026-12-07"
+"#;
+
+fn fixture() -> Vec<Row> {
+    flaky_known::parse(FIXTURE).unwrap_or_else(|why| panic!("{why}"))
+}
+
+/// The real configuration with the generated block spliced from [`FIXTURE`].
+fn fixture_nextest() -> String {
+    splice(&read(NEXTEST_PATH), &fixture()).unwrap_or_else(|why| panic!("{why}"))
+}
+
 fn doctored(edit: impl FnOnce(&mut Vec<Row>)) -> Vec<String> {
-    let mut rows = the_list();
+    let mut rows = fixture();
     // Every row live on the fixed day, whatever the real dates are by now.
     for row in &mut rows {
         row.listed = TODAY.to_string();
@@ -110,7 +149,7 @@ fn day(date: &str) -> i64 {
 }
 
 fn first(rows: &mut [Row]) -> &mut Row {
-    rows.first_mut().expect("the list has a row to doctor")
+    rows.first_mut().expect("the fixture has a row to doctor")
 }
 
 #[track_caller]
@@ -122,7 +161,7 @@ fn assert_one(problems: &[String], needle: &str) {
 }
 
 #[test]
-fn the_list_as_seeded_is_clean_on_a_fixed_day() {
+fn the_fixture_is_clean_on_a_fixed_day() {
     assert_eq!(doctored(|_| {}), Vec::<String>::new());
 }
 
@@ -162,7 +201,7 @@ fn a_row_naming_a_test_that_no_longer_exists_is_refused() {
         let carried = rows
             .iter_mut()
             .find(|row| row.module.is_some())
-            .expect("the seed carries a module row");
+            .expect("the fixture carries a module row");
         carried.module = Some("a_module_that_was_deleted".to_string());
     });
     assert_one(&problems, "no module `a_module_that_was_deleted`");
@@ -170,7 +209,7 @@ fn a_row_naming_a_test_that_no_longer_exists_is_refused() {
         let carried = rows
             .iter_mut()
             .find(|row| row.whole_binary)
-            .expect("the seed carries a whole-binary row");
+            .expect("the fixture carries a whole-binary row");
         carried.binary = "mush-worldgen::a_target_that_was_deleted".to_string();
     });
     assert_one(&problems, "names nothing in the tree: no crates");
@@ -237,7 +276,7 @@ fn a_row_with_no_class_or_no_row_of_the_record_is_refused() {
         let carried = rows
             .iter_mut()
             .find(|row| row.module.is_some())
-            .expect("the seed carries a module row");
+            .expect("the fixture carries a module row");
         carried.class = "clock".to_string();
         carried.carried = None;
     });
@@ -250,8 +289,12 @@ fn a_retry_the_list_does_not_generate_is_refused() {
         // A bless run rewrites the file this test reads, beside it.
         return;
     }
-    let rows = the_list();
-    let nextest = read(NEXTEST_PATH);
+    assert_eq!(
+        retry_problems(&read(NEXTEST_PATH), &the_list()),
+        Vec::<String>::new()
+    );
+    let rows = fixture();
+    let nextest = fixture_nextest();
     assert_eq!(retry_problems(&nextest, &rows), Vec::<String>::new());
 
     // A hand-written retry override, in any profile.
@@ -299,11 +342,14 @@ fn a_retry_the_list_does_not_generate_is_refused() {
 
 #[test]
 fn the_generated_block_is_one_term_a_row_and_one_retry() {
-    let rows = the_list();
+    let rows = fixture();
     let text = block(&rows);
     assert_eq!(text.matches("binary_id(").count(), rows.len());
     assert_eq!(text.matches("retries = 1").count(), 1);
+    // An empty list generates comments only: no override, so no retry.
     assert!(block(&[]).lines().all(|line| line.starts_with('#')));
+    let real = the_list();
+    assert_eq!(block(&real).matches("binary_id(").count(), real.len());
 }
 
 #[test]
