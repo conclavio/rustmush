@@ -118,6 +118,7 @@ impl ChildProcessBuilder {
         let mut child = command.spawn()?;
 
         let log = Arc::new(Mutex::new(String::new()));
+        let mut readers = Vec::new();
         for stream in [
             child
                 .stdout
@@ -132,7 +133,7 @@ impl ChildProcessBuilder {
         .flatten()
         {
             let log = Arc::clone(&log);
-            std::thread::spawn(move || {
+            readers.push(std::thread::spawn(move || {
                 let reader = BufReader::new(stream);
                 for line in reader.lines() {
                     let Ok(line) = line else { break };
@@ -140,12 +141,13 @@ impl ChildProcessBuilder {
                     log.push_str(&line);
                     log.push('\n');
                 }
-            });
+            }));
         }
         Ok(ChildProcess {
             label: self.program.to_string_lossy().into_owned(),
             child,
             log,
+            readers,
         })
     }
 }
@@ -158,6 +160,7 @@ pub struct ChildProcess {
     label: String,
     child: Child,
     log: Arc<Mutex<String>>,
+    readers: Vec<std::thread::JoinHandle<()>>,
 }
 
 impl ChildProcess {
@@ -169,6 +172,14 @@ impl ChildProcess {
             args: Vec::new(),
             envs: Vec::new(),
             current_dir: None,
+        }
+    }
+
+    /// Wait for the stdout and stderr reader threads to finish draining once
+    /// the child has exited and closed its pipe ends.
+    fn drain_readers(&mut self) {
+        for handle in self.readers.drain(..) {
+            let _ = handle.join();
         }
     }
 
@@ -200,8 +211,7 @@ impl ChildProcess {
             }
             let exited = self.child.try_wait().ok().flatten();
             if let Some(status) = exited {
-                // One last look: the writer threads may still be draining.
-                std::thread::sleep(POLL);
+                self.drain_readers();
                 if self.log_snapshot().contains(needle) {
                     return Ok(());
                 }
@@ -246,15 +256,15 @@ impl ChildProcess {
         }
     }
 
-    /// [`ChildProcess::wait_exit`] plus the log, after giving the reader
-    /// threads a moment to drain the pipes the exit just closed.
+    /// [`ChildProcess::wait_exit`] plus the log, after joining the reader
+    /// threads so both closed pipes are drained completely before reading.
     ///
     /// # Errors
     ///
     /// As [`ChildProcess::wait_exit`].
     pub fn wait_with_log(&mut self, timeout: Duration) -> Result<(ExitStatus, String), String> {
         let status = self.wait_exit(timeout)?;
-        std::thread::sleep(POLL * 4);
+        self.drain_readers();
         Ok((status, self.log_snapshot()))
     }
 
@@ -326,10 +336,37 @@ fn strip_ansi(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::strip_ansi;
+    use std::time::Duration;
+
+    use super::{ChildProcess, strip_ansi};
 
     #[test]
     fn ansi_is_stripped() {
         assert_eq!(strip_ansi("\u{1b}[31mred\u{1b}[0m text"), "red text");
+    }
+
+    #[test]
+    fn wait_with_log_drains_reader_threads_before_returning() {
+        #[cfg(unix)]
+        let mut child = ChildProcess::builder("sh")
+            .args(["-c", "printf 'out-line\\n'; printf 'err-line\\n' >&2"])
+            .spawn()
+            .expect("spawn sh");
+        #[cfg(windows)]
+        let mut child = ChildProcess::builder("cmd")
+            .args(["/C", "echo out-line& echo err-line 1>&2"])
+            .spawn()
+            .expect("spawn cmd");
+
+        let (status, log) = child
+            .wait_with_log(Duration::from_secs(10))
+            .expect("child exited");
+        assert!(status.success(), "child exited {status}; log:\n{log}");
+        assert!(log.contains("out-line"), "missing stdout in:\n{log}");
+        assert!(log.contains("err-line"), "missing stderr in:\n{log}");
+        assert!(
+            child.readers.is_empty(),
+            "reader handles must be joined before returning"
+        );
     }
 }
