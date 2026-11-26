@@ -69,6 +69,7 @@ namespace TacSim.UI
         public event Action<string, bool> OnSpaceRowSecondaryAct;  // (id, isRock -> match vel / beam)
         public event Action<int, int> OnSurfaceBeaconDriveClicked; // (siteX, siteY)
         public event Action<string> OnArenaContactLockClicked;     // (designator)
+        public event Action<string> OnArenaContactScanClicked;     // (designator)
 
         private const int MaxVisibleRows = 7;
 
@@ -89,6 +90,7 @@ namespace TacSim.UI
         private GameObject _body;
         private Text _headerText;
         private Text _collapseBtnLabel;
+        private Text _sortBtnLabel;
         private readonly Image[] _filterImages = new Image[3];
         private readonly Text[] _filterLabels = new Text[3];
         private readonly List<PooledRow> _rowPool = new List<PooledRow>(MaxVisibleRows);
@@ -101,12 +103,16 @@ namespace TacSim.UI
         private TacSimActiveStage _activeStage = TacSimActiveStage.StationWalk;
         private bool _userEnabled = true;
         private bool _collapsed;
+        private bool _avoidMidLeftMinimap;
+        private bool _sortArenaByOdds;
         private float _nextSyncAt;
 
         public TacticalOverviewFilter ActiveFilter { get; private set; } = TacticalOverviewFilter.All;
         public bool IsVisible => _root != null && _root.activeSelf;
         public bool IsUserEnabled => _userEnabled;
         public bool IsCollapsed => _collapsed;
+        public bool IsAvoidingMidLeftMinimap => _avoidMidLeftMinimap;
+        public bool SortArenaByOdds => _sortArenaByOdds;
         public int VisibleRowCount { get; private set; }
         public int TotalEntryCount => _entries.Count;
         public string FirstRowId => _entries.Count > 0 ? _entries[0].Id : string.Empty;
@@ -116,7 +122,7 @@ namespace TacSim.UI
             _font = sharedFont != null ? sharedFont : Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
             _rowPool.Clear();
 
-            // Left edge below UnitFrames (UnitFrames sits at y=-164..-72, CommsDrawer sits at bottom y=16..266)
+            // Left edge below UnitFrames (shifts right of TacticalMinimap when minimap docks Mid-Left)
             _root = CreatePanel(
                 hudRoot,
                 "TacticalOverviewDrawer",
@@ -129,7 +135,10 @@ namespace TacSim.UI
 
             var hdr = CreatePanel(_root.transform, "OverviewHeader", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -24f), Vector2.zero, new Color(0.06f, 0.13f, 0.21f, 0.96f));
             _headerText = CreateText(hdr.transform, "TACTICAL OVERVIEW [T]", 11, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.48f, 0.92f, 1f));
-            SetRect(_headerText.rectTransform, Vector2.zero, Vector2.one, new Vector2(8f, 0f), new Vector2(-30f, 0f));
+            SetRect(_headerText.rectTransform, Vector2.zero, Vector2.one, new Vector2(8f, 0f), new Vector2(-76f, 0f));
+
+            var sortBtn = CreateSmallButton(hdr.transform, "DIST", new Color(0.14f, 0.28f, 0.42f), ToggleSortMode, out _sortBtnLabel);
+            SetRect(sortBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-72f, 2f), new Vector2(-30f, -2f));
 
             var colBtn = CreateSmallButton(hdr.transform, "—", new Color(0.16f, 0.28f, 0.40f), ToggleCollapsed, out _collapseBtnLabel);
             SetRect(colBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-26f, 2f), new Vector2(-2f, -2f));
@@ -206,6 +215,10 @@ namespace TacSim.UI
             ActiveFilter = TacticalOverviewFilter.All;
             _userEnabled = true;
             _collapsed = false;
+            _avoidMidLeftMinimap = false;
+            _sortArenaByOdds = false;
+            if (_sortBtnLabel != null) _sortBtnLabel.text = "DIST";
+            ApplyDrawerBounds();
             if (_root != null) _root.SetActive(false);
         }
 
@@ -222,13 +235,36 @@ namespace TacSim.UI
             SyncOverview(_activeStage, forceImmediate: true);
         }
 
+        public void ToggleSortMode()
+        {
+            _sortArenaByOdds = !_sortArenaByOdds;
+            if (_sortBtnLabel != null)
+                _sortBtnLabel.text = _sortArenaByOdds ? "ODDS" : "DIST";
+            SyncOverview(_activeStage, forceImmediate: true);
+        }
+
+        public void SetAvoidMidLeftMinimap(bool avoid)
+        {
+            if (_avoidMidLeftMinimap == avoid) return;
+            _avoidMidLeftMinimap = avoid;
+            ApplyDrawerBounds();
+        }
+
         public void ToggleCollapsed()
         {
             _collapsed = !_collapsed;
             if (_body != null) _body.SetActive(!_collapsed);
             if (_collapseBtnLabel != null) _collapseBtnLabel.text = _collapsed ? "+" : "—";
-            if (_rootRect != null)
-                _rootRect.offsetMin = new Vector2(16f, _collapsed ? -196f : -430f);
+            ApplyDrawerBounds();
+        }
+
+        private void ApplyDrawerBounds()
+        {
+            if (_rootRect == null) return;
+            float xLeft = _avoidMidLeftMinimap ? 242f : 16f;
+            float xRight = xLeft + 300f;
+            float yBot = _collapsed ? -196f : -412f;
+            SetRect(_rootRect, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(xLeft, yBot), new Vector2(xRight, -172f));
         }
 
         public void SyncOverview(TacSimActiveStage stage, bool hideForOverlay = false, bool forceImmediate = false)
@@ -263,6 +299,13 @@ namespace TacSim.UI
         {
             if (index < 0 || index >= VisibleRowCount || index >= _rowPool.Count) return false;
             HandlePrimaryRowClick(_rowPool[index].BoundEntry);
+            return true;
+        }
+
+        public bool ClickRowSecondaryByIndex(int index)
+        {
+            if (index < 0 || index >= VisibleRowCount || index >= _rowPool.Count) return false;
+            HandleSecondaryRowClick(_rowPool[index].BoundEntry);
             return true;
         }
 
@@ -341,11 +384,18 @@ namespace TacSim.UI
                             ? new Color(1.0f, 0.30f, 0.22f)
                             : (ct.Friendly ? new Color(0.30f, 0.90f, 0.68f) : new Color(1.0f, 0.56f, 0.24f));
                         string oddsTag = ct.HitOddsPct > 0 ? $"{ct.HitOddsPct}%" : (ct.Friendly ? "ALLY" : "FOE");
+                        string aspectTag = !string.IsNullOrEmpty(ct.Aspect) && !string.Equals(ct.Aspect, "front", StringComparison.OrdinalIgnoreCase)
+                            ? $" [{ct.Aspect.ToUpperInvariant()}]"
+                            : string.Empty;
+                        string moveDot = ct.Moving ? " •" : string.Empty;
+                        float sortKey = _sortArenaByOdds
+                            ? (ct.Friendly ? 10000f + ct.RangeM : (1000f - ct.HitOddsPct * 10f) + ct.RangeM * 0.001f)
+                            : ct.RangeM;
                         _entries.Add(new OverviewRowEntry(
                             ct.Designator,
-                            $"{ct.Designator} {(string.IsNullOrEmpty(ct.ClassLabel) ? ct.Party : ct.ClassLabel)}",
+                            $"{ct.Designator} {(string.IsNullOrEmpty(ct.ClassLabel) ? ct.Party : ct.ClassLabel)}{aspectTag}{moveDot}",
                             $"{ct.RangeM:0}m",
-                            ct.RangeM,
+                            sortKey,
                             isLocked ? "LOCK" : oddsTag,
                             col,
                             isLocked: isLocked));
@@ -397,7 +447,7 @@ namespace TacSim.UI
                         row.ActLabel.text = stage == TacSimActiveStage.PlanetarySurface
                             ? "DRIVE"
                             : (stage == TacSimActiveStage.SimulatorArena
-                                ? "LOCK"
+                                ? "SCAN"
                                 : (e.IsRock ? "MATCH" : "BEAM"));
                     }
                     row.Root.SetActive(true);
@@ -437,7 +487,7 @@ namespace TacSim.UI
             }
             else if (_activeStage == TacSimActiveStage.SimulatorArena)
             {
-                OnArenaContactLockClicked?.Invoke(e.Id);
+                OnArenaContactScanClicked?.Invoke(e.Id);
             }
             else if (_activeStage == TacSimActiveStage.ShipHelmSeated)
             {

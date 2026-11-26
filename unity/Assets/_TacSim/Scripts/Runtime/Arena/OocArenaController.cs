@@ -1445,6 +1445,46 @@ namespace TacSim.Arena
             SelectReplayFocusUnit(ReplayFocusUnitIndex + delta);
         }
 
+        /// <summary>
+        /// Jumps the replay cursor to the next (`delta &gt; 0`) or previous (`delta &lt; 0`) combat highlight
+        /// (any wreck or hit shot in `ActiveReplayDoc`) and pauses on that timestamp.
+        /// </summary>
+        public bool StepReplayToEvent(int delta)
+        {
+            if (!IsReplayModeActive || ActiveReplayDoc == null) return false;
+            var eventTimes = new List<long>(ActiveReplayDoc.Destroyed.Count + ActiveReplayDoc.Shots.Count);
+            for (int i = 0; i < ActiveReplayDoc.Destroyed.Count; i++)
+                eventTimes.Add(ActiveReplayDoc.Destroyed[i].TimeMs);
+            for (int i = 0; i < ActiveReplayDoc.Shots.Count; i++)
+            {
+                if (string.Equals(ActiveReplayDoc.Shots[i].Outcome, "hit", StringComparison.OrdinalIgnoreCase))
+                    eventTimes.Add(ActiveReplayDoc.Shots[i].TimeMs);
+            }
+            if (eventTimes.Count == 0) return false;
+            eventTimes.Sort();
+
+            float cur = ReplayCursorMs;
+            long? target = null;
+            if (delta >= 0)
+            {
+                for (int i = 0; i < eventTimes.Count; i++)
+                {
+                    if (eventTimes[i] > cur + 1f) { target = eventTimes[i]; break; }
+                }
+            }
+            else
+            {
+                for (int i = eventTimes.Count - 1; i >= 0; i--)
+                {
+                    if (eventTimes[i] < cur - 1f) { target = eventTimes[i]; break; }
+                }
+            }
+            if (!target.HasValue) return false;
+            ReplayPlaying = false;
+            SeekReplayMs(target.Value);
+            return true;
+        }
+
         public void CloseReplayOrObserver()
         {
             if (!IsReplayModeActive && !IsLiveObserverActive) return;
@@ -1458,6 +1498,8 @@ namespace TacSim.Arena
             ReplayCursorMs = 0f;
             _pendingOpenKeyframeIndex = -1;
             ClearReplayRigs();
+            if (_lockedTargetGroundRing != null)
+                _lockedTargetGroundRing.enabled = false;
             OnReplayStateChanged?.Invoke();
             OnReplayClosed?.Invoke();
         }
@@ -1512,19 +1554,28 @@ namespace TacSim.Arena
                 }
 
                 Vector3 worldPos = ReplayCellToWorldPos(pose.Value.CellX, pose.Value.CellY);
+                Vector3 localPos = worldPos - ArenaStageOrigin;
+                bool isBipedGuess = false;
                 if (!_replayRigs.TryGetValue(i, out var rig) || rig?.Root == null)
                 {
                     string safeCs = MushProtocol.EscapeUnityRichText(entry.Callsign);
                     rig = TacSimVehicleVisualFactory.SpawnArenaCombatUnit(Catalog, _unitsRoot, "line_tank", safeCs, entry.PartyCode, worldPos, pose.Value.HeadingDeg);
                     rig.Root.name = $"ReplayUnit_{i}_{entry.Callsign}";
                     _replayRigs[i] = rig;
+                    isBipedGuess = rig.IsBiped;
+                    rig.Root.transform.rotation = ComputeArenaChassisRotation(TerrainGrid, localPos, pose.Value.HeadingDeg, isBipedGuess, out _);
                 }
                 else
                 {
                     if (!rig.Root.activeSelf) rig.Root.SetActive(true);
+                    isBipedGuess = rig.IsBiped;
+                    Vector3 prevPos = rig.Root.transform.position;
                     float blend = immediate ? 1f : (1f - Mathf.Exp(-14f * dt));
-                    rig.Root.transform.position = Vector3.Lerp(rig.Root.transform.position, worldPos, blend);
-                    rig.Root.transform.rotation = Quaternion.Slerp(rig.Root.transform.rotation, Quaternion.Euler(0f, pose.Value.HeadingDeg, 0f), blend);
+                    Quaternion slopeRot = ComputeArenaChassisRotation(TerrainGrid, localPos, pose.Value.HeadingDeg, isBipedGuess, out _);
+                    rig.Root.transform.position = Vector3.Lerp(prevPos, worldPos, blend);
+                    rig.Root.transform.rotation = Quaternion.Slerp(rig.Root.transform.rotation, slopeRot, blend);
+                    float movedKph = !immediate && dt > 0.0001f ? (Vector3.Distance(prevPos, rig.Root.transform.position) / dt) * 3.6f : 0f;
+                    rig.UpdateArticulation(dt, wrecked ? 0f : movedKph, null);
                 }
 
                 rig.SetWrecked(wrecked);
@@ -1533,6 +1584,30 @@ namespace TacSim.Arena
                     string focusMark = i == ReplayFocusUnitIndex ? "<color=#FFEE44>[CAM]</color> " : string.Empty;
                     string wreckTag = wrecked ? " <color=#FF6666>[WRECK]</color>" : string.Empty;
                     rig.Billboard.NameplateText.text = $"{focusMark}{MushProtocol.EscapeUnityRichText(entry.Callsign)}{wreckTag}";
+                }
+            }
+
+            if (_lockedTargetGroundRing != null)
+            {
+                if (_replayRigs.TryGetValue(ReplayFocusUnitIndex, out var focRig) && focRig?.Root != null && focRig.Root.activeSelf)
+                {
+                    Vector3 fPos = focRig.Root.transform.position;
+                    const int Segs = 28;
+                    float rad = 5.4f;
+                    _lockedTargetGroundRing.positionCount = Segs;
+                    for (int s = 0; s < Segs; s++)
+                    {
+                        float ang = (s / (float)Segs) * Mathf.PI * 2f;
+                        float wx = fPos.x + Mathf.Cos(ang) * rad;
+                        float wz = fPos.z + Mathf.Sin(ang) * rad;
+                        float wy = ArenaStageOrigin.y + TerrainGrid.SampleElevationMeters(wx - ArenaStageOrigin.x, wz - ArenaStageOrigin.z) + 0.55f;
+                        _lockedTargetGroundRing.SetPosition(s, new Vector3(wx, wy, wz));
+                    }
+                    _lockedTargetGroundRing.enabled = true;
+                }
+                else
+                {
+                    _lockedTargetGroundRing.enabled = false;
                 }
             }
         }
