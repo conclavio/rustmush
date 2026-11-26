@@ -210,6 +210,12 @@ namespace TacSim.Arena
         }
     }
 
+    public sealed class ArenaStandingRule
+    {
+        public int Slot;
+        public string Action = string.Empty; // "fire" | "hold" | "lock"
+    }
+
     public sealed class ArenaCockpitState
     {
         public ulong MatchId;
@@ -249,10 +255,15 @@ namespace TacSim.Arena
         public int BlueAliveCount = 6;
         public int HoldControlScore;
         public string SquadPosture = "ENGAGE";
+        public string Posture = "return"; // "return" | "guard" | "hold"
         public string MatchBanner = string.Empty;
         public float SightMeters = 120f;
         public string Scope = "clear"; // "clear" | "unidentified" | "hostile"
         public string Tempo = "alert";
+        public bool HasReceiver;
+        public int ReceiverBudget;
+        public int ReceiverBudgetMax;
+        public int ReceiverReachPercent = 100;
         public bool HasDynamicObjective;
         public int ObjectiveCellX;
         public int ObjectiveCellY;
@@ -264,6 +275,7 @@ namespace TacSim.Arena
         public readonly List<ArenaWeaponSlotState> Weapons = new List<ArenaWeaponSlotState>();
         public readonly List<ArenaContactState> Contacts = new List<ArenaContactState>();
         public readonly List<ArenaSectionState> Sections = new List<ArenaSectionState>();
+        public readonly List<ArenaStandingRule> Rules = new List<ArenaStandingRule>(6);
     }
 
     /// <summary>
@@ -379,6 +391,216 @@ namespace TacSim.Arena
                 }
             }
             return false;
+        }
+
+        public int? AutoLockRuleSlot
+        {
+            get
+            {
+                if (State?.Rules == null) return null;
+                for (int i = 0; i < State.Rules.Count; i++)
+                {
+                    if (string.Equals(State.Rules[i].Action, "lock", StringComparison.OrdinalIgnoreCase))
+                        return State.Rules[i].Slot;
+                }
+                return null;
+            }
+        }
+
+        public bool HasAutoLockRule => AutoLockRuleSlot.HasValue;
+
+        public bool HasAutoFireRule
+        {
+            get
+            {
+                if (State?.Rules == null) return false;
+                for (int i = 0; i < State.Rules.Count; i++)
+                {
+                    if (string.Equals(State.Rules[i].Action, "fire", StringComparison.OrdinalIgnoreCase))
+                        return true;
+                }
+                return false;
+            }
+        }
+
+        public void ToggleAutoLockRule()
+        {
+            int? slot = AutoLockRuleSlot;
+            if (slot.HasValue)
+            {
+                OnLiveCockpitVerbRequested?.Invoke($"MIND RULE {slot.Value} OFF");
+            }
+            else
+            {
+                OnLiveCockpitVerbRequested?.Invoke("LOCK nearest WHEN nolock");
+            }
+        }
+
+        public void SetAutoFireRule(int minOddsPct, bool enable, string weaponId = "ALL")
+        {
+            string safeWeapon = "ALL";
+            if (!string.IsNullOrWhiteSpace(weaponId) && !string.Equals(weaponId, "ALL", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!MushProtocol.TryValidateSafeCommandToken(weaponId, out string validWpn, maxLen: 32))
+                    return;
+                safeWeapon = validWpn;
+            }
+
+            int clampedOdds = Mathf.Clamp(minOddsPct, 10, 100);
+            if (enable)
+            {
+                if (State != null && !State.WeaponsFree)
+                    OnLiveCockpitVerbRequested?.Invoke("FIRE FREE");
+                OnLiveCockpitVerbRequested?.Invoke($"FIRE {safeWeapon} WHEN odds >= {clampedOdds}");
+                return;
+            }
+
+            bool clearedAny = false;
+            if (State?.Rules != null)
+            {
+                for (int i = 0; i < State.Rules.Count; i++)
+                {
+                    if (string.Equals(State.Rules[i].Action, "fire", StringComparison.OrdinalIgnoreCase))
+                    {
+                        OnLiveCockpitVerbRequested?.Invoke($"MIND RULE {State.Rules[i].Slot} OFF");
+                        clearedAny = true;
+                    }
+                }
+            }
+            if (!clearedAny)
+                OnLiveCockpitVerbRequested?.Invoke($"FIRE {safeWeapon} OFF");
+        }
+
+        public void ToggleAutoFireRule(int minOddsPct, string weaponId = "ALL")
+        {
+            SetAutoFireRule(minOddsPct, enable: !HasAutoFireRule, weaponId: weaponId);
+        }
+
+        public bool TryGetLockedContactBearingDeg(out float bearingDeg)
+        {
+            bearingDeg = 0f;
+            if (State == null || string.IsNullOrEmpty(State.LockedDesignator)) return false;
+            if (PlayerRig?.Root != null && TryGetContactWorldPosition(State.LockedDesignator, out Vector3 targetPos))
+            {
+                Vector3 d = targetPos - PlayerRig.Root.transform.position;
+                if (d.sqrMagnitude > 0.25f)
+                {
+                    bearingDeg = ((Mathf.Atan2(d.x, d.z) * Mathf.Rad2Deg) % 360f + 360f) % 360f;
+                    return true;
+                }
+            }
+            for (int i = 0; i < State.Contacts.Count; i++)
+            {
+                if (string.Equals(State.Contacts[i].Designator, State.LockedDesignator, StringComparison.OrdinalIgnoreCase))
+                {
+                    bearingDeg = ((State.Contacts[i].BearingDeg % 360f) + 360f) % 360f;
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        public bool TryGetActiveObjectiveBearingDeg(out float bearingDeg, out float rangeM, out string label)
+        {
+            bearingDeg = 0f;
+            rangeM = 0f;
+            label = string.Empty;
+            if (TerrainGrid == null || State == null) return false;
+
+            Vector3 targetLocal;
+            if (State.HasDynamicObjective)
+            {
+                targetLocal = TerrainGrid.SiteCellToLocalPos(State.ObjectiveCellX, State.ObjectiveCellY, 0f);
+                label = !string.IsNullOrEmpty(State.ObjectiveLetter) ? State.ObjectiveLetter : "OBJ";
+            }
+            else if (!string.IsNullOrWhiteSpace(TerrainGrid.HoldSpotLetter) && TerrainGrid.KeySpots != null)
+            {
+                ArenaKeySpotDef found = null;
+                for (int i = 0; i < TerrainGrid.KeySpots.Count; i++)
+                {
+                    if (string.Equals(TerrainGrid.KeySpots[i].Letter, TerrainGrid.HoldSpotLetter, StringComparison.OrdinalIgnoreCase))
+                    {
+                        found = TerrainGrid.KeySpots[i];
+                        break;
+                    }
+                }
+                if (found == null) return false;
+                targetLocal = TerrainGrid.SiteCellToLocalPos(found.CellX, found.CellY, 0f);
+                label = found.Letter;
+            }
+            else
+            {
+                return false;
+            }
+
+            Vector3 ownLocal = PlayerRig?.Root != null
+                ? PlayerRig.Root.transform.position - ArenaStageOrigin
+                : ArenaWorldMetersToLocalPos(State.Xm, State.Zm);
+            float dx = targetLocal.x - ownLocal.x;
+            float dz = targetLocal.z - ownLocal.z;
+            rangeM = Mathf.Sqrt(dx * dx + dz * dz);
+            bearingDeg = rangeM > 0.5f ? (((Mathf.Atan2(dx, dz) * Mathf.Rad2Deg) % 360f) + 360f) % 360f : State.HeadingDeg;
+            return true;
+        }
+
+        public bool HandleArenaCombatHotkey(KeyCode key)
+        {
+            if (KeyboardSuspended) return false;
+            switch (key)
+            {
+                case KeyCode.Space:
+                    ExecuteCockpitAction("fire");
+                    return true;
+                case KeyCode.V:
+                    OnToggleCameraViewRequested?.Invoke();
+                    return true;
+                case KeyCode.Alpha1:
+                    ExecuteCockpitAction("throttle slow");
+                    return true;
+                case KeyCode.Alpha2:
+                    ExecuteCockpitAction("throttle half");
+                    return true;
+                case KeyCode.Alpha3:
+                    ExecuteCockpitAction("throttle cruise");
+                    return true;
+                case KeyCode.Alpha4:
+                    ExecuteCockpitAction("throttle full");
+                    return true;
+                case KeyCode.Alpha0:
+                    ExecuteCockpitAction("speed 0");
+                    return true;
+                case KeyCode.F:
+                    ExecuteCockpitAction(State != null && State.WeaponsFree ? "fire hold" : "fire free");
+                    return true;
+                case KeyCode.G:
+                    ExecuteCockpitAction("fire all");
+                    return true;
+                case KeyCode.N:
+                    ExecuteCockpitAction("scan");
+                    return true;
+                case KeyCode.M:
+                    ExecuteCockpitAction("emcon");
+                    return true;
+                case KeyCode.Z:
+                    ExecuteCockpitAction("startup");
+                    return true;
+                case KeyCode.L:
+                    ToggleAutoLockRule();
+                    return true;
+                case KeyCode.Y:
+                    if (State?.Detachment != null &&
+                        !State.DetachmentProjectionInvalid &&
+                        State.Detachment.MyOrder != null &&
+                        string.IsNullOrEmpty(State.Detachment.MyOrder.Response) &&
+                        !string.IsNullOrEmpty(State.Detachment.WilcoCommand))
+                    {
+                        OnLiveCockpitVerbRequested?.Invoke(State.Detachment.WilcoCommand);
+                        return true;
+                    }
+                    return false;
+                default:
+                    return false;
+            }
         }
 
         private void OnDestroy()
@@ -1142,6 +1364,38 @@ namespace TacSim.Arena
             if (!string.IsNullOrEmpty(rawScope)) State.Scope = rawScope;
             string rawTempo = d.Str("tempo", string.Empty);
             if (!string.IsNullOrEmpty(rawTempo)) State.Tempo = rawTempo;
+            string rawPosture = d.Str("posture", string.Empty);
+            if (!string.IsNullOrEmpty(rawPosture)) State.Posture = rawPosture;
+
+            var rcvrNode = d["receiver"];
+            if (rcvrNode != null && rcvrNode.IsObject)
+            {
+                State.HasReceiver = true;
+                State.ReceiverBudget = rcvrNode.Int("budget", 0);
+                State.ReceiverBudgetMax = Mathf.Max(0, rcvrNode.Int("budget_max", 0));
+                State.ReceiverReachPercent = Mathf.Clamp(rcvrNode.Int("reach_percent", 100), 0, 100);
+            }
+            else
+            {
+                State.HasReceiver = false;
+                State.ReceiverReachPercent = 100;
+            }
+
+            State.Rules.Clear();
+            var rulesArr = d["rules"].AsArray();
+            if (rulesArr != null)
+            {
+                int rCap = Math.Min(rulesArr.Count, 12);
+                for (int i = 0; i < rCap; i++)
+                {
+                    var r = rulesArr[i];
+                    if (r == null || !r.IsObject) continue;
+                    int slot = r.Int("slot", 0);
+                    string action = r.Str("action", string.Empty);
+                    if (slot > 0 && !string.IsNullOrEmpty(action))
+                        State.Rules.Add(new ArenaStandingRule { Slot = slot, Action = action });
+                }
+            }
 
             var objNode = d["objective"];
             if (objNode != null && objNode.IsObject)
@@ -1821,15 +2075,20 @@ namespace TacSim.Arena
             bool overUi = EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
             if (!KeyboardSuspended)
             {
-                if (Input.GetKeyDown(KeyCode.Space))
-                    ExecuteCockpitAction("fire");
-                else if (Input.GetKeyDown(KeyCode.V))
-                    OnToggleCameraViewRequested?.Invoke();
-                else if (Input.GetKeyDown(KeyCode.Alpha1)) ExecuteCockpitAction("throttle slow");
-                else if (Input.GetKeyDown(KeyCode.Alpha2)) ExecuteCockpitAction("throttle half");
-                else if (Input.GetKeyDown(KeyCode.Alpha3)) ExecuteCockpitAction("throttle cruise");
-                else if (Input.GetKeyDown(KeyCode.Alpha4)) ExecuteCockpitAction("throttle full");
-                else if (Input.GetKeyDown(KeyCode.Alpha0)) ExecuteCockpitAction("speed 0");
+                if (Input.GetKeyDown(KeyCode.Space)) HandleArenaCombatHotkey(KeyCode.Space);
+                else if (Input.GetKeyDown(KeyCode.V)) HandleArenaCombatHotkey(KeyCode.V);
+                else if (Input.GetKeyDown(KeyCode.Alpha1)) HandleArenaCombatHotkey(KeyCode.Alpha1);
+                else if (Input.GetKeyDown(KeyCode.Alpha2)) HandleArenaCombatHotkey(KeyCode.Alpha2);
+                else if (Input.GetKeyDown(KeyCode.Alpha3)) HandleArenaCombatHotkey(KeyCode.Alpha3);
+                else if (Input.GetKeyDown(KeyCode.Alpha4)) HandleArenaCombatHotkey(KeyCode.Alpha4);
+                else if (Input.GetKeyDown(KeyCode.Alpha0)) HandleArenaCombatHotkey(KeyCode.Alpha0);
+                else if (Input.GetKeyDown(KeyCode.F)) HandleArenaCombatHotkey(KeyCode.F);
+                else if (Input.GetKeyDown(KeyCode.G)) HandleArenaCombatHotkey(KeyCode.G);
+                else if (Input.GetKeyDown(KeyCode.N)) HandleArenaCombatHotkey(KeyCode.N);
+                else if (Input.GetKeyDown(KeyCode.M)) HandleArenaCombatHotkey(KeyCode.M);
+                else if (Input.GetKeyDown(KeyCode.Z)) HandleArenaCombatHotkey(KeyCode.Z);
+                else if (Input.GetKeyDown(KeyCode.L)) HandleArenaCombatHotkey(KeyCode.L);
+                else if (Input.GetKeyDown(KeyCode.Y)) HandleArenaCombatHotkey(KeyCode.Y);
             }
 
             if (!overUi && Input.GetMouseButtonDown(0))

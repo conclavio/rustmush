@@ -60,6 +60,21 @@ namespace TacSim.UI
         private Text _arenaHeatLabel;
         private Text _arenaDriveStrip;
 
+        // Arena Top-Center 360-deg Scrolling Compass Tape & Tactical Telemetry Strip
+        private const float ArenaCompassWidthPx = 420f;
+        private const float ArenaCompassFovDeg = 140f;
+        private GameObject _arenaCompassWidget;
+        private Text _arenaCompassHeadingTxt;
+        private Text _arenaCompassTelemetryTxt;
+        private readonly RectTransform[] _compassTickRects = new RectTransform[8];
+        private readonly Text[] _compassTickLabels = new Text[8];
+        private static readonly float[] CompassTickBearings = { 0f, 45f, 90f, 135f, 180f, 225f, 270f, 315f };
+        private static readonly string[] CompassTickNames = { "N", "045", "E", "135", "S", "225", "W", "315" };
+        private RectTransform _compassOrderBugPip;
+        private RectTransform _compassLockPip;
+        private RectTransform _compassObjectivePip;
+        private Text _compassObjectivePipLabel;
+
         // Surface Rover Compass & Drill Strip (bottom-center above SurfaceRoverActions)
         private GameObject _surfaceCompassWidget;
         private Text _surfaceCompassText;
@@ -85,6 +100,12 @@ namespace TacSim.UI
 
         public int ActiveBracketCount { get; private set; }
         public bool IsArenaArmorSchematicVisible => _arenaArmorWidget != null && _arenaArmorWidget.activeSelf;
+        public bool IsArenaCompassVisible => _arenaCompassWidget != null && _arenaCompassWidget.activeSelf;
+        public string ArenaCompassHeadingSnapshot => _arenaCompassHeadingTxt != null ? _arenaCompassHeadingTxt.text : string.Empty;
+        public string ArenaCompassTelemetrySnapshot => _arenaCompassTelemetryTxt != null ? _arenaCompassTelemetryTxt.text : string.Empty;
+        public bool ArenaCompassLockPipVisible => _compassLockPip != null && _compassLockPip.gameObject.activeSelf;
+        public bool ArenaCompassObjectivePipVisible => _compassObjectivePip != null && _compassObjectivePip.gameObject.activeSelf;
+        public bool ArenaCompassOrderBugVisible => _compassOrderBugPip != null && _compassOrderBugPip.gameObject.activeSelf;
         public bool IsSurfaceCompassVisible => _surfaceCompassWidget != null && _surfaceCompassWidget.activeSelf;
         public bool IsDockingReticleVisible => _dockingReticleWidget != null && _dockingReticleWidget.activeSelf;
         public Vector2 DockingLateralPipPos => _dockLateralPip != null ? _dockLateralPip.anchoredPosition : Vector2.zero;
@@ -110,6 +131,7 @@ namespace TacSim.UI
             BuildDockingAlignmentReticle(_layerRect);
             BuildSurfaceCompassStrip(_layerRect);
             BuildArenaArmorSchematic(_layerRect);
+            BuildArenaCompassTape(_layerRect);
         }
 
         public void BindControllers(SpaceFlightController space, SurfaceMiningController surface, OocArenaController arena)
@@ -126,8 +148,27 @@ namespace TacSim.UI
             if (_dockingReticleWidget != null) _dockingReticleWidget.SetActive(false);
             if (_surfaceCompassWidget != null) _surfaceCompassWidget.SetActive(false);
             if (_arenaArmorWidget != null) _arenaArmorWidget.SetActive(false);
+            if (_arenaCompassWidget != null) _arenaCompassWidget.SetActive(false);
             DockingRollBarAngleDeg = 0f;
             DockingReticleAllGreen = false;
+        }
+
+        /// <summary>
+        /// Pure-math signed horizontal pixel offset on a 360-degree scrolling compass tape.
+        /// Wraps shortest angular delta cleanly across North (355° -> 005° = +10°).
+        /// </summary>
+        public static float ComputeCompassTapeOffsetPx(
+            float centerHeadingDeg,
+            float markerBearingDeg,
+            float tapeWidthPx,
+            float fovDeg,
+            out bool withinTape)
+        {
+            float delta = Mathf.DeltaAngle(centerHeadingDeg, markerBearingDeg);
+            float halfFov = Mathf.Max(20f, fovDeg * 0.5f);
+            withinTape = Mathf.Abs(delta) <= halfFov;
+            float clamped = Mathf.Clamp(delta, -halfFov, halfFov);
+            return (clamped / halfFov) * (tapeWidthPx * 0.5f - 14f);
         }
 
         public static void ComputeDockingReticleOffsets(
@@ -218,6 +259,7 @@ namespace TacSim.UI
                 if (_dockingReticleWidget != null) _dockingReticleWidget.SetActive(false);
                 if (_surfaceCompassWidget != null) _surfaceCompassWidget.SetActive(false);
                 if (_arenaArmorWidget != null) _arenaArmorWidget.SetActive(false);
+                if (_arenaCompassWidget != null) _arenaCompassWidget.SetActive(false);
                 return;
             }
 
@@ -236,6 +278,8 @@ namespace TacSim.UI
                 _surfaceCompassWidget.SetActive(stage == TacSimActiveStage.PlanetarySurface);
             if (_arenaArmorWidget != null)
                 _arenaArmorWidget.SetActive(stage == TacSimActiveStage.SimulatorArena);
+            if (_arenaCompassWidget != null)
+                _arenaCompassWidget.SetActive(stage == TacSimActiveStage.SimulatorArena);
 
             if (dockingActive)
             {
@@ -394,10 +438,12 @@ namespace TacSim.UI
 
             if (_arenaDriveStrip != null)
             {
-                float hdg = (st.HeadingDeg % 360f + 360f) % 360f;
+                float hdg = (_arena.PredictedHeadingDeg % 360f + 360f) % 360f;
                 string lockTag = !string.IsNullOrEmpty(st.LockedDesignator) ? $" | LOCK {st.LockedDesignator} ({st.LockHitPercent}%)" : " | TAB: LOCK";
                 _arenaDriveStrip.text = $"HDG {hdg:000}° | {st.SpeedKph:0} kph{lockTag}";
             }
+
+            SyncArenaCompassTape();
 
             if (cam == null)
             {
@@ -706,6 +752,151 @@ namespace TacSim.UI
             SetRect(_arenaDriveStrip.rectTransform, new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(6f, 4f), new Vector2(-6f, 21f));
 
             _arenaArmorWidget.SetActive(false);
+        }
+
+        private void BuildArenaCompassTape(Transform parent)
+        {
+            // Sits cleanly below RedVsBlueScoreboard (y = -118..-68) and above ArenaBanner (-206..-166)
+            _arenaCompassWidget = CreatePanel(
+                parent,
+                "ArenaCompassTape",
+                new Vector2(0.5f, 1f),
+                new Vector2(0.5f, 1f),
+                new Vector2(-ArenaCompassWidthPx * 0.5f, -160f),
+                new Vector2(ArenaCompassWidthPx * 0.5f, -122f),
+                new Color(0.03f, 0.06f, 0.11f, 0.90f));
+            _arenaCompassWidget.GetComponent<Image>().raycastTarget = false;
+
+            // Subtle top & bottom horizon hairlines + center bearing notch
+            CreateStroke(_arenaCompassWidget.transform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(4f, -2f), new Vector2(-4f, 0f), new Color(0.28f, 0.72f, 0.90f, 0.48f));
+            CreateStroke(_arenaCompassWidget.transform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(-1f, -14f), new Vector2(1f, 0f), new Color(0.45f, 0.95f, 1f, 0.92f));
+
+            // 8 pooled cardinal/intercardinal labels scrolling smoothly along top track
+            for (int i = 0; i < CompassTickNames.Length; i++)
+            {
+                bool cardinal = i % 2 == 0;
+                var lbl = CreateText(
+                    _arenaCompassWidget.transform,
+                    CompassTickNames[i],
+                    cardinal ? 11 : 10,
+                    cardinal ? FontStyle.Bold : FontStyle.Normal,
+                    TextAnchor.MiddleCenter,
+                    cardinal ? new Color(0.84f, 0.96f, 1f, 0.95f) : new Color(0.54f, 0.72f, 0.84f, 0.80f));
+                SetRect(lbl.rectTransform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(-18f, -20f), new Vector2(18f, -4f));
+                _compassTickRects[i] = lbl.rectTransform;
+                _compassTickLabels[i] = lbl;
+            }
+
+            // Ordered Helm Bug chevron (cyan)
+            var bugGo = CreatePanel(_arenaCompassWidget.transform, "CompassHelmBug", new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(-4f, -9f), new Vector2(4f, -1f), new Color(0.28f, 0.96f, 1f, 0.95f));
+            bugGo.GetComponent<Image>().raycastTarget = false;
+            _compassOrderBugPip = bugGo.GetComponent<RectTransform>();
+            _compassOrderBugPip.localRotation = Quaternion.Euler(0f, 0f, 45f);
+            bugGo.SetActive(false);
+
+            // Locked Hostile Target diamond (crimson)
+            var lockGo = CreatePanel(_arenaCompassWidget.transform, "CompassLockPip", new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(-5f, -19f), new Vector2(5f, -9f), new Color(1.0f, 0.28f, 0.20f, 0.98f));
+            lockGo.GetComponent<Image>().raycastTarget = false;
+            _compassLockPip = lockGo.GetComponent<RectTransform>();
+            _compassLockPip.localRotation = Quaternion.Euler(0f, 0f, 45f);
+            lockGo.SetActive(false);
+
+            // Active Objective / Hold Zone marker (gold)
+            var objGo = CreatePanel(_arenaCompassWidget.transform, "CompassObjectivePip", new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(-9f, -20f), new Vector2(9f, -4f), new Color(0.95f, 0.76f, 0.16f, 0.94f));
+            objGo.GetComponent<Image>().raycastTarget = false;
+            _compassObjectivePip = objGo.GetComponent<RectTransform>();
+            _compassObjectivePipLabel = CreateText(objGo.transform, "B", 10, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(0.06f, 0.08f, 0.10f, 1f));
+            SetRect(_compassObjectivePipLabel.rectTransform, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero);
+            objGo.SetActive(false);
+
+            // Center digital heading readout pill + telemetry line below
+            var hdgBg = CreatePanel(_arenaCompassWidget.transform, "CompassCenterHeadingBg", new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(-26f, -21f), new Vector2(26f, -3f), new Color(0.06f, 0.14f, 0.22f, 0.96f));
+            hdgBg.GetComponent<Image>().raycastTarget = false;
+            _arenaCompassHeadingTxt = CreateText(hdgBg.transform, "090°", 11, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(0.42f, 0.96f, 1f));
+            SetRect(_arenaCompassHeadingTxt.rectTransform, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero);
+
+            _arenaCompassTelemetryTxt = CreateText(_arenaCompassWidget.transform, "SCOPE CLEAR  |  TEMPO ALERT  |  SIGHT 120m  |  RCVR 100%", 10, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(0.74f, 0.90f, 0.98f));
+            SetRect(_arenaCompassTelemetryTxt.rectTransform, new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(6f, 2f), new Vector2(-6f, 16f));
+
+            _arenaCompassWidget.SetActive(false);
+        }
+
+        private void SyncArenaCompassTape()
+        {
+            if (_arenaCompassWidget == null || _arena == null || _arena.State == null) return;
+            var st = _arena.State;
+            float centerHdg = ((_arena.PredictedHeadingDeg % 360f) + 360f) % 360f;
+
+            if (_arenaCompassHeadingTxt != null)
+                _arenaCompassHeadingTxt.text = $"{Mathf.RoundToInt(centerHdg) % 360:000}°";
+
+            for (int i = 0; i < _compassTickRects.Length; i++)
+            {
+                var rt = _compassTickRects[i];
+                if (rt == null) continue;
+                float xOff = ComputeCompassTapeOffsetPx(centerHdg, CompassTickBearings[i], ArenaCompassWidthPx, ArenaCompassFovDeg, out bool visible);
+                if (rt.gameObject.activeSelf != visible) rt.gameObject.SetActive(visible);
+                if (visible)
+                    rt.anchoredPosition = new Vector2(xOff, -12f);
+            }
+
+            // Ordered Helm Bug (shown whenever an ordered helm heading differs from current heading)
+            if (_compassOrderBugPip != null)
+            {
+                bool showBug = _arena.Helm != null && _arena.Helm.OrderedMdeg.HasValue;
+                float bugDeg = showBug ? (_arena.Helm.OrderedMdeg.Value * 0.001f) : centerHdg;
+                if (showBug && Mathf.Abs(Mathf.DeltaAngle(centerHdg, bugDeg)) < 1.5f)
+                    showBug = false;
+                if (_compassOrderBugPip.gameObject.activeSelf != showBug)
+                    _compassOrderBugPip.gameObject.SetActive(showBug);
+                if (showBug)
+                {
+                    float xOff = ComputeCompassTapeOffsetPx(centerHdg, bugDeg, ArenaCompassWidthPx, ArenaCompassFovDeg, out _);
+                    _compassOrderBugPip.anchoredPosition = new Vector2(xOff, -5f);
+                }
+            }
+
+            // Locked Hostile Contact Pip
+            if (_compassLockPip != null)
+            {
+                bool hasLock = _arena.TryGetLockedContactBearingDeg(out float lockBearing);
+                if (_compassLockPip.gameObject.activeSelf != hasLock)
+                    _compassLockPip.gameObject.SetActive(hasLock);
+                if (hasLock)
+                {
+                    float xOff = ComputeCompassTapeOffsetPx(centerHdg, lockBearing, ArenaCompassWidthPx, ArenaCompassFovDeg, out _);
+                    _compassLockPip.anchoredPosition = new Vector2(xOff, -14f);
+                }
+            }
+
+            // Active Dynamic Objective / Hold Spot Pip
+            if (_compassObjectivePip != null)
+            {
+                bool hasObj = _arena.TryGetActiveObjectiveBearingDeg(out float objBearing, out _, out string objLabel);
+                if (_compassObjectivePip.gameObject.activeSelf != hasObj)
+                    _compassObjectivePip.gameObject.SetActive(hasObj);
+                if (hasObj)
+                {
+                    float xOff = ComputeCompassTapeOffsetPx(centerHdg, objBearing, ArenaCompassWidthPx, ArenaCompassFovDeg, out _);
+                    _compassObjectivePip.anchoredPosition = new Vector2(xOff, -12f);
+                    if (_compassObjectivePipLabel != null)
+                        _compassObjectivePipLabel.text = string.IsNullOrEmpty(objLabel) ? "O" : objLabel;
+                }
+            }
+
+            if (_arenaCompassTelemetryTxt != null)
+            {
+                string scopeUp = (st.Scope ?? "clear").ToUpperInvariant();
+                string tempoUp = (st.Tempo ?? "alert").ToUpperInvariant();
+                string postureUp = (st.Posture ?? "return").ToUpperInvariant();
+                string rcvrTag = st.HasReceiver ? $"  |  RCVR {st.ReceiverReachPercent}%" : string.Empty;
+                _arenaCompassTelemetryTxt.text = $"SCOPE {scopeUp}  |  {tempoUp}  |  SIGHT {st.SightMeters:0}m  |  {postureUp}{rcvrTag}";
+                _arenaCompassTelemetryTxt.color = string.Equals(st.Scope, "hostile", StringComparison.OrdinalIgnoreCase)
+                    ? new Color(1.0f, 0.44f, 0.36f)
+                    : (string.Equals(st.Scope, "unidentified", StringComparison.OrdinalIgnoreCase) || (st.HasReceiver && st.ReceiverReachPercent < 85)
+                        ? new Color(1.0f, 0.80f, 0.34f)
+                        : new Color(0.68f, 0.92f, 1.0f));
+            }
         }
 
         private void BuildArmorPlate(Transform parent, string name, Vector2 anchor, Vector2 minOff, Vector2 maxOff, out Image bg, out Text txt)
