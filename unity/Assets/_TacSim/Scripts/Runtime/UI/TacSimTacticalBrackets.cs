@@ -68,6 +68,17 @@ namespace TacSim.UI
         // Space Center Flight Reticle (subtle center pip when seated at helm)
         private GameObject _spaceReticleWidget;
 
+        // 6-DOF Bow Docking Alignment Crosshair HUD Reticle (active during IsDockingActive)
+        private GameObject _dockingReticleWidget;
+        private RectTransform _dockLateralPip;
+        private Image _dockLateralPipImg;
+        private RectTransform _dockAttitudePip;
+        private Image _dockAttitudePipImg;
+        private RectTransform _dockRollBar;
+        private Image _dockRollBarImg;
+        private Image _dockClosureFill;
+        private Text _dockStatusText;
+
         private SpaceFlightController _space;
         private SurfaceMiningController _surface;
         private OocArenaController _arena;
@@ -75,6 +86,10 @@ namespace TacSim.UI
         public int ActiveBracketCount { get; private set; }
         public bool IsArenaArmorSchematicVisible => _arenaArmorWidget != null && _arenaArmorWidget.activeSelf;
         public bool IsSurfaceCompassVisible => _surfaceCompassWidget != null && _surfaceCompassWidget.activeSelf;
+        public bool IsDockingReticleVisible => _dockingReticleWidget != null && _dockingReticleWidget.activeSelf;
+        public Vector2 DockingLateralPipPos => _dockLateralPip != null ? _dockLateralPip.anchoredPosition : Vector2.zero;
+        public float DockingRollBarAngleDeg { get; private set; }
+        public bool DockingReticleAllGreen { get; private set; }
         public string SurfaceCompassSnapshot => _surfaceCompassText != null ? _surfaceCompassText.text : string.Empty;
         public string ArenaArmorSummarySnapshot => _arenaDriveStrip != null ? _arenaDriveStrip.text : string.Empty;
 
@@ -92,6 +107,7 @@ namespace TacSim.UI
                 _pool.Add(CreatePooledBracket(_layerRect, i));
 
             BuildSpaceCenterReticle(_layerRect);
+            BuildDockingAlignmentReticle(_layerRect);
             BuildSurfaceCompassStrip(_layerRect);
             BuildArenaArmorSchematic(_layerRect);
         }
@@ -107,8 +123,37 @@ namespace TacSim.UI
         {
             HideAllBrackets();
             if (_spaceReticleWidget != null) _spaceReticleWidget.SetActive(false);
+            if (_dockingReticleWidget != null) _dockingReticleWidget.SetActive(false);
             if (_surfaceCompassWidget != null) _surfaceCompassWidget.SetActive(false);
             if (_arenaArmorWidget != null) _arenaArmorWidget.SetActive(false);
+            DockingRollBarAngleDeg = 0f;
+            DockingReticleAllGreen = false;
+        }
+
+        public static void ComputeDockingReticleOffsets(
+            long dxMm,
+            long dyMm,
+            long yawMdeg,
+            long pitchMdeg,
+            long rollMdeg,
+            long vzMmps,
+            out Vector2 lateralPx,
+            out Vector2 attitudePx,
+            out float rollDeg,
+            out float closureNorm)
+        {
+            // ±150mm lateral gate maps cleanly inside the ±26px center capture box; clamp at ±108px
+            float lx = Mathf.Clamp((dxMm / 150f) * 26f, -108f, 108f);
+            float ly = Mathf.Clamp((dyMm / 150f) * 26f, -108f, 108f);
+            lateralPx = new Vector2(lx, ly);
+
+            // ±3 deg (3000 mdeg) attitude gate maps inside ±24px; clamp at ±104px
+            float ax = Mathf.Clamp((yawMdeg / 3000f) * 24f, -104f, 104f);
+            float ay = Mathf.Clamp((-pitchMdeg / 3000f) * 24f, -104f, 104f);
+            attitudePx = new Vector2(ax, ay);
+
+            rollDeg = Mathf.Clamp(-rollMdeg / 1000f, -65f, 65f);
+            closureNorm = Mathf.Clamp01(vzMmps / 1000f);
         }
 
         /// <summary>
@@ -170,6 +215,7 @@ namespace TacSim.UI
             {
                 HideAllBrackets();
                 if (_spaceReticleWidget != null) _spaceReticleWidget.SetActive(false);
+                if (_dockingReticleWidget != null) _dockingReticleWidget.SetActive(false);
                 if (_surfaceCompassWidget != null) _surfaceCompassWidget.SetActive(false);
                 if (_arenaArmorWidget != null) _arenaArmorWidget.SetActive(false);
                 return;
@@ -181,12 +227,22 @@ namespace TacSim.UI
             float sw = Mathf.Max(1f, Screen.width > 0 ? Screen.width : 1920f);
             float sh = Mathf.Max(1f, Screen.height > 0 ? Screen.height : 1080f);
 
+            bool dockingActive = stage == TacSimActiveStage.ShipHelmSeated && _space != null && _space.IsDockingActive && _space.ActiveDockingSession != null;
             if (_spaceReticleWidget != null)
-                _spaceReticleWidget.SetActive(stage == TacSimActiveStage.ShipHelmSeated && (_space == null || !_space.IsDockingActive));
+                _spaceReticleWidget.SetActive(stage == TacSimActiveStage.ShipHelmSeated && !dockingActive);
+            if (_dockingReticleWidget != null)
+                _dockingReticleWidget.SetActive(dockingActive);
             if (_surfaceCompassWidget != null)
                 _surfaceCompassWidget.SetActive(stage == TacSimActiveStage.PlanetarySurface);
             if (_arenaArmorWidget != null)
                 _arenaArmorWidget.SetActive(stage == TacSimActiveStage.SimulatorArena);
+
+            if (dockingActive)
+            {
+                HideAllBrackets();
+                SyncDockingAlignmentReticle(_space.ActiveDockingSession);
+                return;
+            }
 
             switch (stage)
             {
@@ -487,6 +543,114 @@ namespace TacSim.UI
             CreateStroke(_spaceReticleWidget.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-1f, 7f), new Vector2(1f, 20f), pip);
             CreateStroke(_spaceReticleWidget.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-1f, -20f), new Vector2(1f, -7f), pip);
             _spaceReticleWidget.SetActive(false);
+        }
+
+        private void BuildDockingAlignmentReticle(Transform parent)
+        {
+            _dockingReticleWidget = new GameObject("DockingAlignmentReticle", typeof(RectTransform));
+            _dockingReticleWidget.transform.SetParent(parent, false);
+            var rt = _dockingReticleWidget.GetComponent<RectTransform>();
+            SetRect(rt, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-130f, -130f), new Vector2(130f, 130f));
+
+            // Center collar tolerance box (±26px = ±150 mm)
+            Color boxCol = new Color(0.34f, 0.88f, 1.0f, 0.58f);
+            CreateStroke(_dockingReticleWidget.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-26f, 25f), new Vector2(26f, 27f), boxCol);
+            CreateStroke(_dockingReticleWidget.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-26f, -27f), new Vector2(26f, -25f), boxCol);
+            CreateStroke(_dockingReticleWidget.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-27f, -26f), new Vector2(-25f, 26f), boxCol);
+            CreateStroke(_dockingReticleWidget.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(25f, -26f), new Vector2(27f, 26f), boxCol);
+
+            // Outer reference axes
+            Color axisCol = new Color(0.32f, 0.74f, 0.88f, 0.30f);
+            CreateStroke(_dockingReticleWidget.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-115f, -1f), new Vector2(-32f, 1f), axisCol);
+            CreateStroke(_dockingReticleWidget.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(32f, -1f), new Vector2(115f, 1f), axisCol);
+            CreateStroke(_dockingReticleWidget.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-1f, 32f), new Vector2(1f, 115f), axisCol);
+            CreateStroke(_dockingReticleWidget.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-1f, -115f), new Vector2(1f, -32f), axisCol);
+
+            // Live rotating Roll Horizon Wing Bar
+            var rollGo = new GameObject("RollHorizonBar", typeof(RectTransform), typeof(Image));
+            rollGo.transform.SetParent(_dockingReticleWidget.transform, false);
+            _dockRollBar = rollGo.GetComponent<RectTransform>();
+            SetRect(_dockRollBar, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-72f, -2f), new Vector2(72f, 2f));
+            _dockRollBarImg = rollGo.GetComponent<Image>();
+            _dockRollBarImg.color = new Color(1.0f, 0.72f, 0.22f, 0.85f);
+            _dockRollBarImg.raycastTarget = false;
+
+            // Live Lateral Offset Pip (Dx, Dy)
+            var latGo = new GameObject("LateralOffsetPip", typeof(RectTransform), typeof(Image));
+            latGo.transform.SetParent(_dockingReticleWidget.transform, false);
+            _dockLateralPip = latGo.GetComponent<RectTransform>();
+            SetRect(_dockLateralPip, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-7f, -7f), new Vector2(7f, 7f));
+            _dockLateralPip.localRotation = Quaternion.Euler(0f, 0f, 45f);
+            _dockLateralPipImg = latGo.GetComponent<Image>();
+            _dockLateralPipImg.color = new Color(1.0f, 0.64f, 0.20f, 0.95f);
+            _dockLateralPipImg.raycastTarget = false;
+
+            // Live Pitch/Yaw Attitude Vector Pip
+            var attGo = new GameObject("AttitudeVectorPip", typeof(RectTransform), typeof(Image));
+            attGo.transform.SetParent(_dockingReticleWidget.transform, false);
+            _dockAttitudePip = attGo.GetComponent<RectTransform>();
+            SetRect(_dockAttitudePip, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-4f, -4f), new Vector2(4f, 4f));
+            _dockAttitudePipImg = attGo.GetComponent<Image>();
+            _dockAttitudePipImg.color = new Color(0.38f, 0.92f, 1.0f, 0.95f);
+            _dockAttitudePipImg.raycastTarget = false;
+
+            // Vertical Closure Velocity Gauge on right edge of reticle (100..800 mm/s green zone)
+            var clBg = CreatePanel(_dockingReticleWidget.transform, "ClosureBarBg", new Vector2(1f, 0.5f), new Vector2(1f, 0.5f), new Vector2(10f, -70f), new Vector2(20f, 70f), new Color(0.06f, 0.11f, 0.17f, 0.88f));
+            clBg.GetComponent<Image>().raycastTarget = false;
+            var clFill = CreatePanel(clBg.transform, "ClosureBarFill", new Vector2(0f, 0f), new Vector2(1f, 0.35f), Vector2.zero, Vector2.zero, new Color(0.24f, 0.92f, 0.56f, 0.95f));
+            _dockClosureFill = clFill.GetComponent<Image>();
+            _dockClosureFill.raycastTarget = false;
+
+            _dockStatusText = CreateText(_dockingReticleWidget.transform, "6-DOF COLLAR ALIGNMENT  |  0/5 GATES", 11, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(0.75f, 0.95f, 1f));
+            SetRect(_dockStatusText.rectTransform, new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(-170f, -24f), new Vector2(170f, -4f));
+
+            _dockingReticleWidget.SetActive(false);
+        }
+
+        private void SyncDockingAlignmentReticle(DockingClientSession session)
+        {
+            if (session == null) return;
+            var gates = session.EvaluateGates();
+            DockingReticleAllGreen = gates.AllGreen;
+
+            ComputeDockingReticleOffsets(
+                session.DxMm,
+                session.DyMm,
+                session.YawMdeg,
+                session.PitchMdeg,
+                session.RollMdeg,
+                session.VzMmps,
+                out Vector2 latPx,
+                out Vector2 attPx,
+                out float rollDeg,
+                out float closureNorm);
+
+            DockingRollBarAngleDeg = rollDeg;
+
+            Color green = new Color(0.22f, 1.0f, 0.56f, 0.96f);
+            Color amber = new Color(1.0f, 0.62f, 0.18f, 0.96f);
+            Color cyan = new Color(0.38f, 0.90f, 1.0f, 0.95f);
+
+            if (_dockLateralPip != null) _dockLateralPip.anchoredPosition = latPx;
+            if (_dockLateralPipImg != null) _dockLateralPipImg.color = gates.LateralOk ? green : amber;
+
+            if (_dockAttitudePip != null) _dockAttitudePip.anchoredPosition = attPx;
+            if (_dockAttitudePipImg != null) _dockAttitudePipImg.color = gates.AttitudeOk ? green : cyan;
+
+            if (_dockRollBar != null) _dockRollBar.localRotation = Quaternion.Euler(0f, 0f, rollDeg);
+            if (_dockRollBarImg != null) _dockRollBarImg.color = gates.RollOk ? green : amber;
+
+            if (_dockClosureFill != null)
+            {
+                _dockClosureFill.rectTransform.anchorMax = new Vector2(1f, Mathf.Max(0.03f, closureNorm));
+                _dockClosureFill.color = gates.ClosureOk ? green : amber;
+            }
+
+            if (_dockStatusText != null)
+            {
+                _dockStatusText.text = $"GATES {gates.GreenCount}/5  |  Z {session.DzMm / 1000f:0.00} m  |  Vz {session.VzMmps} mm/s  |  ROLL {session.RollMdeg / 1000f:0.0}°";
+                _dockStatusText.color = gates.AllGreen ? green : new Color(0.84f, 0.95f, 1f);
+            }
         }
 
         private void BuildSurfaceCompassStrip(Transform parent)

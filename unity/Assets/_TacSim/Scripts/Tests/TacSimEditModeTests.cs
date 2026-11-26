@@ -5611,5 +5611,106 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void BridgeHoloTableAndDockingCorridor_InteractiveHoloClickToggle3DGatesAnd6DofHudReticle()
+        {
+            // 1. Pure-math 6-DOF Docking Alignment HUD Reticle offsets
+            TacSim.UI.TacSimTacticalBrackets.ComputeDockingReticleOffsets(
+                dxMm: 150, dyMm: -150, yawMdeg: 3000, pitchMdeg: -3000, rollMdeg: 2500, vzMmps: 500,
+                out UnityEngine.Vector2 latPx, out UnityEngine.Vector2 attPx, out float rollDeg, out float closureNorm);
+            Assert.AreEqual(26f, latPx.x, 0.1f);
+            Assert.AreEqual(-26f, latPx.y, 0.1f);
+            Assert.AreEqual(24f, attPx.x, 0.1f);
+            Assert.AreEqual(24f, attPx.y, 0.1f);
+            Assert.AreEqual(-2.5f, rollDeg, 0.05f);
+            Assert.AreEqual(0.5f, closureNorm, 0.01f);
+
+            var rootGo = new UnityEngine.GameObject("BridgeHoloAndDockingTest");
+            try
+            {
+                // 2. Interactive 3D Bridge Holo-Table: clickable blips, clickable planets & mode switching
+                var shipGo = new UnityEngine.GameObject("ShipHoloTest");
+                shipGo.transform.SetParent(rootGo.transform, false);
+                var ship = shipGo.AddComponent<TacSim.World.ShipInteriorController>();
+                ship.BuildInterior(null, "dray");
+
+                var chart = TacSim.Space.TacSimSolarChartFrame.FromJson(JsonNode.Parse(@"{
+                    ""vantage"": ""ceres"",
+                    ""scale"": { ""r0_au"": 2.0, ""au_max"": 10.0 },
+                    ""bodies"": [
+                        { ""id"": ""ceres"", ""name"": ""Ceres"", ""x_au"": 2.7, ""y_au"": 0.1, ""z_au"": 0.0, ""here"": true },
+                        { ""id"": ""mars"", ""name"": ""Mars"", ""x_au"": 1.5, ""y_au"": 0.2, ""z_au"": 0.0 }
+                    ],
+                    ""routes"": [
+                        { ""to"": ""stickney"", ""label"": ""Stickney Yards"", ""body"": ""mars"", ""legs"": [{ ""from"": ""ceres"", ""to"": ""mars"" }] }
+                    ]
+                }"));
+                ship.ApplySolarChartFrame(chart);
+                Assert.IsTrue(ship.IsHoloShowingSolarSystem);
+                Assert.GreaterOrEqual(ship.ClickableHoloNodeCount, 2, "Solar bodies on Bridge Holo-Table must expose clickable BridgeHoloMarkers");
+
+                string clickedPlanet = null;
+                ship.OnHoloPlanetClicked += p => clickedPlanet = p;
+                var planetMarkers = ship.GetComponentsInChildren<TacSim.World.BridgeHoloMarker>(true);
+                Assert.GreaterOrEqual(planetMarkers.Length, 2);
+                Assert.IsTrue(ship.TryHandleHoloMarkerClick(planetMarkers[1]));
+                Assert.AreEqual("stickney", clickedPlanet, "Clicking Mars/Stickney holo body must emit its corridor port slug");
+
+                // Switch to live tactical contacts and verify mode toggling between Local Bubble and Solar System
+                ship.PopulateHoloBlips(JsonNode.Parse(@"{
+                    ""range_km"": 100,
+                    ""contacts"": [
+                        { ""id"": ""own"", ""you"": true, ""x_km"": 0, ""y_km"": 0, ""z_km"": 0 },
+                        { ""id"": ""C1"", ""x_km"": 20, ""y_km"": 5, ""z_km"": 3, ""relation"": ""hostile"" }
+                    ]
+                }"));
+                Assert.IsFalse(ship.IsHoloShowingSolarSystem);
+                string clickedContact = null;
+                bool clickedIsRock = true;
+                ship.OnHoloContactClicked += (id, rock) => { clickedContact = id; clickedIsRock = rock; };
+                var tacMarkers = ship.GetComponentsInChildren<TacSim.World.BridgeHoloMarker>(true);
+                Assert.AreEqual(1, tacMarkers.Length);
+                Assert.IsTrue(ship.TryHandleHoloMarkerClick(tacMarkers[0]));
+                Assert.AreEqual("C1", clickedContact);
+                Assert.IsFalse(clickedIsRock);
+
+                ship.SetHoloDisplayMode(TacSim.World.BridgeHoloMode.SolarSystem);
+                Assert.IsTrue(ship.IsHoloShowingSolarSystem, "Forcing SolarSystem mode must project the solar orrery even while contacts exist");
+                ship.SetHoloDisplayMode(TacSim.World.BridgeHoloMode.LocalBubble);
+                Assert.IsFalse(ship.IsHoloShowingSolarSystem, "Forcing LocalBubble mode must return to local tactical contacts");
+
+                // 3. 3D Illuminated Bow Docking Corridor + 6-DOF Alignment HUD Crosshair
+                var spaceGo = new UnityEngine.GameObject("SpaceDockCorridorTest");
+                spaceGo.transform.SetParent(rootGo.transform, false);
+                var space = spaceGo.AddComponent<TacSim.Space.SpaceFlightController>();
+                space.BuildSpaceStage(null);
+                Assert.AreEqual(5, space.DockingCorridorGateCount, "Bow docking corridor must build 5 open 4-rail alignment gates");
+                Assert.AreEqual(4, space.DockingCorridorRailCount, "Bow docking corridor must build 4 longitudinal guide rails");
+                Assert.IsTrue(space.HasDockingGhostSight, "Bow docking collar must build 3D lateral alignment ghost sight");
+
+                space.StartDockingFromFeed(JsonNode.Parse(@"{
+                    ""session_id"": ""dock.hud8"",
+                    ""target_label"": ""Ceres Bay 4"",
+                    ""start_pose"": { ""dx_mm"": 120, ""dy_mm"": -80, ""dz_mm"": 1800, ""vz_mmps"": 400, ""roll_mdeg"": 1500 }
+                }"));
+                Assert.IsTrue(space.IsDockingActive);
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.TacticalBrackets.BindControllers(space, null, null);
+                var camGo = new UnityEngine.GameObject("DockHudCam", typeof(UnityEngine.Camera));
+                camGo.transform.SetParent(rootGo.transform, false);
+                hud.TacticalBrackets.SyncBrackets(TacSim.Core.TacSimActiveStage.ShipHelmSeated, camGo.GetComponent<UnityEngine.Camera>());
+
+                Assert.IsTrue(hud.TacticalBrackets.IsDockingReticleVisible, "Active 6-DOF docking must activate center HUD alignment reticle");
+                Assert.AreEqual(0, hud.TacticalBrackets.ActiveBracketCount, "Normal space brackets must hide cleanly during 6-DOF docking");
+                Assert.AreEqual(-1.5f, hud.TacticalBrackets.DockingRollBarAngleDeg, 0.05f);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
