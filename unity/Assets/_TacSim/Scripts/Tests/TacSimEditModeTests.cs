@@ -7233,5 +7233,82 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void Arena3DCoverPropsAndTerrainTilt_BuildsBatchedCoverAlignsSlopesAndSyncsSightObjective()
+        {
+            // 1. Batched 3D Arena cover environment builder (woods, rocks, walls, water)
+            var grid = new DecodedTerrainGrid
+            {
+                Id = "test_valley",
+                DisplayName = "Test Valley",
+                Biome = "temperate",
+                Width = 12,
+                Height = 12,
+                CellSizeM = 10f,
+                Classes = new TerrainCellClass[144],
+                ElevMeters = new float[144]
+            };
+            for (int y = 0; y < 12; y++)
+            {
+                for (int x = 0; x < 12; x++)
+                {
+                    int idx = y * 12 + x;
+                    grid.ElevMeters[idx] = y * 3.0f + x * 0.8f; // sloped valley hillside
+                    if (x < 3) grid.Classes[idx] = TerrainCellClass.WoodsHeavy;
+                    else if (x == 4) grid.Classes[idx] = TerrainCellClass.Rock;
+                    else if (x == 6 && y >= 3 && y <= 8) grid.Classes[idx] = TerrainCellClass.Wall;
+                    else if (x >= 10) grid.Classes[idx] = TerrainCellClass.Water;
+                    else grid.Classes[idx] = TerrainCellClass.Ground;
+                }
+            }
+
+            var rootGo = new UnityEngine.GameObject("Wave5PR1_ArenaEnvAndTiltTest");
+            try
+            {
+                var catalog = TacSimAssetCatalog.LoadOrDefault();
+                var arenaGo = new UnityEngine.GameObject("Arena");
+                arenaGo.transform.SetParent(rootGo.transform);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(catalog, grid);
+
+                Assert.Greater(arena.BuiltTreePropCount, 0, "WoodsHeavy cells must batch 3D canopy trees");
+                Assert.Greater(arena.BuiltRockPropCount, 0, "Rock cells must batch 3D boulder outcrops");
+                Assert.Greater(arena.BuiltWallPropCount, 0, "Wall cells must batch 3D ferrocrete cover barriers");
+                Assert.Greater(arena.BuiltWaterCellCount, 0, "Water cells must batch translucent water sheet");
+
+                // 2. Terrain-slope alignment: tank tilts sharply on hillside, biped damps tilt cleanly
+                var tankRot = TacSim.Arena.OocArenaController.ComputeArenaChassisRotation(
+                    grid, new UnityEngine.Vector3(60f, 0f, 60f), headingDeg: 0f, isBiped: false, out float tankTilt);
+                var mechRot = TacSim.Arena.OocArenaController.ComputeArenaChassisRotation(
+                    grid, new UnityEngine.Vector3(60f, 0f, 60f), headingDeg: 0f, isBiped: true, out float mechTilt);
+                Assert.Greater(tankTilt, 5f, "Tank chassis must conform to local hillside grade");
+                Assert.Less(mechTilt, tankTilt, "Gyro-stabilized biped mech must damp slope tilt relative to tracked tank");
+                Assert.Greater(UnityEngine.Quaternion.Angle(UnityEngine.Quaternion.identity, tankRot), 5f);
+                Assert.Greater(UnityEngine.Quaternion.Angle(UnityEngine.Quaternion.identity, mechRot), 1f);
+
+                // 3. Authoritative sight_m, scope, and live dynamic objective sync
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 91, ""seated"": true, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""mode"": ""hold"", ""power"": ""online"",
+                    ""x_cm"": 6000, ""y_cm"": 6000, ""heading_deg"": 45, ""speed_kph"": 28,
+                    ""sight_m"": 180, ""scope"": ""hostile"", ""tempo"": ""engaged"",
+                    ""objective"": { ""cell"": [7, 7], ""letter"": ""C"", ""radius_cells"": 3 },
+                    ""weapons"": [], ""contacts"": []
+                }"));
+
+                Assert.AreEqual(180f, arena.State.SightMeters, 0.01f);
+                Assert.AreEqual("hostile", arena.State.Scope);
+                Assert.IsTrue(arena.State.HasDynamicObjective);
+                Assert.AreEqual("C", arena.State.ObjectiveLetter);
+                Assert.IsTrue(arena.IsDynamicObjectiveRingVisible, "Live frame.objective must display the 3D golden capture zone ring");
+                Assert.IsTrue(arena.IsPlayerDustPlumeActive, "Moving tank at 28 kph must activate track dust plume");
+                Assert.Greater(arena.LastPlayerSlopeTiltDeg, 4f);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

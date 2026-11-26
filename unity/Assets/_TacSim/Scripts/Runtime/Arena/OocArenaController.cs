@@ -250,6 +250,14 @@ namespace TacSim.Arena
         public int HoldControlScore;
         public string SquadPosture = "ENGAGE";
         public string MatchBanner = string.Empty;
+        public float SightMeters = 120f;
+        public string Scope = "clear"; // "clear" | "unidentified" | "hostile"
+        public string Tempo = "alert";
+        public bool HasDynamicObjective;
+        public int ObjectiveCellX;
+        public int ObjectiveCellY;
+        public string ObjectiveLetter = string.Empty;
+        public int ObjectiveRadiusCells = 6;
         public ArenaDetachmentState Detachment;
         public bool DetachmentProjectionInvalid;
 
@@ -371,9 +379,19 @@ namespace TacSim.Arena
 
         private void OnDestroy()
         {
+            if (_propsRoot != null)
+                TacSimArenaEnvironmentBuilder.DestroyEnvironmentProps(_propsRoot);
             if (_terrainRoot != null)
                 TacSimTerrainDecoder.DestroyTerrainChunkResources(_terrainRoot);
         }
+
+        public int BuiltTreePropCount { get; private set; }
+        public int BuiltRockPropCount { get; private set; }
+        public int BuiltWallPropCount { get; private set; }
+        public int BuiltWaterCellCount { get; private set; }
+        public float LastPlayerSlopeTiltDeg { get; private set; }
+        public bool IsDynamicObjectiveRingVisible => _dynamicObjectiveRoot != null && _dynamicObjectiveRoot.gameObject.activeSelf;
+        public bool IsPlayerDustPlumeActive => _playerDustRoot != null && _playerDustRoot.gameObject.activeSelf;
 
         public void ResetSessionState()
         {
@@ -419,10 +437,16 @@ namespace TacSim.Arena
         private static long CurrentHelmClockMs() => (long)Math.Round(Time.unscaledTime * 1000.0);
 
         private Transform _terrainRoot;
+        private Transform _propsRoot;
         private Transform _beaconsRoot;
         private Transform _unitsRoot;
         private Transform _vfxRoot;
         private Transform _spectatorCenterAnchor;
+        private Transform _dynamicObjectiveRoot;
+        private Transform _dynamicObjectiveRing;
+        private TextMeshPro _dynamicObjectiveLabel;
+        private Transform _playerDustRoot;
+        private readonly Transform[] _playerDustPuffs = new Transform[3];
 
         private readonly Dictionary<string, SpawnedGroundVehicleRig> _contactRigs = new Dictionary<string, SpawnedGroundVehicleRig>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<int, SpawnedGroundVehicleRig> _replayRigs = new Dictionary<int, SpawnedGroundVehicleRig>();
@@ -468,6 +492,8 @@ namespace TacSim.Arena
             Catalog = catalog;
             TerrainGrid = grid ?? TacSimTerrainDecoder.LoadStaticArena("proving_ground");
 
+            if (_propsRoot != null)
+                TacSimArenaEnvironmentBuilder.DestroyEnvironmentProps(_propsRoot);
             if (_terrainRoot != null)
                 TacSimTerrainDecoder.DestroyTerrainChunkResources(_terrainRoot);
 
@@ -478,6 +504,11 @@ namespace TacSim.Arena
                 else DestroyImmediate(ch);
             }
             _terrainRoot = null;
+            _propsRoot = null;
+            _dynamicObjectiveRoot = null;
+            _dynamicObjectiveRing = null;
+            _dynamicObjectiveLabel = null;
+            _playerDustRoot = null;
             _contactRigs.Clear();
             _replayRigs.Clear();
             _activeTracers.Clear();
@@ -495,15 +526,25 @@ namespace TacSim.Arena
             _terrainRoot.SetParent(transform, false);
             TacSimTerrainDecoder.BuildChunkedTerrainMeshes(TerrainGrid, _terrainRoot, chunkCells: 64);
 
+            _propsRoot = new GameObject("ArenaTerrainProps").transform;
+            _propsRoot.SetParent(transform, false);
+            var propSummary = TacSimArenaEnvironmentBuilder.BuildArenaProps(TerrainGrid, _propsRoot);
+            BuiltTreePropCount = propSummary.TreeCount;
+            BuiltRockPropCount = propSummary.RockCount;
+            BuiltWallPropCount = propSummary.WallCount;
+            BuiltWaterCellCount = propSummary.WaterCellCount;
+
             _beaconsRoot = new GameObject("KeySpotBeacons").transform;
             _beaconsRoot.SetParent(transform, false);
             BuildKeySpotsAndHoldRing();
+            BuildDynamicObjectiveBeacon();
 
             _unitsRoot = new GameObject("ArenaCombatUnits").transform;
             _unitsRoot.SetParent(transform, false);
 
             _vfxRoot = new GameObject("ArenaCombatVfx").transform;
             _vfxRoot.SetParent(transform, false);
+            BuildPlayerDustTrailVisual();
 
             var pulseGo = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
             pulseGo.name = "ArenaRadarPulseRing";
@@ -605,6 +646,103 @@ namespace TacSim.Arena
                 tmp.rectTransform.sizeDelta = new Vector2(80f, 8f);
                 bb.NameplateText = tmp;
             }
+        }
+
+        private void BuildDynamicObjectiveBeacon()
+        {
+            if (_beaconsRoot == null) return;
+            var objGo = new GameObject("DynamicObjectiveZone");
+            objGo.transform.SetParent(_beaconsRoot, false);
+            _dynamicObjectiveRoot = objGo.transform;
+
+            var pillar = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            pillar.name = "ObjectivePillar";
+            pillar.transform.SetParent(_dynamicObjectiveRoot, false);
+            pillar.transform.localPosition = new Vector3(0f, 18f, 0f);
+            pillar.transform.localScale = new Vector3(1.8f, 18f, 1.8f);
+            var pc = pillar.GetComponent<Collider>();
+            if (pc != null) { if (Application.isPlaying) Destroy(pc); else DestroyImmediate(pc); }
+            pillar.GetComponent<MeshRenderer>().sharedMaterial = UrpMaterialFactory.GetHologramUnlit("DynamicObjPillar", new Color(1.0f, 0.84f, 0.22f, 0.45f));
+
+            var capRing = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            capRing.name = "ObjectivePerimeterRing";
+            capRing.transform.SetParent(_dynamicObjectiveRoot, false);
+            capRing.transform.localPosition = new Vector3(0f, 0.4f, 0f);
+            capRing.transform.localScale = new Vector3(60f, 0.14f, 60f);
+            var cc = capRing.GetComponent<Collider>();
+            if (cc != null) { if (Application.isPlaying) Destroy(cc); else DestroyImmediate(cc); }
+            capRing.GetComponent<MeshRenderer>().sharedMaterial = UrpMaterialFactory.GetHologramUnlit("DynamicObjRing", new Color(1.0f, 0.80f, 0.18f, 0.22f));
+            _dynamicObjectiveRing = capRing.transform;
+
+            var bbGo = new GameObject("ObjectiveLabel");
+            bbGo.transform.SetParent(_dynamicObjectiveRoot, false);
+            bbGo.transform.localPosition = new Vector3(0f, 38f, 0f);
+            var bb = bbGo.AddComponent<WorldBillboard>();
+            var txtGo = new GameObject("Txt");
+            txtGo.transform.SetParent(bbGo.transform, false);
+            var tmp = txtGo.AddComponent<TextMeshPro>();
+            tmp.richText = false;
+            tmp.text = "OBJECTIVE";
+            tmp.fontSize = 18f;
+            tmp.color = new Color(1f, 0.88f, 0.30f);
+            tmp.alignment = TextAlignmentOptions.Center;
+            tmp.textWrappingMode = TextWrappingModes.NoWrap;
+            tmp.rectTransform.sizeDelta = new Vector2(96f, 10f);
+            bb.NameplateText = tmp;
+            _dynamicObjectiveLabel = tmp;
+
+            objGo.SetActive(false);
+        }
+
+        private void BuildPlayerDustTrailVisual()
+        {
+            if (_vfxRoot == null) return;
+            var root = new GameObject("PlayerTrackDustPlume");
+            root.transform.SetParent(_vfxRoot, false);
+            _playerDustRoot = root.transform;
+            Material dustMat = UrpMaterialFactory.GetHologramUnlit("ArenaTrackDust", new Color(0.76f, 0.68f, 0.56f, 0.34f));
+
+            for (int i = 0; i < _playerDustPuffs.Length; i++)
+            {
+                var puff = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                puff.name = $"DustPuff_{i}";
+                puff.transform.SetParent(_playerDustRoot, false);
+                var col = puff.GetComponent<Collider>();
+                if (col != null) { if (Application.isPlaying) Destroy(col); else DestroyImmediate(col); }
+                puff.GetComponent<MeshRenderer>().sharedMaterial = dustMat;
+                _playerDustPuffs[i] = puff.transform;
+            }
+            root.SetActive(false);
+        }
+
+        public static Quaternion ComputeArenaChassisRotation(
+            DecodedTerrainGrid grid,
+            Vector3 localPos,
+            float headingDeg,
+            bool isBiped,
+            out float slopeTiltDeg)
+        {
+            slopeTiltDeg = 0f;
+            if (grid == null)
+                return Quaternion.Euler(0f, headingDeg, 0f);
+
+            float rad = headingDeg * Mathf.Deg2Rad;
+            Vector3 fwd = new Vector3(Mathf.Sin(rad), 0f, Mathf.Cos(rad));
+            Vector3 right = new Vector3(Mathf.Cos(rad), 0f, -Mathf.Sin(rad));
+            const float ForeAftSample = 2.6f;
+            const float SideSample = 1.9f;
+
+            float yFwd = grid.SampleElevationMeters(localPos.x + fwd.x * ForeAftSample, localPos.z + fwd.z * ForeAftSample);
+            float yAft = grid.SampleElevationMeters(localPos.x - fwd.x * ForeAftSample, localPos.z - fwd.z * ForeAftSample);
+            float yRight = grid.SampleElevationMeters(localPos.x + right.x * SideSample, localPos.z + right.z * SideSample);
+            float yLeft = grid.SampleElevationMeters(localPos.x - right.x * SideSample, localPos.z - right.z * SideSample);
+
+            float scale = isBiped ? 0.32f : 1.0f;
+            float maxAngle = isBiped ? 10f : 26f;
+            float pitchDeg = Mathf.Clamp(-Mathf.Atan2(yFwd - yAft, ForeAftSample * 2f) * Mathf.Rad2Deg * scale, -maxAngle, maxAngle);
+            float rollDeg = Mathf.Clamp(Mathf.Atan2(yRight - yLeft, SideSample * 2f) * Mathf.Rad2Deg * scale, -maxAngle, maxAngle);
+            slopeTiltDeg = Mathf.Sqrt(pitchDeg * pitchDeg + rollDeg * rollDeg);
+            return Quaternion.Euler(pitchDeg, headingDeg, rollDeg);
         }
 
         public void ApplyLiveArenaMap(JsonNode mapData)
@@ -943,6 +1081,30 @@ namespace TacSim.Arena
             State.Power = d.Str("power", "online");
             State.IsWreck = d.Bool("wreck", false);
             State.Immobile = d.Bool("immobile", false);
+            if (d["sight_m"].Kind == JsonKind.Int || d["sight_m"].Kind == JsonKind.Float)
+                State.SightMeters = Mathf.Clamp(d.Float("sight_m", 120f), 20f, 1200f);
+            string rawScope = d.Str("scope", string.Empty);
+            if (!string.IsNullOrEmpty(rawScope)) State.Scope = rawScope;
+            string rawTempo = d.Str("tempo", string.Empty);
+            if (!string.IsNullOrEmpty(rawTempo)) State.Tempo = rawTempo;
+
+            var objNode = d["objective"];
+            if (objNode != null && objNode.IsObject)
+            {
+                var oc = objNode["cell"].AsArray();
+                if (oc != null && oc.Count >= 2)
+                {
+                    State.HasDynamicObjective = true;
+                    State.ObjectiveCellX = oc[0].AsInt(128);
+                    State.ObjectiveCellY = oc[1].AsInt(128);
+                    State.ObjectiveLetter = objNode.Str("letter", string.Empty);
+                    State.ObjectiveRadiusCells = Mathf.Clamp(objNode.Int("radius_cells", 6), 1, 64);
+                }
+            }
+            else if (d.ContainsKey("objective") && objNode != null && objNode.IsNull)
+            {
+                State.HasDynamicObjective = false;
+            }
 
             // Live frames.rs:633 emits "ecm": "on" (radiating) | "off" (silent) | null (no pod); keep object fallback too.
             var ecmNode = d["ecm"];
@@ -1359,8 +1521,9 @@ namespace TacSim.Arena
             }
             else
             {
+                Quaternion slopeRot = ComputeArenaChassisRotation(TerrainGrid, localPos, cs.FacingDeg, rig.IsBiped, out _);
                 rig.Root.transform.position = Vector3.Lerp(rig.Root.transform.position, worldPos, 0.45f);
-                rig.Root.transform.rotation = Quaternion.Slerp(rig.Root.transform.rotation, Quaternion.Euler(0f, cs.FacingDeg, 0f), 0.45f);
+                rig.Root.transform.rotation = Quaternion.Slerp(rig.Root.transform.rotation, slopeRot, 0.45f);
             }
 
             rig.SetWrecked(cs.IsWreck);
@@ -1648,10 +1811,14 @@ namespace TacSim.Arena
         private void UpdateOwnPlayerRigPose(float dt)
         {
             if (PlayerRig?.Root == null || TerrainGrid == null) return;
-            Vector3 targetPos = ArenaStageOrigin + ArenaWorldMetersToLocalPos(State.Xm, State.Zm);
+            Vector3 localPos = ArenaWorldMetersToLocalPos(State.Xm, State.Zm);
+            Vector3 targetPos = ArenaStageOrigin + localPos;
             float shownHeading = PredictedHeadingDeg;
+            Quaternion slopeRot = ComputeArenaChassisRotation(TerrainGrid, localPos, shownHeading, PlayerRig.IsBiped, out float tiltDeg);
+            LastPlayerSlopeTiltDeg = tiltDeg;
+
             PlayerRig.Root.transform.position = Vector3.Lerp(PlayerRig.Root.transform.position, targetPos, 1f - Mathf.Exp(-14f * dt));
-            PlayerRig.Root.transform.rotation = Quaternion.Slerp(PlayerRig.Root.transform.rotation, Quaternion.Euler(0f, shownHeading, 0f), 1f - Mathf.Exp(-18f * dt));
+            PlayerRig.Root.transform.rotation = Quaternion.Slerp(PlayerRig.Root.transform.rotation, slopeRot, 1f - Mathf.Exp(-18f * dt));
             PlayerRig.SetWrecked(State.IsWreck);
 
             float? aimYaw = null;
@@ -1662,11 +1829,62 @@ namespace TacSim.Arena
                     aimYaw = Mathf.Atan2(d.x, d.z) * Mathf.Rad2Deg;
             }
             PlayerRig.UpdateArticulation(dt, State.SpeedKph, aimYaw);
+            SyncPlayerDustPlume(shownHeading);
             SyncArenaTacticalVisuals();
+        }
+
+        private void SyncPlayerDustPlume(float headingDeg)
+        {
+            if (_playerDustRoot == null) return;
+            bool active = PlayerRig?.Root != null && !State.IsWreck && Mathf.Abs(State.SpeedKph) > 4f;
+            if (_playerDustRoot.gameObject.activeSelf != active)
+                _playerDustRoot.gameObject.SetActive(active);
+            if (!active) return;
+
+            float rad = headingDeg * Mathf.Deg2Rad;
+            Vector3 back = new Vector3(-Mathf.Sin(rad), 0f, -Mathf.Cos(rad));
+            Vector3 side = new Vector3(Mathf.Cos(rad), 0f, -Mathf.Sin(rad));
+            Vector3 basePos = PlayerRig.Root.transform.position;
+            float t = Time.unscaledTime * 3.8f;
+
+            for (int i = 0; i < _playerDustPuffs.Length; i++)
+            {
+                var puff = _playerDustPuffs[i];
+                if (puff == null) continue;
+                float phase = (t + i * 0.33f) % 1f;
+                float trailDist = 2.8f + phase * 4.5f;
+                float latSign = (i % 2 == 0) ? -1.15f : 1.15f;
+                puff.position = basePos + back * trailDist + side * latSign + Vector3.up * (0.45f + phase * 1.15f);
+                float sz = 0.7f + phase * 1.25f;
+                puff.localScale = new Vector3(sz, sz * 0.65f, sz);
+            }
         }
 
         public void SyncArenaTacticalVisuals()
         {
+            if (_dynamicObjectiveRoot != null && TerrainGrid != null)
+            {
+                bool showObj = State != null && State.HasDynamicObjective;
+                if (_dynamicObjectiveRoot.gameObject.activeSelf != showObj)
+                    _dynamicObjectiveRoot.gameObject.SetActive(showObj);
+                if (showObj)
+                {
+                    Vector3 objWorld = ArenaStageOrigin + TerrainGrid.SiteCellToLocalPos(State.ObjectiveCellX, State.ObjectiveCellY, 0f);
+                    _dynamicObjectiveRoot.position = objWorld;
+                    if (_dynamicObjectiveRing != null)
+                    {
+                        float dia = Mathf.Max(20f, State.ObjectiveRadiusCells * TerrainGrid.CellSizeM * 2f);
+                        _dynamicObjectiveRing.localScale = new Vector3(dia, 0.14f, dia);
+                    }
+                    if (_dynamicObjectiveLabel != null)
+                    {
+                        _dynamicObjectiveLabel.text = !string.IsNullOrEmpty(State.ObjectiveLetter)
+                            ? $"[{State.ObjectiveLetter}] HOLD ZONE"
+                            : "HOLD OBJECTIVE";
+                    }
+                }
+            }
+
             if (PlayerRig?.Root == null || TerrainGrid == null || State == null || State.IsWreck)
             {
                 if (_arenaRangeRing != null) _arenaRangeRing.enabled = false;
@@ -1678,13 +1896,20 @@ namespace TacSim.Arena
             if (_arenaRangeRing != null)
             {
                 const int Segs = 40;
-                const float RangeRadiusM = 68f;
+                float rangeRadiusM = Mathf.Clamp(State.SightMeters > 10f ? State.SightMeters : 120f, 24f, 450f);
+                Color ringCol = string.Equals(State.Scope, "hostile", StringComparison.OrdinalIgnoreCase)
+                    ? new Color(1.0f, 0.34f, 0.24f, 0.42f)
+                    : (string.Equals(State.Scope, "unidentified", StringComparison.OrdinalIgnoreCase)
+                        ? new Color(1.0f, 0.78f, 0.24f, 0.38f)
+                        : new Color(0.24f, 0.86f, 0.96f, 0.32f));
+                _arenaRangeRing.startColor = ringCol;
+                _arenaRangeRing.endColor = ringCol;
                 _arenaRangeRing.positionCount = Segs;
                 for (int i = 0; i < Segs; i++)
                 {
                     float ang = (i / (float)Segs) * Mathf.PI * 2f;
-                    float wx = ownPos.x + Mathf.Cos(ang) * RangeRadiusM;
-                    float wz = ownPos.z + Mathf.Sin(ang) * RangeRadiusM;
+                    float wx = ownPos.x + Mathf.Cos(ang) * rangeRadiusM;
+                    float wz = ownPos.z + Mathf.Sin(ang) * rangeRadiusM;
                     float wy = ArenaStageOrigin.y + TerrainGrid.SampleElevationMeters(wx - ArenaStageOrigin.x, wz - ArenaStageOrigin.z) + 0.65f;
                     _arenaRangeRing.SetPosition(i, new Vector3(wx, wy, wz));
                 }
