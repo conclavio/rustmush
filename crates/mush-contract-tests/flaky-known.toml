@@ -66,9 +66,9 @@ note = "on watch; the class is doc 51's likely reading, the cause is not known"
 # --- Carried over from the `load-sensitive` retry: no failure on record -----
 #
 # The entries of the old filter that match no row of the record: eighteen at
-# FL.2, fifteen since doc 51 unit FL.6 closed mush-server's three; unit
-# FL.7 closed mush-gateway's five. Two are narrowed to the one test a cut note names; the rest keep the scope the
-# filter gave them.
+# FL.2, fifteen since doc 51 unit FL.6 closed mush-server's three; unit FL.7
+# closed four of mush-gateway's five. Two are narrowed to the one test a cut
+# note names; the rest keep the scope the filter gave them.
 
 [[flaky]]
 binary = "mushd::world_journeys"
@@ -117,6 +117,15 @@ class = "unclassed"
 carried = "the load-sensitive retry of cut T.1, which covered arena_story::*; narrowed to the test the cut notes name"
 listed = "2026-11-23"
 expires = "2026-12-07"
+
+[[flaky]]
+binary = "mush-gateway::split_halves"
+module = "arena_story_split"
+class = "unclassed"
+carried = "the load-sensitive retry of cut T.1 (16b's list)"
+listed = "2026-11-23"
+expires = "2026-12-07"
+note = "kept by FL.7, not renewed: one failure at 54 s in a 480-test run of the unit's merged tree, its message not kept; the 10 runs after it and 96 soak passes before it passed"
 
 [[flaky]]
 binary = "mush-worldgen::plan"

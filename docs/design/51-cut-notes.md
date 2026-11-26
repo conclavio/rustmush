@@ -1091,10 +1091,10 @@ paused), one in `boot_store`. The `src/` sites: three in `world_task/tests.rs` (
 ## FL.7
 
 The gateway's stories. Built 2026-11-25 on `0e3a26804`. It adds one module to `mush-storykit` (`term.rs`, the one
-`Term`), moves mush-gateway's `split_halves` stories onto it, turns on `one_reader` for mush-gateway, and closes all
-twelve of mush-gateway's rows in `flaky-known.toml`. **It changes product code in two places.** Rows 12 and 15 were
-not the rig's wall-clock limits. They were two product faults, and the restart stories found both once their waits
-were bounded by the gateway's own schedule.
+`Term`), moves mush-gateway's `split_halves` stories onto it, turns on `one_reader` for mush-gateway, and closes
+eleven of mush-gateway's twelve rows in `flaky-known.toml`; the twelfth stays, not renewed (Rows). **It changes
+product code in two places.** Rows 12 and 15 were not the rig's wall-clock limits. They were two product faults,
+and the restart stories found both once their waits were bounded by the gateway's own schedule.
 
 Every measurement is from conclav.dev, by hand as `ghrunner`, in a clone with its own target directory. Another
 session's soak held cores 0 to 23 for part of the time; where this unit's runs used fewer cores, it says so.
@@ -1189,7 +1189,7 @@ The middle row is how the keeper fault was found (Rows). **The rates do not prov
 | `struct Term` definitions under `crates/mush-gateway/tests/` | 11 | 0 |
 | `strip_ansi` definitions there | 11 | 0 |
 | `ask_whole` definitions there | 1 | 0 |
-| mush-gateway's rows in `flaky-known.toml` | 12 | 0 |
+| mush-gateway's rows in `flaky-known.toml` | 12 | 1, carried and not renewed |
 
 `scripts/wait_audit.py` agrees with the budget: 55 waits and 2 wall-clock reads in mush-gateway's story files.
 
@@ -1207,11 +1207,17 @@ The middle row is how the keeper fault was found (Rows). **The rates do not prov
 - **One more test of the fault, never listed:** `restart_survival::server_self_exit_auto_restarts_without_dropping_players`
   failed once and passed on its same head on 2026-11-23 (run 45277135577). It failed in the converted soak the
   same way.
-- **The five carried module rows** (`two_process_e2e`, `server_panic_relaunch`, `arena_story_split`,
-  `two_gateways`, `gateway_generations_unit`) had no failure on record. They passed in every soak pass above.
+- **Four of the five carried module rows are deleted** (`two_process_e2e`, `server_panic_relaunch`, `two_gateways`,
+  `gateway_generations_unit`). They had no failure on record and passed in every soak pass above.
+- **`arena_story_split::*` keeps its carried row, not renewed** (it expires 2026-12-07 with the rest).
+  - Its one story, `the_story_is_the_same_story_through_the_gateway`, passed all 96 soak passes.
+  - It then failed once, at 54 s, in one 480-test run of the tree merged with main `ecc6887b8`, beside
+    mush-contract-tests' and the kit's tests at 24 threads. That run kept no message.
+  - The ten runs of the same shape after it passed, and so did it alone and four at once.
+  - Its cause is not known, so the row stays for the soak to name one. The row says so in its note.
 - **Not a flake:** `arena_story_split::the_story_is_the_same_story_through_the_gateway` failed both tries in run
   44774353324, at a security branch's head (`fix/security-tier1d-tacsim-highs`), and nowhere else.
-- **Every row is deleted.** None is renewed.
+- **Eleven of the twelve rows are deleted.** None is renewed.
 
 **Tests.**
 
