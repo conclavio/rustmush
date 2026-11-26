@@ -255,6 +255,7 @@ namespace TacSim.Arena
 
         public readonly List<ArenaWeaponSlotState> Weapons = new List<ArenaWeaponSlotState>();
         public readonly List<ArenaContactState> Contacts = new List<ArenaContactState>();
+        public readonly List<ArenaSectionState> Sections = new List<ArenaSectionState>();
     }
 
     /// <summary>
@@ -1186,28 +1187,51 @@ namespace TacSim.Arena
 
         private void ParseSectionsIntoState(List<JsonNode> sections)
         {
+            State.Sections.Clear();
             if (sections == null || sections.Count == 0) return;
-            for (int i = 0; i < sections.Count; i++)
+            int cap = Math.Min(sections.Count, 24);
+            for (int i = 0; i < cap; i++)
             {
                 var sec = sections[i];
+                if (sec == null || !sec.IsObject) continue;
                 string sid = sec.Str("id", string.Empty);
                 int intCur = sec.Int("internals", 100);
                 int intMax = Mathf.Max(1, sec.Int("internals_max", 100));
                 if (sid == "hull" || i == 0)
                     State.InternalsPct = Mathf.RoundToInt(intCur * 100f / intMax);
 
-                var facets = sec["facets"].AsArray();
-                if (facets == null) continue;
-                for (int f = 0; f < facets.Count; f++)
+                var secState = new ArenaSectionState
                 {
-                    var fc = facets[f];
-                    string fid = fc.Str("id", string.Empty);
-                    int pct = Mathf.RoundToInt(fc.Int("armor", 100) * 100f / Mathf.Max(1, fc.Int("armor_max", 100)));
-                    if (fid == "front") State.ArmorFrontPct = pct;
-                    else if (fid == "left") State.ArmorLeftPct = pct;
-                    else if (fid == "right") State.ArmorRightPct = pct;
-                    else if (fid == "rear") State.ArmorRearPct = pct;
+                    Id = sid,
+                    Condition = sec.Str("condition", "intact"),
+                    Internals = intCur,
+                    InternalsMax = intMax
+                };
+
+                var facets = sec["facets"].AsArray();
+                if (facets != null)
+                {
+                    for (int f = 0; f < facets.Count && f < 8; f++)
+                    {
+                        var fc = facets[f];
+                        if (fc == null || !fc.IsObject) continue;
+                        string fid = fc.Str("id", string.Empty);
+                        int armCur = fc.Int("armor", 100);
+                        int armMax = Mathf.Max(1, fc.Int("armor_max", 100));
+                        secState.Facets.Add(new ArenaFacetState
+                        {
+                            Id = fid,
+                            Armor = armCur,
+                            ArmorMax = armMax
+                        });
+                        int pct = Mathf.RoundToInt(armCur * 100f / armMax);
+                        if (fid == "front") State.ArmorFrontPct = pct;
+                        else if (fid == "left") State.ArmorLeftPct = pct;
+                        else if (fid == "right") State.ArmorRightPct = pct;
+                        else if (fid == "rear") State.ArmorRearPct = pct;
+                    }
                 }
+                State.Sections.Add(secState);
             }
         }
 
