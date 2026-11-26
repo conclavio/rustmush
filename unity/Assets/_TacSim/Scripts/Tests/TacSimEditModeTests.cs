@@ -7737,5 +7737,171 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ArenaTacticalMinimapCoverClickToLockAndDriveAndSealedMindDeck_RendersCoverDispatchesClicksAndSwitchesMindProfilesAndPosture()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave6PR2_MinimapAndMindDeckTest");
+            try
+            {
+                var catalog = TacSimAssetCatalog.LoadOrDefault();
+                var arenaGo = new UnityEngine.GameObject("Arena");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+
+                // Build a deterministic 64x64 grid containing WoodsHeavy, Water, Wall, and Road cells so minimap cover color-coding is verified
+                var grid = new DecodedTerrainGrid
+                {
+                    Id = "minimap_test",
+                    DisplayName = "Minimap Test",
+                    Biome = "temperate",
+                    Width = 64,
+                    Height = 64,
+                    CellSizeM = 10f,
+                    OriginCellX = 0,
+                    OriginCellY = 0,
+                    SpanCells = 1,
+                    Classes = new TerrainCellClass[64 * 64],
+                    ElevMeters = new float[64 * 64],
+                    KeySpots = new List<ArenaKeySpotDef>
+                    {
+                        new ArenaKeySpotDef { Letter = "B", Name = "Hilltop", CellX = 32, CellY = 32 }
+                    },
+                    HoldSpotLetter = "B",
+                    HoldRadiusCells = 4
+                };
+                for (int y = 0; y < 64; y++)
+                {
+                    for (int x = 0; x < 64; x++)
+                    {
+                        int idx = y * 64 + x;
+                        grid.ElevMeters[idx] = 2f;
+                        if (x < 16 && y < 16) grid.Classes[idx] = TerrainCellClass.WoodsHeavy;
+                        else if (x >= 48 && y < 16) grid.Classes[idx] = TerrainCellClass.Water;
+                        else grid.Classes[idx] = TerrainCellClass.Ground;
+                    }
+                }
+                arena.BuildArenaTerrain(catalog, grid);
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.Overlays.BindControllers(null, arena, null);
+                hud.Minimap.BindWorldSources(null, null, null, null, arena);
+
+                var emittedVerbs = new List<string>();
+                var combatLogs = new List<string>();
+                arena.OnLiveCockpitVerbRequested += emittedVerbs.Add;
+                arena.OnArenaCombatLog += combatLogs.Add;
+                hud.Overlays.OnArenaCockpitVerbRequested += v => arena.ExecuteCockpitAction(v);
+
+                string clickedContact = null;
+                int clickedCellX = -1, clickedCellY = -1;
+                hud.Minimap.OnArenaMinimapContactClicked += d =>
+                {
+                    clickedContact = d;
+                    arena.ExecuteCockpitAction($"lock {d}");
+                };
+                hud.Minimap.OnArenaMinimapCellClicked += (cx, cy) =>
+                {
+                    clickedCellX = cx;
+                    clickedCellY = cy;
+                    arena.ExecuteCockpitAction($"drive {cx},{cy}");
+                };
+
+                // 1. Live frame with sealed Mind (Standard Doctrine, 2 profiles), posture=guard, objective, contact B1, and reclaim catchup
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 104, ""seated"": true, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""mode"": ""hold"", ""power"": ""online"",
+                    ""x_cm"": 20000, ""y_cm"": 20000, ""heading_deg"": 45, ""speed_kph"": 18,
+                    ""sight_m"": 160, ""scope"": ""hostile"", ""posture"": ""guard"",
+                    ""lock_designator"": ""B1"",
+                    ""objective"": { ""cell"": [32, 32], ""letter"": ""B"", ""radius_cells"": 4 },
+                    ""mind"": {
+                        ""name"": ""Standard Doctrine"",
+                        ""profiles"": [""Sniper"", ""Line""],
+                        ""active"": 0,
+                        ""class"": ""I"",
+                        ""core"": ""II"",
+                        ""channels"": [""helm"", ""sensors"", ""fire""],
+                        ""next_switch_ms"": null,
+                        ""off"": false
+                    },
+                    ""catchup"": {
+                        ""away_s"": 42,
+                        ""cell_then"": [18, 18],
+                        ""cell_now"": [20, 20],
+                        ""contacts_new"": 2,
+                        ""contacts_lost"": 1,
+                        ""sections"": [{ ""id"": ""hull"", ""then"": ""intact"", ""now"": ""scarred"" }]
+                    },
+                    ""contacts"": [
+                        { ""designator"": ""B1"", ""class"": ""line_tank"", ""unit_type"": ""tacsim.unit.line_tank"", ""party"": ""B"", ""friendly"": false, ""cell"": [48, 48], ""range_m"": 380, ""bearing_deg"": 45, ""facing"": ""front"", ""health"": ""intact"" }
+                    ]
+                }"));
+                hud.Overlays.RefreshArenaHud();
+
+                // Catchup log emitted once on reclaim
+                Assert.IsTrue(arena.State.HasReceivedCatchup);
+                Assert.AreEqual(42L, arena.State.LastCatchupAwaySec);
+                Assert.IsTrue(combatLogs.Exists(l => l.Contains("[CATCH-UP]") && l.Contains("42s")),
+                    "Reclaim catchup summary must be emitted to arena combat log");
+
+                // 2. Sealed Mind Profile & Hull Posture Deck
+                Assert.IsNotNull(arena.State.Mind);
+                Assert.AreEqual("Standard Doctrine", arena.State.Mind.Name);
+                Assert.AreEqual("Sniper", arena.State.Mind.ActiveProfileName);
+                Assert.IsTrue(hud.Overlays.IsMindStripVisible, "Sealed mind strip must appear when hull carries a sealed mind");
+                Assert.AreEqual(2, hud.Overlays.VisibleMindProfileButtonCount);
+                StringAssert.Contains("STANDARD DOCTRINE", hud.Overlays.MindStripHeaderSnapshot);
+
+                // Clicking active profile (0 = Sniper) must NOT emit a redundant verb; clicking inactive profile (1 = Line) emits `MIND PROFILE Line`
+                emittedVerbs.Clear();
+                hud.Overlays.ClickMindProfileForTests(0);
+                Assert.AreEqual(0, emittedVerbs.Count, "Active mind profile must not re-send MIND PROFILE");
+                hud.Overlays.ClickMindProfileForTests(1);
+                CollectionAssert.AreEqual(new[] { "MIND PROFILE Line" }, emittedVerbs);
+
+                // Posture switching: already `guard` is a no-op; clicking `hold` emits `MIND POSTURE hold`
+                emittedVerbs.Clear();
+                hud.Overlays.ClickMindPostureForTests("guard");
+                Assert.AreEqual(0, emittedVerbs.Count, "Already-active posture must not re-send MIND POSTURE");
+                hud.Overlays.ClickMindPostureForTests("hold");
+                CollectionAssert.AreEqual(new[] { "MIND POSTURE hold" }, emittedVerbs);
+
+                // 3. Upgraded Arena Tactical Minimap: cover rendering, sensor ring, objective, waypoint, click-to-lock, click-to-drive
+                arena.ExecuteCockpitAction("drive 40,24");
+                emittedVerbs.Clear();
+                hud.Minimap.SyncMinimap(TacSimActiveStage.SimulatorArena, UnityEngine.Vector3.zero, 45f, rightCornerOccupied: true, forceRedraw: true);
+
+                Assert.AreEqual(1, hud.Minimap.LastArenaMinimapContactBlipCount);
+                Assert.IsTrue(hud.Minimap.LastArenaMinimapHasSensorRing, "Arena minimap must draw SightMeters sensor ring");
+                Assert.IsTrue(hud.Minimap.LastArenaMinimapHasObjective, "Arena minimap must draw dynamic hold objective");
+                Assert.IsTrue(hud.Minimap.LastArenaMinimapHasWaypoint, "Arena minimap must draw active drive waypoint");
+
+                // Verify WoodsHeavy (bottom-left pixel) renders greener than Water (bottom-right pixel)
+                var tex = hud.Minimap.MinimapTexture;
+                Assert.IsNotNull(tex);
+                var woodsPx = hud.Minimap.SampleMinimapPixelForTests(16, 16);
+                var waterPx = hud.Minimap.SampleMinimapPixelForTests(tex.width - 16, 16);
+                Assert.Greater(woodsPx.g, woodsPx.b, "Woods terrain on arena minimap must render forest green");
+                Assert.Greater(waterPx.b, waterPx.g, "Water terrain on arena minimap must render water blue");
+
+                // Clicking contact B1 at cell (48, 48) -> UV ~(48.5/64, 48.5/64) triggers click-to-lock!
+                Assert.IsTrue(hud.Minimap.HandleClickAtUv(new UnityEngine.Vector2(48.5f / 64f, 48.5f / 64f)));
+                Assert.AreEqual("B1", clickedContact);
+                CollectionAssert.AreEqual(new[] { "lock B1" }, emittedVerbs);
+
+                // Clicking open terrain at UV (0.25, 0.75) -> cell ~(16, 48) triggers click-to-drive!
+                emittedVerbs.Clear();
+                Assert.IsTrue(hud.Minimap.HandleClickAtUv(new UnityEngine.Vector2(0.25f, 0.75f)));
+                Assert.AreEqual(16, clickedCellX);
+                Assert.AreEqual(48, clickedCellY);
+                CollectionAssert.AreEqual(new[] { "drive 16,48" }, emittedVerbs);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

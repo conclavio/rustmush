@@ -224,6 +224,24 @@ namespace TacSim.Arena
         public string Action = string.Empty; // "fire" | "hold" | "lock"
     }
 
+    /// <summary>
+    /// Sealed unit mind metadata projected by `arena.cockpit` (`frames.rs:mind_json`).
+    /// </summary>
+    public sealed class ArenaMindState
+    {
+        public string Name = string.Empty; // empty when custom/unnamed -> display "OWN MIND"
+        public readonly List<string> Profiles = new List<string>(4);
+        public int ActiveIndex;
+        public string ClassWord = string.Empty;
+        public string CoreWord = string.Empty;
+        public readonly List<string> Channels = new List<string>(3);
+        public long? NextSwitchMs;
+        public bool IsOff;
+
+        public string ActiveProfileName =>
+            ActiveIndex >= 0 && ActiveIndex < Profiles.Count ? Profiles[ActiveIndex] : string.Empty;
+    }
+
     public sealed class ArenaCockpitState
     {
         public ulong MatchId;
@@ -279,6 +297,9 @@ namespace TacSim.Arena
         public int ObjectiveRadiusCells = 6;
         public ArenaDetachmentState Detachment;
         public bool DetachmentProjectionInvalid;
+        public ArenaMindState Mind;
+        public bool HasReceivedCatchup;
+        public long LastCatchupAwaySec;
         public string MotorGoal = string.Empty;
         public string MotorOutcome = string.Empty;
         public bool HasDriveWaypoint;
@@ -515,6 +536,28 @@ namespace TacSim.Arena
         public void ToggleAutoFireRule(int minOddsPct, string weaponId = "ALL")
         {
             SetAutoFireRule(minOddsPct, enable: !HasAutoFireRule, weaponId: weaponId);
+        }
+
+        public bool SwitchMindProfile(string profileName)
+        {
+            if (State?.Mind == null || string.IsNullOrWhiteSpace(profileName)) return false;
+            if (!MushProtocol.TryValidateSafeCommandToken(profileName, out string safeName, maxLen: 32))
+                return false;
+            if (string.Equals(State.Mind.ActiveProfileName, safeName, StringComparison.OrdinalIgnoreCase))
+                return false;
+            OnLiveCockpitVerbRequested?.Invoke($"MIND PROFILE {safeName}");
+            return true;
+        }
+
+        public bool SetHullPosture(string postureWord)
+        {
+            if (State == null || string.IsNullOrWhiteSpace(postureWord)) return false;
+            string low = postureWord.Trim().ToLowerInvariant();
+            if (low != "return" && low != "guard" && low != "hold") return false;
+            if (string.Equals(State.Posture, low, StringComparison.OrdinalIgnoreCase))
+                return false;
+            OnLiveCockpitVerbRequested?.Invoke($"MIND POSTURE {low}");
+            return true;
         }
 
         public bool TryGetLockedContactBearingDeg(out float bearingDeg)
@@ -1495,6 +1538,61 @@ namespace TacSim.Arena
             {
                 State.HasReceiver = false;
                 State.ReceiverReachPercent = 100;
+            }
+
+            var mindNode = d["mind"];
+            if (mindNode != null && mindNode.IsObject)
+            {
+                var ms = new ArenaMindState
+                {
+                    Name = mindNode["name"].IsNull ? string.Empty : mindNode.Str("name", string.Empty),
+                    ActiveIndex = Mathf.Max(0, mindNode.Int("active", 0)),
+                    ClassWord = mindNode.Str("class", string.Empty),
+                    CoreWord = mindNode.Str("core", string.Empty),
+                    NextSwitchMs = (mindNode["next_switch_ms"].Kind == JsonKind.Int || mindNode["next_switch_ms"].Kind == JsonKind.Float)
+                        ? mindNode.Long("next_switch_ms", 0)
+                        : (long?)null,
+                    IsOff = mindNode.Bool("off", false)
+                };
+                var profArr = mindNode["profiles"].AsArray();
+                if (profArr != null)
+                {
+                    int pCap = Math.Min(profArr.Count, 12);
+                    for (int p = 0; p < pCap; p++)
+                    {
+                        string pn = profArr[p].AsString(string.Empty);
+                        if (!string.IsNullOrEmpty(pn)) ms.Profiles.Add(pn);
+                    }
+                }
+                var chArr = mindNode["channels"].AsArray();
+                if (chArr != null)
+                {
+                    int chCap = Math.Min(chArr.Count, 6);
+                    for (int ch = 0; ch < chCap; ch++)
+                    {
+                        string cn = chArr[ch].AsString(string.Empty);
+                        if (!string.IsNullOrEmpty(cn)) ms.Channels.Add(cn);
+                    }
+                }
+                State.Mind = ms;
+            }
+            else if (d.ContainsKey("mind"))
+            {
+                State.Mind = null;
+            }
+
+            var catchupNode = d["catchup"];
+            if (catchupNode != null && catchupNode.IsObject)
+            {
+                long awayS = Math.Max(0L, catchupNode.Long("away_s", 0));
+                int newC = Math.Max(0, catchupNode.Int("contacts_new", 0));
+                int lostC = Math.Max(0, catchupNode.Int("contacts_lost", 0));
+                var secsChanged = catchupNode["sections"].AsArray();
+                int secCount = secsChanged != null ? secsChanged.Count : 0;
+                State.HasReceivedCatchup = true;
+                State.LastCatchupAwaySec = awayS;
+                OnArenaCombatLog?.Invoke(
+                    $"<color=#66DDFF>[CATCH-UP]</color> Reclaimed hull after {awayS}s away (+{newC}/-{lostC} contacts, {secCount} section updates).");
             }
 
             State.Rules.Clear();

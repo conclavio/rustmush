@@ -525,6 +525,15 @@ namespace TacSim.Core
                     if (SurfaceStage != null && _ws != null && _ws.IsConnected)
                         _ws.SendLine($"+tv/{SurfaceStage.AddressedRigSlot} drive {sx},{sy} go");
                 };
+                Hud.Minimap.OnArenaMinimapContactClicked += desig =>
+                {
+                    if (ArenaStage != null && MushProtocol.TryValidateSafeCommandToken(desig, out string safeDesig))
+                        ArenaStage.ExecuteCockpitAction($"lock {safeDesig}");
+                };
+                Hud.Minimap.OnArenaMinimapCellClicked += (cx, cy) =>
+                {
+                    ArenaStage?.ExecuteCockpitAction($"drive {cx},{cy}");
+                };
                 Hud.Minimap.OnOpenSolarChartRequested += () => Hud.SolarMap?.SetOpen(true);
             }
 
