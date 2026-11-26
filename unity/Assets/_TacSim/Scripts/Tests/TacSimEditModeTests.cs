@@ -6095,5 +6095,105 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void LiveRpScenesAndSignalContacts_ParsesRoomGlancePanelFramesAndDispatchesInspectVerbs()
+        {
+            // 1. Parse RoomView.ambient["scene"] glance
+            var rv = MushProtocol.ParseRoomView(JsonNode.Parse(@"{
+                ""id"": ""#101"",
+                ""name"": ""Ceres Exchange Floor"",
+                ""ambient"": {
+                    ""scene"": {
+                        ""id"": 19,
+                        ""title"": ""Broker Dispute"",
+                        ""kind"": ""timestop"",
+                        ""mode"": ""turn"",
+                        ""status"": ""active"",
+                        ""round"": 2,
+                        ""turn"": 1,
+                        ""current_actor"": { ""id"": ""#42"", ""name"": ""Nadia"" }
+                    }
+                }
+            }"));
+            Assert.IsNotNull(rv.Scene);
+            Assert.AreEqual(19L, rv.Scene.Id);
+            Assert.AreEqual("Broker Dispute", rv.Scene.Title);
+            Assert.AreEqual("Nadia", rv.Scene.CurrentActor.Name);
+
+            var rootGo = new UnityEngine.GameObject("SceneAndSignalIntelTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                Assert.IsNotNull(hud.SceneIntelModal, "BuildHud must wire [L] TacSimSceneAndIntelModal");
+
+                string turnAlertScene = null;
+                hud.SceneIntelModal.OnLocalPlayerTurnStarted += s => turnAlertScene = s;
+                hud.SceneIntelModal.SetLocalCharacter("#42", "Nadia");
+
+                // 2. Room glance activates scene banner & fires local-turn alert when current_actor matches player
+                hud.SceneIntelModal.ApplyRoomSceneGlance(rv.Scene);
+                Assert.IsTrue(hud.SceneIntelModal.IsSceneBannerVisible);
+                Assert.IsTrue(hud.SceneIntelModal.IsLocalPlayersTurn);
+                Assert.AreEqual("Broker Dispute", turnAlertScene);
+
+                // 3. Full `scenes` panel keyframe populates participant roster & null clears cleanly
+                hud.SceneIntelModal.ApplyScenesPanel(JsonNode.Parse(@"{
+                    ""id"": 19,
+                    ""title"": ""Broker Dispute"",
+                    ""kind"": ""timestop"",
+                    ""mode"": ""turn"",
+                    ""status"": ""paused"",
+                    ""round"": 2,
+                    ""turn"": 0,
+                    ""current_actor"": { ""id"": ""#55"", ""name"": ""Ilse"" },
+                    ""facilitator"": { ""id"": ""#42"", ""name"": ""Nadia"" },
+                    ""anchor"": { ""id"": ""#101"", ""name"": ""Ceres Exchange Floor"" },
+                    ""participants"": [
+                        { ""id"": ""#55"", ""name"": ""Ilse"" },
+                        { ""id"": ""#42"", ""name"": ""Nadia"" }
+                    ],
+                    ""observers"": [{ ""id"": ""#77"", ""name"": ""Dov"" }]
+                }"));
+                Assert.IsFalse(hud.SceneIntelModal.IsLocalPlayersTurn);
+                Assert.AreEqual(2, hud.SceneIntelModal.ActiveScene.Participants.Count);
+                Assert.AreEqual(1, hud.SceneIntelModal.ActiveScene.Observers.Count);
+
+                // 4. `tactics.contacts` propagation ledger populates clickable rows & dispatches sanitized `+contact <id>`
+                hud.SceneIntelModal.ApplySignalContactsPanel(JsonNode.Parse(@"{
+                    ""schema"": { ""id"": ""tactics.contacts"", ""shape"": ""list"" },
+                    ""truncated"": false,
+                    ""rows"": [
+                        { ""id"": ""C-01"", ""gen"": 2, ""rev"": 4, ""state"": ""live"", ""age"": ""3s"", ""band"": ""thermal"", ""source"": ""own"" },
+                        { ""id"": ""C-02"", ""gen"": 1, ""rev"": 1, ""state"": ""stale"", ""age"": ""48s"", ""band"": ""radar"", ""source"": ""relay"" }
+                    ]
+                }"));
+                Assert.AreEqual(2, hud.SceneIntelModal.SignalContactCount);
+                Assert.AreEqual(2, hud.SceneIntelModal.VisibleContactRowCount);
+
+                string dispatchedCmd = null;
+                hud.SceneIntelModal.OnCommandRequested += c => dispatchedCmd = c;
+                hud.SceneIntelModal.InspectContactById("C-01");
+                Assert.AreEqual("+contact C-01", dispatchedCmd);
+
+                // Rejects injected whitespace/control characters
+                dispatchedCmd = null;
+                hud.SceneIntelModal.InspectContactById("C-01\nQUIT");
+                Assert.IsNull(dispatchedCmd);
+
+                // Null scenes panel clears active scene & banner; ESC closes modal
+                hud.SceneIntelModal.SetOpen(true);
+                Assert.IsTrue(hud.TryCloseTopmostModal());
+                Assert.IsFalse(hud.SceneIntelModal.IsOpen);
+                hud.SceneIntelModal.ApplyScenesPanel(JsonNode.Null);
+                Assert.IsNull(hud.SceneIntelModal.ActiveScene);
+                Assert.IsFalse(hud.SceneIntelModal.IsSceneBannerVisible);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

@@ -254,6 +254,7 @@ namespace TacSim.UI
             _allEntries.Add(new PaletteEntry("UI", "Open Nav Directory & Room Roster [N]", "3D wayfinder directory, cast & active ops", () => OnUiActionRequested?.Invoke("ui:ops_dir")));
             _allEntries.Add(new PaletteEntry("UI", "Open Social, Online Pilots, IC Mail & Channels [O]", "Live WHO roster, @mail inbox/compose & comsys channels", () => OnUiActionRequested?.Invoke("ui:social")));
             _allEntries.Add(new PaletteEntry("UI", "Open Mission, Passage, Survey & Claims Journal [J]", "Active quests, passages, surveys, claims & HUD objective pin", () => OnUiActionRequested?.Invoke("ui:journal")));
+            _allEntries.Add(new PaletteEntry("UI", "Open RP Scene Tracker & Signal Contacts Intel [L]", "Active timestop scene turn order, recap & light-delay signal contacts", () => OnUiActionRequested?.Invoke("ui:scene_intel")));
             _allEntries.Add(new PaletteEntry("UI", "Open Controls, Keybinds & Macros [F1]", "Keybind reference & F5-F8 custom macros", () => OnUiActionRequested?.Invoke("ui:keybinds")));
             _allEntries.Add(new PaletteEntry("UI", "Open Port Commodity Exchange", "Live market book, cargo gauges & trade", () => OnCommandRequested?.Invoke("ui:open_exchange")));
             _allEntries.Add(new PaletteEntry("UI", "Open Sailing Plan Builder", "Plot corridor fuel burn & departure orders", () => OnCommandRequested?.Invoke("ui:open_sailing")));
@@ -307,6 +308,11 @@ namespace TacSim.UI
             AddCmd("SPACE", "Helm Status", "+helm/status");
             AddCmd("SPACE", "Tactical Sensor Scan", "+tac/scan");
             AddCmd("SPACE", "Tactical Weapon Mounts", "+tac/status");
+            AddCmd("INTEL", "Signal Propagation Contacts", "+contacts");
+            AddCmd("INTEL", "Active Tactical Orders", "+orders");
+            AddCmd("RP", "Active Scene & Turn Order", "+scene");
+            AddCmd("RP", "Scene Narrative Recap", "+recap");
+            AddCmd("RP", "Start Room Timestop Scene", "+timestop");
             AddCmd("SPACE", "Ping Asteroid Cluster", "+mine/ping");
             AddCmd("SPACE", "Solar Ephemeris Table", "+chart");
             AddCmd("WORLD", "Step Out of Character", "+ooc");
