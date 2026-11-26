@@ -18,6 +18,19 @@ namespace TacSim.Surface
         public double AtSec;
     }
 
+    public sealed class SurfaceRigSummary
+    {
+        public int Slot;
+        public string Mark = string.Empty;
+        public string Line = string.Empty;
+        public int ChargePct = 100;
+        public string Hopper = string.Empty;
+        public bool OnGround;
+        public string RunText = string.Empty;
+        public string PlanText = string.Empty;
+        public string QueuedText = string.Empty;
+    }
+
     /// <summary>
     /// Pure-online 3D Planetary Surface Heightfield, Landed Dray-P Pad, and
     /// Articulated Prospector Rover (`+tv`) driven by authoritative `mushd` `site.map`
@@ -57,8 +70,25 @@ namespace TacSim.Surface
         public string StatusSummaryLine { get; private set; } = "Rig 1 cradled in Dray-P Vehicle Bay.";
 
         public event Action<int, int> OnTerrainCellDriveClicked;
+        public event Action<int> OnRigSlotSelected;
         public event Action OnSurfaceTelemetryChanged;
         public event Action<string> OnSurfaceLogEvent;
+
+        private readonly List<SurfaceRigSummary> _ownedRigs = new List<SurfaceRigSummary>(4);
+        public IReadOnlyList<SurfaceRigSummary> OwnedRigs => _ownedRigs;
+        public string ActiveRunSummary { get; private set; } = string.Empty;
+        public string ActivePlanSummary { get; private set; } = string.Empty;
+        public string ActiveQueuedSummary { get; private set; } = string.Empty;
+        public string PresenceLine { get; private set; } = string.Empty;
+        public string OtherRigsLine { get; private set; } = string.Empty;
+
+        public void SelectRigSlot(int slot)
+        {
+            if (slot <= 0 || slot == AddressedRigSlot) return;
+            AddressedRigSlot = slot;
+            OnRigSlotSelected?.Invoke(slot);
+            OnSurfaceTelemetryChanged?.Invoke();
+        }
 
         private Transform _terrainRoot;
         private Transform _padRoot;
@@ -106,6 +136,12 @@ namespace TacSim.Surface
             _hasCachedHullSiteCell = false;
             _cachedHullSiteTitle = null;
             _recentSiteLines.Clear();
+            _ownedRigs.Clear();
+            ActiveRunSummary = string.Empty;
+            ActivePlanSummary = string.Empty;
+            ActiveQueuedSummary = string.Empty;
+            PresenceLine = string.Empty;
+            OtherRigsLine = string.Empty;
             HopperLoadedTonnes = 0;
             BatteryPct = 100;
             StatusSummaryLine = "Rig 1 cradled in Dray-P Vehicle Bay.";
@@ -884,7 +920,14 @@ namespace TacSim.Surface
                     _clockBaseMonotonicSec = MonotonicSeconds();
                 }
 
-                // 2. Read authoritative battery, hopper ("3 of 6 t"), cell, and active leg from `site.rigs[]`!
+                // 2. Read authoritative battery, hopper ("3 of 6 t"), cell, run, fill plan, and active leg from `site.rigs[]`!
+                _ownedRigs.Clear();
+                ActiveRunSummary = string.Empty;
+                ActivePlanSummary = string.Empty;
+                ActiveQueuedSummary = string.Empty;
+                PresenceLine = siteBlock.Str("presence_line", string.Empty).Trim();
+                OtherRigsLine = siteBlock.Str("other_rigs", string.Empty).Trim();
+
                 var rigsArr = siteBlock["rigs"].AsArray();
                 if (rigsArr != null && rigsArr.Count > 0)
                 {
@@ -892,17 +935,32 @@ namespace TacSim.Surface
                     for (int i = 0; i < rigsArr.Count; i++)
                     {
                         var r = rigsArr[i];
-                        if (r.IsObject && r.Int("slot", 0) == AddressedRigSlot)
+                        if (!r.IsObject) continue;
+                        int rSlot = r.Int("slot", i + 1);
+                        var summary = new SurfaceRigSummary
                         {
+                            Slot = rSlot,
+                            Mark = r.Str("mark", string.Empty),
+                            Line = r.Str("line", string.Empty),
+                            ChargePct = r.ContainsKey("charge_pct") && !r["charge_pct"].IsNull ? Mathf.Clamp(r.Int("charge_pct", 100), 0, 100) : 100,
+                            Hopper = r.Str("hopper", string.Empty),
+                            OnGround = r["cell"].IsArray && r["cell"].AsArray().Count >= 2,
+                            RunText = r["run"].IsObject ? r["run"].Str("text", string.Empty).Trim() : string.Empty,
+                            PlanText = r["plan"].IsObject ? r["plan"].Str("text", string.Empty).Trim() : string.Empty,
+                            QueuedText = r.Str("queued", string.Empty).Trim()
+                        };
+                        _ownedRigs.Add(summary);
+                        if (rSlot == AddressedRigSlot)
                             matchedRig = r;
-                            break;
-                        }
                     }
                     if (!matchedRig.IsObject)
                         matchedRig = rigsArr[0];
 
                     if (matchedRig.IsObject)
                     {
+                        ActiveRunSummary = matchedRig["run"].IsObject ? matchedRig["run"].Str("text", string.Empty).Trim() : string.Empty;
+                        ActivePlanSummary = matchedRig["plan"].IsObject ? matchedRig["plan"].Str("text", string.Empty).Trim() : string.Empty;
+                        ActiveQueuedSummary = matchedRig.Str("queued", string.Empty).Trim();
                         ApplyRigRowNode(matchedRig);
                         if (TerrainGrid != null && matchedRig["cell"].IsArray && matchedRig["cell"].AsArray().Count >= 2)
                         {

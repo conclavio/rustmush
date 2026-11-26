@@ -22,6 +22,7 @@ namespace TacSim.UI
     {
         public event Action<string> OnCommandRequested;
         public event Action OnExitSurfaceExcursionRequested;
+        public event Action OnOpenGroundChartRequested;
         public event Action<string> OnArenaCockpitVerbRequested;
         public event Action OnToggleVehicleCameraViewRequested;
 
@@ -52,6 +53,10 @@ namespace TacSim.UI
         private Text _surfaceHeaderText;
         private Text _surfaceGaugesText;
         private Text _surfaceReadingsText;
+        private GameObject _surfaceRigRow;
+        private readonly List<Image> _surfaceRigBtnImages = new List<Image>();
+        private readonly List<Text> _surfaceRigBtnLabels = new List<Text>();
+        private readonly List<int> _surfaceRigBtnSlots = new List<int>();
         private readonly List<Image> _familyBtnImages = new List<Image>();
 
         // Diegetic OOC Simulator Selector Console Modal (`room.simulator_lobby`)
@@ -472,14 +477,35 @@ namespace TacSim.UI
         {
             _surfaceHudRoot = CreatePanel(parent, "SurfaceMiningHud", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, Color.clear);
 
-            var card = CreatePanel(_surfaceHudRoot.transform, "QuarryCard", new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-470f, -342f), new Vector2(-16f, -74f), new Color(0.04f, 0.08f, 0.12f, 0.92f));
+            var card = CreatePanel(_surfaceHudRoot.transform, "QuarryCard", new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-470f, -376f), new Vector2(-16f, -74f), new Color(0.04f, 0.08f, 0.12f, 0.92f));
             _surfaceHeaderText = CreateTxt(card.transform, "OCCATOR RIM — SURFACE PROSPECTOR RIG 1", 15, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(1f, 0.84f, 0.42f));
             SetRect(_surfaceHeaderText.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(12f, -32f), new Vector2(-12f, -6f));
 
             _surfaceGaugesText = CreateTxt(card.transform, "HOPPER: 0 / 6 t  |  BATTERY: 100%  |  HOLD ROOM: 86 t", 13, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.55f, 0.95f, 0.78f));
-            SetRect(_surfaceGaugesText.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(12f, -58f), new Vector2(-12f, -34f));
+            SetRect(_surfaceGaugesText.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(12f, -56f), new Vector2(-12f, -34f));
 
-            var famRow = CreatePanel(card.transform, "OreFamilyRow", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(10f, -92f), new Vector2(-10f, -62f), Color.clear);
+            _surfaceRigRow = CreatePanel(card.transform, "MultiRigSwitcherRow", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(10f, -84f), new Vector2(-10f, -58f), Color.clear);
+            var rHlg = _surfaceRigRow.AddComponent<HorizontalLayoutGroup>();
+            rHlg.spacing = 5f; rHlg.childControlWidth = true; rHlg.childControlHeight = true; rHlg.childForceExpandWidth = true;
+            _surfaceRigBtnImages.Clear();
+            _surfaceRigBtnLabels.Clear();
+            _surfaceRigBtnSlots.Clear();
+            for (int i = 0; i < 4; i++)
+            {
+                int btnIdx = i;
+                var rb = CreateBtn(_surfaceRigRow.transform, $"RIG {i + 1}", new Color(0.14f, 0.24f, 0.34f), () =>
+                {
+                    if (btnIdx < _surfaceRigBtnSlots.Count && _surfaceRigBtnSlots[btnIdx] > 0)
+                        _surface?.SelectRigSlot(_surfaceRigBtnSlots[btnIdx]);
+                });
+                _surfaceRigBtnImages.Add(rb.GetComponent<Image>());
+                _surfaceRigBtnLabels.Add(rb.GetComponentInChildren<Text>());
+                _surfaceRigBtnSlots.Add(i + 1);
+                rb.gameObject.SetActive(false);
+            }
+            _surfaceRigRow.SetActive(false);
+
+            var famRow = CreatePanel(card.transform, "OreFamilyRow", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(10f, -116f), new Vector2(-10f, -88f), Color.clear);
             var fHlg = famRow.AddComponent<HorizontalLayoutGroup>();
             fHlg.spacing = 6f; fHlg.childControlWidth = true; fHlg.childControlHeight = true; fHlg.childForceExpandWidth = true;
 
@@ -500,11 +526,11 @@ namespace TacSim.UI
 
             _surfaceReadingsText = CreateTxt(card.transform, "WASD or Left-Click terrain to drive Rig 1.\n1) Click SCAN 9 FIELDS  2) Drive near beacon & SOUND  3) CORE / DRILL!", 12, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.84f, 0.92f, 0.98f));
             _surfaceReadingsText.supportRichText = true;
-            SetRect(_surfaceReadingsText.rectTransform, new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(12f, 10f), new Vector2(-12f, -98f));
+            SetRect(_surfaceReadingsText.rectTransform, new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(12f, 10f), new Vector2(-12f, -122f));
 
             var actionBar = CreatePanel(_surfaceHudRoot.transform, "SurfaceRoverActions", new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(452f, 16f), new Vector2(-16f, 66f), new Color(0.05f, 0.09f, 0.13f, 0.94f));
             var aHlg = actionBar.AddComponent<HorizontalLayoutGroup>();
-            aHlg.spacing = 6f; aHlg.padding = new RectOffset(8, 8, 6, 6);
+            aHlg.spacing = 5f; aHlg.padding = new RectOffset(8, 8, 6, 6);
             aHlg.childControlWidth = true; aHlg.childControlHeight = true; aHlg.childForceExpandWidth = true;
 
             CreateBtn(actionBar.transform, "SCAN 9 FIELDS", new Color(0.14f, 0.44f, 0.54f), () => OnCommandRequested?.Invoke("surface:scan"));
@@ -513,6 +539,7 @@ namespace TacSim.UI
             CreateBtn(actionBar.transform, "STAKE CLAIM", new Color(0.32f, 0.42f, 0.18f), () => OnCommandRequested?.Invoke("surface:claim_stake"));
             CreateBtn(actionBar.transform, "UNLOAD HOPPER", new Color(0.22f, 0.40f, 0.48f), () => OnCommandRequested?.Invoke("surface:unload"));
             CreateBtn(actionBar.transform, "RECOVER RAMP", new Color(0.28f, 0.28f, 0.44f), () => OnCommandRequested?.Invoke("surface:recover"));
+            CreateBtn(actionBar.transform, "PLANET CHART [G]", new Color(0.14f, 0.38f, 0.44f), () => OnOpenGroundChartRequested?.Invoke());
             CreateBtn(actionBar.transform, "CAB / CHASE CAM", new Color(0.24f, 0.32f, 0.42f), () => OnToggleVehicleCameraViewRequested?.Invoke());
             CreateBtn(actionBar.transform, "RETURN TO BAY", new Color(0.48f, 0.18f, 0.20f), () =>
             {
@@ -532,12 +559,50 @@ namespace TacSim.UI
             _surfaceHeaderText.text = $"{_surface.ActiveSiteTitle.ToUpperInvariant()} — RIG {_surface.AddressedRigSlot} [{_surface.ActiveOreFamily.ToUpperInvariant()}]";
             _surfaceGaugesText.text = $"HOPPER: {_surface.HopperLoadedTonnes} / {_surface.HopperCapacityTonnes} t   |   BATTERY: {_surface.BatteryPct}%   |   HOLD FREE: {_surface.HoldUnreservedTonnes} t";
 
-            var sb = new StringBuilder(256);
+            if (_surfaceRigRow != null)
+            {
+                var rigs = _surface.OwnedRigs;
+                bool multiRig = rigs != null && rigs.Count >= 2;
+                _surfaceRigRow.SetActive(multiRig);
+                if (multiRig)
+                {
+                    for (int i = 0; i < _surfaceRigBtnImages.Count; i++)
+                    {
+                        if (i < rigs.Count)
+                        {
+                            var r = rigs[i];
+                            _surfaceRigBtnSlots[i] = r.Slot;
+                            bool sel = r.Slot == _surface.AddressedRigSlot;
+                            _surfaceRigBtnImages[i].color = sel
+                                ? new Color(0.20f, 0.60f, 0.78f, 1f)
+                                : new Color(0.12f, 0.22f, 0.32f, 0.94f);
+                            if (_surfaceRigBtnLabels[i] != null)
+                                _surfaceRigBtnLabels[i].text = $"RIG {r.Slot} ({r.ChargePct}%{(r.OnGround ? "" : " BAY")})";
+                            _surfaceRigBtnImages[i].gameObject.SetActive(true);
+                        }
+                        else
+                        {
+                            _surfaceRigBtnSlots[i] = 0;
+                            _surfaceRigBtnImages[i].gameObject.SetActive(false);
+                        }
+                    }
+                }
+            }
+
+            var sb = new StringBuilder(320);
             sb.AppendLine($"<color=#FFEE77>{MushProtocol.EscapeUnityRichText(_surface.StatusSummaryLine)}</color>");
+            if (!string.IsNullOrEmpty(_surface.ActiveRunSummary))
+                sb.AppendLine($"<color=#66FFAA>[RUN] {MushProtocol.EscapeUnityRichText(_surface.ActiveRunSummary)}</color>");
+            if (!string.IsNullOrEmpty(_surface.ActivePlanSummary))
+                sb.AppendLine($"<color=#77DDFF>[PLAN] {MushProtocol.EscapeUnityRichText(_surface.ActivePlanSummary)}</color>");
+            if (!string.IsNullOrEmpty(_surface.ActiveQueuedSummary))
+                sb.AppendLine($"<color=#FFCC66>[QUEUED] {MushProtocol.EscapeUnityRichText(_surface.ActiveQueuedSummary)}</color>");
+            if (!string.IsNullOrEmpty(_surface.PresenceLine))
+                sb.AppendLine($"<color=#FFAA88>{MushProtocol.EscapeUnityRichText(_surface.PresenceLine)}</color>");
             var lines = _surface.RecentSiteLines;
-            for (int i = Mathf.Max(0, lines.Count - 4); i < lines.Count; i++)
+            for (int i = Mathf.Max(0, lines.Count - 3); i < lines.Count; i++)
                 sb.AppendLine("• " + MushProtocol.EscapeUnityRichText(lines[i]));
-            sb.Append("<color=#88CCFF>[WASD / LMB Terrain] Drive   [RMB + Scroll] Orbit Camera</color>");
+            sb.Append("<color=#88CCFF>[WASD / LMB Terrain] Drive   [RMB + Scroll] Orbit   [G] Ground Chart</color>");
             _surfaceReadingsText.text = sb.ToString();
         }
 

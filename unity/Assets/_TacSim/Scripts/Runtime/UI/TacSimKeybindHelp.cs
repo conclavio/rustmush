@@ -83,7 +83,7 @@ namespace TacSim.UI
                 "MMORPG INTERFACE & WINDOWS",
                 new Vector2(0f, 0.51f), new Vector2(0.495f, 1f),
                 "<b>[Ctrl+K]</b> Quick Command & Fast-Travel Palette\n" +
-                "<b>[C]</b> Pilot/Ship Sheet   <b>[M]</b> Solar Holo-Orrery\n" +
+                "<b>[C]</b> Pilot/Ship Sheet   <b>[M]</b> Solar Orrery   <b>[G]</b> Ground Survey\n" +
                 "<b>[N]</b> 3D Wayfinder Directory & Room Roster\n" +
                 "<b>[O]</b> Social, Online WHO, IC Mail & Channels\n" +
                 "<b>[J]</b> Mission/Passage/Survey/Claims Journal   <b>[L]</b> RP Scene & Signal Intel\n" +

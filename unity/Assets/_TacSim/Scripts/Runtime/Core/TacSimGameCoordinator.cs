@@ -371,6 +371,11 @@ namespace TacSim.Core
                 if (_ws != null && _ws.IsConnected)
                     _ws.SendLine($"+tv/{SurfaceStage.AddressedRigSlot} drive {sx},{sy} go");
             };
+            SurfaceStage.OnRigSlotSelected += _ =>
+            {
+                if (_ws != null && _ws.IsConnected)
+                    SendSiteMapPull(SurfaceStage.ActiveOreFamily);
+            };
             SurfaceStage.OnSurfaceLogEvent += ln =>
             {
                 if (Hud != null)
@@ -483,6 +488,7 @@ namespace TacSim.Core
             {
                 Hud.Overlays.OnCommandRequested += ExecutePlayerCommand;
                 Hud.Overlays.OnExitSurfaceExcursionRequested += ExitPlanetarySurfaceStage;
+                Hud.Overlays.OnOpenGroundChartRequested += () => Hud.GroundChart?.SetOpen(true);
                 Hud.Overlays.OnArenaCockpitVerbRequested += HandleArenaCockpitVerb;
                 Hud.Overlays.OnToggleVehicleCameraViewRequested += ToggleGroundVehicleCameraMode;
             }
@@ -499,6 +505,35 @@ namespace TacSim.Core
                 {
                     if (!string.IsNullOrEmpty(destPort) && TradeState != null)
                         TradeState.SelectedDestinationPort = destPort;
+                    OpenVisualTradeTerminal("SAILING PLAN & CORRIDOR ROUTE BUILDER", openSailingTab: true);
+                };
+                Hud.SolarMap.OnOpenGroundChartRequested += () =>
+                {
+                    Hud.SolarMap.SetOpen(false);
+                    Hud.GroundChart?.SetOpen(true);
+                };
+            }
+
+            if (Hud.GroundChart != null)
+            {
+                Hud.GroundChart.OnRefreshGroundChartRequested += fam =>
+                {
+                    if (_ws != null && _ws.IsConnected && _ws.HasAdvertisedPanel("body.ground"))
+                    {
+                        JsonNode q = null;
+                        if (!string.IsNullOrWhiteSpace(fam))
+                        {
+                            q = JsonNode.NewObject();
+                            q["family"] = JsonNode.FromString(fam.Trim().ToLowerInvariant());
+                        }
+                        _ws.SendPanelSubscribe("body.ground", q);
+                    }
+                };
+                Hud.GroundChart.OnCommandRequested += ExecutePlayerCommand;
+                Hud.GroundChart.OnOpenSailingPlanRequested += destVenue =>
+                {
+                    if (!string.IsNullOrEmpty(destVenue) && TradeState != null)
+                        TradeState.SelectedDestinationPort = destVenue;
                     OpenVisualTradeTerminal("SAILING PLAN & CORRIDOR ROUTE BUILDER", openSailingTab: true);
                 };
             }
@@ -643,6 +678,7 @@ namespace TacSim.Core
                     {
                         case "ui:sheet": Hud.CharacterSheet?.SetOpen(true); break;
                         case "ui:solar_map": Hud.SolarMap?.SetOpen(true); break;
+                        case "ui:ground_chart": Hud.GroundChart?.SetOpen(true); break;
                         case "ui:ops_dir": Hud.OpsDirectory?.SetOpen(true); break;
                         case "ui:social": Hud.SocialModal?.SetOpen(true); break;
                         case "ui:journal": Hud.QuestJournal?.SetOpen(true); break;
@@ -3006,6 +3042,9 @@ namespace TacSim.Core
                     }
                     break;
                 }
+                case "body.ground":
+                    Hud?.GroundChart?.ApplyGroundFrame(data);
+                    break;
                 case "space.holotank":
                     ShipInterior.PopulateHoloBlips(data);
                     SpaceStage.ApplyHolotankFeed(data);
