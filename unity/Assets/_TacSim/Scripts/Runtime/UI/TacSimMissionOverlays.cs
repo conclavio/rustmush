@@ -186,6 +186,24 @@ namespace TacSim.UI
         private Text _arenaDebriefText;
         private ulong _dismissedDebriefMatchId;
 
+        // OOC Arena Collapsible Standing Rules & Sealed Mind Inspector Drawer (`rules` + `mind.sealed_rules` + `order`)
+        private GameObject _rulesDrawer;
+        private RectTransform _rulesDrawerRect;
+        private Text _rulesDrawerBodyText;
+        private Button _rulesToggleBtn;
+        private Text _rulesToggleBtnLabel;
+        private bool _rulesDrawerOpen;
+        private const int MaxPooledStandingRuleChips = 6;
+        private readonly List<PooledStandingRuleChip> _ruleChipPool = new List<PooledStandingRuleChip>(MaxPooledStandingRuleChips);
+
+        private sealed class PooledStandingRuleChip
+        {
+            public GameObject Root;
+            public Button Button;
+            public Text Label;
+            public int BoundSlot;
+        }
+
         public bool IsLobbyModalOpen => _arenaLobbyModal != null && _arenaLobbyModal.activeSelf;
         public bool IsSpaceFireCardVisible => _spaceFireCard != null && _spaceFireCard.activeSelf;
         public bool IsDetachmentBarVisible => _detachmentBar != null && _detachmentBar.activeSelf;
@@ -197,6 +215,18 @@ namespace TacSim.UI
         public bool IsCombatFeedVisible => _combatFeedPanel != null && _combatFeedPanel.activeSelf;
         public bool IsDebriefCardVisible => _arenaDebriefCard != null && _arenaDebriefCard.activeSelf;
         public string DebriefSummarySnapshot => _arenaDebriefText != null ? _arenaDebriefText.text : string.Empty;
+        public bool IsRulesDrawerOpen => _rulesDrawer != null && _rulesDrawer.activeSelf;
+        public string RulesDrawerSnapshot => _rulesDrawerBodyText != null ? _rulesDrawerBodyText.text : string.Empty;
+        public int VisibleStandingRulePillCount
+        {
+            get
+            {
+                int n = 0;
+                for (int i = 0; i < _ruleChipPool.Count; i++)
+                    if (_ruleChipPool[i].Root != null && _ruleChipPool[i].Root.activeSelf) n++;
+                return n;
+            }
+        }
         public int VisibleCombatFeedEntryCount
         {
             get
@@ -299,6 +329,7 @@ namespace TacSim.UI
             _mindProfilePool.Clear();
             _postureButtons.Clear();
             _combatFeedLines.Clear();
+            _ruleChipPool.Clear();
 
             if (gameplayHudRoot == null) return;
 
@@ -378,6 +409,8 @@ namespace TacSim.UI
             if (_mindStrip != null) _mindStrip.SetActive(false);
             if (_combatFeedPanel != null) _combatFeedPanel.SetActive(false);
             if (_arenaDebriefCard != null) _arenaDebriefCard.SetActive(false);
+            if (_rulesDrawer != null) _rulesDrawer.SetActive(false);
+            _rulesDrawerOpen = false;
             if (_arenaLobbyLiveRosterText != null) _arenaLobbyLiveRosterText.text = DefaultLobbyRosterHint;
         }
 
@@ -1238,7 +1271,7 @@ namespace TacSim.UI
                 _mindProfilePool.Add(mpBtn);
             }
 
-            var postureRow = CreatePanel(_mindStrip.transform, "MindPostureRow", new Vector2(0.73f, 0f), new Vector2(1f, 1f), new Vector2(4f, 4f), new Vector2(-8f, -4f), Color.clear);
+            var postureRow = CreatePanel(_mindStrip.transform, "MindPostureRow", new Vector2(0.73f, 0f), new Vector2(0.90f, 1f), new Vector2(4f, 4f), new Vector2(-4f, -4f), Color.clear);
             var posHlg = postureRow.AddComponent<HorizontalLayoutGroup>();
             posHlg.spacing = 4f; posHlg.childControlWidth = true; posHlg.childControlHeight = true; posHlg.childForceExpandWidth = true;
             string[] postureWords = { "return", "guard", "hold" };
@@ -1250,7 +1283,39 @@ namespace TacSim.UI
                 if (lbl != null) lbl.fontSize = 10;
                 _postureButtons[pw] = (pBtn, pBtn.GetComponent<Image>());
             }
+
+            _rulesToggleBtn = CreateBtn(_mindStrip.transform, "RULES", new Color(0.22f, 0.34f, 0.46f), ToggleRulesDrawer);
+            SetRect(_rulesToggleBtn.GetComponent<RectTransform>(), new Vector2(0.905f, 0f), new Vector2(1f, 1f), new Vector2(2f, 4f), new Vector2(-6f, -4f));
+            _rulesToggleBtnLabel = _rulesToggleBtn.GetComponentInChildren<Text>();
+            if (_rulesToggleBtnLabel != null) _rulesToggleBtnLabel.fontSize = 10;
             _mindStrip.SetActive(false);
+
+            // Collapsible Standing Rules & Sealed Mind Inspector Drawer (docks cleanly directly above ArenaMindStrip)
+            _rulesDrawer = CreatePanel(_arenaBattleHudRoot.transform, "ArenaRulesDrawer", new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(452f, 154f), new Vector2(-446f, 276f), new Color(0.03f, 0.06f, 0.11f, 0.96f));
+            _rulesDrawerRect = _rulesDrawer.GetComponent<RectTransform>();
+            var rdHdr = CreateTxt(_rulesDrawer.transform, "STANDING RULES (CLICK TO CLEAR) & SEALED MIND INSPECTOR", 10, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.54f, 0.90f, 1f));
+            SetRect(rdHdr.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(10f, -20f), new Vector2(-10f, -2f));
+
+            var chipsRow = CreatePanel(_rulesDrawer.transform, "StandingRuleChipsRow", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(8f, -46f), new Vector2(-8f, -22f), Color.clear);
+            var rcHlg = chipsRow.AddComponent<HorizontalLayoutGroup>();
+            rcHlg.spacing = 4f; rcHlg.childControlWidth = true; rcHlg.childControlHeight = true; rcHlg.childForceExpandWidth = true;
+            for (int c = 0; c < MaxPooledStandingRuleChips; c++)
+            {
+                int capturedIdx = c;
+                var chip = new PooledStandingRuleChip();
+                var cBtn = CreateBtn(chipsRow.transform, string.Empty, new Color(0.36f, 0.22f, 0.16f), () => HandleRemoveStandingRuleClick(capturedIdx));
+                chip.Root = cBtn.gameObject;
+                chip.Button = cBtn;
+                chip.Label = cBtn.GetComponentInChildren<Text>();
+                if (chip.Label != null) chip.Label.fontSize = 10;
+                chip.Root.SetActive(false);
+                _ruleChipPool.Add(chip);
+            }
+
+            _rulesDrawerBodyText = CreateTxt(_rulesDrawer.transform, string.Empty, 10, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.84f, 0.92f, 0.98f));
+            _rulesDrawerBodyText.supportRichText = true;
+            SetRect(_rulesDrawerBodyText.rectTransform, new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(10f, 6f), new Vector2(-10f, -50f));
+            _rulesDrawer.SetActive(false);
 
             // Live Arena Combat & Kill Feed Ticker (docked cleanly at Mid-Left below TacticalMinimap y=-412, well above CommsDrawer)
             _combatFeedPanel = CreatePanel(_arenaBattleHudRoot.transform, "ArenaCombatFeedPanel", new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(16f, -542f), new Vector2(346f, -424f), new Color(0.03f, 0.06f, 0.10f, 0.86f));
@@ -1483,6 +1548,25 @@ namespace TacSim.UI
         public void ClickScanLockedTargetForTests() => HandleScanLockedTargetClick();
         public void ClickMindProfileForTests(int index) => HandleMindProfileClick(index);
         public void ClickMindPostureForTests(string postureWord) => HandleMindPostureClick(postureWord);
+        public void ToggleRulesDrawerForTests() => ToggleRulesDrawer();
+        public void ClickRemoveStandingRulePillForTests(int index) => HandleRemoveStandingRuleClick(index);
+
+        private void ToggleRulesDrawer()
+        {
+            _rulesDrawerOpen = !_rulesDrawerOpen;
+            if (_arena?.State != null)
+                UpdateRulesDrawer(_arena.State);
+            else if (_rulesDrawer != null)
+                _rulesDrawer.SetActive(_rulesDrawerOpen);
+        }
+
+        private void HandleRemoveStandingRuleClick(int index)
+        {
+            if (_arena == null || index < 0 || index >= _ruleChipPool.Count) return;
+            int slot = _ruleChipPool[index].BoundSlot;
+            if (slot > 0)
+                _arena.ClearStandingRuleSlot(slot);
+        }
 
         private void HandleMindProfileClick(int index)
         {
@@ -1501,35 +1585,41 @@ namespace TacSim.UI
         {
             if (_mindStrip == null) return;
             var mind = s?.Mind;
-            if (mind == null)
+            bool hasRulesOrOrder = s != null && (s.Rules.Count > 0 || s.StandingOrder != null);
+            if (mind == null && !hasRulesOrOrder)
             {
                 if (_mindStrip.activeSelf) _mindStrip.SetActive(false);
+                if (_rulesDrawer != null && _rulesDrawer.activeSelf) _rulesDrawer.SetActive(false);
                 return;
             }
 
             // Dynamically stack cleanly above DetachmentBar when present, else directly above SquadOrderBar
+            float yBot = (_detachmentBar != null && _detachmentBar.activeSelf) ? 190f : 114f;
             if (_mindStripRect != null)
-            {
-                bool detVisible = _detachmentBar != null && _detachmentBar.activeSelf;
-                float yBot = detVisible ? 190f : 114f;
                 SetRect(_mindStripRect, new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(452f, yBot), new Vector2(-446f, yBot + 36f));
-            }
 
             if (!_mindStrip.activeSelf) _mindStrip.SetActive(true);
 
             if (_mindHeaderText != null)
             {
-                string safeName = string.IsNullOrEmpty(mind.Name)
-                    ? "OWN MIND"
-                    : MushProtocol.EscapeUnityRichText(mind.Name.ToUpperInvariant());
-                string classBadge = !string.IsNullOrEmpty(mind.ClassWord)
-                    ? $" [{MushProtocol.EscapeUnityRichText(mind.ClassWord)}/{MushProtocol.EscapeUnityRichText(string.IsNullOrEmpty(mind.CoreWord) ? "-" : mind.CoreWord)}]"
-                    : string.Empty;
-                string stateTag = mind.IsOff ? " <color=#FF9966>[ROM]</color>" : string.Empty;
-                _mindHeaderText.text = $"MIND: <b>{safeName}</b>{classBadge}{stateTag}";
+                if (mind != null)
+                {
+                    string safeName = string.IsNullOrEmpty(mind.Name)
+                        ? "OWN MIND"
+                        : MushProtocol.EscapeUnityRichText(mind.Name.ToUpperInvariant());
+                    string classBadge = !string.IsNullOrEmpty(mind.ClassWord)
+                        ? $" [{MushProtocol.EscapeUnityRichText(mind.ClassWord)}/{MushProtocol.EscapeUnityRichText(string.IsNullOrEmpty(mind.CoreWord) ? "-" : mind.CoreWord)}]"
+                        : string.Empty;
+                    string stateTag = mind.IsOff ? " <color=#FF9966>[ROM]</color>" : string.Empty;
+                    _mindHeaderText.text = $"MIND: <b>{safeName}</b>{classBadge}{stateTag}";
+                }
+                else
+                {
+                    _mindHeaderText.text = $"STANDING RULES ({s.Rules.Count})";
+                }
             }
 
-            int shown = Mathf.Min(mind.Profiles.Count, _mindProfilePool.Count);
+            int shown = mind != null ? Mathf.Min(mind.Profiles.Count, _mindProfilePool.Count) : 0;
             for (int i = 0; i < shown; i++)
             {
                 var slot = _mindProfilePool[i];
@@ -1560,6 +1650,85 @@ namespace TacSim.UI
                     kv.Value.bg.color = isCur ? new Color(0.48f, 0.36f, 0.14f) : new Color(0.14f, 0.22f, 0.32f);
                 if (kv.Value.btn != null)
                     kv.Value.btn.interactable = !isCur;
+            }
+
+            if (_rulesToggleBtnLabel != null)
+                _rulesToggleBtnLabel.text = s.Rules.Count > 0 ? $"RULES ({s.Rules.Count})" : "RULES";
+
+            UpdateRulesDrawer(s, yBot + 40f);
+        }
+
+        private void UpdateRulesDrawer(ArenaCockpitState s, float? forcedBottomY = null)
+        {
+            if (_rulesDrawer == null) return;
+            bool show = _rulesDrawerOpen && s != null;
+            if (_rulesDrawer.activeSelf != show)
+                _rulesDrawer.SetActive(show);
+            if (!show) return;
+
+            if (_rulesDrawerRect != null)
+            {
+                float yBot = forcedBottomY ?? ((_detachmentBar != null && _detachmentBar.activeSelf) ? 230f : 154f);
+                SetRect(_rulesDrawerRect, new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(452f, yBot), new Vector2(-446f, yBot + 122f));
+            }
+
+            int ruleCount = Mathf.Min(s.Rules.Count, _ruleChipPool.Count);
+            for (int i = 0; i < ruleCount; i++)
+            {
+                var r = s.Rules[i];
+                var chip = _ruleChipPool[i];
+                chip.BoundSlot = r.Slot;
+                string extra = !string.IsNullOrEmpty(r.Weapon)
+                    ? $" {r.Weapon.ToUpperInvariant()}"
+                    : (r.MinPercent > 0 ? $" >={r.MinPercent}%" : string.Empty);
+                if (chip.Label != null)
+                    chip.Label.text = $"S{r.Slot} {r.Action.ToUpperInvariant()}{extra} ×";
+                if (chip.Root != null && !chip.Root.activeSelf)
+                    chip.Root.SetActive(true);
+            }
+            for (int i = ruleCount; i < _ruleChipPool.Count; i++)
+            {
+                _ruleChipPool[i].BoundSlot = 0;
+                if (_ruleChipPool[i].Root != null && _ruleChipPool[i].Root.activeSelf)
+                    _ruleChipPool[i].Root.SetActive(false);
+            }
+
+            if (_rulesDrawerBodyText != null)
+            {
+                var sb = new StringBuilder(240);
+                if (s.StandingOrder != null)
+                {
+                    var ord = s.StandingOrder;
+                    string objUp = MushProtocol.EscapeUnityRichText((ord.Objective ?? string.Empty).ToUpperInvariant());
+                    string dest = ord.HasToCell
+                        ? $" -> ({ord.ToCellX},{ord.ToCellY})"
+                        : (!string.IsNullOrEmpty(ord.Target) ? $" -> {MushProtocol.EscapeUnityRichText(ord.Target)}" : string.Empty);
+                    string hf = ord.HoldFire ? " <color=#FFAA44>[HOLD FIRE]</color>" : string.Empty;
+                    sb.Append($"<color=#FFEE66>ORDER:</color> <b>{objUp}</b>{dest}{hf}\n");
+                }
+                if (s.Mind != null)
+                {
+                    string schema = !string.IsNullOrEmpty(s.Mind.CardSchema) ? $" ({MushProtocol.EscapeUnityRichText(s.Mind.CardSchema)})" : string.Empty;
+                    if (s.Mind.SealedRules.Count > 0)
+                    {
+                        sb.Append($"<color=#77DDFF>SEALED MIND{schema}:</color> ");
+                        int cap = Mathf.Min(s.Mind.SealedRules.Count, 4);
+                        for (int i = 0; i < cap; i++)
+                        {
+                            if (i > 0) sb.Append("  |  ");
+                            sb.Append(MushProtocol.EscapeUnityRichText(s.Mind.SealedRules[i]));
+                        }
+                    }
+                    else
+                    {
+                        sb.Append($"<color=#77DDFF>SEALED MIND{schema}:</color> No sealed rules listed.");
+                    }
+                }
+                else if (s.Rules.Count == 0)
+                {
+                    sb.Append("No active standing rules. Toggle AUTO-LOCK or AUTO-FIRE to arm.");
+                }
+                _rulesDrawerBodyText.text = sb.ToString();
             }
         }
 

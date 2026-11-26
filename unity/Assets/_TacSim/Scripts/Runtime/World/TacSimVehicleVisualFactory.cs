@@ -22,28 +22,39 @@ namespace TacSim.World
         public Animator WeaponAnimator;
         public GameObject WreckSmokeVisual;
         public GameObject DamageSmokeVisual;
+        public GameObject HitFlashVisual;
+        public MeshRenderer HitFlashRenderer;
+        public MeshRenderer StatusBeaconRenderer;
         public WorldBillboard Billboard;
         public bool IsBiped;
         public bool IsSpiderWalker;
         public bool IsRover;
         public string CurrentHealthWord { get; private set; } = "intact";
         public bool IsDamageSmokeActive => DamageSmokeVisual != null && DamageSmokeVisual.activeSelf;
+        public bool IsHitFlashActive => HitFlashVisual != null && HitFlashVisual.activeSelf && _hitFlashRemainSec > 0f;
+        public float CurrentRecoilKickOffset => _recoilKickOffset;
 
         private float _walkCycleRad;
         private Vector3 _chassisSpawnLocalPos;
         private float _turretBaseLocalY;
+        private float _turretBaseLocalZ;
         private float _waistRestLocalY;
         private bool _poseCaptured;
         private string _activeAnimState = string.Empty;
         private bool _isWrecked;
         private float _weaponRecoilStopAt = -1f;
+        private float _recoilKickOffset;
+        private float _hitFlashRemainSec;
 
         public void CaptureInitialCommercialPose()
         {
             if (ChassisTransform != null)
                 _chassisSpawnLocalPos = ChassisTransform.localPosition;
             if (TurretPivot != null)
+            {
                 _turretBaseLocalY = TurretPivot.localPosition.y;
+                _turretBaseLocalZ = TurretPivot.localPosition.z;
+            }
             if (WaistMountSocket != null && HullTiltRoot != null)
                 _waistRestLocalY = HullTiltRoot.InverseTransformPoint(WaistMountSocket.position).y;
             _poseCaptured = true;
@@ -65,11 +76,63 @@ namespace TacSim.World
 
         public void PlayWeaponRecoil()
         {
+            _recoilKickOffset = 0.52f;
+            if (TurretPivot != null)
+            {
+                if (!_poseCaptured)
+                {
+                    _turretBaseLocalY = TurretPivot.localPosition.y;
+                    _turretBaseLocalZ = TurretPivot.localPosition.z;
+                }
+                Vector3 lp = TurretPivot.localPosition;
+                TurretPivot.localPosition = new Vector3(lp.x, lp.y, _turretBaseLocalZ - _recoilKickOffset);
+            }
             if (WeaponAnimator == null) return;
             WeaponAnimator.enabled = true;
             WeaponAnimator.speed = 1.35f;
             WeaponAnimator.Play("Shoot", 0, 0f);
             _weaponRecoilStopAt = Time.time + 0.45f;
+        }
+
+        public void TriggerHitFlash(bool isCrit = false)
+        {
+            if (HitFlashVisual == null) return;
+            _hitFlashRemainSec = isCrit ? 0.28f : 0.18f;
+            if (HitFlashRenderer != null)
+            {
+                Color c = isCrit ? new Color(1.0f, 0.34f, 0.18f, 0.58f) : new Color(1.0f, 0.86f, 0.34f, 0.48f);
+                HitFlashRenderer.sharedMaterial = UrpMaterialFactory.GetHologramUnlit(isCrit ? "RigCritFlash" : "RigHitFlash", c);
+            }
+            HitFlashVisual.transform.localScale = Vector3.one * (isCrit ? 4.4f : 3.6f);
+            HitFlashVisual.SetActive(true);
+        }
+
+        public void SetOperationalBeacon(bool overheated, bool immobile, bool wrecked)
+        {
+            if (StatusBeaconRenderer == null) return;
+            string key;
+            Color col;
+            if (wrecked)
+            {
+                key = "BeaconWreck";
+                col = new Color(0.55f, 0.10f, 0.10f);
+            }
+            else if (overheated)
+            {
+                key = "BeaconOverheat";
+                col = new Color(1.0f, 0.36f, 0.12f);
+            }
+            else if (immobile)
+            {
+                key = "BeaconImmobile";
+                col = new Color(1.0f, 0.72f, 0.14f);
+            }
+            else
+            {
+                key = "BeaconOnline";
+                col = new Color(0.22f, 0.96f, 0.62f);
+            }
+            StatusBeaconRenderer.sharedMaterial = UrpMaterialFactory.GetEmissive(key, col, col * 2.2f);
         }
 
         private void PlayChassisState(string stateName, bool immediate, float animSpeed)
@@ -95,6 +158,30 @@ namespace TacSim.World
                 WeaponAnimator.Update(0f);
                 WeaponAnimator.speed = 0f;
                 WeaponAnimator.enabled = false;
+            }
+
+            if (_recoilKickOffset > 0.0005f)
+            {
+                _recoilKickOffset = Mathf.Max(0f, _recoilKickOffset - dt * 2.4f);
+                if (TurretPivot != null)
+                {
+                    Vector3 lp = TurretPivot.localPosition;
+                    TurretPivot.localPosition = new Vector3(lp.x, lp.y, _turretBaseLocalZ - _recoilKickOffset);
+                }
+            }
+
+            if (_hitFlashRemainSec > 0f && HitFlashVisual != null)
+            {
+                _hitFlashRemainSec = Mathf.Max(0f, _hitFlashRemainSec - dt);
+                if (_hitFlashRemainSec <= 0f)
+                {
+                    HitFlashVisual.SetActive(false);
+                }
+                else
+                {
+                    float s = 3.2f + (_hitFlashRemainSec / 0.28f) * 1.4f;
+                    HitFlashVisual.transform.localScale = Vector3.one * s;
+                }
             }
 
             if (_poseCaptured && ChassisTransform != null)
@@ -371,6 +458,30 @@ namespace TacSim.World
 
             rig.WreckSmokeVisual = BuildWreckMarker(tilt, catalog);
             rig.WreckSmokeVisual.SetActive(false);
+
+            // 3D Impact Hit-Flash burst sphere (illuminates briefly on incoming hit/crit)
+            var flashGo = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            flashGo.name = "HitFlashShell";
+            flashGo.transform.SetParent(tilt, false);
+            flashGo.transform.localPosition = new Vector3(0f, isBiped ? 2.4f : 1.5f, 0f);
+            flashGo.transform.localScale = Vector3.one * 3.6f;
+            var flCol = flashGo.GetComponent<Collider>();
+            if (flCol != null) { if (Application.isPlaying) UnityEngine.Object.Destroy(flCol); else UnityEngine.Object.DestroyImmediate(flCol); }
+            rig.HitFlashRenderer = flashGo.GetComponent<MeshRenderer>();
+            rig.HitFlashRenderer.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("RigHitFlash", new Color(1.0f, 0.86f, 0.34f, 0.48f));
+            flashGo.SetActive(false);
+            rig.HitFlashVisual = flashGo;
+
+            // 3D Diegetic Hull Status Beacon LED (emerald online / orange overheat / amber immobile / crimson wreck)
+            var beaconGo = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            beaconGo.name = "StatusBeaconLed";
+            beaconGo.transform.SetParent(rig.TurretPivot != null ? rig.TurretPivot : tilt, false);
+            beaconGo.transform.localPosition = isBiped ? new Vector3(0f, 1.35f, -0.35f) : new Vector3(0f, 1.25f, -0.85f);
+            beaconGo.transform.localScale = Vector3.one * 0.28f;
+            var bcCol = beaconGo.GetComponent<Collider>();
+            if (bcCol != null) { if (Application.isPlaying) UnityEngine.Object.Destroy(bcCol); else UnityEngine.Object.DestroyImmediate(bcCol); }
+            rig.StatusBeaconRenderer = beaconGo.GetComponent<MeshRenderer>();
+            rig.SetOperationalBeacon(overheated: false, immobile: false, wrecked: false);
 
             // Tactical floating nameplate & armor/health status
             var bbGo = new GameObject("TacticalTag");
