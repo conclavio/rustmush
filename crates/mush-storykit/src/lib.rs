@@ -76,6 +76,17 @@
 //! - [`Term::across_restart`]: a held session's side of a restart, bounded
 //!   by the restarted half's own heal schedule (rule P).
 //!
+//! Added by unit FL.8, for mushd's stories:
+//!
+//! - [`Term::ask_settled`]: a needle read made whole, for a story that parses
+//!   what a line printed. [`ask_whole`] now counts its answers as [`ask`]
+//!   does.
+//! - [`Term::expect_squeezed_after`], [`Term::resize`] and [`Term::sent_at`]:
+//!   the rest of mushd's own terminal, for the `@tui` screen and the rig's
+//!   flood-bucket room.
+//! - [`after_ticks`]: the barrier for "a world tick has fired `n` more
+//!   times", on the scheduler's own order.
+//!
 //! Added by unit FL.9, for the small crates' stories (mush-net-web,
 //! mush-net-ssh, mush-sshdoorway):
 //!
@@ -110,6 +121,7 @@ mod figures;
 mod odds;
 mod paused;
 mod phase;
+mod readout;
 mod reply;
 mod scratch;
 mod step;
@@ -130,6 +142,7 @@ pub use phase::{
     BEFORE_DAY_TURN, BEFORE_MONTH_TURN_DAYS, Calendar, IC_DAY, IC_HOUR, IC_MONTH, PHASE_TESTS,
     PHASE_VAR, Phase, STORY_EPOCH,
 };
+pub use readout::{FLOODED, TICK_MARK, after_ticks};
 pub use reply::{Reply, ask};
 pub use scratch::scratch_dir;
 pub use step::{at_most, round_trip, within, within_for};

@@ -23,7 +23,7 @@ use std::path::Path;
 use mush_contract_tests::scan;
 
 /// The crates whose stories have moved onto the kit's reader.
-const CONVERTED: [&str; 1] = ["mush-gateway"];
+const CONVERTED: [&str; 2] = ["mush-gateway", "mushd"];
 
 /// The kit, which holds the one definition of each.
 const KIT_CRATE: &str = "mush-storykit";

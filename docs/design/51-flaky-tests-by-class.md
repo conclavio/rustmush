@@ -728,7 +728,7 @@ for the suite. FL.0 is this document and its script, merged as #771.
 | **FL.5 the bot's stories** | `Client::ask_whole` and `Reply`; one busy-sentence table for the rig; `StoryBudget` in every `mining_cohort` story; the seed and `Figures` in `arena_e2e`, with row 2's range derived and its odds stated; row 18's reader if the hygiene fix left a needle read | mush-bot tests, mush-storykit | M | 16 |
 | **FL.6 mush-server's lib and boundary** | row 10 and its neighbors onto the paused clock with `TimeSource::Tokio`; the in-`src` `world_task` tests' drain windows (row 8's kind) onto `settled`-style barriers; the `--src` scope added to `wait_budget` for mush-server | mush-server | M | 15 |
 | **FL.7 the gateway's stories** (cut 2026-11-25, built) | the ten `Term` copies replaced by the kit's; `across_restart`; restart limits from the gateway's own schedule; rows 12 and 15 closed or re-described; `one_reader` turned on for mush-gateway | mush-gateway tests, mush-storykit, mush-contract-tests | M | 8 |
-| **FL.8 mushd's readers** | the 15 `say`, 12 `ask` and 10 `ask_whole` definitions in `sim_lenses` replaced by the kit's; every parse after a needle read moved to `ask_whole`; `after_tick`; row 14; `one_reader` turned on for mushd | mushd tests, mush-storykit, mush-contract-tests | L, mechanical | 3 |
+| **FL.8 mushd's readers** (cut 2026-11-25, built) | the 15 `say`, 12 `ask` and 10 `ask_whole` definitions in `sim_lenses` replaced by the kit's; every parse after a needle read moved to `ask_whole`; `after_tick`; row 14; `one_reader` turned on for mushd | mushd tests, mush-storykit, mush-contract-tests | L, mechanical | 3 |
 | **FL.9 the small crates** (cut 2026-11-25, built) | mush-net-web's and mush-net-ssh's bare sleeps onto barriers and absence-between-marks; mush-sshdoorway's rig onto the kit; the literal-span counter baselined | mush-net-web, mush-net-ssh, mush-sshdoorway, mush-contract-tests | M | |
 | **FL.10 close-out** | budgets re-blessed down and the totals recorded; `docs/flaky-tests.md` rows closed against the soak's record; doc 43 §2.3 gains rules F, D, C, S, P and T as #16 to #21; what the soak found that no rule covers | docs, mush-contract-tests | S | |
 
@@ -851,6 +851,11 @@ alternative and the reason are kept as the record of what was weighed.
 - **Alternative:** add a per-tick fire count to `@ps` in FL.8.
 - **Reason:** a readout change is a product change, and the first barrier that needs it may not
   exist. If it does, the count is a small one.
+- **FL.8's report (2026-11-26):** whole seconds are not fine enough. The one tick a story waits
+  on, tacsim's boarding tick, has a 1-s period, so `@ps` reads `next in 0s` at every instant.
+  The barrier needs no readout either: `after_ticks` has staff queue `@wait n=think …` and waits
+  for the thought, since the scheduler fires its entries in the order they fall due. No product
+  change, so no fire count (the FL.8 cut note).
 
 ## 7. What this audit did not check
 

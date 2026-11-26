@@ -58,8 +58,6 @@ const PILOT_PASSWORD: &str = "pilot-secret-1";
 /// The phrase both commit refusals end with — the old immediate one and the
 /// cut's timed-out one. The story asserts it never appears.
 const RETRY: &str = "please retry in a moment";
-/// How many times the SETUP (never the story) re-sends a line on that refusal.
-const RETRY_BUDGET: usize = 8;
 
 /// The one pilot, created before the world task spawns so its id is stable.
 const ADA: ObjId = ObjId(2);
@@ -217,19 +215,6 @@ async fn login(
     (handle, term)
 }
 
-/// SETUP ONLY: run one line and wait for `needle`, re-sending on a commit
-/// refusal (the staff account's teleport can meet the first-boot pack apply).
-async fn say(term: &mut Term, line: &str, needle: &str) {
-    for _ in 0..RETRY_BUDGET {
-        let mark = term.mark();
-        term.send_line(line).await;
-        if term.expect_one_of_after(mark, &[needle, RETRY]).await == 0 {
-            return;
-        }
-    }
-    panic!("`{line}` was refused as commit-pending {RETRY_BUDGET} times running");
-}
-
 /// One object's dbref, out of an `@find` listing.
 fn dbref_of(listing: &str, name: &str) -> u32 {
     listing
@@ -259,14 +244,10 @@ async fn four_lines_typed_ahead_behind_a_commit_are_all_answered_in_order() {
     // the board.
     let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
     let mark = god.mark();
-    say(&mut god, "@find Simulator Lobby", "END OF LIST").await;
-    let lobby = dbref_of(&strip_ansi(&god.seen[mark..]), "Simulator Lobby");
-    say(
-        &mut god,
-        &format!("@teleport #{}=#{lobby}", ADA.0),
-        "Teleported",
-    )
-    .await;
+    god.say("@find Simulator Lobby", "END OF LIST").await;
+    let lobby = dbref_of(&strip_ansi(&god.raw()[mark..]), "Simulator Lobby");
+    god.say(&format!("@teleport #{}=#{lobby}", ADA.0), "Teleported")
+        .await;
 
     let (_ada_handle, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
     // Let the attach look land before the mark, so everything after it is the
@@ -284,7 +265,7 @@ async fn four_lines_typed_ahead_behind_a_commit_are_all_answered_in_order() {
     // any line would have had its chance to arrive.
     ada.expect_after(mark, "in your room.").await;
 
-    let heard = strip_ansi(&ada.seen[mark..]);
+    let heard = strip_ansi(&ada.raw()[mark..]);
     assert!(
         !heard.contains(RETRY),
         "no line of the burst was refused: {heard}"
@@ -314,7 +295,7 @@ fn script_lines(text: &str) -> Vec<String> {
 /// contains `<<<`, such as the echo of `OUTPUTSUFFIX <<<`, does not count).
 async fn read_suffixes(term: &mut Term, from: usize, n: usize) {
     loop {
-        let seen = script_lines(&strip_ansi(&term.seen[from..]))
+        let seen = script_lines(&strip_ansi(&term.raw()[from..]))
             .iter()
             .filter(|line| *line == "<<<")
             .count();
@@ -347,20 +328,12 @@ async fn brackets_round_four_lines_typed_ahead_in_one_write_and_round_no_notice(
     // say of God's reaches her.
     let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
     let mark = god.mark();
-    say(&mut god, "@find Simulator Lobby", "END OF LIST").await;
-    let lobby = dbref_of(&strip_ansi(&god.seen[mark..]), "Simulator Lobby");
-    say(
-        &mut god,
-        &format!("@teleport #{}=#{lobby}", ADA.0),
-        "Teleported",
-    )
-    .await;
-    say(
-        &mut god,
-        &format!("@teleport me=#{lobby}"),
-        "Simulator Lobby",
-    )
-    .await;
+    god.say("@find Simulator Lobby", "END OF LIST").await;
+    let lobby = dbref_of(&strip_ansi(&god.raw()[mark..]), "Simulator Lobby");
+    god.say(&format!("@teleport #{}=#{lobby}", ADA.0), "Teleported")
+        .await;
+    god.say(&format!("@teleport me=#{lobby}"), "Simulator Lobby")
+        .await;
 
     let (_ada_handle, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
     ada.expect("Simulator Lobby").await;
@@ -371,7 +344,7 @@ async fn brackets_round_four_lines_typed_ahead_in_one_write_and_round_no_notice(
     ada.send_line("OUTPUTPREFIX >>>").await;
     ada.send_line("OUTPUTSUFFIX <<<").await;
     read_suffixes(&mut ada, mark, 1).await;
-    let settings = script_lines(&strip_ansi(&ada.seen[mark..]));
+    let settings = script_lines(&strip_ansi(&ada.raw()[mark..]));
     let framed: Vec<&String> = settings
         .iter()
         .filter(|line| *line == ">>>" || *line == "<<<")
@@ -394,7 +367,7 @@ async fn brackets_round_four_lines_typed_ahead_in_one_write_and_round_no_notice(
         .await;
     // The WHO table's footer is inside the fourth pair; read to its suffix.
     read_suffixes(&mut ada, burst, 4).await;
-    let heard = strip_ansi(&ada.seen[burst..]);
+    let heard = strip_ansi(&ada.raw()[burst..]);
     assert!(
         !heard.contains(RETRY),
         "no line of the burst was refused: {heard}"
@@ -463,14 +436,14 @@ async fn brackets_round_four_lines_typed_ahead_in_one_write_and_round_no_notice(
     // A notice: God says a line in Ada's room. It is pushed, not an answer,
     // so it arrives outside every pair.
     let notice = ada.mark();
-    say(
-        &mut god,
+    god.say(
         "say The tower is listening.",
-        "The tower is listening.",
+        // Its own answer closes the quote; the echo does not.
+        "The tower is listening.\"",
     )
     .await;
     ada.expect_after(notice, "The tower is listening.").await;
-    let all = script_lines(&strip_ansi(&ada.seen[mark..]));
+    let all = script_lines(&strip_ansi(&ada.raw()[mark..]));
     let count = |needle: &str| all.iter().filter(|line| *line == needle).count();
     assert_eq!(
         (count(">>>"), count("<<<")),

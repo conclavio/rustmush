@@ -179,8 +179,10 @@ const MEASURED: [(&str, [u32; 6]); 52] = [
     // to chance). Two at FL.1, sixteen at FL.3; unit FL.7's `Term` adds
     // thirteen, each a session that fails its story (a dial, a pty or a shell
     // refused, a needle or a heal that never came, a channel closed). Unit
-    // FL.9's `within_for` adds one: an event that never came.
-    ("mush-storykit", [0, 0, 0, 30, 0, 0]),
+    // FL.8's `readout` adds three: a squeezed needle that never came, a channel
+    // closed under it, and a window change refused. FL.9's `within_for` adds
+    // one: an event that never came.
+    ("mush-storykit", [0, 0, 0, 33, 0, 0]),
     ("mush-tactics", [3, 49, 1, 0, 2, 0]),
     ("mush-testkit", [0, 5, 0, 1, 0, 0]),
     ("mush-weather", [0, 11, 11, 0, 0, 0]),

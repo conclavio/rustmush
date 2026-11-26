@@ -289,10 +289,7 @@ async fn shell_term(handle: &russh::client::Handle<AcceptAll>) -> Term {
         .await
         .expect("pty");
     channel.request_shell(true).await.expect("shell");
-    Term {
-        channel,
-        seen: String::new(),
-    }
+    Term::new(channel)
 }
 
 /// The M19 public-key journey over the REAL bridge (gateway `verify_pubkey`
@@ -580,122 +577,9 @@ async fn m20_newchar_creates_playable_second_character_e2e() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-struct AcceptAll;
-
-impl russh::client::Handler for AcceptAll {
-    type Error = russh::Error;
-
-    async fn check_server_key(
-        &mut self,
-        _key: &russh::keys::PublicKeyOrCertificate,
-    ) -> Result<bool, Self::Error> {
-        Ok(true)
-    }
-}
-
-/// Drop ANSI CSI sequences so assertions match what a player reads.
-fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                for f in chars.by_ref() {
-                    if ('\u{40}'..='\u{7e}').contains(&f) {
-                        break;
-                    }
-                }
-            }
-            continue;
-        }
-        out.push(c);
-    }
-    out
-}
-
-/// One player's terminal: an SSH channel plus everything it has printed.
-struct Term {
-    channel: russh::Channel<russh::client::Msg>,
-    seen: String,
-}
-
-impl Term {
-    /// Byte offset of "now" in the raw stream, for [`Term::expect_after`]
-    /// when the needle may already occur earlier in the scrollback.
-    fn mark(&self) -> usize {
-        self.seen.len()
-    }
-
-    async fn expect(&mut self, needle: &str) {
-        self.expect_after(0, needle).await;
-    }
-
-    async fn expect_after(&mut self, mark: usize, needle: &str) {
-        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
-        while !strip_ansi(&self.seen[mark..]).contains(needle) {
-            let msg = tokio::time::timeout_at(deadline, self.channel.wait())
-                .await
-                .unwrap_or_else(|_| {
-                    panic!("timeout waiting for {needle:?}; seen: {:?}", self.seen)
-                });
-            match msg {
-                Some(ChannelMsg::Data { data }) => {
-                    self.seen.push_str(&String::from_utf8_lossy(&data));
-                }
-                Some(_) => {}
-                None => panic!(
-                    "channel closed waiting for {needle:?}; seen: {:?}",
-                    self.seen
-                ),
-            }
-        }
-    }
-
-    async fn send_line(&mut self, line: &str) {
-        let bytes = format!("{line}\r").into_bytes();
-        self.channel.data(&bytes[..]).await.expect("send line");
-    }
-
-    async fn expect_close(&mut self) {
-        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
-        loop {
-            let msg = tokio::time::timeout_at(deadline, self.channel.wait())
-                .await
-                .expect("timeout waiting for close");
-            match msg {
-                None | Some(ChannelMsg::Close) => return,
-                Some(ChannelMsg::Data { data }) => {
-                    self.seen.push_str(&String::from_utf8_lossy(&data));
-                }
-                Some(_) => {}
-            }
-        }
-    }
-}
-
-/// `ssh play@addr` with a PTY + shell, landing on the welcome screen.
-async fn play_client(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, Term) {
-    let config = Arc::new(russh::client::Config::default());
-    let mut handle = russh::client::connect(config, addr, AcceptAll)
-        .await
-        .expect("connect");
-    let auth = handle.authenticate_none("play").await.expect("auth-none");
-    assert!(auth.success(), "play must be accepted with no auth");
-    let channel = handle.channel_open_session().await.expect("open channel");
-    channel
-        .request_pty(true, "xterm-256color", 80, 24, 0, 0, &[])
-        .await
-        .expect("pty");
-    channel.request_shell(true).await.expect("shell");
-    (
-        handle,
-        Term {
-            channel,
-            seen: String::new(),
-        },
-    )
-}
+// Doc 51 unit FL.8: the terminal and its login are the rig's, over the story
+// kit's `Term`.
+use crate::support::{AcceptAll, Term, play_client, strip_ansi};
 
 /// Parse a rendered WHO duration token (`0s`, `12m`, `3h`, `2d`) to seconds.
 fn duration_secs(tok: &str) -> Option<u64> {
@@ -773,7 +657,7 @@ async fn m1_exit_criterion_full_journey() {
     god.send_line("think interleaved-42").await;
     god.expect("interleaved-42").await;
     god.expect("SLOWTEST: fake async call").await;
-    let stripped = strip_ansi(&god.seen);
+    let stripped = strip_ansi(god.raw());
     let think_at = stripped.find("interleaved-42").expect("think output");
     let slow_at = stripped.find("SLOWTEST:").expect("slowtest output");
     assert!(
@@ -799,7 +683,7 @@ async fn m1_exit_criterion_full_journey() {
     let who_mark = bob.mark();
     bob.send_line("WHO").await;
     bob.expect_after(who_mark, "3 connected, ").await;
-    let block = strip_ansi(&bob.seen[who_mark..]);
+    let block = strip_ansi(&bob.raw()[who_mark..]);
     let (_alice_idle, alice_conn) = who_row(&block, "Alice");
     let (bob_idle, _bob_conn) = who_row(&block, "Bob");
     who_row(&block, "God");
@@ -965,7 +849,7 @@ async fn mw24_a_mind_exec_is_never_presence() {
     ada.send_line("say checked the offline exec").await;
     ada.expect_after(offline, "Ada says, \"checked the offline exec\"")
         .await;
-    let seen = strip_ansi(&ada.seen[offline..]);
+    let seen = strip_ansi(&ada.raw()[offline..]);
     assert!(seen.contains("Ada"), "WHO answered: {seen}");
     assert!(
         !seen.contains("Nick"),
@@ -1016,7 +900,7 @@ async fn mw24_a_mind_exec_is_never_presence() {
     ada.send_line("say checked the exec in the gap").await;
     ada.expect_after(after_loss, "Ada says, \"checked the exec in the gap\"")
         .await;
-    let seen = strip_ansi(&ada.seen[after_loss..]);
+    let seen = strip_ansi(&ada.raw()[after_loss..]);
     assert!(seen.contains("Nick"), "WHO still lists him: {seen}");
     assert!(
         !seen.contains("Nick has"),
@@ -1026,7 +910,7 @@ async fn mw24_a_mind_exec_is_never_presence() {
     // The grace that started at the loss is the one that ends him.
     ada.expect_after(after_loss, "Nick has disconnected.").await;
     let gone_at = std::time::Instant::now();
-    let seen = strip_ansi(&ada.seen[after_loss..]);
+    let seen = strip_ansi(&ada.raw()[after_loss..]);
     assert!(
         !seen.contains("Nick has reconnected.") && !seen.contains("Nick has gone link-dead."),
         "no revival and no second loss between the real loss and its expiry: {seen}"

@@ -31,6 +31,7 @@
 
 use crate::shipped::mount;
 use crate::support;
+use support::ask_whole;
 
 use support::{Odds, PULL_REQUEST_BAR, STEP_TIMEOUT, wait_until};
 
@@ -56,13 +57,6 @@ use support::{Term, play_client, scratch_dir, strip_ansi};
 
 const GM_PASSWORD: &str = "gm-secret-1";
 const PILOT_PASSWORD: &str = "pilot-secret-1";
-
-/// The world's transient authoritative refusal: a commit is in flight.
-const COMMIT_PENDING: &str = "please retry in a moment";
-/// `BOARD`'s one transient: the control-lease mirror is a 1 Hz projection.
-const CONTROL_UNKNOWN: &str = "control state unknown";
-/// How many times a line is re-sent on a transient before the test gives up.
-const RETRY_BUDGET: usize = 40;
 
 /// The two pilot characters, created before the world task spawns so their ids are
 /// stable.
@@ -263,53 +257,6 @@ async fn login(
     (handle, term)
 }
 
-/// Run one line and wait for `needle`, retrying the two transients.
-async fn say(term: &mut Term, line: &str, needle: &str) {
-    assert!(
-        !line.contains(needle),
-        "`{needle}` appears in `{line}`'s own echo; pick a needle from the ANSWER"
-    );
-    for _ in 0..RETRY_BUDGET {
-        let mark = term.mark();
-        term.send_line(line).await;
-        match term
-            .expect_one_of_after(mark, &[needle, COMMIT_PENDING, CONTROL_UNKNOWN])
-            .await
-        {
-            0 => return,
-            _ => tokio::time::sleep(Duration::from_millis(200)).await,
-        }
-    }
-    panic!("`{line}` was refused as transient {RETRY_BUDGET} times running");
-}
-
-/// Run one line, wait for `needle`, and hand back everything that arrived.
-async fn ask(term: &mut Term, line: &str, needle: &str) -> String {
-    let mark = term.mark();
-    say(term, line, needle).await;
-    strip_ansi(&term.seen[mark..])
-}
-
-/// The parser's refusal of [`SENTINEL`], which closes a whole answer.
-const HUH: &str = "Huh?";
-/// A line no command answers but the parser's refusal.
-const SENTINEL: &str = "zzz-sentinel";
-
-/// **A whole answer, never half of one**: the line, then a sentinel the parser
-/// refuses, so the whole of a multi-line answer has arrived by the refusal.
-async fn ask_whole(term: &mut Term, line: &str) -> String {
-    for _ in 0..RETRY_BUDGET {
-        let mark = term.mark();
-        term.send_line(line).await;
-        term.send_line(SENTINEL).await;
-        if term.expect_one_of_after(mark, &[HUH, COMMIT_PENDING]).await == 0 {
-            return strip_ansi(&term.seen[mark..]);
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    panic!("`{line}` never produced a whole answer")
-}
-
 /// Run `line` until its answer carries `needle`, and hand that answer back.
 ///
 /// The frame a read verb renders is the **last one the arena sent** (16b cut K.2's
@@ -323,7 +270,7 @@ async fn poll(term: &mut Term, line: &str, echo: &str, needle: &str) -> String {
         STEP_TIMEOUT,
         &format!("`{line}` to say `{needle}`"),
         async || {
-            seen = ask(term, line, echo).await;
+            seen = term.ask_settled(line, echo).await;
             seen.contains(needle)
         },
     )
@@ -396,34 +343,26 @@ fn assert_section_word(outcome: &str) {
 
 /// Walk both pilots into the simulator lobby and put staff in the lobby with them.
 async fn open_the_centre(god: &mut Term) {
-    let listing = ask(god, "@find Simulator Lobby", "END OF LIST").await;
+    let listing = god
+        .ask_settled("@find Simulator Lobby", "END OF LIST")
+        .await;
     let lobby = dbref_of(&listing, "Simulator Lobby");
     for pilot in [ADA, BO] {
-        say(
-            god,
-            &format!("@teleport #{}=#{lobby}", pilot.0),
-            "Teleported",
-        )
-        .await;
+        god.say(&format!("@teleport #{}=#{lobby}", pilot.0), "Teleported")
+            .await;
     }
-    say(
-        god,
-        &format!("@teleport #{}=#{lobby}", GOD.0),
-        "Simulator Lobby",
-    )
-    .await;
+    god.say(&format!("@teleport #{}=#{lobby}", GOD.0), "Simulator Lobby")
+        .await;
 }
 
 /// Put the blue tank four cells south of the red one, on ground the pack authored.
 /// See the module head for why.
 async fn muster_them_together(god: &mut Term) {
-    let listing = ask(god, "@find Proving Ground", "END OF LIST").await;
+    let listing = god.ask_settled("@find Proving Ground", "END OF LIST").await;
     let ground = dbref_of(&listing, "Proving Ground");
-    let listing = ask(god, "@find Blue Tank 1", "END OF LIST").await;
+    let listing = god.ask_settled("@find Blue Tank 1", "END OF LIST").await;
     let blue = dbref_of(&listing, "Blue Tank 1");
-    say(
-        god,
-        &format!(
+    god.say(&format!(
             "@spatial/place/domain #{blue}=#{ground},{{\"x_cm\":{BLUE_X_CM},\"y_cm\":{BLUE_Y_CM},\"heading_mdeg\":270000}}"
         ),
         "Placed",
@@ -433,13 +372,13 @@ async fn muster_them_together(god: &mut Term) {
 
 /// Claim, start, walk and board: the state the shot is taken from.
 async fn take_off(ada: &mut Term, bo: &mut Term) {
-    say(ada, "SIM TEAM red", "takes red slot 1").await;
-    say(bo, "SIM TEAM blue", "takes blue slot 1").await;
-    say(ada, "SIM START", "is boarding").await;
-    say(ada, "red", "Red Room").await;
-    say(bo, "blue", "Blue Room").await;
-    say(ada, "BOARD", "climb into").await;
-    say(bo, "BOARD", "climb into").await;
+    ada.say("SIM TEAM red", "takes red slot 1").await;
+    bo.say("SIM TEAM blue", "takes blue slot 1").await;
+    ada.say("SIM START", "is boarding").await;
+    ada.say("red", "Red Room").await;
+    bo.say("blue", "Blue Room").await;
+    ada.say("BOARD", "climb into").await;
+    bo.say("BOARD", "climb into").await;
     // The second seat fires cut K.1's trigger, and the centre says so in every room.
     ada.expect("Good hunting").await;
 }
@@ -452,7 +391,7 @@ async fn take_off(ada: &mut Term, bo: &mut Term) {
 /// and leave its `STATUS` in flight, to land after whatever the caller marks
 /// next.
 async fn power_up(term: &mut Term) {
-    say(term, "STARTUP", "Startup sequence").await;
+    term.say("STARTUP", "Startup sequence").await;
     wait_until(STEP_TIMEOUT, "the tank to come online", async || {
         ask_whole(term, "STATUS").await.contains("power online")
     })
@@ -517,7 +456,7 @@ async fn two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot() {
 
     // A cold tank with no lock is told about the **lock** first: doc 16 §3.7's
     // refusal column puts power last, which is what makes `FIRE` useful advice.
-    let seen = ask(&mut ada, "FIRE", "No lock").await;
+    let seen = ada.ask_settled("FIRE", "No lock").await;
     assert!(
         !seen.contains(POWER_NOT_ONLINE),
         "the lock comes first: {seen}"
@@ -540,14 +479,14 @@ async fn two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot() {
     // Before the lock, `WEAPONSTATUS` is a full load and no band. The load is the
     // content's (doc 49 cut CC.0), so a retune of the round's pack moves no line here.
     let cannon = mount("line_tank", "cannon");
-    let seen = ask(&mut ada, "WEAPONSTATUS", "cannon").await;
+    let seen = ada.ask_settled("WEAPONSTATUS", "cannon").await;
     assert!(seen.contains(&cannon.full()), "{seen}");
     assert!(seen.contains("ready"), "{seen}");
     assert!(!seen.contains("Locked on"), "{seen}");
 
     // The lock, and then the shot. The arena records the lock in its own phase 4 and
     // the pilot reads it back off the next frame, which is what `poll` waits for.
-    say(&mut ada, &format!("LOCK {contact}"), "Locking").await;
+    ada.say(&format!("LOCK {contact}"), "Locking").await;
     let seen = poll(&mut ada, "WEAPONSTATUS", "cannon", "Locked on").await;
     assert!(seen.contains(&contact), "the lock is the contact: {seen}");
     assert!(
@@ -561,13 +500,13 @@ async fn two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot() {
     // re-locked to watch the number close as the range shortened read two lines
     // with two different numbers, the first of them stale. One order, one line.
     let repeat = ada.mark();
-    say(&mut ada, &format!("LOCK {contact}"), "Locking").await;
+    ada.say(&format!("LOCK {contact}"), "Locking").await;
     ada.expect_after(repeat, "Locked on ").await;
     // Advance the arena and then read a command fence, so any duplicate lock
     // notice is actually collected instead of sitting unread on the socket.
     support::wait_arena_seconds(&mut god, 3).await;
-    ask(&mut ada, "STATUS", "power").await;
-    let after = strip_ansi(&ada.seen[repeat..]);
+    ada.ask_settled("STATUS", "power").await;
+    let after = strip_ansi(&ada.raw()[repeat..]);
     assert_eq!(
         after.matches("Locked on ").count(),
         1,
@@ -582,7 +521,7 @@ async fn two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot() {
     // of the scrollback: the impact resolves a pulse after the `FIRE`, so a
     // synchronous scan would race the arena.
     let shot = ada.mark();
-    say(&mut ada, "FIRE", "Firing cannon").await;
+    ada.say("FIRE", "Firing cannon").await;
 
     // The shooter: a round down, and cycling. The second `FIRE` is refused for the
     // cycle and not for the lock, which is the arena's own `ready_at_ms` speaking.
@@ -594,11 +533,11 @@ async fn two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot() {
     )
     .await;
     assert!(spent.contains("cycling"), "{spent}");
-    let seen = ask(&mut ada, "FIRE", "Still cycling").await;
+    let seen = ada.ask_settled("FIRE", "Still cycling").await;
     assert!(!seen.contains("No lock"), "the lock is still held: {seen}");
 
     // The target: untouched in the magazine, and ready. Damage is below.
-    let seen = ask(&mut bo, "WEAPONSTATUS", "cannon").await;
+    let seen = bo.ask_settled("WEAPONSTATUS", "cannon").await;
     assert!(seen.contains(&cannon.full()), "{seen}");
     assert!(seen.contains("ready"), "{seen}");
     assert!(
@@ -614,7 +553,7 @@ async fn two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot() {
     // tank.
     ada.expect_one_of_after(shot, &["Hit on ", "Miss on "])
         .await;
-    let seen = strip_ansi(&ada.seen[shot..]);
+    let seen = strip_ansi(&ada.raw()[shot..]);
     let outcome = seen
         .lines()
         .find(|line| line.starts_with("Hit on ") || line.starts_with("Miss on "))
@@ -682,7 +621,7 @@ async fn two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot() {
     );
     // The same verb, against a name the platform does not hold: the one
     // byte-identical refusal, and nothing about a contact.
-    let refused = ask(&mut ada, "SCAN ZZ", "No such contact.").await;
+    let refused = ada.ask_settled("SCAN ZZ", "No such contact.").await;
     assert!(
         !refused.contains("Scan of") && !refused.contains("not identified"),
         "SCAN of an unheld name said something about a contact: {refused}"
@@ -702,13 +641,13 @@ async fn two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot() {
     // provisional one is `tacsim/tests/weapons.rs` and `tacsim/tests/cockpit.rs`,
     // which drive the classification clock instead of racing it.
     let renamed = ada.mark();
-    say(&mut ada, &format!("LOCK {contact}"), "Locking").await;
-    let kept = strip_ansi(&ada.seen[renamed..]);
+    ada.say(&format!("LOCK {contact}"), "Locking").await;
+    let kept = strip_ansi(&ada.raw()[renamed..]);
     assert!(
         !kept.contains("No such contact."),
         "the name the lock was taken under stopped resolving after the rename: {kept}"
     );
-    let still = ask(&mut ada, "WEAPONSTATUS", "Locked on").await;
+    let still = ada.ask_settled("WEAPONSTATUS", "Locked on").await;
     assert!(
         still.contains(&named) && !still.contains("No lock"),
         "the lock moved or broke: {still}"
@@ -753,13 +692,13 @@ async fn two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot() {
     .assert_false_failure_below(PULL_REQUEST_BAR);
     let burst = ada.mark();
     let taking = bo.mark();
-    say(&mut ada, "FIRE mg", "Firing machine_gun").await;
+    ada.say("FIRE mg", "Firing machine_gun").await;
     ada.expect_after(burst, "Hit on ").await;
 
     // **16b cut Q.2**, deterministically: the burst lands, so every outcome line
     // it produced is read and each is checked for the section word. This is the
     // hit half of `assert_section_word`, taken where a hit is guaranteed.
-    let landed = strip_ansi(&ada.seen[burst..]);
+    let landed = strip_ansi(&ada.raw()[burst..]);
     let outcomes: Vec<&str> = landed
         .lines()
         .map(str::trim)
@@ -796,7 +735,7 @@ async fn two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot() {
 
     // And the black box: the lock, the shot and its arrival, in the match's own
     // ledger on the world's writer lane.
-    say(&mut ada, "SIM ABORT", "aborts match").await;
+    ada.say("SIM ABORT", "aborts match").await;
     let mut ledger = String::new();
     wait_until(STEP_TIMEOUT, "the weapon match's ledger tail", async || {
         ledger = ledger_text(&server.store, 1).await;
@@ -824,13 +763,11 @@ async fn two_pilots_detect_lock_and_fire_and_the_ledger_records_the_shot() {
 /// Put the blue tank four cells south of the red one facing NORTH — nose-on to
 /// it, so the red tank's sensor reads its front.
 async fn muster_them_nose_on(god: &mut Term) {
-    let listing = ask(god, "@find Proving Ground", "END OF LIST").await;
+    let listing = god.ask_settled("@find Proving Ground", "END OF LIST").await;
     let ground = dbref_of(&listing, "Proving Ground");
-    let listing = ask(god, "@find Blue Tank 1", "END OF LIST").await;
+    let listing = god.ask_settled("@find Blue Tank 1", "END OF LIST").await;
     let blue = dbref_of(&listing, "Blue Tank 1");
-    say(
-        god,
-        &format!(
+    god.say(&format!(
             "@spatial/place/domain #{blue}=#{ground},{{\"x_cm\":{BLUE_X_CM},\"y_cm\":{BLUE_Y_CM},\"heading_mdeg\":0}}"
         ),
         "Placed",
@@ -912,7 +849,7 @@ async fn m1b4_a_conditioned_cannon_fires_only_on_flanks_while_a_typed_fire_still
     let ada_mark = ada.mark();
 
     let contact = wait_for_contact(&mut ada).await;
-    say(&mut ada, &format!("LOCK {contact}"), "Locking").await;
+    ada.say(&format!("LOCK {contact}"), "Locking").await;
     // The lock on the mirror, read WHOLE (3ef6e34a): a half-read answer's tail
     // would land inside the next ask's mark.
     wait_until(STEP_TIMEOUT, "the lock on WEAPONSTATUS", async || {
@@ -923,7 +860,9 @@ async fn m1b4_a_conditioned_cannon_fires_only_on_flanks_while_a_typed_fire_still
     .await;
 
     // Under the floor: refused as typed, and nothing armed.
-    let seen = ask(&mut ada, "FIRE cannon WHEN odds >= 5", "Compact floor").await;
+    let seen = ada
+        .ask_settled("FIRE cannon WHEN odds >= 5", "Compact floor")
+        .await;
     assert_eq!(
         lines_opening(&seen, "FIRE cannon refused."),
         vec![FLOOR.to_owned()],
@@ -937,12 +876,12 @@ async fn m1b4_a_conditioned_cannon_fires_only_on_flanks_while_a_typed_fire_still
 
     // The gate's rule.
     let armed_at = ada.mark();
-    let seen = ask(
-        &mut ada,
-        "FIRE cannon WHEN odds >= 60 AND aspect = side,rear",
-        "Queued: cannon",
-    )
-    .await;
+    let seen = ada
+        .ask_settled(
+            "FIRE cannon WHEN odds >= 60 AND aspect = side,rear",
+            "Queued: cannon",
+        )
+        .await;
     assert_eq!(
         lines_opening(&seen, "Queued: cannon"),
         vec![GATE.to_owned()],
@@ -966,7 +905,7 @@ async fn m1b4_a_conditioned_cannon_fires_only_on_flanks_while_a_typed_fire_still
     // slot shot.
     support::wait_arena_seconds(&mut god, 6).await;
     let _ = ask_whole(&mut ada, "STATUS").await;
-    let seen = strip_ansi(&ada.seen[armed_at..]);
+    let seen = strip_ansi(&ada.raw()[armed_at..]);
     assert!(
         lines_opening(&seen, "Cannon fires").is_empty(),
         "the slot fired at a front: {seen}"
@@ -978,21 +917,20 @@ async fn m1b4_a_conditioned_cannon_fires_only_on_flanks_while_a_typed_fire_still
     );
 
     // A typed FIRE is never gated.
-    say(&mut ada, "FIRE cannon", "Firing cannon.").await;
+    ada.say("FIRE cannon", "Firing cannon.").await;
 
     // Bo turns side-on; with Ada typing nothing, her slot fires.
     let unprompted = ada.mark();
-    say(&mut bo, "HEADING 90", "Steering to 90").await;
+    bo.say("HEADING 90", "Steering to 90").await;
     ada.expect_after(unprompted, &format!("Cannon fires at {contact} by S1 ("))
         .await;
     let off = ada.mark();
-    say(
-        &mut ada,
+    ada.say(
         "FIRE cannon OFF",
         "Cleared: cannon fires only when you say.",
     )
     .await;
-    let seen = strip_ansi(&ada.seen[unprompted..off]);
+    let seen = strip_ansi(&ada.raw()[unprompted..off]);
     let fired = lines_opening(&seen, "Cannon fires");
     assert!(!fired.is_empty(), "{seen}");
     for line in &fired {
@@ -1025,7 +963,7 @@ async fn m1b4_a_conditioned_cannon_fires_only_on_flanks_while_a_typed_fire_still
     .await;
     support::wait_arena_seconds(&mut god, 2).await;
     let _ = ask_whole(&mut ada, "STATUS").await;
-    let after = strip_ansi(&ada.seen[off..]);
+    let after = strip_ansi(&ada.raw()[off..]);
     assert!(
         lines_opening(&after, "Cannon fires").is_empty(),
         "the cleared slot fired: {after}"
@@ -1049,7 +987,7 @@ async fn m1b4_a_conditioned_cannon_fires_only_on_flanks_while_a_typed_fire_still
     // Bo read nothing of Ada's slot — his terminal read to its end first (a
     // whole answer of his own), so nothing he was sent is still in flight.
     let _ = ask_whole(&mut bo, "STATUS").await;
-    let theirs = strip_ansi(&bo.seen[bo_mark..]);
+    let theirs = strip_ansi(&bo.raw()[bo_mark..]);
     for leak in [
         "S1",
         "fires by",
@@ -1065,7 +1003,7 @@ async fn m1b4_a_conditioned_cannon_fires_only_on_flanks_while_a_typed_fire_still
     }
 
     // The tape.
-    say(&mut ada, "SIM ABORT", "aborts match").await;
+    ada.say("SIM ABORT", "aborts match").await;
     let mut ledger = String::new();
     wait_until(STEP_TIMEOUT, "the match's ledger tail", async || {
         ledger = ledger_text(&server.store, 1).await;
@@ -1105,8 +1043,8 @@ async fn m1b4_a_conditioned_cannon_fires_only_on_flanks_while_a_typed_fire_still
     // The whole transcript, for the record.
     println!(
         "==== Ada ====\n{}\n==== Bo ====\n{}\n==== end ({} s) ====",
-        strip_ansi(&ada.seen[ada_mark..]),
-        strip_ansi(&bo.seen[bo_mark..]),
+        strip_ansi(&ada.raw()[ada_mark..]),
+        strip_ansi(&bo.raw()[bo_mark..]),
         began.elapsed().as_secs()
     );
     assert!(

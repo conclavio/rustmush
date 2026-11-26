@@ -27,8 +27,8 @@ use std::time::Duration;
 use russh::ChannelMsg;
 
 use crate::barrier::{Session, settled};
-use crate::busy::BUSY_NEEDLES;
-use crate::wait::{STEP_TIMEOUT, loaded};
+use crate::busy::busy_needles;
+use crate::wait::{POLL_INTERVAL, STEP_TIMEOUT, loaded};
 
 /// How many times [`Term::say`] types a line again on a busy answer before
 /// the story fails. Each try waits for an answer, so this counts answers, not
@@ -89,8 +89,11 @@ pub fn strip_ansi(s: &str) -> String {
 
 /// One player's terminal: an SSH channel and everything it has printed.
 pub struct Term {
-    channel: russh::Channel<russh::client::Msg>,
-    seen: String,
+    pub(crate) channel: russh::Channel<russh::client::Msg>,
+    pub(crate) seen: String,
+    /// When each line was typed, for a rig that must know how fast its
+    /// session typed (mushd's flood-bucket room; unit FL.8, `crate::readout`).
+    pub(crate) sent: Vec<std::time::Instant>,
 }
 
 impl std::fmt::Debug for Term {
@@ -102,7 +105,7 @@ impl std::fmt::Debug for Term {
 }
 
 /// What ended a read early.
-enum Stop {
+pub(crate) enum Stop {
     /// The limit passed.
     Timeout,
     /// The server closed the channel.
@@ -116,6 +119,7 @@ impl Term {
         Term {
             channel,
             seen: String::new(),
+            sent: Vec::new(),
         }
     }
 
@@ -180,6 +184,7 @@ impl Term {
 
     /// Type one line.
     pub async fn send_line(&mut self, line: &str) {
+        self.sent.push(std::time::Instant::now());
         let bytes = format!("{line}\r").into_bytes();
         if let Err(e) = self.channel.data(&bytes[..]).await {
             panic!("send {line:?}: {e}; seen: {:?}", self.seen);
@@ -187,7 +192,7 @@ impl Term {
     }
 
     /// Read until one of `needles` shows after `mark` or `limit` passes.
-    async fn read_until(
+    pub(crate) async fn read_until(
         &mut self,
         mark: usize,
         needles: &[&str],
@@ -250,7 +255,7 @@ impl Term {
     }
 
     /// **Type `line` and wait for `needle`**, typing it again while the
-    /// server gives a busy answer (a sentence of [`BUSY_NEEDLES`], the kit's
+    /// server gives a busy answer (a sentence of [`crate::BUSY_NEEDLES`], the kit's
     /// one table): a commit in flight, the engine's queue, the control lease's
     /// 1 Hz mirror. Those are real answers a real client retries, not
     /// failures. A needle read: it waits, it returns nothing to parse.
@@ -258,18 +263,29 @@ impl Term {
     /// The needle must not be in the line itself, or the line's own echo
     /// would satisfy it before the world had seen the line.
     pub async fn say(&mut self, line: &str, needle: &str) {
+        self.say_from(line, needle).await;
+    }
+
+    /// [`Term::say`], answering the mark taken before the try that was
+    /// answered: a read of the reply starts there, so a refused try's text
+    /// is not part of it (unit FL.8).
+    pub(crate) async fn say_from(&mut self, line: &str, needle: &str) -> usize {
         assert!(
             !line.contains(needle),
             "`{needle}` appears in `{line}`'s own echo; pick a needle from the answer"
         );
         let mut needles = vec![needle];
-        needles.extend(BUSY_NEEDLES);
+        needles.extend(busy_needles());
         for _ in 0..BUSY_RETRIES {
             let mark = self.mark();
             self.send_line(line).await;
             if self.expect_one_of_after(mark, &needles).await == 0 {
-                return;
+                return mark;
             }
+            // A busy answer clears in a moment, and a flooded session gets a
+            // token back in a tenth of a second: typed again at once, the
+            // line would only be refused again (unit FL.8).
+            tokio::time::sleep(POLL_INTERVAL).await;
         }
         panic!(
             "`{line}` had a busy answer {BUSY_RETRIES} times running; seen: {:?}",
@@ -282,8 +298,7 @@ impl Term {
     /// only what the needle itself proves has arrived, or read with
     /// [`crate::ask_whole`].
     pub async fn ask(&mut self, line: &str, needle: &str) -> String {
-        let mark = self.mark();
-        self.say(line, needle).await;
+        let mark = self.say_from(line, needle).await;
         self.since(mark)
     }
 

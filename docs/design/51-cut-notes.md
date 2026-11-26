@@ -1470,6 +1470,184 @@ entries for `split_halves`). It is larger than `docs/flaky-tests.md`'s count, wh
 - **Q-FL7-1.** Two product fixes landed in a test unit (Divergences, 1). Default: keep them here, since the rows
   cannot close without them.
 
+## FL.8
+
+mushd's readers. Built 2026-11-26 on main `2f3101aec` (FL.7, #806, merged). It moves every mushd story onto the kit's
+`Term` and its readers, adds one module to `mush-storykit` (`readout.rs`), builds `after_tick`, fixes row 14, turns
+on `one_reader` for mushd, and deletes mushd's seven rows in `flaky-known.toml`. **No product code changes.**
+
+Every measurement is from conclav.dev, by hand as `ghrunner`, in a clone with its own target directory.
+
+**The suite's soak rate.** `scripts/soak.sh` with `SOAK_PACKAGES=mushd` (`sim_lenses`, `world_journeys`,
+`durable_process`), six cells of four cores, four rounds each, no retry:
+
+| | Passes | Failed passes | Tests that failed | A pass, wall | A pass, summed test time |
+|---|---:|---:|---|---:|---:|
+| Before, main `2f3101aec` | 24 | 0 | none | 269 to 282 s | 1,019 to 1,054 s |
+| After, this unit | 24 | 0 | none | 271 to 284 s | 1,026 to 1,055 s |
+
+Each pass is 248 tests: the binaries' Redis-gated tests skip without `REDIS_URL`, as in the nightly soak. The six
+cells ran on cores 0 to 23 of a quiet box (load at most 12.9 on 32 cores).
+
+**Survey.**
+
+- **Fifteen `say`, twelve `ask` and ten `ask_whole`** in `sim_lenses`, as doc 51 §5 counted, behind 607 `say` and
+  247 `ask` calls. They differed in:
+  - their busy lists: one sentence, two, or the fragment `please retry in a moment`;
+  - their budgets: 8 to 40 tries;
+  - whether a retry slept 200 ms.
+
+  `observer_rule`'s `ask_whole` drained a refused try's sentinel before it typed again. The other nine did not
+  (FL.3's hazard).
+- **Four `Term`s, not one.** `tests/support` held mushd's. `durable_process/server.rs`, `world_fault.rs` and
+  `world_journeys/ssh_e2e.rs` each held a private one, with its own `strip_ansi` and `AcceptAll`. `one_reader`
+  refuses all four.
+- **mushd's `Term` had four things the kit's lacked:**
+  - a public `seen`, which about 300 reads sliced by hand (`ada.seen[mark..]`);
+  - `room_for`, over a copy of the flood bucket;
+  - `expect_squeezed_after`, for the `@tui` screen;
+  - `resize`.
+- **Six files typed their own sentinel word** (`zzq-solo-sentinel`, `zzz-sentinel` and others), and their line
+  readers dropped that word's echo. The kit types `zzq-sentinel`.
+- **`@ps` cannot carry `after_tick`.** The one tick a story waits on is tacsim's boarding tick (`tacsim.board`,
+  `BOARD_TICK_PERIOD`, 1 s). `render_ps` prints whole seconds, `(due - now) / 1000`, so the tick reads
+  `next in 0s` at every instant (Q-51-11).
+- **Row 14's twin never failed.** `metrics_healthz_and_stats…` asks `/healthz` after its session's answers.
+  `spa_if_built…` asked it straight after the boot.
+
+**Built.**
+
+- **The kit.** `readout.rs` is FL.8's own module. The edits elsewhere are small:
+  - **`Term::ask_settled(line, needle)`**: `say`, then `settled`, and the text from the answered try on, with the
+    sentinel's echo and answers left out. Every story `ask` is this now, so a parse follows a whole read (rule S).
+    The needle may be an event after the line's reply, which `ask_whole` alone cannot wait for.
+  - **`ask_whole` counts its answers.** It is FL.5's `ask` read, answering text through the refusal as the copies
+    did. A refused try's sentinel can no longer end the next try's read.
+  - **`Term::say`** waits `POLL_INTERVAL` before typing a refused line again. It also reports the mark of the try
+    that was answered, so `ask` and `ask_settled` read from there and not from a refused try.
+  - **`FLOODED`**: the flood bucket's `You're doing that too fast.`, which `is_busy` and `busy_needles()` now
+    know (Divergences, 2). Its test holds the sentence to the two product files that write it.
+  - **`Term::expect_squeezed_after`, `Term::resize` and `Term::sent_at`** (the instants the session typed). `Term`
+    keeps that list. Its fields are `pub(crate)` for this module.
+  - **`after_ticks(staff, period, n)`**, doc 51's `after_tick`. Staff queues `@wait <n periods + 1 s>=think
+    zzq-tick` and waits for the thought. The scheduler fires its entries in `(due, seq)` order
+    (`mush_core::sched::Scheduler::pop_due`), so every tick due before the thought has fired by then.
+- **mushd's rig** (`tests/support`):
+  - the kit's `Term`, `AcceptAll`, `strip_ansi`, `ask_whole` and `after_ticks`, re-exported;
+  - `play_client_sized` is `Term::play_sized`;
+  - `room_for(&term, lines)` replays `sent_at()` through the server's own `FloodBucket` at its own figures, as
+    FL.3's copy of the bucket did.
+- **The stories.**
+  - All 37 private readers are deleted. `say(&mut t, …)` is `t.say(…)`, `ask(…)` is `t.ask_settled(…)`, and
+    `x.seen` is `x.raw()`.
+  - The six private sentinel words are the kit's.
+  - Two hand-written sentinel loops are `settled`: `m5_fog_fence`, and one in the attach story.
+  - The three private `Term`s are the rig's. `world_fault`'s login reads under its own child-process limit with
+    `expect_one_of_within`.
+- **`after_ticks` in use.** Two stories slept 2.5 s for "two more boarding ticks" after a restart:
+  `observer_rule::af3_…` and `sim_rematch::a_restart_mid_match…`. Both wait for two ticks of
+  `BOARD_TICK_PERIOD` now.
+- **Row 14** (Rows), and row 21, found in CI's record on the way (Rows).
+- **`one_reader`** lists mushd beside mush-gateway.
+
+**The counts.**
+
+| | Before | After |
+|---|---:|---:|
+| `say` / `ask` / `ask_whole` definitions in `sim_lenses` | 15 / 12 / 10 | 0 |
+| `struct Term` / `strip_ansi` / `AcceptAll` under `crates/mushd/tests/` | 4 / 4 / 4 | 0 |
+| Raw waits in mushd's story files (`wait_budget/mushd.txt`) | 105 | 73 |
+| Literal spans passed to a wait in them (FL.9's counter, after main was merged in) | 80 | 55 |
+| mushd's rows in `flaky-known.toml` | 7 | 0 |
+
+`scripts/wait_audit.py --budget` agrees: 73 waits and 5 wall-clock reads in mushd's story files.
+
+**Rows.**
+
+- **Row 14, re-described as process, and fixed.**
+  - `ok` needs the world loop's heartbeat. The loop stamps it at the start of every iteration
+    (`world_task.rs`, `set_world_loop_iteration`), and a rig asked within milliseconds of its boot may not have
+    run one.
+  - The story had a 5-s poll for it. It now logs in staff, calls `settled` and asks once. The world has answered
+    by then, so it has run iterations and stamped them.
+  - This is a reading of the code and of the twin, not a reproduction. The three CI failures are from 2026-11-05
+    to 11-12.
+- **Row 21 is new**: `observer_rule::af3_the_resume_names_nothing…`, one CI failure on a branch
+  (45426726188, 2026-11-24), which `flake_report.py` listed with no record. Stream: Bo's `has connected.` landed
+  inside Ada's refusal read. Fixed with a `settled` before the read. Never listed in `flaky-known.toml`.
+- **The six carried rows are deleted**: `scripting_e2e`, `sim_reflex`, `load_soak` and `world_fault`, and the two
+  narrowed tests, `relay_bridge::r6b_…` and `arena_story::two_pilots_walk_in…`. None has a failure on record.
+  - The four modules and two tests ran in every one of the 24 soak passes, and passed.
+  - The Redis-gated ones (`relay_bridge`, `load_soak`, `world_fault`, `persistence`, `durability_e2e`, `m10c_e2e`)
+    ran against a throwaway Redis 8.10 on port 6391: 50 of 50.
+
+**Tests.**
+
+- `mush-storykit`: 74 unit tests and 4 doc tests. The new ones:
+  - `after_ticks`' two, on the line it queues;
+  - the sentinel left out of a settled read, a flooded sentinel among them;
+  - the flood sentence held to its sources.
+- mushd whole (`-P soak`, sixteen threads, no retry), and its Redis-gated part (one thread), as above.
+- `split_halves` whole, sixteen threads, no retry: 47 of 47. The kit's `say` changed under it.
+- `mush-contract-tests`' `ci_policy`: `one_reader`, `wait_budget` (re-blessed down), `flaky_known` (re-blessed),
+  `restriction_lints` and `panic_budget`.
+- `cargo fmt`; clippy with `-D warnings` over mushd's tests, mush-storykit and mush-contract-tests, every target,
+  and over mush-gateway and mush-bot once; rustdoc.
+
+**What the conversion found.** The first run of the converted suite failed 13 of 261 tests. Every one was the kit
+meeting something the private readers had hidden:
+
+- **The flood bucket.**
+  - A whole read types two lines where a needle read typed one.
+  - Under a fast battery, the session's bucket (10 lines a second, a burst of 30) dropped a sentinel with
+    `You're doing that too fast.`.
+  - No reader knew that sentence, so the read waited 60 s for a refusal that never came. Four tests failed this
+    way, and one more after the first fix.
+- **A refused try's text in the reply.** `Term::ask` read from the first try's mark. A flooded or busy first try's
+  answer was then part of what the story compared (`You're doing that too fast.\r\nVIEW BW…`).
+- **A queued line has no one to answer.** `after_ticks`' first version queued a nonsense word and waited for its
+  `Huh?`. A line the scheduler runs has no connection, so the refusal reached no one. A `think` does reach the
+  actor.
+- **Six private sentinel words.** The files' own line readers dropped their echo, and did not drop the kit's.
+- **One needle in its own echo**: `typeahead`'s `say The tower is listening.`, which the private `say` had not
+  checked.
+
+Each of the next three runs found the next layer. The fourth was clean.
+
+**Divergences.**
+
+1. **`ask` became `ask_settled`, not `ask_whole`.** Doc 51 §5 says "every parse after a needle read moved to
+   `ask_whole`". Many of the 247 wait for an event the line causes later, such as a lock confirmed at the next
+   pulse. So the needle is still awaited, and then the read is closed with `settled`. It is whole by the same
+   ordering argument, and it does not change what a story waits for.
+2. **The flood sentence is not a row of `BUSY_SENTENCES`.**
+   - That table is also the bot's. mush-bot's `the_bots_busy_sentences_are_the_story_kits` requires the bot's
+     readers to type a line again after every row, and the bot does not know the flood sentence.
+   - Adding the row would need a bot product change. So `FLOODED` sits beside the table, and the kit's own
+     readers (`is_busy`, `busy_needles()`) know both.
+   - `BUSY_NEEDLES`, which is the bot's `TRANSIENTS`, is unchanged.
+3. **`after_tick` reads the scheduler, not `@ps`.** Doc 51 §3.3 sketched it over `@ps`'s next fire, and whole
+   seconds cannot tell one fire of a 1-s tick from the next. That is Q-51-11's report, now written into doc 51 §6.
+   The name is `after_ticks(staff, period, n)`, and the period is tacsim's own `BOARD_TICK_PERIOD`.
+4. **mushd's ptys stay 80 by 24.** The rig's line-mode stories pin the line client's wrap at eighty columns, as
+   `play_client`'s comment says. FL.7 moved the gateway's to 120 by 40. Doing that here would move every wrapped
+   read at once, which is not this unit's work.
+5. **`Term::say` now pauses 200 ms before a retry**, where FL.7's typed again at once. A flooded line typed at
+   once is refused again before a token comes back. The gateway's suite passed whole with the pause.
+
+**Not built.**
+
+- **`arena_custody_split`'s 2.5-s sleep** (mush-gateway). It has no staff session to queue the thought on.
+- **Busy loops that are not one of the three readers**: `observer_rule`'s panel and TUI loops,
+  `whole_macro_answer`, and the files' `COMMIT_PENDING` needles beside an `expect_one_of_after`. They keep their
+  private sentence fragments. The next unit to touch them should read `is_busy`.
+- **The web-socket drains** of the mind feed, which are FL.9's kind.
+
+**For the owner.**
+
+- **Q-FL8-1.** The flood bucket's refusal is a busy answer to the kit's readers but not to the bot's
+  (Divergences, 2). Default: leave the bot as it is. A bot that typed fast enough to meet the bucket would want it.
+
 ## FL.9
 
 The small crates. Built 2026-11-25 on `6b63cb8be` (FL.7's branch, PR #806, with main merged in), stacked on FL.7

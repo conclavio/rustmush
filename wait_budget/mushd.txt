@@ -6,7 +6,7 @@
 #   WAIT_BUDGET_BLESS=1 cargo test -p mush-contract-tests --test ci_policy wait_budget::
 # A raise carries a written reason; the prefer-instead is `mush-storykit`.
 #
-# total: 105 raw waits, 5 wall-clock reads, 80 literal spans passed to a wait
+# total: 73 raw waits, 5 wall-clock reads, 55 literal spans passed to a wait
 #
 # Literal spans are counted from their baseline (doc 51 cut FL.9).
 # spans counted
@@ -18,34 +18,19 @@ clock 1 1 tests/durable_process/persistence.rs
 span 15 15 tests/durable_process/persistence.rs
 wait 4 4 tests/durable_process/relay_bridge.rs
 span 4 4 tests/durable_process/relay_bridge.rs
-wait 6 6 tests/durable_process/server.rs
+wait 4 4 tests/durable_process/server.rs
 span 2 2 tests/durable_process/server.rs
-wait 4 4 tests/durable_process/world_fault.rs
+wait 2 2 tests/durable_process/world_fault.rs
 span 1 1 tests/durable_process/world_fault.rs
-wait 2 2 tests/sim_lenses/arena_story.rs
-span 2 2 tests/sim_lenses/arena_story.rs
-wait 1 1 tests/sim_lenses/attach_room.rs
-span 1 1 tests/sim_lenses/attach_room.rs
-wait 1 1 tests/sim_lenses/front_door.rs
-span 1 1 tests/sim_lenses/front_door.rs
-wait 13 13 tests/sim_lenses/observer_rule.rs
-span 9 9 tests/sim_lenses/observer_rule.rs
-wait 4 4 tests/sim_lenses/sim_cockpit.rs
-span 2 2 tests/sim_lenses/sim_cockpit.rs
-wait 3 3 tests/sim_lenses/sim_net.rs
-span 2 2 tests/sim_lenses/sim_net.rs
-wait 2 2 tests/sim_lenses/sim_range.rs
-span 2 2 tests/sim_lenses/sim_range.rs
-wait 2 2 tests/sim_lenses/sim_reflex.rs
-span 2 2 tests/sim_lenses/sim_reflex.rs
-wait 3 3 tests/sim_lenses/sim_rematch.rs
-span 3 3 tests/sim_lenses/sim_rematch.rs
-wait 4 4 tests/sim_lenses/sim_solo.rs
-span 4 4 tests/sim_lenses/sim_solo.rs
-wait 5 5 tests/sim_lenses/sim_units.rs
-span 3 3 tests/sim_lenses/sim_units.rs
-wait 2 2 tests/sim_lenses/sim_weapons.rs
-span 2 2 tests/sim_lenses/sim_weapons.rs
+wait 9 9 tests/sim_lenses/observer_rule.rs
+span 5 5 tests/sim_lenses/observer_rule.rs
+wait 2 2 tests/sim_lenses/sim_cockpit.rs
+wait 2 2 tests/sim_lenses/sim_net.rs
+span 1 1 tests/sim_lenses/sim_net.rs
+wait 2 2 tests/sim_lenses/sim_solo.rs
+span 2 2 tests/sim_lenses/sim_solo.rs
+wait 2 2 tests/sim_lenses/sim_units.rs
+span 1 1 tests/sim_lenses/sim_units.rs
 wait 2 2 tests/world_journeys/admin.rs
 clock 1 1 tests/world_journeys/admin.rs
 wait 5 5 tests/world_journeys/legal_action_web.rs
@@ -53,7 +38,7 @@ span 5 5 tests/world_journeys/legal_action_web.rs
 wait 8 8 tests/world_journeys/mind_market_web.rs
 span 8 8 tests/world_journeys/mind_market_web.rs
 clock 1 1 tests/world_journeys/modules_e2e.rs
-wait 6 6 tests/world_journeys/ssh_e2e.rs
+wait 4 4 tests/world_journeys/ssh_e2e.rs
 clock 1 1 tests/world_journeys/ssh_e2e.rs
 span 2 2 tests/world_journeys/ssh_e2e.rs
 wait 1 1 tests/world_journeys/weather_e2e.rs
@@ -61,5 +46,4 @@ span 1 1 tests/world_journeys/weather_e2e.rs
 wait 2 2 tests/world_journeys/web_bridge.rs
 clock 1 1 tests/world_journeys/web_bridge.rs
 span 2 2 tests/world_journeys/web_bridge.rs
-wait 3 3 tests/world_journeys/web_e2e.rs
-span 1 1 tests/world_journeys/web_e2e.rs
+wait 2 2 tests/world_journeys/web_e2e.rs

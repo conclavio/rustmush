@@ -109,6 +109,7 @@
 
 use crate::shipped::mount;
 use crate::support;
+use support::ask_whole;
 
 use support::{Figures, STEP_TIMEOUT, wait_until};
 
@@ -140,8 +141,6 @@ const PILOT_PASSWORD: &str = "pilot-secret-1";
 const COMMIT_PENDING: &str = "please retry in a moment";
 /// `BOARD`'s one transient: the control-lease mirror is a 1 Hz projection.
 const CONTROL_UNKNOWN: &str = "control state unknown";
-/// How many times a line is re-sent on a transient before the test gives up.
-const RETRY_BUDGET: usize = 40;
 
 /// The two pilots and the bystander, created before the world task spawns so
 /// their ids are stable (see the module head).
@@ -209,7 +208,7 @@ const TURRET_LOST: &str = "The turret is destroyed: its weapons are gone; its co
 /// What `CONTACTS` says when the platform holds nothing.
 const NO_CONTACTS: &str = "No contacts.";
 /// The parser's refusal, which is the sentinel's answer.
-const HUH: &str = "Huh?";
+const HUH: &str = mush_storykit::SENTINEL_REFUSAL;
 /// The one line the eleven cockpit selectors refuse with once the pilot is no
 /// longer at the station of a deployed unit — which is what they all become the
 /// moment the check-in opens the hatches.
@@ -411,33 +410,6 @@ async fn login(
     (handle, term)
 }
 
-/// Run one line and wait for `needle`, retrying the two transients.
-async fn say(term: &mut Term, line: &str, needle: &str) {
-    assert!(
-        !line.contains(needle),
-        "`{needle}` appears in `{line}`'s own echo; pick a needle from the ANSWER"
-    );
-    for _ in 0..RETRY_BUDGET {
-        let mark = term.mark();
-        term.send_line(line).await;
-        match term
-            .expect_one_of_after(mark, &[needle, COMMIT_PENDING, CONTROL_UNKNOWN])
-            .await
-        {
-            0 => return,
-            _ => tokio::time::sleep(Duration::from_millis(200)).await,
-        }
-    }
-    panic!("`{line}` was refused as transient {RETRY_BUDGET} times running");
-}
-
-/// Run one line, wait for `needle`, and hand back everything that arrived.
-async fn ask(term: &mut Term, line: &str, needle: &str) -> String {
-    let mark = term.mark();
-    say(term, line, needle).await;
-    strip_ansi(&term.seen[mark..])
-}
-
 /// Run `line` until its **whole** answer carries `needle`, and hand that answer
 /// back.
 ///
@@ -469,24 +441,7 @@ fn tail(seen: &str) -> String {
 /// its first line can return before the contents line has arrived, which would
 /// make an absence assertion pass for the wrong reason. So the line is followed by
 /// a deliberate nonsense command and the slice runs to *its* refusal.
-const SENTINEL: &str = "zzq-story-sentinel";
-
-async fn ask_whole(term: &mut Term, line: &str) -> String {
-    for _ in 0..RETRY_BUDGET {
-        let mark = term.mark();
-        term.send_line(line).await;
-        term.send_line(SENTINEL).await;
-        // Always consume this attempt's sentinel before retrying. A delayed
-        // refusal must not terminate the next command's reply early.
-        term.expect_after(mark, HUH).await;
-        let reply = strip_ansi(&term.seen[mark..]);
-        if !reply.contains(COMMIT_PENDING) && !reply.contains(CONTROL_UNKNOWN) {
-            return reply;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    panic!("`{line}` never produced a whole answer")
-}
+const SENTINEL: &str = mush_storykit::SENTINEL;
 
 /// **`SIM REPORT`, read whole** (16b cut V.3) — `observer_rule.rs`' device.
 ///
@@ -511,7 +466,7 @@ async fn sim_report(term: &mut Term, line: &str) -> String {
         }
         term.send_line(SENTINEL).await;
         term.expect_after(mark, HUH).await;
-        report = strip_ansi(&term.seen[mark..]);
+        report = strip_ansi(&term.raw()[mark..]);
         true
     })
     .await;
@@ -763,34 +718,27 @@ fn first(events: &[Value], kind: &str) -> usize {
 async fn open_the_books(god: &mut Term) -> ((u64, u64), (String, String)) {
     // The settlement currency is the game's own (`tacsim.credit`, registered at
     // boot by the economy layer), so nothing here invents an instrument.
-    let seen = ask(
-        god,
-        "@account/system faucet=tacsim.credit",
-        "Opened account",
-    )
-    .await;
+    let seen = god
+        .ask_settled("@account/system faucet=tacsim.credit", "Opened account")
+        .await;
     let faucet = number_after(&seen, "Opened account #");
-    let seen = ask(
-        god,
-        &format!("@account/open #{}=tacsim.credit", ADA.0),
-        "Opened account",
-    )
-    .await;
-    let ada = number_after(&seen, "Opened account #");
-    let seen = ask(
-        god,
-        &format!("@account/open #{}=tacsim.credit", BO.0),
-        "Opened account",
-    )
-    .await;
-    let bo = number_after(&seen, "Opened account #");
-    for account in [ada, bo] {
-        say(
-            god,
-            &format!("@econ/mint {faucet}={account} 250000"),
-            "Minted",
+    let seen = god
+        .ask_settled(
+            &format!("@account/open #{}=tacsim.credit", ADA.0),
+            "Opened account",
         )
         .await;
+    let ada = number_after(&seen, "Opened account #");
+    let seen = god
+        .ask_settled(
+            &format!("@account/open #{}=tacsim.credit", BO.0),
+            "Opened account",
+        )
+        .await;
+    let bo = number_after(&seen, "Opened account #");
+    for account in [ada, bo] {
+        god.say(&format!("@econ/mint {faucet}={account} 250000"), "Minted")
+            .await;
     }
     let before = (balance(god, ada).await, balance(god, bo).await);
     assert!(
@@ -813,11 +761,15 @@ async fn balance(god: &mut Term, account: u64) -> String {
 /// Re-pose the two slot-1 tanks 62 cells apart on the road, nose to nose (see the
 /// module head), and answer their dbrefs.
 async fn muster_the_tanks(god: &mut Term) -> (u32, u32) {
-    let listing = ask(god, &format!("@find {RED_TANK}"), "END OF LIST").await;
+    let listing = god
+        .ask_settled(&format!("@find {RED_TANK}"), "END OF LIST")
+        .await;
     let red = dbref_of(&listing, RED_TANK);
-    let listing = ask(god, &format!("@find {BLUE_TANK}"), "END OF LIST").await;
+    let listing = god
+        .ask_settled(&format!("@find {BLUE_TANK}"), "END OF LIST")
+        .await;
     let blue = dbref_of(&listing, BLUE_TANK);
-    let listing = ask(god, "@domain", &format!("host {MUSTER}")).await;
+    let listing = god.ask_settled("@domain", &format!("host {MUSTER}")).await;
     let domain = domain_of(&listing, MUSTER);
     for (unit, (x, y), heading) in [(red, RED_CELL, 90_000), (blue, BLUE_CELL, 270_000)] {
         let pose = format!(
@@ -825,8 +777,7 @@ async fn muster_the_tanks(god: &mut Term) -> (u32, u32) {
             x * 1_000 + 500,
             y * 1_000 + 500
         );
-        say(
-            god,
+        god.say(
             &format!("@spatial/place/domain #{unit}={domain},{pose}"),
             "Placed",
         )
@@ -838,22 +789,21 @@ async fn muster_the_tanks(god: &mut Term) -> (u32, u32) {
 /// The front door, for one pilot: a sheet built with the three commands the game's
 /// chargen has, then the walk from Limbo through the welcome hall into the lobby.
 async fn arrive(term: &mut Term, name: &str, callsign: &str, gunnery: u32) {
-    say(term, "+chargen", "A blank pilot sheet is yours").await;
-    say(term, &format!("+stat name={name}"), &format!("= {name}.")).await;
-    say(
-        term,
+    term.say("+chargen", "A blank pilot sheet is yours").await;
+    term.say(&format!("+stat name={name}"), &format!("= {name}."))
+        .await;
+    term.say(
         &format!("+stat callsign={callsign}"),
         &format!("= {callsign}."),
     )
     .await;
-    say(
-        term,
+    term.say(
         &format!("+stat gunnery={gunnery}"),
         &format!("gunnery = {gunnery}."),
     )
     .await;
-    say(term, "ooc", "Welcome Hall").await;
-    say(term, "simulator", "Simulator Lobby").await;
+    term.say("ooc", "Welcome Hall").await;
+    term.say("simulator", "Simulator Lobby").await;
 }
 
 /// Bring a tank's power up and wait for the arena to say it is online.
@@ -864,7 +814,7 @@ async fn arrive(term: &mut Term, name: &str, callsign: &str, gunnery: u32) {
 /// and leave its `STATUS` in flight, to land after whatever the caller marks
 /// next.
 async fn power_up(term: &mut Term) {
-    say(term, "STARTUP", "Startup sequence").await;
+    term.say("STARTUP", "Startup sequence").await;
     wait_until(STEP_TIMEOUT, "the tank to come online", async || {
         ask_whole(term, "STATUS").await.contains("power online")
     })
@@ -890,7 +840,7 @@ async fn drive(term: &mut Term, heading: u32) {
             == 0
     })
     .await;
-    say(term, "SPEED 54", "Making 54 kph").await;
+    term.say("SPEED 54", "Making 54 kph").await;
 }
 
 /// One tank's easting, metres, off its own `STATUS` line (`  at 1085 m east,
@@ -964,9 +914,9 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     let (_g, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
     let ((ada_account, bo_account), money_before) = open_the_books(&mut god).await;
     let (red, blue) = muster_the_tanks(&mut god).await;
-    say(&mut god, "ooc", "Welcome Hall").await;
-    say(&mut god, "simulator", "Simulator Lobby").await;
-    say(&mut god, "@arena/status", "No match is running.").await;
+    god.say("ooc", "Welcome Hall").await;
+    god.say("simulator", "Simulator Lobby").await;
+    god.say("@arena/status", "No match is running.").await;
 
     // -----------------------------------------------------------------
     // (1) Two pilots and a bystander come in through the front door.
@@ -976,8 +926,8 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     let (_c, mut cy) = login(server.addr, "cy", PILOT_PASSWORD, "Cy").await;
     arrive(&mut ada, "Ada Renard", "Ladder", 4).await;
     arrive(&mut bo, "Bo Nakamura", "Kestrel", 2).await;
-    say(&mut cy, "ooc", "Welcome Hall").await;
-    say(&mut cy, "simulator", "Simulator Lobby").await;
+    cy.say("ooc", "Welcome Hall").await;
+    cy.say("simulator", "Simulator Lobby").await;
     // The bystander's own clock starts here: everything after this mark is what
     // the lobby showed somebody who never left it.
     let bystander_mark = cy.mark();
@@ -985,31 +935,33 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     // -----------------------------------------------------------------
     // (2) Opposite teams, and the centre says so to the room.
     // -----------------------------------------------------------------
-    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
-    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
+    ada.say("SIM TEAM red", "takes red slot 1").await;
+    bo.say("SIM TEAM blue", "takes blue slot 1").await;
     cy.expect_after(bystander_mark, "Ada takes red slot 1")
         .await;
     cy.expect_after(bystander_mark, "Bo takes blue slot 1")
         .await;
 
-    let status = ask(&mut ada, "SIM STATUS", "blue:").await;
+    let status = ada.ask_settled("SIM STATUS", "blue:").await;
     assert!(status.contains("selection"), "{status}");
 
     // -----------------------------------------------------------------
     // (3) `SIM START`, the walk to the team rooms, and the pods.
     // -----------------------------------------------------------------
-    say(&mut ada, "SIM START", "is boarding").await;
-    say(&mut ada, "red", "Red Room").await;
-    say(&mut bo, "blue", "Blue Room").await;
-    say(&mut ada, "BOARD", "climb into").await;
-    say(&mut bo, "BOARD", "climb into").await;
+    ada.say("SIM START", "is boarding").await;
+    ada.say("red", "Red Room").await;
+    bo.say("blue", "Blue Room").await;
+    ada.say("BOARD", "climb into").await;
+    bo.say("BOARD", "climb into").await;
     // The second seat fires cut K.1's `Boarding -> Running` trigger, and the
     // centre says so in every one of its rooms — the lobby the bystander is
     // standing in included.
     ada.expect("Good hunting").await;
     cy.expect_after(bystander_mark, "Good hunting").await;
 
-    let status = ask(&mut god, "@arena/status", "ledger writes awaiting").await;
+    let status = god
+        .ask_settled("@arena/status", "ledger writes awaiting")
+        .await;
     assert!(status.contains("running"), "{status}");
     assert!(status.contains("tempo"), "{status}");
 
@@ -1018,14 +970,14 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     // -----------------------------------------------------------------
     power_up(&mut ada).await;
     power_up(&mut bo).await;
-    let seen = ask(&mut ada, "CONTACTS", NO_CONTACTS).await;
+    let seen = ada.ask_settled("CONTACTS", NO_CONTACTS).await;
     names_nothing(
         &seen,
         red,
         blue,
         "the red pilot's `CONTACTS` before detection",
     );
-    let seen = ask(&mut bo, "CONTACTS", NO_CONTACTS).await;
+    let seen = bo.ask_settled("CONTACTS", NO_CONTACTS).await;
     names_nothing(
         &seen,
         red,
@@ -1034,12 +986,8 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     );
     // And the world is told nothing about either of them while the arena holds
     // them: the muster room's own domain is gone from every staff read.
-    say(
-        &mut god,
-        &format!("@unit/show #{red}"),
-        "not a tactical unit",
-    )
-    .await;
+    god.say(&format!("@unit/show #{red}"), "not a tactical unit")
+        .await;
     // Doc 18 cut IC3: the two port domains stand beside it (was "No domains."),
     // and the muster's is still absent. Read WHOLE (to the sentinel), so the
     // absence holds whatever order the domain ids come in.
@@ -1081,7 +1029,7 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
                 .await
                 == 0
             {
-                held = strip_ansi(&ada.seen[mark..]);
+                held = strip_ansi(&ada.raw()[mark..]);
                 return true;
             }
             false
@@ -1091,7 +1039,7 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     assert!(
         !held.is_empty(),
         "the two tanks never detected each other:\n{}",
-        tail(&strip_ansi(&ada.seen))
+        tail(&strip_ansi(ada.raw()))
     );
     let contact = designator_of(&held)
         .unwrap_or_else(|| panic!("a contact designator in:\n{held}"))
@@ -1101,7 +1049,7 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     // The notice came first, unasked, while she was driving — doc 16 §3.6's
     // `acquired` — and then, after `sensors.classify_after_ms`, the side.
     assert!(
-        strip_ansi(&ada.seen).contains(&format!("New contact {contact}")),
+        strip_ansi(ada.raw()).contains(&format!("New contact {contact}")),
         "the acquisition notice reached the pilot:\n{held}"
     );
     // The *row* has to be re-read until it is renamed, not merely until the
@@ -1121,7 +1069,7 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     .await;
     names_nothing(&classified, red, blue, "the classified `CONTACTS`");
     assert!(
-        strip_ansi(&ada.seen).contains(&format!("Contact {contact} identified")),
+        strip_ansi(ada.raw()).contains(&format!("Contact {contact} identified")),
         "and the classification notice did too:\n{classified}"
     );
     // **16b cut Q.1**: the rename. Once the return has been told apart it answers
@@ -1149,8 +1097,8 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
         async || easting_m(&mut ada).await >= STOP_AT_M,
     )
     .await;
-    say(&mut ada, "SPEED 0", "Making 0 kph").await;
-    say(&mut bo, "SPEED 0", "Making 0 kph").await;
+    ada.say("SPEED 0", "Making 0 kph").await;
+    bo.say("SPEED 0", "Making 0 kph").await;
     // Nose to nose, and neither tank turns: see the module head for why the fight
     // is fought on the front facet and not on the cheaper rear one.
     poll_whole(&mut bo, "STATUS", "heading 270").await;
@@ -1175,7 +1123,7 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     );
     assert!(!seen.contains("Locked on"), "{seen}");
 
-    say(&mut ada, &format!("LOCK {contact}"), "Locking").await;
+    ada.say(&format!("LOCK {contact}"), "Locking").await;
     // The asynchronous lock notice (`Locked on BA, 69% to hit.`) can arrive
     // beside an older weapon reply that still renders the frame before the
     // lock. Wait for the command's weapon telemetry, not that out-of-band
@@ -1269,7 +1217,7 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
                     confirmed = true;
                     true
                 }
-                Some(_) => strip_ansi(&ada.seen[fired..]).contains(ARENA_REFUSED),
+                Some(_) => strip_ansi(&ada.raw()[fired..]).contains(ARENA_REFUSED),
                 None => {
                     cockpit = false;
                     true
@@ -1277,7 +1225,7 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
             },
         )
         .await;
-        if !cockpit || strip_ansi(&ada.seen[fight_mark..]).contains(OVER) {
+        if !cockpit || strip_ansi(&ada.raw()[fight_mark..]).contains(OVER) {
             break;
         }
         if !confirmed {
@@ -1286,14 +1234,14 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     }
     assert!(shots > 0, "the red tank never got a shot away");
     assert!(
-        strip_ansi(&ada.seen[fight_mark..]).contains(OVER)
-            || strip_ansi(&ada.seen[fight_mark..]).contains(OUTSIDE_COCKPIT),
+        strip_ansi(&ada.raw()[fight_mark..]).contains(OVER)
+            || strip_ansi(&ada.raw()[fight_mark..]).contains(OUTSIDE_COCKPIT),
         "{shots} rounds went into the blue tank and it is still fighting"
     );
     assert!(
         !readings.is_empty(),
         "the cockpit never showed a round count after a shot ({shots} fired):\n{}",
-        tail(&strip_ansi(&ada.seen))
+        tail(&strip_ansi(ada.raw()))
     );
     let load = load();
     for (fired, rounds) in &readings {
@@ -1321,12 +1269,12 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     assert!(seen.contains("Red Room"), "the winner walked out: {seen}");
     let seen = ask_whole(&mut bo, "look").await;
     assert!(seen.contains("Blue Room"), "the loser walked out: {seen}");
-    say(&mut bo, "WEAPONSTATUS", OUTSIDE_COCKPIT).await;
+    bo.say("WEAPONSTATUS", OUTSIDE_COCKPIT).await;
 
     // The bystander stood in the lobby for the whole match and was shown the
     // centre's announcements and **nothing of the arena** (doc 16 §1's observer
     // rule).
-    let bystander = strip_ansi(&cy.seen[bystander_mark..]);
+    let bystander = strip_ansi(&cy.raw()[bystander_mark..]);
     names_nothing(&bystander, red, blue, "the bystander's whole transcript");
     says_nothing_of_the_fight(&bystander, &contact, "the bystander's whole transcript");
     assert!(
@@ -1340,7 +1288,7 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     // names its **own** tank — `STATUS` prints the platform a pilot is sitting in,
     // and a hit names the section and facet the round found — and nothing of the
     // other side: not the red tank, not its dbref, not the shot, not the lock.
-    let loser = strip_ansi(&bo.seen);
+    let loser = strip_ansi(bo.raw());
     assert!(
         loser.contains("Hit on the "),
         "the loser was told nothing about being shot:\n{}",
@@ -1398,7 +1346,7 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
 
     // The winner saw her rounds land and saw the kill (or the turret go), and
     // saw nothing of what the blue tank had left: the two halves of the same shot never cross.
-    let winner = strip_ansi(&ada.seen);
+    let winner = strip_ansi(ada.raw());
     assert!(
         // 16b cut Q.1: by the shot the target has been told apart, so the
         // shooter's line names its callsign. **16b cut Q.2**: and the contact is
@@ -1922,7 +1870,7 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     ] {
         assert!(flat.contains(want), "{want:?} missing from:\n{report}");
     }
-    let said = ask(&mut ada, "SIM REPORT 9", "not one of them").await;
+    let said = ada.ask_settled("SIM REPORT 9", "not one of them").await;
     assert!(
         said.contains("The center remembers its last 20 matches; match 9 is not one of them."),
         "{said}"
@@ -1943,19 +1891,20 @@ async fn two_pilots_walk_in_fight_and_one_tank_is_destroyed() {
     // -----------------------------------------------------------------
     // (13) The centre resets, and a second match can start.
     // -----------------------------------------------------------------
-    let status = ask(&mut god, "SIM STATUS", "blue:").await;
+    let status = god.ask_settled("SIM STATUS", "blue:").await;
     assert!(status.contains("ended"), "{status}");
     assert!(
         status.contains("red"),
         "the outcome is on the board: {status}"
     );
-    say(&mut god, "@arena/reset", "center is reset").await;
-    say(&mut god, "@arena/reset", "already idle; nothing changed").await;
-    say(&mut god, "@arena/status", "No match is running.").await;
+    god.say("@arena/reset", "center is reset").await;
+    god.say("@arena/reset", "already idle; nothing changed")
+        .await;
+    god.say("@arena/status", "No match is running.").await;
     // Both pilots walk back to the lobby and claim again: doc 16 §1's *a second
     // match can start*.
-    say(&mut ada, "lobby", "Simulator Lobby").await;
-    say(&mut bo, "lobby", "Simulator Lobby").await;
-    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
-    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
+    ada.say("lobby", "Simulator Lobby").await;
+    bo.say("lobby", "Simulator Lobby").await;
+    ada.say("SIM TEAM red", "takes red slot 1").await;
+    bo.say("SIM TEAM blue", "takes blue slot 1").await;
 }

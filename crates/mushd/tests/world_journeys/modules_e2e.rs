@@ -275,7 +275,7 @@ async fn m3_cross_module_journey() {
     let mark = god.mark();
     god.send_line("@dig Local Post Office").await;
     god.expect_after(mark, "created with room number").await;
-    let room = support::parse_id_after(&strip_ansi(&god.seen[mark..]), "room number #");
+    let room = support::parse_id_after(&strip_ansi(&god.raw()[mark..]), "room number #");
     for actor in ["Alice", "Bob", "me"] {
         let mark = god.mark();
         god.send_line(&format!("@teleport {actor}=#{room}")).await;
@@ -312,9 +312,9 @@ async fn m3_cross_module_journey() {
     alice.send_line("look").await;
     alice.expect_after(mark, "Local Post Office").await;
     assert!(
-        !strip_ansi(&alice.seen[mark..]).contains("Mail>"),
+        !strip_ansi(&alice.raw()[mark..]).contains("Mail>"),
         "stale Mail> prompt redrawn after compose popped:\n{}",
-        strip_ansi(&alice.seen[mark..])
+        strip_ansi(&alice.raw()[mark..])
     );
 
     // Live delivery notice, then the recipient reads it.
@@ -417,10 +417,10 @@ async fn m3_cross_module_journey() {
     // colors the [Public] prefix), and stripping it yields the classic
     // line — "assert rendered ANSI output" both ways.
     assert!(
-        god.seen.contains('\u{1b}'),
+        god.raw().contains('\u{1b}'),
         "SSH output must carry ANSI escapes"
     );
-    assert!(strip_ansi(&god.seen).contains("[Public] the Bold Alice: still here"));
+    assert!(strip_ansi(god.raw()).contains("[Public] the Bold Alice: still here"));
 
     let _ = std::fs::remove_dir_all(&dir);
 }

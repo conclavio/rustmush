@@ -102,6 +102,7 @@ pub fn is_busy(line: &str) -> bool {
     }
     let bare = body.strip_suffix('.').unwrap_or(body);
     BUSY_SENTENCES.iter().any(|busy| bare.ends_with(busy.ends))
+        || bare.ends_with(crate::readout::FLOODED.ends)
 }
 
 /// **Whether any line of `text` is a busy refusal** ([`is_busy`]).
@@ -122,10 +123,14 @@ pub const BUSY_NEEDLES: [&str; BUSY_SENTENCES.len()] = {
     ]
 };
 
-/// [`BUSY_NEEDLES`] as a list, to extend a reader's own needles with.
+/// [`BUSY_NEEDLES`] as a list, to extend a reader's own needles with, and
+/// the flood bucket's refusal ([`crate::FLOODED`], unit FL.8), which
+/// the kit's readers also type a line again after.
 #[must_use]
 pub fn busy_needles() -> Vec<&'static str> {
-    BUSY_NEEDLES.to_vec()
+    let mut needles = BUSY_NEEDLES.to_vec();
+    needles.push(crate::readout::FLOODED.ends);
+    needles
 }
 
 #[cfg(test)]

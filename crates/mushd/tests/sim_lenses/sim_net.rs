@@ -32,6 +32,7 @@
 //! START`, `BOARD` — because a staff `@arena/start` joins nobody.
 
 use crate::support;
+use support::ask_whole;
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
@@ -68,8 +69,6 @@ const PILOT_PASSWORD: &str = "pilot-secret-1";
 
 /// The world's transient authoritative refusal: a commit is in flight.
 const COMMIT_PENDING: &str = "please retry in a moment";
-/// `BOARD`'s one transient: the control-lease mirror is refreshed by a 1 Hz tick.
-const CONTROL_UNKNOWN: &str = "control state unknown";
 /// How many times a line is re-sent on a transient before the test gives up.
 const RETRY_BUDGET: usize = 40;
 
@@ -99,11 +98,11 @@ async fn joined_alias(term: &mut Term, net: &str, party: char) -> String {
     let head = format!("{JOINED}{net} (alias: ");
     term.expect(&head).await;
     let at = term
-        .seen
+        .raw()
         .find(&head)
-        .unwrap_or_else(|| panic!("the join line, raw: {:?}", term.seen));
+        .unwrap_or_else(|| panic!("the join line, raw: {:?}", term.raw()));
     term.expect_after(at, ").").await;
-    let seen = strip_ansi(&term.seen[at..]);
+    let seen = strip_ansi(&term.raw()[at..]);
     let alias = seen
         .split_once("(alias: ")
         .and_then(|(_, rest)| rest.split_once(")."))
@@ -119,9 +118,9 @@ async fn joined_alias(term: &mut Term, net: &str, party: char) -> String {
 /// A sentinel whose refusal closes a window: the world answers commands in the
 /// order it took them, so everything that reached the terminal before the
 /// refusal is in the window and nothing of it is still in flight.
-const SENTINEL: &str = "zzq-net-sentinel";
+const SENTINEL: &str = mush_storykit::SENTINEL;
 /// The parser's refusal, which is the sentinel's answer.
-const HUH: &str = "Huh?";
+const HUH: &str = mush_storykit::SENTINEL_REFUSAL;
 /// The web client's own sentinel: a `say`, whose answer carries a token no
 /// other stream produces.
 const WEB_SENTINEL: &str = "zzq-net-web-sentinel";
@@ -355,33 +354,6 @@ async fn login(
     (handle, term)
 }
 
-/// Run one line and wait for `needle`, retrying the two transients.
-async fn say(term: &mut Term, line: &str, needle: &str) {
-    assert!(
-        !line.contains(needle),
-        "`{needle}` appears in `{line}`'s own echo; pick a needle from the ANSWER"
-    );
-    for _ in 0..RETRY_BUDGET {
-        let mark = term.mark();
-        term.send_line(line).await;
-        match term
-            .expect_one_of_after(mark, &[needle, COMMIT_PENDING, CONTROL_UNKNOWN])
-            .await
-        {
-            0 => return,
-            _ => tokio::time::sleep(Duration::from_millis(200)).await,
-        }
-    }
-    panic!("`{line}` was refused as transient {RETRY_BUDGET} times running");
-}
-
-/// Run one line, wait for `needle`, and hand back everything that arrived.
-async fn ask(term: &mut Term, line: &str, needle: &str) -> String {
-    let mark = term.mark();
-    say(term, line, needle).await;
-    strip_ansi(&term.seen[mark..])
-}
-
 /// **Everything the terminal received from `mark` to the sentinel's refusal** —
 /// a whole window, never half of one.
 async fn close_window(term: &mut Term, mark: usize) -> String {
@@ -389,19 +361,11 @@ async fn close_window(term: &mut Term, mark: usize) -> String {
         let at = term.mark();
         term.send_line(SENTINEL).await;
         if term.expect_one_of_after(at, &[HUH, COMMIT_PENDING]).await == 0 {
-            return strip_ansi(&term.seen[mark..]);
+            return strip_ansi(&term.raw()[mark..]);
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
     panic!("the sentinel was never answered")
-}
-
-/// **One line's whole answer**: the line, then the sentinel, and everything
-/// between.
-async fn ask_whole(term: &mut Term, line: &str) -> String {
-    let mark = term.mark();
-    term.send_line(line).await;
-    close_window(term, mark).await
 }
 
 /// **What blue can read about red's net** (16b cut Z.4): the `clist` rows and
@@ -584,17 +548,13 @@ async fn a_sides_net_carries_its_pilots_words_to_its_own_side_and_nothing_to_the
 
     // Everybody into their team room BEFORE the match starts, for the reason
     // `sim_lobby.rs`' `d3_a_lead_concedes_and_the_board_names_the_winner` gives.
-    let listing = ask(&mut god, "@find Red Room", "END OF LIST").await;
+    let listing = god.ask_settled("@find Red Room", "END OF LIST").await;
     let red_room = dbref_of(&listing, "Red Room");
-    let listing = ask(&mut god, "@find Blue Room", "END OF LIST").await;
+    let listing = god.ask_settled("@find Blue Room", "END OF LIST").await;
     let blue_room = dbref_of(&listing, "Blue Room");
     for (pilot, room) in [(ADA, red_room), (CY, red_room), (BO, blue_room)] {
-        say(
-            &mut god,
-            &format!("@teleport #{}=#{room}", pilot.0),
-            "Teleported",
-        )
-        .await;
+        god.say(&format!("@teleport #{}=#{room}", pilot.0), "Teleported")
+            .await;
     }
 
     // Before any match, blue's view of red's net is already nothing.
@@ -606,17 +566,17 @@ async fn a_sides_net_carries_its_pilots_words_to_its_own_side_and_nothing_to_the
     assert_eq!(before.1, vec!["No such channel.".to_owned()]);
     let bo_start = bo.mark();
 
-    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
-    say(&mut cy, "SIM TEAM red", "takes red slot 2").await;
-    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
+    ada.say("SIM TEAM red", "takes red slot 1").await;
+    cy.say("SIM TEAM red", "takes red slot 2").await;
+    bo.say("SIM TEAM blue", "takes blue slot 1").await;
     let ada_mark = ada.mark();
-    say(&mut ada, "SIM START", "is boarding").await;
-    say(&mut ada, "BOARD", "climb into").await;
-    say(&mut cy, "BOARD", "climb into").await;
+    ada.say("SIM START", "is boarding").await;
+    ada.say("BOARD", "climb into").await;
+    cy.say("BOARD", "climb into").await;
     // (1) Two of three aboard: nobody is on a net yet.
     let early = close_window(&mut ada, ada_mark).await;
     assert!(!early.contains("You have been joined"), "{early}");
-    say(&mut bo, "BOARD", "climb into").await;
+    bo.say("BOARD", "climb into").await;
     // The join rides the check-out's batch ahead of `Good hunting`, so the
     // line every client waits on to know the match is theirs comes last.
     ada.expect("Good hunting").await;
@@ -626,8 +586,8 @@ async fn a_sides_net_carries_its_pilots_words_to_its_own_side_and_nothing_to_the
     assert_ne!(ada_alias, cy_alias, "two red tanks, two drawn letters");
     let red_joined_ada = joined_line("RedNet", &ada_alias);
     let blue_joined_bo = joined_line("BlueNet", &bo_alias);
-    assert!(strip_ansi(&ada.seen[ada_mark..]).contains(&red_joined_ada));
-    let ada_seen = strip_ansi(&ada.seen[ada_mark..]);
+    assert!(strip_ansi(&ada.raw()[ada_mark..]).contains(&red_joined_ada));
+    let ada_seen = strip_ansi(&ada.raw()[ada_mark..]);
     let hunting = ada_seen.find("Good hunting").expect("the start");
     let joined = ada_seen.find(&red_joined_ada).expect("the join");
     assert!(
@@ -654,12 +614,8 @@ async fn a_sides_net_carries_its_pilots_words_to_its_own_side_and_nothing_to_the
     // (2) Ada speaks on red's net, and Cy reads comsys's own line.
     let bo_mark = bo.mark();
     let cy_mark = cy.mark();
-    say(
-        &mut ada,
-        &format!("{ada_alias} contact east"),
-        &ada_on_the_net,
-    )
-    .await;
+    ada.say(&format!("{ada_alias} contact east"), &ada_on_the_net)
+        .await;
     cy.expect_after(cy_mark, &ada_on_the_net).await;
     // ... and on the web, as the `Channel` event the channel screen renders.
     let red_seen = web_window(&mut red_web).await;
@@ -707,7 +663,7 @@ async fn a_sides_net_carries_its_pilots_words_to_its_own_side_and_nothing_to_the
         "{during:?}"
     );
     assert_eq!(during.1, before.1, "blue reads red's net mid-match");
-    say(&mut ada, "EXIT", "You climb out of").await;
+    ada.say("EXIT", "You climb out of").await;
     ada.expect(RED_REMOVED).await;
     let after = blue_view_of_red(&mut bo).await;
     assert_eq!(after, during, "a red EXIT changed what blue can read");
@@ -719,7 +675,8 @@ async fn a_sides_net_carries_its_pilots_words_to_its_own_side_and_nothing_to_the
     // Cy is still on red's net, and still reads it.
     let cy_mark = cy.mark();
     let cy_on_the_net = format!("[RedNet] {cy_callsign} Cy: still here");
-    say(&mut cy, &format!("{cy_alias} still here"), &cy_on_the_net).await;
+    cy.say(&format!("{cy_alias} still here"), &cy_on_the_net)
+        .await;
     let cy_window = close_window(&mut cy, cy_mark).await;
     assert!(cy_window.contains(&cy_on_the_net), "{cy_window}");
 }

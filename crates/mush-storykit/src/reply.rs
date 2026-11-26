@@ -185,8 +185,9 @@ fn answered(asked: &str, text: &str) -> bool {
 
 /// How one try ended.
 enum Try {
-    /// The whole reply.
-    Whole(String),
+    /// The whole reply: the text before the answer that ended it, and the
+    /// text through that answer's line.
+    Whole(String, String),
     /// The line was refused busy and both answers are in.
     Refused,
 }
@@ -217,15 +218,17 @@ async fn one_try(term: &mut impl Session, line: &str) -> Try {
     };
     let ((at, refusal), text) = first;
     let before = text.get(..at).unwrap_or("");
-    if refusal || answered(line, before) {
-        return Try::Whole(before.to_owned());
-    }
-    // Refused busy with nothing before it: the sentinel's answer is owed.
+    // The end of the answer's own line.
     let after = at
         + text
             .get(at..)
             .and_then(|t| t.find('\n'))
-            .map_or(0, |n| n + 1);
+            .map_or_else(|| text.len() - at, |n| n + 1);
+    if refusal || answered(line, before) {
+        let through = text.get(..after).unwrap_or(&text);
+        return Try::Whole(before.to_owned(), through.to_owned());
+    }
+    // Refused busy with nothing before it: the sentinel's answer is owed.
     loop {
         let later = term.mark();
         let text = term.seen_after(mark);
@@ -246,7 +249,7 @@ pub async fn ask(term: &mut impl Session, line: &str) -> Reply {
         STEP_TIMEOUT,
         &format!("`{line}` to be answered whole"),
         async || match one_try(term, line).await {
-            Try::Whole(text) => {
+            Try::Whole(text, _) => {
                 reply = Some(text);
                 true
             }
@@ -255,6 +258,27 @@ pub async fn ask(term: &mut impl Session, line: &str) -> Reply {
     )
     .await;
     Reply::new(line, &reply.unwrap_or_default())
+}
+
+/// [`ask`]'s read, answering the text from the line through the line of the
+/// answer that ended it (the sentinel's refusal, as a rig's own `ask_whole`
+/// always returned it). It is the body of [`crate::ask_whole`] since unit
+/// FL.8, so that read counts its answers too.
+pub(crate) async fn whole_through(term: &mut impl Session, line: &str) -> String {
+    let mut reply = None;
+    wait_until(
+        STEP_TIMEOUT,
+        &format!("`{line}` to be answered whole"),
+        async || match one_try(term, line).await {
+            Try::Whole(_, through) => {
+                reply = Some(through);
+                true
+            }
+            Try::Refused => false,
+        },
+    )
+    .await;
+    reply.unwrap_or_default()
 }
 
 #[cfg(test)]

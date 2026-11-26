@@ -48,15 +48,10 @@ use mushd::ssh_bridge::{SshBridge, SshListener, start_listener};
 use mushd::staff::{StaffQueue, register_server_commands};
 use mushd::world_task::{self, PersistHandles, ServerDeps};
 
-use support::{Term, play_client, scratch_dir, strip_ansi};
+use support::{Term, play_client, scratch_dir};
 
 const GM_PASSWORD: &str = "gm-secret-1";
 const PILOT_PASSWORD: &str = "pilot-secret-1";
-
-/// The world's transient authoritative refusal: a commit is in flight.
-const COMMIT_PENDING: &str = "please retry in a moment";
-/// How many times a line is re-sent on that refusal before the test gives up.
-const RETRY_BUDGET: usize = 8;
 
 /// The three pilot characters, created before the world task spawns so their
 /// ids are stable.
@@ -286,34 +281,6 @@ async fn login(
     (handle, term)
 }
 
-/// Run one line and wait for `needle`, retrying the transient authoritative
-/// refusal. Every needle is chosen so it cannot appear in the line's own echo.
-async fn say(term: &mut Term, line: &str, needle: &str) {
-    assert!(
-        !line.contains(needle),
-        "`{needle}` appears in `{line}`'s own echo; pick a needle from the ANSWER"
-    );
-    for _ in 0..RETRY_BUDGET {
-        let mark = term.mark();
-        term.send_line(line).await;
-        if term
-            .expect_one_of_after(mark, &[needle, COMMIT_PENDING])
-            .await
-            == 0
-        {
-            return;
-        }
-    }
-    panic!("`{line}` was refused as commit-pending {RETRY_BUDGET} times running");
-}
-
-/// Run one line, wait for `needle`, and hand back everything that arrived.
-async fn ask(term: &mut Term, line: &str, needle: &str) -> String {
-    let mark = term.mark();
-    say(term, line, needle).await;
-    strip_ansi(&term.seen[mark..])
-}
-
 /// One object's dbref, out of an `@find` listing.
 fn dbref_of(listing: &str, name: &str) -> u32 {
     listing
@@ -328,15 +295,13 @@ fn dbref_of(listing: &str, name: &str) -> u32 {
 
 /// Walk every pilot into the simulator lobby, and answer its dbref.
 async fn open_the_centre(god: &mut Term) -> u32 {
-    let listing = ask(god, "@find Simulator Lobby", "END OF LIST").await;
+    let listing = god
+        .ask_settled("@find Simulator Lobby", "END OF LIST")
+        .await;
     let lobby = dbref_of(&listing, "Simulator Lobby");
     for pilot in [ADA, BO, CY] {
-        say(
-            god,
-            &format!("@teleport #{}=#{lobby}", pilot.0),
-            "Teleported",
-        )
-        .await;
+        god.say(&format!("@teleport #{}=#{lobby}", pilot.0), "Teleported")
+            .await;
     }
     lobby
 }
@@ -357,25 +322,24 @@ async fn two_pilots_walk_selection_and_boarding_twice_and_a_slot_belongs_to_an_a
 
     for run in 1..=2 {
         // `Idle -> Selection`, and the centre says so to everyone in it.
-        say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
-        say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
+        ada.say("SIM TEAM red", "takes red slot 1").await;
+        bo.say("SIM TEAM blue", "takes blue slot 1").await;
 
         // One account, one slot — whichever side it reaches for.
-        say(&mut ada, "SIM TEAM blue", "already hold red slot 1").await;
+        ada.say("SIM TEAM blue", "already hold red slot 1").await;
 
         // A third account takes the *next* slot, never a taken one.
-        say(&mut cy, "SIM TEAM red", "takes red slot 2").await;
-        say(&mut cy, "SIM LEAVE", "gives up red slot 2").await;
+        cy.say("SIM TEAM red", "takes red slot 2").await;
+        cy.say("SIM LEAVE", "gives up red slot 2").await;
 
         // The status a pilot reads, anywhere in the centre.
-        let status = ask(&mut ada, "SIM STATUS", "blue:").await;
+        let status = ada.ask_settled("SIM STATUS", "blue:").await;
         assert!(status.contains("selection"), "run {run}: {status}");
         assert!(status.contains("Ada"), "run {run}: {status}");
         assert!(status.contains("Bo"), "run {run}: {status}");
 
         // A pilot who does not lead a side cannot start it.
-        say(
-            &mut cy,
+        cy.say(
             "SIM START",
             "Only a side's lead or staff can start the match.",
         )
@@ -383,32 +347,33 @@ async fn two_pilots_walk_selection_and_boarding_twice_and_a_slot_belongs_to_an_a
 
         // **16b cut Q.7**: this server fields no machines, so the sixth selector
         // says so and the board says nothing at all about a fill.
-        say(&mut ada, "SIM AI", "AI fill is off on this server.").await;
-        let status = ask(&mut ada, "SIM STATUS", "blue:").await;
+        ada.say("SIM AI", "AI fill is off on this server.").await;
+        let status = ada.ask_settled("SIM STATUS", "blue:").await;
         assert!(
             !status.contains("AI fill:"),
             "run {run}: a board with no fill behind it says nothing about one: {status}"
         );
 
         // `Selection -> Boarding`: the pods lock, slot n to pod n.
-        say(&mut ada, "SIM START", "is boarding").await;
-        let status = ask(&mut ada, "SIM STATUS", "blue:").await;
+        ada.say("SIM START", "is boarding").await;
+        let status = ada.ask_settled("SIM STATUS", "blue:").await;
         assert!(status.contains("boarding"), "run {run}: {status}");
         assert!(status.contains("Red Pod 1"), "run {run}: {status}");
         assert!(status.contains("Blue Pod 1"), "run {run}: {status}");
 
         // `Boarding -> Aborted`, by a participant, and the pods come back.
-        say(&mut bo, "SIM ABORT", "calls the match off").await;
-        let status = ask(&mut ada, "SIM STATUS", "blue:").await;
+        bo.say("SIM ABORT", "calls the match off").await;
+        let status = ada.ask_settled("SIM STATUS", "blue:").await;
         assert!(status.contains("aborted"), "run {run}: {status}");
         assert!(status.contains("red: nobody"), "run {run}: {status}");
 
         // `Aborted -> Idle`: the staff reset, which run 2 then proves.
-        say(&mut god, "@arena/reset", "center is reset").await;
+        god.say("@arena/reset", "center is reset").await;
     }
 
     // And the second reset says nothing changed.
-    say(&mut god, "@arena/reset", "already idle; nothing changed").await;
+    god.say("@arena/reset", "already idle; nothing changed")
+        .await;
 }
 
 // ---------------------------------------------------------------------------
@@ -426,16 +391,17 @@ async fn sim_is_refused_outside_the_centre_and_a_boarding_nobody_answers_aborts(
 
     // God is standing in Limbo, so even staff are refused there: the gate is
     // about the room, not about the power.
-    say(&mut god, "SIM STATUS", OUTSIDE).await;
-    say(&mut god, "sim/status", OUTSIDE).await;
+    god.say("SIM STATUS", OUTSIDE).await;
+    god.say("sim/status", OUTSIDE).await;
 
     // A pilot walked out of the centre is refused the same way, and the same
     // verb inside it is the lobby's own.
-    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
-    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
-    say(&mut ada, "SIM START", "is boarding").await;
-    say(&mut god, &format!("@teleport #{}=#0", BO.0), "Teleported").await;
-    say(&mut bo, "SIM ABORT", OUTSIDE).await;
+    ada.say("SIM TEAM red", "takes red slot 1").await;
+    bo.say("SIM TEAM blue", "takes blue slot 1").await;
+    ada.say("SIM START", "is boarding").await;
+    god.say(&format!("@teleport #{}=#0", BO.0), "Teleported")
+        .await;
+    bo.say("SIM ABORT", OUTSIDE).await;
 
     // Nobody boards. The deadline drops both unseated slots, which empties both
     // sides, and an empty side aborts (doc 16 §3.8). The deadline is a due world
@@ -445,7 +411,7 @@ async fn sim_is_refused_outside_the_centre_and_a_boarding_nobody_answers_aborts(
         STEP_TIMEOUT,
         "the unanswered boarding to abort",
         async || {
-            status = ask(&mut ada, "SIM STATUS", "blue:").await;
+            status = ada.ask_settled("SIM STATUS", "blue:").await;
             status.contains("aborted")
         },
     )
@@ -454,14 +420,10 @@ async fn sim_is_refused_outside_the_centre_and_a_boarding_nobody_answers_aborts(
     assert!(status.contains("red: nobody"), "{status}");
 
     // And the centre is reusable at once: a reset, and a fresh claim.
-    say(&mut god, "@arena/reset", "center is reset").await;
-    say(
-        &mut god,
-        &format!("@teleport #{}=#{lobby}", BO.0),
-        "Teleported",
-    )
-    .await;
-    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
+    god.say("@arena/reset", "center is reset").await;
+    god.say(&format!("@teleport #{}=#{lobby}", BO.0), "Teleported")
+        .await;
+    bo.say("SIM TEAM blue", "takes blue slot 1").await;
 }
 
 // ---------------------------------------------------------------------------
@@ -475,52 +437,49 @@ async fn the_staff_shortcut_runs_a_match_the_centre_knows_about() {
     let lobby = open_the_centre(&mut god).await;
 
     // The arena pack's own tanks, found the way a staffer finds anything.
-    let listing = ask(&mut god, "@find Red Tank 1", "END OF LIST").await;
+    let listing = god.ask_settled("@find Red Tank 1", "END OF LIST").await;
     let red = dbref_of(&listing, "Red Tank 1");
-    let listing = ask(&mut god, "@find Blue Tank 1", "END OF LIST").await;
+    let listing = god.ask_settled("@find Blue Tank 1", "END OF LIST").await;
     let blue = dbref_of(&listing, "Blue Tank 1");
 
-    say(
-        &mut god,
+    god.say(
         &format!("@arena/start tacsim.arena.proving_ground=#{red}/#{blue}"),
         "is running on",
     )
     .await;
 
     // `@arena/status` now prints the centre the lobby prints, not a second one.
-    let status = ask(&mut god, "@arena/status", "ledger writes awaiting").await;
+    let status = god
+        .ask_settled("@arena/status", "ledger writes awaiting")
+        .await;
     assert!(status.contains("running"), "{status}");
 
     // A lobby claim is refused while the centre holds a match, and so is a
     // second shortcut.
     let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
-    say(&mut ada, "SIM TEAM red", "center is running").await;
-    say(
-        &mut god,
+    ada.say("SIM TEAM red", "center is running").await;
+    god.say(
         &format!("@arena/start tacsim.arena.proving_ground=#{red}/#{blue}"),
         "holding a match",
     )
     .await;
     // A reset never drops custody; only the check-in gives the units back.
-    say(&mut god, "@arena/reset", "abort` it first").await;
+    god.say("@arena/reset", "abort` it first").await;
 
     // Staff standing in the lobby may `SIM ABORT` it, and the check-in follows.
     // Teleporting *yourself* answers with the destination's room view, not with
     // the third-person "Teleported." somebody else's move prints.
-    say(
-        &mut god,
-        &format!("@teleport #{}=#{lobby}", GOD.0),
-        "Simulator Lobby",
-    )
-    .await;
-    say(&mut god, "SIM ABORT", "aborts match").await;
+    god.say(&format!("@teleport #{}=#{lobby}", GOD.0), "Simulator Lobby")
+        .await;
+    god.say("SIM ABORT", "aborts match").await;
     god.expect("Its units are checked in.").await;
 
-    let status = ask(&mut god, "SIM STATUS", "blue:").await;
+    let status = god.ask_settled("SIM STATUS", "blue:").await;
     assert!(status.contains("aborted"), "{status}");
-    say(&mut god, "@arena/reset", "center is reset").await;
-    say(&mut god, "@arena/reset", "already idle; nothing changed").await;
-    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    god.say("@arena/reset", "center is reset").await;
+    god.say("@arena/reset", "already idle; nothing changed")
+        .await;
+    ada.say("SIM TEAM red", "takes red slot 1").await;
 }
 
 /// One answer with the terminal's own wrapping taken back out, so a sentence
@@ -550,19 +509,21 @@ async fn d1_the_bare_reads_and_the_claim_line_on_a_server_that_fields_machines()
     let (_c, mut cy) = login(server.addr, "cy", PILOT_PASSWORD, "Cy").await;
 
     // `Idle`, no slot, not a lead: both reads answer.
-    say(&mut cy, "SIM UNIT", "Fieldable units: ").await;
-    let listing = ask(&mut cy, "SIM UNIT", "Fieldable units: ").await;
+    cy.say("SIM UNIT", "Fieldable units: ").await;
+    let listing = cy.ask_settled("SIM UNIT", "Fieldable units: ").await;
     assert!(
         !listing.contains("Yours:"),
         "a reader with no slot was told what they are flying: {listing}"
     );
-    say(&mut cy, "SIM AI", "AI fill: ").await;
+    cy.say("SIM AI", "AI fill: ").await;
 
     // **The claim line branches on the fill** (`B-30`): on this server
     // `SIM START` does not wait for the other side.
     // The needle is short because the line wraps at the terminal's width; the
     // whole sentence is compared below, with the wrap taken back out.
-    let said = ask(&mut ada, "SIM TEAM red", "the machines take the pods").await;
+    let said = ada
+        .ask_settled("SIM TEAM red", "the machines take the pods")
+        .await;
     assert!(
         one_line(&said).contains(
             "Ada takes red slot 1. `SIM START` begins the match; the machines take the pods \
@@ -570,32 +531,31 @@ async fn d1_the_bare_reads_and_the_claim_line_on_a_server_that_fields_machines()
         ),
         "{said}"
     );
-    say(&mut bo, "SIM TEAM red", "takes red slot 2").await;
+    bo.say("SIM TEAM red", "takes red slot 2").await;
 
     // A non-lead who holds a slot reads both, and is refused the SET with its
     // own sentence — not `SIM START`'s.
     // 16b cut AE.1: ten types wrap the sentence, so the needle is its tail —
     // one taken from its opening could return before the wrapped rest has
     // arrived — and it is read as one line.
-    let listing = ask(&mut bo, "SIM UNIT", "Yours:").await;
+    let listing = bo.ask_settled("SIM UNIT", "Yours:").await;
     assert!(
         one_line(&listing).contains("Fieldable units: "),
         "{listing}"
     );
     assert!(one_line(&listing).contains("Yours: "), "{listing}");
-    say(&mut bo, "SIM AI", "AI fill: ").await;
-    say(
-        &mut bo,
+    bo.say("SIM AI", "AI fill: ").await;
+    bo.say(
         "SIM AI 3",
         "Only a side's lead or staff can set the AI fill.",
     )
     .await;
 
     // And in `Boarding`, where neither read was served at all before this cut.
-    say(&mut ada, "SIM START", "is boarding").await;
-    say(&mut cy, "SIM UNIT", "Fieldable units: ").await;
-    say(&mut cy, "SIM AI", "AI fill: ").await;
-    say(&mut ada, "SIM ABORT", "calls the match off").await;
+    ada.say("SIM START", "is boarding").await;
+    cy.say("SIM UNIT", "Fieldable units: ").await;
+    cy.say("SIM AI", "AI fill: ").await;
+    ada.say("SIM ABORT", "calls the match off").await;
 }
 
 /// **`B-30` the other way round**: with the fill off the claim line is byte for
@@ -607,7 +567,7 @@ async fn d1_with_the_fill_off_the_claim_line_is_unchanged() {
     open_the_centre(&mut god).await;
     let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
 
-    let said = ask(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    let said = ada.ask_settled("SIM TEAM red", "takes red slot 1").await;
     assert!(
         said.contains(
             "Ada takes red slot 1. `SIM START` begins the match once both sides have a \
@@ -635,13 +595,13 @@ async fn d1_the_boards_arena_clock_moves_while_nobody_drives() {
     let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
     let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
 
-    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
-    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
-    say(&mut ada, "SIM START", "is boarding").await;
-    say(&mut ada, "red", "Red Room").await;
-    say(&mut bo, "blue", "Blue Room").await;
-    say(&mut ada, "BOARD", "climb into").await;
-    say(&mut bo, "BOARD", "climb into").await;
+    ada.say("SIM TEAM red", "takes red slot 1").await;
+    bo.say("SIM TEAM blue", "takes blue slot 1").await;
+    ada.say("SIM START", "is boarding").await;
+    ada.say("red", "Red Room").await;
+    bo.say("blue", "Blue Room").await;
+    ada.say("BOARD", "climb into").await;
+    bo.say("BOARD", "climb into").await;
     ada.expect("Good hunting").await;
 
     /// The `m:ss` on the board, as whole seconds.
@@ -653,7 +613,7 @@ async fn d1_the_boards_arena_clock_moves_while_nobody_drives() {
         Some(minutes.trim().parse::<i64>().ok()? * 60 + seconds.trim().parse::<i64>().ok()?)
     }
 
-    let board = ask(&mut ada, "SIM STATUS", "arena time ").await;
+    let board = ada.ask_settled("SIM STATUS", "arena time ").await;
     assert!(
         !board.contains(" ms"),
         "the raw milliseconds are still on the board: {board}"
@@ -662,7 +622,7 @@ async fn d1_the_boards_arena_clock_moves_while_nobody_drives() {
 
     // Nobody types anything at the tanks. The clock moves anyway.
     wait_until(STEP_TIMEOUT, "the idle arena clock to move", async || {
-        let board = ask(&mut ada, "SIM STATUS", "arena time ").await;
+        let board = ada.ask_settled("SIM STATUS", "arena time ").await;
         let now = clock_s(&board).unwrap_or_else(|| panic!("an `m:ss` clock: {board}"));
         assert!(now >= first, "the board's clock went backwards: {board}");
         now > first
@@ -671,10 +631,12 @@ async fn d1_the_boards_arena_clock_moves_while_nobody_drives() {
 
     // And `@arena/status` keeps the ledger's own figure AND prints the clock
     // beside it, so an operator can tell the two apart.
-    let staff = ask(&mut god, "@arena/status", "ledger writes awaiting").await;
+    let staff = god
+        .ask_settled("@arena/status", "ledger writes awaiting")
+        .await;
     assert!(staff.contains(" ms, clock "), "{staff}");
 
-    say(&mut ada, "SIM ABORT", "aborts match").await;
+    ada.say("SIM ABORT", "aborts match").await;
 }
 
 // ---------------------------------------------------------------------------
@@ -705,49 +667,41 @@ async fn d3_a_lead_concedes_and_the_board_names_the_winner() {
     // window this file runs at is three seconds, and two pilots walking into the
     // same room cannot wait on that room's name — each would match the other's
     // `Ada goes Red Room <R>.`
-    let listing = ask(&mut god, "@find Red Room", "END OF LIST").await;
+    let listing = god.ask_settled("@find Red Room", "END OF LIST").await;
     let red_room = dbref_of(&listing, "Red Room");
-    let listing = ask(&mut god, "@find Blue Room", "END OF LIST").await;
+    let listing = god.ask_settled("@find Blue Room", "END OF LIST").await;
     let blue_room = dbref_of(&listing, "Blue Room");
     for (pilot, room) in [(ADA, red_room), (CY, red_room), (BO, blue_room)] {
-        say(
-            &mut god,
-            &format!("@teleport #{}=#{room}", pilot.0),
-            "Teleported",
-        )
-        .await;
+        god.say(&format!("@teleport #{}=#{room}", pilot.0), "Teleported")
+            .await;
     }
 
-    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
-    say(&mut cy, "SIM TEAM red", "takes red slot 2").await;
-    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
-    say(&mut ada, "SIM START", "is boarding").await;
-    say(&mut ada, "BOARD", "climb into").await;
-    say(&mut cy, "BOARD", "climb into").await;
-    say(&mut bo, "BOARD", "climb into").await;
+    ada.say("SIM TEAM red", "takes red slot 1").await;
+    cy.say("SIM TEAM red", "takes red slot 2").await;
+    bo.say("SIM TEAM blue", "takes blue slot 1").await;
+    ada.say("SIM START", "is boarding").await;
+    ada.say("BOARD", "climb into").await;
+    cy.say("BOARD", "climb into").await;
+    bo.say("BOARD", "climb into").await;
     ada.expect("Good hunting").await;
 
     // Red's second pilot may not give red's match away.
-    say(
-        &mut cy,
-        "SIM CONCEDE",
-        "Only a side's lead can concede for it.",
-    )
-    .await;
+    cy.say("SIM CONCEDE", "Only a side's lead can concede for it.")
+        .await;
     // Red's first may, and the whole centre is told.
-    say(&mut ada, "SIM CONCEDE", "concedes for the red side").await;
+    ada.say("SIM CONCEDE", "concedes for the red side").await;
     bo.expect("Match 1 goes to blue when the arena answers.")
         .await;
     bo.expect("Its units are checked in.").await;
 
-    let status = one_line(&ask(&mut bo, "SIM STATUS", "blue:").await);
+    let status = one_line(&bo.ask_settled("SIM STATUS", "blue:").await);
     assert!(
         status.contains("ended (match 1) — blue wins: red conceded"),
         "{status}"
     );
     // It is an end and not an abort, so the next match is opened the ordinary
     // way.
-    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
+    bo.say("SIM TEAM blue", "takes blue slot 1").await;
 }
 
 /// **`B-78`: a lead the boarding deadline drops leaves a lead who can concede**
@@ -770,25 +724,21 @@ async fn aa2_a_lead_dropped_at_the_deadline_leaves_a_lead_who_can_concede() {
 
     // Into the team rooms BEFORE the match starts, for the reason
     // `d3_a_lead_concedes_and_the_board_names_the_winner` gives.
-    let listing = ask(&mut god, "@find Red Room", "END OF LIST").await;
+    let listing = god.ask_settled("@find Red Room", "END OF LIST").await;
     let red_room = dbref_of(&listing, "Red Room");
-    let listing = ask(&mut god, "@find Blue Room", "END OF LIST").await;
+    let listing = god.ask_settled("@find Blue Room", "END OF LIST").await;
     let blue_room = dbref_of(&listing, "Blue Room");
     for (pilot, room) in [(ADA, red_room), (CY, red_room), (BO, blue_room)] {
-        say(
-            &mut god,
-            &format!("@teleport #{}=#{room}", pilot.0),
-            "Teleported",
-        )
-        .await;
+        god.say(&format!("@teleport #{}=#{room}", pilot.0), "Teleported")
+            .await;
     }
 
-    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
-    say(&mut cy, "SIM TEAM red", "takes red slot 2").await;
-    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
-    say(&mut ada, "SIM START", "is boarding").await;
-    say(&mut cy, "BOARD", "climb into").await;
-    say(&mut bo, "BOARD", "climb into").await;
+    ada.say("SIM TEAM red", "takes red slot 1").await;
+    cy.say("SIM TEAM red", "takes red slot 2").await;
+    bo.say("SIM TEAM blue", "takes blue slot 1").await;
+    ada.say("SIM START", "is boarding").await;
+    cy.say("BOARD", "climb into").await;
+    bo.say("BOARD", "climb into").await;
     // Ada, red's lead, never boards. The deadline is a due world tick, so this is
     // wall time and nothing has to be poked: the wait is for the line the
     // deadline tells, under the rig's step limit, and no span is slept first.
@@ -796,19 +746,15 @@ async fn aa2_a_lead_dropped_at_the_deadline_leaves_a_lead_who_can_concede() {
     cy.expect("Good hunting").await;
 
     // The dropped lead holds no slot, so no side.
-    say(
-        &mut ada,
-        "SIM CONCEDE",
-        "You hold no slot in the simulator.",
-    )
-    .await;
+    ada.say("SIM CONCEDE", "You hold no slot in the simulator.")
+        .await;
     // Red's next claimant leads red now, and her concede is a result.
-    say(&mut cy, "SIM CONCEDE", "concedes for the red side").await;
+    cy.say("SIM CONCEDE", "concedes for the red side").await;
     bo.expect("Match 1 goes to blue when the arena answers.")
         .await;
     bo.expect("Its units are checked in.").await;
 
-    let status = one_line(&ask(&mut bo, "SIM STATUS", "blue:").await);
+    let status = one_line(&bo.ask_settled("SIM STATUS", "blue:").await);
     assert!(
         status.contains("ended (match 1) — blue wins: red conceded"),
         "{status}"
@@ -835,45 +781,37 @@ async fn b4_a_lead_who_exits_mid_match_hands_the_side_on() {
 
     // Into the team rooms BEFORE the match starts, for the reason
     // `d3_a_lead_concedes_and_the_board_names_the_winner` gives.
-    let listing = ask(&mut god, "@find Red Room", "END OF LIST").await;
+    let listing = god.ask_settled("@find Red Room", "END OF LIST").await;
     let red_room = dbref_of(&listing, "Red Room");
-    let listing = ask(&mut god, "@find Blue Room", "END OF LIST").await;
+    let listing = god.ask_settled("@find Blue Room", "END OF LIST").await;
     let blue_room = dbref_of(&listing, "Blue Room");
     for (pilot, room) in [(ADA, red_room), (CY, red_room), (BO, blue_room)] {
-        say(
-            &mut god,
-            &format!("@teleport #{}=#{room}", pilot.0),
-            "Teleported",
-        )
-        .await;
+        god.say(&format!("@teleport #{}=#{room}", pilot.0), "Teleported")
+            .await;
     }
 
-    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
-    say(&mut cy, "SIM TEAM red", "takes red slot 2").await;
-    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
-    say(&mut ada, "SIM START", "is boarding").await;
-    say(&mut ada, "BOARD", "climb into").await;
-    say(&mut cy, "BOARD", "climb into").await;
-    say(&mut bo, "BOARD", "climb into").await;
+    ada.say("SIM TEAM red", "takes red slot 1").await;
+    cy.say("SIM TEAM red", "takes red slot 2").await;
+    bo.say("SIM TEAM blue", "takes blue slot 1").await;
+    ada.say("SIM START", "is boarding").await;
+    ada.say("BOARD", "climb into").await;
+    cy.say("BOARD", "climb into").await;
+    bo.say("BOARD", "climb into").await;
     ada.expect("Good hunting").await;
 
     // Red's lead leaves her tank for good.
-    say(&mut ada, "EXIT", "You climb out of").await;
+    ada.say("EXIT", "You climb out of").await;
     // She is in the team room, in the centre, holding a slot that has left: she
     // leads nothing now, and is told so in the lead's words.
-    say(
-        &mut ada,
-        "SIM CONCEDE",
-        "Only a side's lead can concede for it.",
-    )
-    .await;
+    ada.say("SIM CONCEDE", "Only a side's lead can concede for it.")
+        .await;
     // Cy, red's next claimant still in a tank, leads red and may concede.
-    say(&mut cy, "SIM CONCEDE", "concedes for the red side").await;
+    cy.say("SIM CONCEDE", "concedes for the red side").await;
     bo.expect("Match 1 goes to blue when the arena answers.")
         .await;
     bo.expect("Its units are checked in.").await;
 
-    let status = one_line(&ask(&mut bo, "SIM STATUS", "blue:").await);
+    let status = one_line(&bo.ask_settled("SIM STATUS", "blue:").await);
     assert!(
         status.contains("ended (match 1) — blue wins: red conceded"),
         "{status}"
@@ -900,18 +838,17 @@ async fn d3_sim_abort_is_refused_in_selection_and_the_board_drops_the_doubled_wo
     let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
     let (_c, mut cy) = login(server.addr, "cy", PILOT_PASSWORD, "Cy").await;
 
-    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
-    say(&mut cy, "SIM TEAM red", "takes red slot 2").await;
-    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
+    ada.say("SIM TEAM red", "takes red slot 1").await;
+    cy.say("SIM TEAM red", "takes red slot 2").await;
+    bo.say("SIM TEAM blue", "takes blue slot 1").await;
 
     // A claimant is refused, and nobody's slot goes.
-    say(
-        &mut cy,
+    cy.say(
         "SIM ABORT",
         "Nothing is running yet. `SIM LEAVE` gives your slot up.",
     )
     .await;
-    let status = ask(&mut ada, "SIM STATUS", "blue:").await;
+    let status = ada.ask_settled("SIM STATUS", "blue:").await;
     assert!(status.contains("selection"), "{status}");
     assert!(
         status.contains("Cy"),
@@ -919,19 +856,15 @@ async fn d3_sim_abort_is_refused_in_selection_and_the_board_drops_the_doubled_wo
     );
     assert!(status.contains("Bo"), "{status}");
     // `SIM LEAVE` is what the sentence says to type, and it works.
-    say(&mut cy, "SIM LEAVE", "gives up red slot 2").await;
+    cy.say("SIM LEAVE", "gives up red slot 2").await;
 
     // Staff standing in the lobby still may, and the board's head carries the
     // state alone — there is no match id in `Selection` and no second word for
     // the same fact.
-    say(
-        &mut god,
-        &format!("@teleport #{}=#{lobby}", GOD.0),
-        "Simulator Lobby",
-    )
-    .await;
-    say(&mut god, "SIM ABORT", "calls the match off").await;
-    let status = one_line(&ask(&mut god, "SIM STATUS", "blue:").await);
+    god.say(&format!("@teleport #{}=#{lobby}", GOD.0), "Simulator Lobby")
+        .await;
+    god.say("SIM ABORT", "calls the match off").await;
+    let status = one_line(&god.ask_settled("SIM STATUS", "blue:").await);
     assert!(status.contains("Simulator center: aborted"), "{status}");
     assert!(
         !status.contains("— abort"),
@@ -940,12 +873,12 @@ async fn d3_sim_abort_is_refused_in_selection_and_the_board_drops_the_doubled_wo
 
     // And from `Boarding`, where there IS a match id, the head names it and
     // still says `abort` no second time.
-    say(&mut god, "@arena/reset", "center is reset").await;
-    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
-    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
-    say(&mut ada, "SIM START", "is boarding").await;
-    say(&mut bo, "SIM ABORT", "calls the match off").await;
-    let status = one_line(&ask(&mut god, "SIM STATUS", "blue:").await);
+    god.say("@arena/reset", "center is reset").await;
+    ada.say("SIM TEAM red", "takes red slot 1").await;
+    bo.say("SIM TEAM blue", "takes blue slot 1").await;
+    ada.say("SIM START", "is boarding").await;
+    bo.say("SIM ABORT", "calls the match off").await;
+    let status = one_line(&god.ask_settled("SIM STATUS", "blue:").await);
     assert!(
         status.contains("Simulator center: aborted (match 1)"),
         "{status}"
@@ -973,12 +906,8 @@ async fn z3_a_side_takes_six_claims_and_the_fill_is_one_to_six() {
     let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
     let lobby = open_the_centre(&mut god).await;
     for (pilot, _) in MORE_PILOTS {
-        say(
-            &mut god,
-            &format!("@teleport #{}=#{lobby}", pilot.0),
-            "Teleported",
-        )
-        .await;
+        god.say(&format!("@teleport #{}=#{lobby}", pilot.0), "Teleported")
+            .await;
     }
 
     let mut pilots = Vec::new();
@@ -987,27 +916,24 @@ async fn z3_a_side_takes_six_claims_and_the_fill_is_one_to_six() {
         pilots.push((handle, term, name));
     }
     for (slot, (_, term, name)) in pilots.iter_mut().take(6).enumerate() {
-        say(
-            term,
+        term.say(
             "SIM TEAM red",
             &format!("{name} takes red slot {}", slot + 1),
         )
         .await;
     }
     let (_, gus, _) = pilots.last_mut().expect("seven pilots");
-    say(
-        gus,
-        "SIM TEAM red",
-        "The red side is full: it takes 6 pilot(s).",
-    )
-    .await;
-    say(gus, "SIM TEAM blue", "Gus takes blue slot 1").await;
+    gus.say("SIM TEAM red", "The red side is full: it takes 6 pilot(s).")
+        .await;
+    gus.say("SIM TEAM blue", "Gus takes blue slot 1").await;
 
     let (_, ada, _) = pilots.first_mut().expect("seven pilots");
-    say(ada, "SIM AI 7", "AI fill is 1 to 6 a side.").await;
-    say(ada, "SIM AI 6", "AI fill set to 6 a side.").await;
+    ada.say("SIM AI 7", "AI fill is 1 to 6 a side.").await;
+    ada.say("SIM AI 6", "AI fill set to 6 a side.").await;
 
-    let status = ask(ada, "SIM STATUS", "AI fill: each side fields").await;
+    let status = ada
+        .ask_settled("SIM STATUS", "AI fill: each side fields")
+        .await;
     let status = one_line(&status);
     // Doc 32 cut CF.0 (Q-CF-11): before a match has checked a tank out its
     // unit letter is not drawn, so the board prints the side's letter and a
@@ -1050,17 +976,17 @@ async fn i1_a_finished_match_replays_to_both_pilots_and_a_bystander() {
     let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
     let (_c, mut cy) = login(server.addr, "cy", PILOT_PASSWORD, "Cy").await;
 
-    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
-    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
-    say(&mut ada, "SIM START", "is boarding").await;
-    say(&mut ada, "red", "Red Room").await;
-    say(&mut bo, "blue", "Blue Room").await;
-    say(&mut ada, "BOARD", "climb into").await;
-    say(&mut bo, "BOARD", "climb into").await;
+    ada.say("SIM TEAM red", "takes red slot 1").await;
+    bo.say("SIM TEAM blue", "takes blue slot 1").await;
+    ada.say("SIM START", "is boarding").await;
+    ada.say("red", "Red Room").await;
+    bo.say("blue", "Blue Room").await;
+    ada.say("BOARD", "climb into").await;
+    bo.say("BOARD", "climb into").await;
     ada.expect("Good hunting").await;
 
     // A running match has no replay: its one answer.
-    say(&mut cy, "SIM REPLAY 1", "Match 1 is still running.").await;
+    cy.say("SIM REPLAY 1", "Match 1 is still running.").await;
     // Doc 32 cut CF.0 (Q-CF-11): each tank's unit letter is drawn at
     // check-out; each pilot reads their own off `STATUS`.
     let red_callsign = support::own_callsign(&mut ada).await;
@@ -1080,17 +1006,23 @@ async fn i1_a_finished_match_replays_to_both_pilots_and_a_bystander() {
         STEP_TIMEOUT,
         "the arena clock to pass a second",
         async || {
-            let staff = ask(&mut god, "@arena/status", "ledger writes awaiting").await;
+            let staff = god
+                .ask_settled("@arena/status", "ledger writes awaiting")
+                .await;
             support::arena_clock_seconds(&staff).is_some_and(|seconds| seconds >= 1)
         },
     )
     .await;
-    say(&mut ada, "SIM CONCEDE", "concedes for the red side").await;
+    ada.say("SIM CONCEDE", "concedes for the red side").await;
     bo.expect("Its units are checked in.").await;
 
     for (who, term) in [("Ada", &mut ada), ("Bo", &mut bo), ("Cy", &mut cy)] {
         // The last line of the reply, so the whole of it has arrived.
-        let said = one_line(&ask(term, "SIM REPLAY 1", "Next: SIM REPLAY 1 next").await);
+        let said = one_line(
+            &term
+                .ask_settled("SIM REPLAY 1", "Next: SIM REPLAY 1 next")
+                .await,
+        );
         assert!(
             said.contains("both sides as the arena recorded them every 100 ms"),
             "{who}: {said}"
@@ -1109,17 +1041,19 @@ async fn i1_a_finished_match_replays_to_both_pilots_and_a_bystander() {
         }
     }
     // A pilot's own replay is centred on their own tank.
-    let said = one_line(&ask(&mut bo, "SIM REPLAY 1", "Next: SIM REPLAY 1 next").await);
+    let said = one_line(
+        &bo.ask_settled("SIM REPLAY 1", "Next: SIM REPLAY 1 next")
+            .await,
+    );
     assert!(
         said.contains(&format!(", around {blue_callsign}.")),
         "{said}"
     );
 
     // `next` moves the keyframe.
-    say(&mut cy, "SIM REPLAY 1 next", ", keyframe 2 of ").await;
+    cy.say("SIM REPLAY 1 next", ", keyframe 2 of ").await;
     // A match the centre never ran.
-    say(
-        &mut cy,
+    cy.say(
         "SIM REPLAY 9",
         "The center remembers its last 20 matches; match 9 is not one of them.",
     )
@@ -1145,43 +1079,44 @@ async fn o1_sim_mode_over_the_wire() {
     let (_c, mut cy) = login(server.addr, "cy", PILOT_PASSWORD, "Cy").await;
 
     // A bystander with no slot reads it.
-    let said = one_line(&ask(&mut cy, "SIM MODE", "supports: skirmish, hold.").await);
+    let said = one_line(
+        &cy.ask_settled("SIM MODE", "supports: skirmish, hold.")
+            .await,
+    );
     assert!(
         said.contains("Mode: skirmish. The Proving Ground supports: skirmish, hold."),
         "{said}"
     );
     // A set outside `Selection`.
-    say(&mut ada, "SIM MODE hold", "center is idle").await;
+    ada.say("SIM MODE hold", "center is idle").await;
 
     // Ada leads red from the red room, Bo blue from the blue room; Cy claims
     // red's second slot and stays in the lobby.
-    let listing = ask(&mut god, "@find Red Room", "END OF LIST").await;
+    let listing = god.ask_settled("@find Red Room", "END OF LIST").await;
     let red_room = dbref_of(&listing, "Red Room");
-    let listing = ask(&mut god, "@find Blue Room", "END OF LIST").await;
+    let listing = god.ask_settled("@find Blue Room", "END OF LIST").await;
     let blue_room = dbref_of(&listing, "Blue Room");
     for (pilot, room) in [(ADA, red_room), (BO, blue_room)] {
-        say(
-            &mut god,
-            &format!("@teleport #{}=#{room}", pilot.0),
-            "Teleported",
-        )
-        .await;
+        god.say(&format!("@teleport #{}=#{room}", pilot.0), "Teleported")
+            .await;
     }
-    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
-    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
-    say(&mut cy, "SIM TEAM red", "takes red slot 2").await;
+    ada.say("SIM TEAM red", "takes red slot 1").await;
+    bo.say("SIM TEAM blue", "takes blue slot 1").await;
+    cy.say("SIM TEAM red", "takes red slot 2").await;
 
     // The refusals, over the wire.
-    say(
-        &mut cy,
+    cy.say(
         "SIM MODE hold",
         "Only a side's lead or staff can set the mode.",
     )
     .await;
-    say(&mut ada, "SIM MODE capture", "No such mode: capture.").await;
+    ada.say("SIM MODE capture", "No such mode: capture.").await;
 
     // The set, heard in every room of the centre.
-    let said = one_line(&ask(&mut ada, "SIM MODE hold", "elimination still ends it").await);
+    let said = one_line(
+        &ada.ask_settled("SIM MODE hold", "elimination still ends it")
+            .await,
+    );
     assert!(
         said.contains(
             "Mode set to hold: keep The Crossroads (B) uncontested for 120 seconds to win; \
@@ -1194,14 +1129,18 @@ async fn o1_sim_mode_over_the_wire() {
 
     // The board says the rule, to every reader.
     for term in [&mut ada, &mut bo, &mut cy] {
-        let status = one_line(&ask(term, "SIM STATUS", "uncontested for 120 s").await);
+        let status = one_line(
+            &term
+                .ask_settled("SIM STATUS", "uncontested for 120 s")
+                .await,
+        );
         assert!(
             status.contains("mode: hold — keep The Crossroads (B) uncontested for 120 s"),
             "{status}"
         );
     }
     // And the bystander's read carries it.
-    let said = one_line(&ask(&mut cy, "SIM MODE", "seconds to win.").await);
+    let said = one_line(&cy.ask_settled("SIM MODE", "seconds to win.").await);
     assert!(
         said.contains(
             "Mode: hold. The Proving Ground supports: skirmish, hold. Hold: keep The \
@@ -1211,7 +1150,7 @@ async fn o1_sim_mode_over_the_wire() {
     );
 
     // `Boarding` refuses a set.
-    say(&mut ada, "SIM START", "is boarding").await;
-    say(&mut ada, "SIM MODE skirmish", "center is boarding").await;
-    say(&mut ada, "SIM ABORT", "calls the match off").await;
+    ada.say("SIM START", "is boarding").await;
+    ada.say("SIM MODE skirmish", "center is boarding").await;
+    ada.say("SIM ABORT", "calls the match off").await;
 }

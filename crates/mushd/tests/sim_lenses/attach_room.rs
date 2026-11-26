@@ -17,7 +17,6 @@ use crate::support;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Duration;
 
 use mush_core::{Engine, GOD, LIMBO, ObjId, ObjKind};
 use mush_llm::{LlmProvider, LlmService, MockProvider};
@@ -36,11 +35,6 @@ use support::{Term, play_client, scratch_dir, strip_ansi};
 const GM_PASSWORD: &str = "gm-secret-1";
 const PLAYER_PASSWORD: &str = "player-secret-1";
 
-/// The world's transient authoritative refusal: a commit is in flight.
-const COMMIT_PENDING: &str = "please retry in a moment";
-/// How many times a line is re-sent on that refusal before the test gives up.
-const RETRY_BUDGET: usize = 40;
-
 /// Ada, created before the world task spawns so her id is stable.
 const ADA: ObjId = ObjId(2);
 
@@ -48,9 +42,9 @@ const ADA: ObjId = ObjId(2);
 const LIMBO_HEAD: &str = "Limbo";
 
 /// A line nothing registers, whose parser refusal fences a stream.
-const SENTINEL: &str = "zzq-attach-sentinel";
+const SENTINEL: &str = mush_storykit::SENTINEL;
 /// The parser's refusal.
-const HUH: &str = "Huh?";
+const HUH: &str = mush_storykit::SENTINEL_REFUSAL;
 
 struct Server {
     addr: SocketAddr,
@@ -178,23 +172,6 @@ async fn login(
     (handle, term)
 }
 
-/// Run one line and wait for `needle`, retrying the commit transient.
-async fn say(term: &mut Term, line: &str, needle: &str) {
-    for _ in 0..RETRY_BUDGET {
-        let mark = term.mark();
-        term.send_line(line).await;
-        if term
-            .expect_one_of_after(mark, &[needle, COMMIT_PENDING])
-            .await
-            == 0
-        {
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    panic!("`{line}` was refused as transient {RETRY_BUDGET} times running");
-}
-
 /// **Two connections, one character: the second attach's room is the second
 /// connection's alone** (16b cut B.4, `B-14`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -203,7 +180,8 @@ async fn a_second_connections_attach_look_is_not_printed_on_the_first() {
     let (_g, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
     // Give Limbo an exit, so the room's render carries an `Exits` fact the first
     // connection could be caught printing.
-    say(&mut god, "@dig Annex = east;e, west;w", "Annex created").await;
+    god.say("@dig Annex = east;e, west;w", "Annex created")
+        .await;
 
     // Connection A: Ada's first attach is shown her room, exits and all.
     let (_a, mut a) = login(server.addr, "ada", PLAYER_PASSWORD, "Ada").await;
@@ -222,8 +200,8 @@ async fn a_second_connections_attach_look_is_not_printed_on_the_first() {
     // A's stream after the mark, fenced by a parser refusal of its own: the
     // world answers A's line after everything it sent before it, so a room the
     // attach had addressed to the actor would be in the slice before the `Huh?`.
-    say(&mut a, SENTINEL, HUH).await;
-    let after = strip_ansi(&a.seen[mark..]);
+    a.say(SENTINEL, HUH).await;
+    let after = strip_ansi(&a.raw()[mark..]);
     assert!(
         !after.contains(LIMBO_HEAD),
         "B's attach printed the room's name on A:\n{after}"
@@ -241,6 +219,6 @@ async fn a_second_connections_attach_look_is_not_printed_on_the_first() {
     // And a typed `look` is unchanged: it answers on the connection that typed
     // it (and, being a command, on every connection of the actor).
     let mark = b.mark();
-    say(&mut a, "look", "Exits").await;
+    a.say("look", "Exits").await;
     b.expect_after(mark, LIMBO_HEAD).await;
 }

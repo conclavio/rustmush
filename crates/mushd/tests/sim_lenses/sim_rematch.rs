@@ -41,6 +41,7 @@
 
 use crate::shipped::mount;
 use crate::support;
+use support::{after_ticks, ask_whole, settled};
 
 use support::{Figures, STEP_TIMEOUT, wait_until};
 
@@ -71,8 +72,6 @@ const PILOT_PASSWORD: &str = "pilot-secret-1";
 const COMMIT_PENDING: &str = "please retry in a moment";
 /// `BOARD`'s one transient: the control-lease mirror is a 1 Hz projection.
 const CONTROL_UNKNOWN: &str = "control state unknown";
-/// How many times a line is re-sent on a transient before the test gives up.
-const RETRY_BUDGET: usize = 40;
 
 /// The two pilots, created before the world task spawns so their ids are stable.
 const ADA: ObjId = ObjId(2);
@@ -112,9 +111,9 @@ const ARENA_REFUSED: &str = "FIRE cannon refused";
 /// The one line the eleven cockpit selectors refuse with once the hatches open.
 const OUTSIDE_COCKPIT: &str = "You are not at the station of a deployed unit.";
 /// A line the parser refuses, used to bracket a multi-line answer.
-const SENTINEL: &str = "zzz-sentinel";
+const SENTINEL: &str = mush_storykit::SENTINEL;
 /// The parser's refusal, which is the sentinel's answer.
-const HUH: &str = "Huh?";
+const HUH: &str = mush_storykit::SENTINEL_REFUSAL;
 /// `SIM`'s one refusal outside the centre (`tacsim::match_::OUTSIDE_CENTRE`).
 const OUTSIDE: &str = "The simulator is through the lobby.";
 /// Match one's row, in `SIM HISTORY`'s public words (16b cut V.2).
@@ -331,53 +330,6 @@ async fn login(
     (handle, term)
 }
 
-/// Run one line and wait for `needle`, retrying the two transients.
-async fn say(term: &mut Term, line: &str, needle: &str) {
-    assert!(
-        !line.contains(needle),
-        "`{needle}` appears in `{line}`'s own echo; pick a needle from the ANSWER"
-    );
-    for _ in 0..RETRY_BUDGET {
-        let mark = term.mark();
-        term.send_line(line).await;
-        match term
-            .expect_one_of_after(mark, &[needle, COMMIT_PENDING, CONTROL_UNKNOWN])
-            .await
-        {
-            0 => return,
-            _ => tokio::time::sleep(Duration::from_millis(200)).await,
-        }
-    }
-    panic!("`{line}` was refused as transient {RETRY_BUDGET} times running");
-}
-
-/// Run one line, wait for `needle`, and hand back everything that arrived.
-async fn ask(term: &mut Term, line: &str, needle: &str) -> String {
-    let mark = term.mark();
-    say(term, line, needle).await;
-    strip_ansi(&term.seen[mark..])
-}
-
-/// **A whole answer, never half of one** — `arena_story.rs`' device: the line,
-/// then a sentinel the parser refuses, so the whole of a multi-line answer has
-/// certainly arrived by the time the refusal does.
-async fn ask_whole(term: &mut Term, line: &str) -> String {
-    for _ in 0..RETRY_BUDGET {
-        let mark = term.mark();
-        term.send_line(line).await;
-        term.send_line(SENTINEL).await;
-        // Drain this attempt's sentinel even when the command was refused.
-        // Otherwise its late Huh can terminate the next command's read early.
-        term.expect_after(mark, HUH).await;
-        let reply = strip_ansi(&term.seen[mark..]);
-        if !reply.contains(COMMIT_PENDING) && !reply.contains(CONTROL_UNKNOWN) {
-            return reply;
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    panic!("`{line}` never produced a whole answer")
-}
-
 /// **`SIM REPORT`, read whole** (16b cut V.3) — `observer_rule.rs`' device: an
 /// early read that outran the result batch's commit answers `still being
 /// written` and is asked again; once the report's end line has arrived, a
@@ -399,7 +351,7 @@ async fn sim_report(term: &mut Term, line: &str) -> String {
         }
         term.send_line(SENTINEL).await;
         term.expect_after(mark, HUH).await;
-        report = strip_ansi(&term.seen[mark..]);
+        report = strip_ansi(&term.raw()[mark..]);
         true
     })
     .await;
@@ -531,29 +483,27 @@ fn designator_of(listing: &str) -> Option<String> {
 
 /// Walk both pilots into the simulator lobby and put staff there with them.
 async fn open_the_centre(god: &mut Term) {
-    let listing = ask(god, "@find Simulator Lobby", "END OF LIST").await;
+    let listing = god
+        .ask_settled("@find Simulator Lobby", "END OF LIST")
+        .await;
     let lobby = dbref_of(&listing, "Simulator Lobby");
     for pilot in [ADA, BO] {
-        say(
-            god,
-            &format!("@teleport #{}=#{lobby}", pilot.0),
-            "Teleported",
-        )
-        .await;
+        god.say(&format!("@teleport #{}=#{lobby}", pilot.0), "Teleported")
+            .await;
     }
-    say(
-        god,
-        &format!("@teleport #{}=#{lobby}", GOD.0),
-        "Simulator Lobby",
-    )
-    .await;
+    god.say(&format!("@teleport #{}=#{lobby}", GOD.0), "Simulator Lobby")
+        .await;
 }
 
 /// The two slot-1 tanks' dbrefs.
 async fn tank_refs(god: &mut Term) -> (u32, u32) {
-    let listing = ask(god, &format!("@find {RED_TANK}"), "END OF LIST").await;
+    let listing = god
+        .ask_settled(&format!("@find {RED_TANK}"), "END OF LIST")
+        .await;
     let red = dbref_of(&listing, RED_TANK);
-    let listing = ask(god, &format!("@find {BLUE_TANK}"), "END OF LIST").await;
+    let listing = god
+        .ask_settled(&format!("@find {BLUE_TANK}"), "END OF LIST")
+        .await;
     let blue = dbref_of(&listing, BLUE_TANK);
     (red, blue)
 }
@@ -566,11 +516,9 @@ async fn tank_refs(god: &mut Term) -> (u32, u32) {
 /// between the matches. Test 2 uses it for the other reason — a tank off its
 /// authored cell is something the boot reset has to put back.
 async fn muster_them_together(god: &mut Term, blue: u32) {
-    let listing = ask(god, "@find Proving Ground", "END OF LIST").await;
+    let listing = god.ask_settled("@find Proving Ground", "END OF LIST").await;
     let ground = dbref_of(&listing, "Proving Ground");
-    say(
-        god,
-        &format!(
+    god.say(&format!(
             "@spatial/place/domain #{blue}=#{ground},{{\"x_cm\":{BLUE_CLOSE_X_CM},\"y_cm\":{BLUE_CLOSE_Y_CM},\"heading_mdeg\":270000}}"
         ),
         "Placed",
@@ -580,13 +528,13 @@ async fn muster_them_together(god: &mut Term, blue: u32) {
 
 /// Claim, start, walk and board — the whole lobby walk, by the players alone.
 async fn take_off(ada: &mut Term, bo: &mut Term) {
-    say(ada, "SIM TEAM red", "takes red slot 1").await;
-    say(bo, "SIM TEAM blue", "takes blue slot 1").await;
-    say(ada, "SIM START", "is boarding").await;
-    say(ada, "red", "Red Room").await;
-    say(bo, "blue", "Blue Room").await;
-    say(ada, "BOARD", "climb into").await;
-    say(bo, "BOARD", "climb into").await;
+    ada.say("SIM TEAM red", "takes red slot 1").await;
+    bo.say("SIM TEAM blue", "takes blue slot 1").await;
+    ada.say("SIM START", "is boarding").await;
+    ada.say("red", "Red Room").await;
+    bo.say("blue", "Blue Room").await;
+    ada.say("BOARD", "climb into").await;
+    bo.say("BOARD", "climb into").await;
     ada.expect("Good hunting").await;
 }
 
@@ -598,7 +546,7 @@ async fn take_off(ada: &mut Term, bo: &mut Term) {
 /// belongs to the verb, and this helper was one of the places that depended on
 /// it not doing.
 async fn back_to_the_lobby(term: &mut Term) {
-    say(term, "lobby", "Simulator Lobby").await;
+    term.say("lobby", "Simulator Lobby").await;
 }
 
 /// Bring power up, waiting for the arena to say it is online.
@@ -609,7 +557,7 @@ async fn back_to_the_lobby(term: &mut Term) {
 /// and leave its `STATUS` in flight, to land after whatever the caller marks
 /// next.
 async fn power_up(term: &mut Term) {
-    say(term, "STARTUP", "Startup sequence").await;
+    term.say("STARTUP", "Startup sequence").await;
     wait_until(STEP_TIMEOUT, "the tank to come online", async || {
         ask_whole(term, "STATUS").await.contains("power online")
     })
@@ -708,8 +656,8 @@ async fn fight_to_the_end(ada: &mut Term) -> usize {
                 let rows = ask_whole(ada, "WEAPONSTATUS").await;
                 landed = rows.contains(&taken);
                 over =
-                    rows.contains(OUTSIDE_COCKPIT) || strip_ansi(&ada.seen[mark..]).contains(OVER);
-                landed || over || strip_ansi(&ada.seen[order..]).contains(ARENA_REFUSED)
+                    rows.contains(OUTSIDE_COCKPIT) || strip_ansi(&ada.raw()[mark..]).contains(OVER);
+                landed || over || strip_ansi(&ada.raw()[order..]).contains(ARENA_REFUSED)
             },
         )
         .await;
@@ -748,7 +696,7 @@ async fn two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_s
     power_up(&mut ada).await;
     power_up(&mut bo).await;
     let contact = wait_for_contact(&mut ada).await;
-    say(&mut ada, &format!("LOCK {contact}"), "Locking").await;
+    ada.say(&format!("LOCK {contact}"), "Locking").await;
     let shots = fight_to_the_end(&mut ada).await;
     assert!(shots > 0, "the red tank never got a shot away");
     ada.expect(OVER).await;
@@ -810,8 +758,8 @@ async fn two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_s
         "a bystander's row: {row}"
     );
     // And outside the centre the line is refused like every other `SIM` line.
-    say(&mut god, &format!("@teleport #{}=#0", GOD.0), "Limbo").await;
-    say(&mut god, "SIM HISTORY", OUTSIDE).await;
+    god.say(&format!("@teleport #{}=#0", GOD.0), "Limbo").await;
+    god.say("SIM HISTORY", OUTSIDE).await;
 
     // ---- match two, by the two players alone -----------------------------
     //
@@ -829,12 +777,12 @@ async fn two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_s
         seen.contains("`SIM TEAM red` or `SIM TEAM blue` opens the next match."),
         "and says how to get past it: {seen}"
     );
-    let seen = ask(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    let seen = ada.ask_settled("SIM TEAM red", "takes red slot 1").await;
     assert!(
         !seen.contains("that is not something you can do to it now"),
         "the terminal refusal is still what a player gets: {seen}"
     );
-    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
+    bo.say("SIM TEAM blue", "takes blue slot 1").await;
 
     // **The staff read, after the second claim and before the check-out**: both
     // tanks are at their spec. Nothing between the matches asked for this.
@@ -863,11 +811,11 @@ async fn two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_s
     }
 
     // ---- and the second match really runs, from the authored muster ------
-    say(&mut ada, "SIM START", "is boarding").await;
-    say(&mut ada, "red", "Red Room").await;
-    say(&mut bo, "blue", "Blue Room").await;
-    say(&mut ada, "BOARD", "climb into").await;
-    say(&mut bo, "BOARD", "climb into").await;
+    ada.say("SIM START", "is boarding").await;
+    ada.say("red", "Red Room").await;
+    bo.say("blue", "Blue Room").await;
+    ada.say("BOARD", "climb into").await;
+    bo.say("BOARD", "climb into").await;
     ada.expect("Good hunting").await;
     let blue_two = support::drawn_callsigns(&server.store, 2).await[&blue].clone();
 
@@ -883,16 +831,16 @@ async fn two_players_start_a_second_match_with_no_staff_and_find_both_tanks_at_s
         BLUE_MUSTER_M,
         "the blue tank opened where staff put it for match one, not at its authored cell"
     );
-    let seen = ask(&mut bo, "WEAPONSTATUS", "cannon").await;
+    let seen = bo.ask_settled("WEAPONSTATUS", "cannon").await;
     assert!(
         seen.contains(&mount("line_tank", "cannon").full()),
         "the formerly destroyed tank's cannon is not full: {seen}"
     );
     // And it is a tank again, not a hulk: it starts up and takes an order.
     power_up(&mut bo).await;
-    say(&mut bo, "HEADING 270", "Steering to 270").await;
+    bo.say("HEADING 270", "Steering to 270").await;
 
-    say(&mut ada, "SIM ABORT", "aborts match").await;
+    ada.say("SIM ABORT", "aborts match").await;
 
     // **16b cut V.2**: two rows now, the newer first, and the loser of match one
     // reads their own callsign on both.
@@ -974,7 +922,7 @@ async fn crash(server: &mut Server) {
 /// flattened: the line client wraps at the terminal's width, and the resume
 /// line is longer than eighty columns.
 fn count_since(term: &Term, mark: usize, needle: &str) -> usize {
-    flat(&strip_ansi(&term.seen[mark..]))
+    flat(&strip_ansi(&term.raw()[mark..]))
         .matches(flat(needle).as_str())
         .count()
 }
@@ -1031,9 +979,7 @@ async fn a_restart_mid_match_through_the_lobby_resumes_and_the_pilots_board_agai
     let (red, blue) = tank_refs(&mut god).await;
     // Something only the snapshot carries: a spent magazine and a tank parked
     // off its authored cell, both committed before the check-out.
-    say(
-        &mut god,
-        &format!(
+    god.say(&format!(
             "@unit/damage #{blue}={{\"ops\":[{{\"AdjustCell\":{{\"addr\":{{\"Component\":{{\"component\":\"cannon\",\"cell\":\"ammo\"}}}},\"delta\":-13}}}}]}}"
         ),
         "Applied",
@@ -1050,7 +996,7 @@ async fn a_restart_mid_match_through_the_lobby_resumes_and_the_pilots_board_agai
     // Doc 32 cut CF.0 (Q-CF-11): her tank's unit letter is drawn at check-out
     // from the match seed; read it off the match's record.
     let red_one = support::drawn_callsigns(&first.store, 1).await[&red].clone();
-    say(&mut ada, "STATUS", "power").await;
+    ada.say("STATUS", "power").await;
     // The markers and the arena's snapshot are on disk.
     wait_until(STEP_TIMEOUT, "the markers and the snapshot", async || {
         let mut settled = first
@@ -1080,7 +1026,7 @@ async fn a_restart_mid_match_through_the_lobby_resumes_and_the_pilots_board_agai
     drop(first);
 
     let second = boot("sim-resume-b", Some(Arc::clone(&store))).await;
-    let (_god2, god) = login(second.addr, "boss", GM_PASSWORD, "God").await;
+    let (_god2, mut god) = login(second.addr, "boss", GM_PASSWORD, "God").await;
     // The markers are still on both records: the match is running again.
     for unit in [red, blue] {
         assert!(
@@ -1103,10 +1049,12 @@ async fn a_restart_mid_match_through_the_lobby_resumes_and_the_pilots_board_agai
     let bo_mark = 0;
     ada.expect(&on_its_mind_red).await;
     bo.expect(&on_its_mind_blue).await;
-    // Two more boarding ticks: nothing is said again.
-    tokio::time::sleep(Duration::from_millis(2_500)).await;
-    say(&mut ada, SENTINEL, HUH).await;
-    say(&mut bo, SENTINEL, HUH).await;
+    // Two more boarding ticks: nothing is said again. The world's scheduler
+    // fires them before staff's queued line (doc 51 `after_tick`, unit FL.8),
+    // and each pilot's session is then read to the end.
+    after_ticks(&mut god, tacsim::match_::sim::BOARD_TICK_PERIOD, 2).await;
+    settled(&mut ada).await;
+    settled(&mut bo).await;
     for (term, mark, reconnect) in [
         (&ada, ada_mark, &on_its_mind_red),
         (&bo, bo_mark, &on_its_mind_blue),
@@ -1117,7 +1065,7 @@ async fn a_restart_mid_match_through_the_lobby_resumes_and_the_pilots_board_agai
             1,
             "the reconnect line, once"
         );
-        let seen = flat(&strip_ansi(&term.seen[mark..]));
+        let seen = flat(&strip_ansi(&term.raw()[mark..]));
         let (at_resumed, at_reconnect) = (
             seen.find(flat(resumed).as_str()).unwrap_or(usize::MAX),
             seen.find(flat(reconnect).as_str()).unwrap_or(0),
@@ -1125,7 +1073,7 @@ async fn a_restart_mid_match_through_the_lobby_resumes_and_the_pilots_board_agai
         assert!(at_resumed < at_reconnect, "the resume line first: {seen}");
     }
     // Before the reclaim the pilot is at no station.
-    say(&mut ada, "STATUS", OUTSIDE_COCKPIT).await;
+    ada.say("STATUS", OUTSIDE_COCKPIT).await;
 
     // Each takes the tank back where it stands, and the first frame says what
     // happened meanwhile.
@@ -1133,7 +1081,7 @@ async fn a_restart_mid_match_through_the_lobby_resumes_and_the_pilots_board_agai
         let mark = term.mark();
         board_again(term).await;
         term.expect_after(mark, "Back aboard").await;
-        say(term, "STATUS", "power").await;
+        term.say("STATUS", "power").await;
     }
     // The tanks came from the snapshot: the spent rounds are still spent, and
     // the blue tank is near where staff parked it, not on its authored cell.
@@ -1158,7 +1106,7 @@ async fn a_restart_mid_match_through_the_lobby_resumes_and_the_pilots_board_agai
     );
 
     // The match ends the ordinary way, and is remembered as flown.
-    say(&mut ada, "SIM ABORT", "aborts match").await;
+    ada.say("SIM ABORT", "aborts match").await;
     let history = poll_whole(&mut ada, "SIM HISTORY", "#1  aborted  ").await;
     assert!(
         history_row(&history, 1).ends_with(&format!(" (you flew {red_one})")),
@@ -1183,7 +1131,7 @@ async fn a_restart_mid_match_through_the_lobby_resumes_and_the_pilots_board_agai
         seen.contains(&mount("line_tank", "cannon").full()),
         "the reset put the magazine back after the resumed match ended: {seen}"
     );
-    say(&mut ada, "SIM ABORT", "aborts match").await;
+    ada.say("SIM ABORT", "aborts match").await;
     poll_whole(&mut ada, "SIM HISTORY", "#2  aborted  ").await;
     wait_until(
         STEP_TIMEOUT,

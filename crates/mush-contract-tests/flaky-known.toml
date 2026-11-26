@@ -45,69 +45,12 @@ listed = "2026-11-23"
 expires = "2026-12-07"
 note = "kept by FL.7, not renewed: its channel-closed shape is the drain fault FL.7 fixed; its other shape, the queued-connection burst answered 15 of 16 (run 43258253021, 2026-11-12, a branch), is the kernel's listener migration and is not explained"
 
-[[flaky]]
-binary = "mushd::world_journeys"
-test = "web_e2e::spa_if_built_and_healthz_are_served"
-class = "process"
-row = 14
-listed = "2026-11-23"
-expires = "2026-12-07"
-note = "on watch; the class is doc 51's likely reading, the cause is not known"
-
 # --- Carried over from the `load-sensitive` retry: no failure on record -----
 #
 # The entries of the old filter that match no row of the record: eighteen at
 # FL.2, fifteen since doc 51 unit FL.6 closed mush-server's three; unit FL.7
-# closed four of mush-gateway's five. Two are narrowed to the one test a cut
-# note names; the rest keep the scope the filter gave them.
-
-[[flaky]]
-binary = "mushd::world_journeys"
-module = "scripting_e2e"
-class = "unclassed"
-carried = "the load-sensitive retry of cut T.1 (16b's list)"
-listed = "2026-11-23"
-expires = "2026-12-07"
-
-[[flaky]]
-binary = "mushd::sim_lenses"
-module = "sim_reflex"
-class = "unclassed"
-carried = "the load-sensitive retry of cut T.1 (16b's list)"
-listed = "2026-11-23"
-expires = "2026-12-07"
-
-[[flaky]]
-binary = "mushd::durable_process"
-module = "load_soak"
-class = "unclassed"
-carried = "the load-sensitive retry of cut T.1 (16b's list)"
-listed = "2026-11-23"
-expires = "2026-12-07"
-
-[[flaky]]
-binary = "mushd::durable_process"
-module = "world_fault"
-class = "unclassed"
-carried = "the load-sensitive retry of cut T.1 (16b's list)"
-listed = "2026-11-23"
-expires = "2026-12-07"
-
-[[flaky]]
-binary = "mushd::durable_process"
-test = "relay_bridge::r6b_real_bridge_delivers_only_to_arrived_observers_and_deduplicates_provider_retries"
-class = "unclassed"
-carried = "the load-sensitive retry of cut T.1, which covered relay_bridge::*; narrowed to the test the cut notes name"
-listed = "2026-11-23"
-expires = "2026-12-07"
-
-[[flaky]]
-binary = "mushd::sim_lenses"
-test = "arena_story::two_pilots_walk_in_fight_and_one_tank_is_destroyed"
-class = "unclassed"
-carried = "the load-sensitive retry of cut T.1, which covered arena_story::*; narrowed to the test the cut notes name"
-listed = "2026-11-23"
-expires = "2026-12-07"
+# closed four of mush-gateway's five; unit FL.8 closed mushd's six. The rest keep
+# the scope the filter gave them.
 
 [[flaky]]
 binary = "mush-gateway::split_halves"

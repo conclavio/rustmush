@@ -54,7 +54,7 @@ use mushd::staff::{StaffQueue, register_server_commands};
 use mushd::web_bridge::WebBridge;
 use mushd::world_task::{self, PersistHandles, ServerDeps};
 
-use support::{STEP_TIMEOUT, Term, play_client, scratch_dir, strip_ansi};
+use support::{STEP_TIMEOUT, Term, play_client, scratch_dir, settled, strip_ansi};
 
 const GM_PASSWORD: &str = "gm-secret-1";
 const BANNER: &str = "Welcome to the web e2e MUSH!";
@@ -613,7 +613,7 @@ async fn ssh_and_web_user_in_the_same_room() {
     let mark = god.mark();
     god.send_line("@dig Web Post Office").await;
     god.expect_after(mark, "created with room number").await;
-    let room = support::parse_id_after(&support::strip_ansi(&god.seen[mark..]), "room number #");
+    let room = support::parse_id_after(&support::strip_ansi(&god.raw()[mark..]), "room number #");
     for actor in ["Nick", "me"] {
         let mark = god.mark();
         god.send_line(&format!("@teleport {actor}=#{room}")).await;
@@ -859,7 +859,7 @@ async fn newpassword_boots_the_accounts_web_connections() {
     god.expect_after(mark, "Password for Nick (account nick) changed")
         .await;
     // Collapse the renderer's word-wrapping before substring checks.
-    let confirm = strip_ansi(&god.seen[mark..])
+    let confirm = strip_ansi(&god.raw()[mark..])
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ");
@@ -988,28 +988,31 @@ async fn spa_if_built_and_healthz_are_served() {
     let api = client.get(rig.url("/api/nope")).send().await.unwrap();
     assert_eq!(api.status(), 404);
 
-    // /healthz answers with uptime. `ok` needs the world loop's first
-    // heartbeat (`Metrics::health_json`: a loop that has never stamped an
-    // iteration is not healthy), and a rig asked within milliseconds of its
-    // boot on a loaded runner may not have stamped one yet: main's CI answered
-    // `ok: false` here on 2026-11-12. Wait for the first healthy answer,
-    // bounded, and show the whole answer if it never comes.
-    let mut health = Value::Null;
-    for _ in 0..100 {
-        health = client
-            .get(rig.url("/healthz"))
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        if health["ok"] == true {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    assert_eq!(health["ok"], true, "healthz never came up: {health}");
+    // /healthz answers with uptime. `ok` needs the world loop's heartbeat
+    // (`Metrics::health_json`: a loop that has never stamped an iteration is
+    // not healthy), and the loop stamps one at the start of every iteration.
+    // A rig asked within milliseconds of its boot may not have run one yet:
+    // main's CI answered `ok: false` here three times (row 14 of
+    // docs/flaky-tests.md). The fact to wait for is the world's own answer
+    // (doc 51 rule P, unit FL.8): once it has answered a staff login and a
+    // sentinel, it has run iterations and stamped them, so the one ask after
+    // that is a fact, not a race. `metrics_healthz_and_stats…` below asks
+    // only after its session's answers, and has never failed this way.
+    let (god_handle, mut god) = god_terminal(&rig).await;
+    settled(&mut god).await;
+    let health: Value = client
+        .get(rig.url("/healthz"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    drop(god_handle);
+    assert_eq!(
+        health["ok"], true,
+        "healthz after the world answered: {health}"
+    );
     assert!(health["uptime_s"].is_u64());
 }
 
@@ -1049,7 +1052,7 @@ async fn metrics_healthz_and_stats_reflect_real_state() {
     let mark = god.mark();
     god.send_line("@stats").await;
     god.expect_after(mark, "Connected:").await;
-    let block = strip_ansi(&god.seen[mark..]);
+    let block = strip_ansi(&god.raw()[mark..]);
     assert!(
         block.contains("ssh 1"),
         "@stats reflects the one live SSH connection: {block:?}"

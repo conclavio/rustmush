@@ -792,115 +792,10 @@ mod ssh_full_stack {
     use super::*;
     use mushd::accounts::Accounts;
     use mushd::ssh_bridge::start_listener;
-    use russh::ChannelMsg;
 
-    use crate::support::STEP_TIMEOUT;
-
-    struct AcceptAll;
-
-    impl russh::client::Handler for AcceptAll {
-        type Error = russh::Error;
-
-        async fn check_server_key(
-            &mut self,
-            _key: &russh::keys::PublicKeyOrCertificate,
-        ) -> Result<bool, Self::Error> {
-            Ok(true)
-        }
-    }
-
-    /// Drop ANSI CSI sequences so assertions match what a player reads.
-    fn strip_ansi(s: &str) -> String {
-        let mut out = String::with_capacity(s.len());
-        let mut chars = s.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c == '\u{1b}' {
-                if chars.peek() == Some(&'[') {
-                    chars.next();
-                    for f in chars.by_ref() {
-                        if ('\u{40}'..='\u{7e}').contains(&f) {
-                            break;
-                        }
-                    }
-                }
-                continue;
-            }
-            out.push(c);
-        }
-        out
-    }
-
-    struct Term {
-        channel: russh::Channel<russh::client::Msg>,
-        seen: String,
-    }
-
-    impl Term {
-        async fn expect(&mut self, needle: &str) {
-            let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
-            while !strip_ansi(&self.seen).contains(needle) {
-                let msg = tokio::time::timeout_at(deadline, self.channel.wait())
-                    .await
-                    .unwrap_or_else(|_| {
-                        panic!("timeout waiting for {needle:?}; seen: {:?}", self.seen)
-                    });
-                match msg {
-                    Some(ChannelMsg::Data { data }) => {
-                        self.seen.push_str(&String::from_utf8_lossy(&data));
-                    }
-                    Some(_) => {}
-                    None => panic!(
-                        "channel closed waiting for {needle:?}; seen: {:?}",
-                        self.seen
-                    ),
-                }
-            }
-        }
-
-        async fn send_line(&mut self, line: &str) {
-            let bytes = format!("{line}\r").into_bytes();
-            self.channel.data(&bytes[..]).await.expect("send line");
-        }
-
-        async fn expect_close(&mut self) {
-            let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
-            loop {
-                let msg = tokio::time::timeout_at(deadline, self.channel.wait())
-                    .await
-                    .expect("timeout waiting for close");
-                match msg {
-                    None | Some(ChannelMsg::Close) => return,
-                    Some(ChannelMsg::Data { data }) => {
-                        self.seen.push_str(&String::from_utf8_lossy(&data));
-                    }
-                    Some(_) => {}
-                }
-            }
-        }
-    }
-
-    /// `ssh play@addr` with a PTY + shell, landing on the welcome screen.
-    async fn play_client(addr: std::net::SocketAddr) -> (russh::client::Handle<AcceptAll>, Term) {
-        let config = Arc::new(russh::client::Config::default());
-        let mut handle = russh::client::connect(config, addr, AcceptAll)
-            .await
-            .expect("connect");
-        let auth = handle.authenticate_none("play").await.expect("auth-none");
-        assert!(auth.success(), "play must be accepted with no auth");
-        let channel = handle.channel_open_session().await.expect("open channel");
-        channel
-            .request_pty(true, "xterm-256color", 80, 24, 0, 0, &[])
-            .await
-            .expect("pty");
-        channel.request_shell(true).await.expect("shell");
-        (
-            handle,
-            Term {
-                channel,
-                seen: String::new(),
-            },
-        )
-    }
+    // Doc 51 unit FL.8: the terminal and its login are the rig's, over the
+    // story kit's `Term`.
+    use crate::support::{play_client, strip_ansi};
 
     #[tokio::test(flavor = "multi_thread")]
     async fn two_players_create_talk_who_quit_over_real_ssh() {
@@ -951,7 +846,7 @@ mod ssh_full_stack {
         // WHO with real session facts lists both.
         ada.send_line("WHO").await;
         ada.expect("2 connected, 2 in your room.").await;
-        assert!(strip_ansi(&ada.seen).contains("nick"), "{:?}", ada.seen);
+        assert!(strip_ansi(ada.raw()).contains("nick"), "{:?}", ada.raw());
 
         // QUIT: farewell + transport close; the other player hears it.
         nick.send_line("QUIT").await;
