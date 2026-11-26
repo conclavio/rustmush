@@ -588,6 +588,8 @@ namespace TacSim.Core
                 Hud.CharacterSheet.OnOpenSailingPlanRequested += () =>
                     OpenVisualTradeTerminal("SAILING PLAN & CORRIDOR ROUTE BUILDER", openSailingTab: true);
                 Hud.CharacterSheet.OnOpenSolarChartRequested += () => Hud.SolarMap?.SetOpen(true);
+                Hud.CharacterSheet.OnRefreshSheetRequested += RequestLiveSheetHydration;
+                Hud.CharacterSheet.OnRefreshUnitAndVitalsRequested += RequestLiveVitalsAndUnitHydration;
             }
 
             if (Hud.TacticalBrackets != null)
@@ -808,6 +810,9 @@ namespace TacSim.Core
                     _ws.SendMailListQuery();
                 if (_ws.HasAdvertisedPanel("comsys") || _ws.HasAdvertisedPanel("comsys.state"))
                     _ws.SendPanelSubscribe("comsys");
+                Hud?.CharacterSheet?.ResetVitalsWatermarks();
+                RequestLiveSheetHydration();
+                RequestLiveVitalsAndUnitHydration();
             };
             _ws.OnWhoReceived += list => Hud?.SocialModal?.ApplyWhoEntries(list);
             _ws.OnMailNoticeReceived += unread =>
@@ -3269,6 +3274,44 @@ namespace TacSim.Core
                         }
                     }
                     break;
+                default:
+                    if (!string.IsNullOrEmpty(feed))
+                    {
+                        if (feed.EndsWith(".sheet", StringComparison.Ordinal))
+                            Hud?.CharacterSheet?.ApplySheetPanel(data);
+                        else if (feed.EndsWith(".vitals", StringComparison.Ordinal))
+                            Hud?.CharacterSheet?.ApplyVitalsPanel(feed, data);
+                        else if (feed.EndsWith(".unit", StringComparison.Ordinal))
+                            Hud?.CharacterSheet?.ApplyUnitChassisPanel(data);
+                    }
+                    break;
+            }
+        }
+
+        private void RequestLiveSheetHydration()
+        {
+            if (_ws == null || !_ws.IsConnected) return;
+            foreach (string feed in _ws.AdvertisedPanels)
+            {
+                if (!string.IsNullOrEmpty(feed) && feed.EndsWith(".sheet", StringComparison.Ordinal))
+                {
+                    _ws.SendSheetQuery();
+                    return;
+                }
+            }
+        }
+
+        private void RequestLiveVitalsAndUnitHydration()
+        {
+            if (_ws == null || !_ws.IsConnected) return;
+            foreach (string feed in _ws.AdvertisedPanels)
+            {
+                if (string.IsNullOrEmpty(feed)) continue;
+                if (feed.EndsWith(".vitals", StringComparison.Ordinal) ||
+                    feed.EndsWith(".unit", StringComparison.Ordinal))
+                {
+                    _ws.SendPanelSubscribe(feed);
+                }
             }
         }
 

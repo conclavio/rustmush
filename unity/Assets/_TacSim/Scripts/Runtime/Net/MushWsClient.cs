@@ -519,6 +519,13 @@ namespace TacSim.Net
             return id;
         }
 
+        public ulong SendSheetQuery()
+        {
+            ulong id = _nextQueryId++;
+            EnqueueRaw(MushProtocol.BuildSheetQueryCommand(id));
+            return id;
+        }
+
         public ulong SendChannelBacklogQuery(string channel, ulong? beforeSeq = null, int limit = 40)
         {
             if (string.IsNullOrWhiteSpace(channel) || MushProtocol.ContainsControlChars(channel))
