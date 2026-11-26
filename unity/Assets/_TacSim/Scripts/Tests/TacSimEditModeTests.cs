@@ -6502,5 +6502,91 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void BridgeHoloProjectorRingsSolarOrbitsAndRoverSlopeHeadlights_RenderAndAlignCleanly()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave3PR7_HoloAndRoverTest");
+            try
+            {
+                var catalog = TacSimAssetCatalog.LoadOrDefault();
+
+                // 1. 3D Bridge Holo-Table volumetric range rings, sweep arm & 3D solar orbital tracks
+                var shipGo = new UnityEngine.GameObject("TestBridgeShip");
+                shipGo.transform.SetParent(rootGo.transform);
+                var ship = shipGo.AddComponent<ShipInteriorController>();
+                ship.BuildInterior(catalog, "tacsim.unit.dray");
+
+                Assert.AreEqual(3, ship.HoloGridRingCount, "Bridge holo-table must render 3 concentric tactical range rings");
+                Assert.IsTrue(ship.HasHoloSweepArm, "Bridge holo-table must render animated radar sweep arm");
+
+                // Invariant check: HoloTankContacts childCount remains strictly 4 for ownship + 3 live contacts!
+                ship.PopulateHoloBlips(JsonNode.Parse(@"{
+                    ""range_km"": 500,
+                    ""contacts"": [
+                        { ""id"": ""own"", ""you"": true, ""x_km"": 0, ""y_km"": 0, ""z_km"": 0 },
+                        { ""id"": ""C1"", ""kind"": ""ship"", ""relation"": ""hostile"", ""x_km"": 120, ""y_km"": 40, ""z_km"": 15 },
+                        { ""id"": ""C2"", ""kind"": ""ship"", ""relation"": ""friendly"", ""x_km"": -90, ""y_km"": 60, ""z_km"": -10 },
+                        { ""id"": ""A"", ""kind"": ""rock"", ""x_km"": 50, ""y_km"": -80, ""z_km"": 5 }
+                    ]
+                }"));
+                var holoContacts = shipGo.transform.Find("HoloTankPedestal")?.Find("HoloTankContacts");
+                Assert.IsNotNull(holoContacts);
+                Assert.AreEqual(4, holoContacts.childCount, "HoloTankContacts childCount invariant must stay exact (ownship + 3 contacts)");
+                Assert.AreEqual(0, ship.HoloSolarOrbitRingCount, "Local tactical bubble mode must hide solar orbit rings");
+
+                // Switch to Solar System mode -> renders 3D orbital track rings for primary solar bodies
+                var chart = TacSimSolarChartFrame.FromJson(JsonNode.Parse(@"{
+                    ""ic_time"": ""2350-05-01"",
+                    ""vantage"": { ""body"": ""ceres"", ""port"": ""ceres"" },
+                    ""scale"": { ""r0_au"": 1.5, ""au_max"": 12.0 },
+                    ""bodies"": [
+                        { ""id"": ""earth"", ""label"": ""Earth"", ""r_au"": 1.0, ""lon_deg"": 15.0, ""lat_deg"": 0.0, ""here"": false },
+                        { ""id"": ""mars"", ""label"": ""Mars"", ""r_au"": 1.52, ""lon_deg"": 110.0, ""lat_deg"": 1.8, ""here"": false },
+                        { ""id"": ""ceres"", ""label"": ""Ceres"", ""r_au"": 2.77, ""lon_deg"": 230.0, ""lat_deg"": 10.6, ""here"": true }
+                    ],
+                    ""routes"": []
+                }"));
+                ship.ApplySolarChartFrame(chart);
+                ship.SetHoloDisplayMode(BridgeHoloMode.SolarSystem);
+                Assert.AreEqual(3, ship.HoloSolarOrbitRingCount, "Solar System holo-table mode must draw concentric 3D orbital rings per primary body");
+
+                // Alert escalation tints holo-grid rings without throwing
+                ship.SetAlertLevel(ShipAlertLevel.RedAlert);
+                Assert.AreEqual(ShipAlertLevel.RedAlert, ship.ActiveAlertLevel);
+
+                // 2. Surface Prospector Rover dual headlights + terrain-slope alignment
+                var surfGo = new UnityEngine.GameObject("TestSurfaceStage");
+                surfGo.transform.SetParent(rootGo.transform);
+                var surf = surfGo.AddComponent<TacSim.Surface.SurfaceMiningController>();
+                surf.BuildSurfaceStage(catalog, "occator_rim");
+
+                Assert.AreEqual(2, surf.RoverHeadlightCount, "Prospector rover must mount dual forward spotlights");
+                Assert.IsFalse(surf.IsRoverDustPlumeActive, "Stationary rover must keep regolith dust plume hidden");
+
+                // Synthetic sloped terrain grid -> ComputeTerrainAlignedRotation yields non-zero slope tilt clamped <= 28 deg
+                var grid = new DecodedTerrainGrid
+                {
+                    Width = 8,
+                    Height = 8,
+                    CellSizeM = 10f,
+                    ElevMeters = new float[64],
+                    Classes = new TerrainCellClass[64]
+                };
+                for (int y = 0; y < 8; y++)
+                {
+                    for (int x = 0; x < 8; x++)
+                        grid.ElevMeters[y * 8 + x] = y * 3.5f + x * 1.2f; // steady uphill ramp
+                }
+                var aligned = TacSim.Surface.SurfaceMiningController.ComputeTerrainAlignedRotation(grid, new UnityEngine.Vector3(35f, 0f, 35f), headingDeg: 0f, out float tiltDeg);
+                Assert.Greater(tiltDeg, 5f, "Sloped terrain must tilt rover chassis onto local grade");
+                Assert.LessOrEqual(tiltDeg, 40f);
+                Assert.Greater(UnityEngine.Quaternion.Angle(UnityEngine.Quaternion.identity, aligned), 5f);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
