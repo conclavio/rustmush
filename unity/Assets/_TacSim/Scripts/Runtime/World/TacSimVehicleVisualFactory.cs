@@ -21,10 +21,13 @@ namespace TacSim.World
         public Animator ChassisAnimator;
         public Animator WeaponAnimator;
         public GameObject WreckSmokeVisual;
+        public GameObject DamageSmokeVisual;
         public WorldBillboard Billboard;
         public bool IsBiped;
         public bool IsSpiderWalker;
         public bool IsRover;
+        public string CurrentHealthWord { get; private set; } = "intact";
+        public bool IsDamageSmokeActive => DamageSmokeVisual != null && DamageSmokeVisual.activeSelf;
 
         private float _walkCycleRad;
         private Vector3 _chassisSpawnLocalPos;
@@ -192,6 +195,8 @@ namespace TacSim.World
         {
             if (WreckSmokeVisual != null && WreckSmokeVisual.activeSelf != wrecked)
                 WreckSmokeVisual.SetActive(wrecked);
+            if (wrecked && DamageSmokeVisual != null && DamageSmokeVisual.activeSelf)
+                DamageSmokeVisual.SetActive(false);
 
             if (wrecked && !_isWrecked)
             {
@@ -207,6 +212,26 @@ namespace TacSim.World
                 _isWrecked = false;
                 if (ChassisAnimator != null)
                     PlayChassisState("Idle", immediate: true, animSpeed: 1f);
+            }
+        }
+
+        public void SetDamageState(string healthWord, bool wrecked)
+        {
+            string normalized = string.IsNullOrWhiteSpace(healthWord)
+                ? (wrecked ? "wreck" : "intact")
+                : healthWord.Trim().ToLowerInvariant();
+            CurrentHealthWord = wrecked ? "wreck" : normalized;
+
+            SetWrecked(wrecked);
+
+            if (DamageSmokeVisual != null)
+            {
+                bool crippled = CurrentHealthWord == "crippled" || CurrentHealthWord == "critical";
+                bool damaged = !wrecked && (crippled || CurrentHealthWord == "scarred" || CurrentHealthWord == "damaged");
+                if (DamageSmokeVisual.activeSelf != damaged)
+                    DamageSmokeVisual.SetActive(damaged);
+                if (damaged)
+                    DamageSmokeVisual.transform.localScale = Vector3.one * (crippled ? 1.45f : 0.95f);
             }
         }
     }
@@ -340,7 +365,10 @@ namespace TacSim.World
             cupola.localPosition = isBiped ? new Vector3(0f, 0.85f, 0.65f) : new Vector3(0f, 1.15f, -0.35f);
             rig.CupolaCameraAnchor = cupola;
 
-            // Wreck fire/smoke visual (hidden until wrecked)
+            // Damage smoke (scarred/crippled) & wreck fire/smoke visual (hidden until triggered)
+            rig.DamageSmokeVisual = BuildDamageSmokeMarker(tilt, catalog);
+            rig.DamageSmokeVisual.SetActive(false);
+
             rig.WreckSmokeVisual = BuildWreckMarker(tilt, catalog);
             rig.WreckSmokeVisual.SetActive(false);
 
@@ -516,6 +544,27 @@ namespace TacSim.World
             muzzle.SetParent(torso, false);
             muzzle.localPosition = new Vector3(1.52f, 0.75f, 2.2f);
             rig.MuzzlePoint = muzzle;
+        }
+
+        private static GameObject BuildDamageSmokeMarker(Transform parent, TacSimAssetCatalog catalog)
+        {
+            var dRoot = new GameObject("DamageSmokeMarker");
+            dRoot.transform.SetParent(parent, false);
+            dRoot.transform.localPosition = new Vector3(0f, 1.85f, -0.4f);
+
+            if (catalog != null && catalog.shipVentMistPrefab != null)
+            {
+                var mist = UnityEngine.Object.Instantiate(catalog.shipVentMistPrefab, dRoot.transform);
+                mist.transform.localPosition = Vector3.zero;
+                mist.transform.localScale = Vector3.one * 1.35f;
+            }
+
+            Material smokeMat = UrpMaterialFactory.GetHologramUnlit("DamageSmokePlume", new Color(0.32f, 0.30f, 0.28f, 0.50f));
+            Material sparkMat = UrpMaterialFactory.GetEmissive("DamageVentGlow", new Color(0.95f, 0.48f, 0.14f), new Color(1.0f, 0.45f, 0.10f) * 1.4f);
+            CreatePart(dRoot.transform, "SmokePuffLow", new Vector3(0f, 0.25f, 0f), new Vector3(0.75f, 0.75f, 0.75f), smokeMat);
+            CreatePart(dRoot.transform, "SmokePuffMid", new Vector3(-0.18f, 0.95f, -0.15f), new Vector3(1.05f, 0.90f, 1.05f), smokeMat);
+            CreatePart(dRoot.transform, "DamageSparkCore", new Vector3(0.10f, 0.08f, 0.05f), new Vector3(0.42f, 0.32f, 0.42f), sparkMat);
+            return dRoot;
         }
 
         private static GameObject BuildWreckMarker(Transform parent, TacSimAssetCatalog catalog)

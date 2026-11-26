@@ -351,6 +351,10 @@ namespace TacSim.Arena
         public event Action<ArenaDetachmentOrder> OnNewDetachmentOrderReceived;
         public event Action OnToggleCameraViewRequested;
         public event Action<bool> OnWeaponShotFired; // (isLaser)
+        public event Action<string, int, bool> OnPlayerArmorDamaged; // (facetLabel, deltaPct, internalHit)
+
+        public int ActiveShotTracerCount => _activeTracers.Count;
+        public bool IsMuzzleFlashActive => _playerMuzzleFlash != null && _playerMuzzleFlash.gameObject.activeSelf;
 
         public bool TryGetContactWorldPosition(string designator, out Vector3 worldPos)
         {
@@ -414,6 +418,11 @@ namespace TacSim.Arena
             _lastNotifiedDetachmentOrderKey = string.Empty;
             _nextHeldThrottleBumpMs = 0L;
             _lastFrameAnchorMs = 0L;
+            _hasPrevArmorSnapshot = false;
+            _prevArmorMatchId = 0;
+            _playerMuzzleFlashUntil = -1f;
+            if (_playerMuzzleFlash != null)
+                _playerMuzzleFlash.gameObject.SetActive(false);
             Helm.Reset();
             Throttle.Reset();
             LiveLobbyMatchState = "idle";
@@ -447,6 +456,17 @@ namespace TacSim.Arena
         private TextMeshPro _dynamicObjectiveLabel;
         private Transform _playerDustRoot;
         private readonly Transform[] _playerDustPuffs = new Transform[3];
+        private Transform _playerMuzzleFlash;
+        private MeshRenderer _playerMuzzleFlashRenderer;
+        private float _playerMuzzleFlashUntil = -1f;
+
+        private bool _hasPrevArmorSnapshot;
+        private ulong _prevArmorMatchId;
+        private int _prevArmorFront = 100;
+        private int _prevArmorLeft = 100;
+        private int _prevArmorRight = 100;
+        private int _prevArmorRear = 100;
+        private int _prevInternals = 100;
 
         private readonly Dictionary<string, SpawnedGroundVehicleRig> _contactRigs = new Dictionary<string, SpawnedGroundVehicleRig>(StringComparer.OrdinalIgnoreCase);
         private readonly Dictionary<int, SpawnedGroundVehicleRig> _replayRigs = new Dictionary<int, SpawnedGroundVehicleRig>();
@@ -473,8 +493,14 @@ namespace TacSim.Arena
         private sealed class ActiveShotTracer
         {
             public LineRenderer Line;
+            public Transform ProjectileBolt;
             public Transform ImpactFlash;
-            public float ExpireTime;
+            public Transform ShockwaveRing;
+            public Vector3 StartWorld;
+            public Vector3 EndWorld;
+            public bool IsLaser;
+            public float Elapsed;
+            public float Duration;
         }
 
         public static bool IsLiveCockpitFrameSeated(JsonNode d)
@@ -509,6 +535,9 @@ namespace TacSim.Arena
             _dynamicObjectiveRing = null;
             _dynamicObjectiveLabel = null;
             _playerDustRoot = null;
+            _playerMuzzleFlash = null;
+            _playerMuzzleFlashRenderer = null;
+            _playerMuzzleFlashUntil = -1f;
             _contactRigs.Clear();
             _replayRigs.Clear();
             _activeTracers.Clear();
@@ -545,6 +574,7 @@ namespace TacSim.Arena
             _vfxRoot = new GameObject("ArenaCombatVfx").transform;
             _vfxRoot.SetParent(transform, false);
             BuildPlayerDustTrailVisual();
+            BuildPlayerMuzzleFlashVisual();
 
             var pulseGo = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
             pulseGo.name = "ArenaRadarPulseRing";
@@ -713,6 +743,31 @@ namespace TacSim.Arena
                 _playerDustPuffs[i] = puff.transform;
             }
             root.SetActive(false);
+        }
+
+        private void BuildPlayerMuzzleFlashVisual()
+        {
+            if (_vfxRoot == null) return;
+            var go = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            go.name = "PlayerMuzzleFlash";
+            go.transform.SetParent(_vfxRoot, false);
+            go.transform.localScale = new Vector3(1.5f, 1.5f, 2.2f);
+            var col = go.GetComponent<Collider>();
+            if (col != null) { if (Application.isPlaying) Destroy(col); else DestroyImmediate(col); }
+            _playerMuzzleFlashRenderer = go.GetComponent<MeshRenderer>();
+            _playerMuzzleFlashRenderer.sharedMaterial = UrpMaterialFactory.GetEmissive(
+                "ArenaMuzzleBallistic",
+                new Color(1.0f, 0.88f, 0.38f),
+                new Color(1.0f, 0.82f, 0.25f) * 3.2f);
+            go.SetActive(false);
+            _playerMuzzleFlash = go.transform;
+        }
+
+        public bool TryGetContactRig(string designator, out SpawnedGroundVehicleRig rig)
+        {
+            rig = null;
+            if (string.IsNullOrWhiteSpace(designator)) return false;
+            return _contactRigs.TryGetValue(designator.Trim(), out rig) && rig?.Root != null;
         }
 
         public static Quaternion ComputeArenaChassisRotation(
@@ -1277,6 +1332,7 @@ namespace TacSim.Arena
                 EnsurePlayerRigSpawned(State.UnitType, State.Callsign, State.Party);
 
             UpdateOwnPlayerRigPose(0.1f);
+            DetectAndEmitPlayerArmorDamage();
 
             // Strict server-projected detachment roster & orders (`crates/tacsim/src/detachment/live.rs`)
             var detNode = d["detachment"];
@@ -1330,6 +1386,7 @@ namespace TacSim.Arena
                         bool isLaser = n.Str("weapon", "").IndexOf("laser", StringComparison.OrdinalIgnoreCase) >= 0 ||
                                        txt.IndexOf("laser", StringComparison.OrdinalIgnoreCase) >= 0;
                         OnWeaponShotFired?.Invoke(isLaser);
+                        TriggerPlayerMuzzleFlash(isLaser);
                         string tgtDesig = n.Str("designator", State.LockedDesignator);
                         if (_contactRigs.TryGetValue(tgtDesig, out var tgtRig) && PlayerRig?.MuzzlePoint != null && tgtRig?.Root != null)
                         {
@@ -1345,6 +1402,62 @@ namespace TacSim.Arena
             }
 
             OnArenaStateUpdated?.Invoke();
+        }
+
+        private void DetectAndEmitPlayerArmorDamage()
+        {
+            if (State == null) return;
+            if (!_hasPrevArmorSnapshot || _prevArmorMatchId != State.MatchId)
+            {
+                _prevArmorMatchId = State.MatchId;
+                _prevArmorFront = State.ArmorFrontPct;
+                _prevArmorLeft = State.ArmorLeftPct;
+                _prevArmorRight = State.ArmorRightPct;
+                _prevArmorRear = State.ArmorRearPct;
+                _prevInternals = State.InternalsPct;
+                _hasPrevArmorSnapshot = true;
+                return;
+            }
+
+            int dFront = _prevArmorFront - State.ArmorFrontPct;
+            int dLeft = _prevArmorLeft - State.ArmorLeftPct;
+            int dRight = _prevArmorRight - State.ArmorRightPct;
+            int dRear = _prevArmorRear - State.ArmorRearPct;
+            int dInt = _prevInternals - State.InternalsPct;
+
+            _prevArmorFront = State.ArmorFrontPct;
+            _prevArmorLeft = State.ArmorLeftPct;
+            _prevArmorRight = State.ArmorRightPct;
+            _prevArmorRear = State.ArmorRearPct;
+            _prevInternals = State.InternalsPct;
+
+            string bestFacet = "INTERNALS";
+            int bestDrop = dInt;
+            if (dFront > 0 && dFront >= bestDrop) { bestFacet = "FRONT"; bestDrop = dFront; }
+            if (dLeft > 0 && dLeft >= bestDrop) { bestFacet = "LEFT"; bestDrop = dLeft; }
+            if (dRight > 0 && dRight >= bestDrop) { bestFacet = "RIGHT"; bestDrop = dRight; }
+            if (dRear > 0 && dRear >= bestDrop) { bestFacet = "REAR"; bestDrop = dRear; }
+
+            bool internalHit = dInt > 0;
+            if (bestDrop > 0 || internalHit)
+            {
+                int reportDelta = bestDrop > 0 ? bestDrop : dInt;
+                OnPlayerArmorDamaged?.Invoke(bestFacet, reportDelta, internalHit);
+                if (PlayerRig?.Root != null)
+                {
+                    Vector3 hullHit = PlayerRig.Root.transform.position + Vector3.up * 1.8f;
+                    Vector3 origin = hullHit + Vector3.up * 4.5f;
+                    if (!string.IsNullOrEmpty(State.LockedDesignator) &&
+                        _contactRigs.TryGetValue(State.LockedDesignator, out var hostileRig) &&
+                        hostileRig?.Root != null)
+                    {
+                        origin = hostileRig.MuzzlePoint != null
+                            ? hostileRig.MuzzlePoint.position
+                            : hostileRig.Root.transform.position + Vector3.up * 1.8f;
+                    }
+                    SpawnShotTracer(origin, hullHit, isLaser: false);
+                }
+            }
         }
 
         private void ParseSectionsIntoState(List<JsonNode> sections)
@@ -1526,7 +1639,21 @@ namespace TacSim.Arena
                 rig.Root.transform.rotation = Quaternion.Slerp(rig.Root.transform.rotation, slopeRot, 0.45f);
             }
 
-            rig.SetWrecked(cs.IsWreck);
+            rig.SetDamageState(cs.HealthWord, cs.IsWreck);
+            if (!cs.IsWreck)
+            {
+                float? contactAimYaw = null;
+                if (!cs.Friendly)
+                {
+                    Vector3 ownWorld = PlayerRig?.Root != null
+                        ? PlayerRig.Root.transform.position
+                        : ArenaStageOrigin + ArenaWorldMetersToLocalPos(State.Xm, State.Zm);
+                    Vector3 toOwn = ownWorld - rig.Root.transform.position;
+                    if (toOwn.sqrMagnitude > 1f)
+                        contactAimYaw = Mathf.Atan2(toOwn.x, toOwn.z) * Mathf.Rad2Deg;
+                }
+                rig.UpdateArticulation(0.16f, 0f, contactAimYaw);
+            }
             if (rig.Billboard?.NameplateText != null)
             {
                 bool locked = string.Equals(State.LockedDesignator, cs.Designator, StringComparison.OrdinalIgnoreCase);
@@ -1539,6 +1666,11 @@ namespace TacSim.Arena
         {
             IsArenaActive = false;
             _desiredLiveSpeedKph = 0f;
+            _hasPrevArmorSnapshot = false;
+            _prevArmorMatchId = 0;
+            _playerMuzzleFlashUntil = -1f;
+            if (_playerMuzzleFlash != null)
+                _playerMuzzleFlash.gameObject.SetActive(false);
             Helm.Reset();
             Throttle.Reset();
             OnArenaStateUpdated?.Invoke();
@@ -1551,7 +1683,17 @@ namespace TacSim.Arena
             string low = trimmed.ToLowerInvariant();
 
             if (low.StartsWith("fire", StringComparison.Ordinal))
+            {
                 PlayerRig?.PlayWeaponRecoil();
+                if (!low.StartsWith("fire hold", StringComparison.Ordinal) &&
+                    !low.StartsWith("fire free", StringComparison.Ordinal) &&
+                    low.IndexOf(" when ", StringComparison.Ordinal) < 0 &&
+                    !low.EndsWith(" off", StringComparison.Ordinal))
+                {
+                    bool isLaser = low.IndexOf("laser", StringComparison.Ordinal) >= 0;
+                    TriggerPlayerMuzzleFlash(isLaser);
+                }
+            }
             else if (low == "scan" || low.StartsWith("scan ", StringComparison.Ordinal))
                 TriggerRadarPulseVfx();
             else if (low == "stop")
@@ -1819,7 +1961,15 @@ namespace TacSim.Arena
 
             PlayerRig.Root.transform.position = Vector3.Lerp(PlayerRig.Root.transform.position, targetPos, 1f - Mathf.Exp(-14f * dt));
             PlayerRig.Root.transform.rotation = Quaternion.Slerp(PlayerRig.Root.transform.rotation, slopeRot, 1f - Mathf.Exp(-18f * dt));
-            PlayerRig.SetWrecked(State.IsWreck);
+            int minArmor = Mathf.Min(Mathf.Min(State.ArmorFrontPct, State.ArmorLeftPct), Mathf.Min(State.ArmorRightPct, State.ArmorRearPct));
+            string ownHealthWord = State.IsWreck
+                ? "wreck"
+                : (State.InternalsPct < 50 || minArmor < 35)
+                    ? "crippled"
+                    : (State.InternalsPct < 90 || minArmor < 75)
+                        ? "scarred"
+                        : "intact";
+            PlayerRig.SetDamageState(ownHealthWord, State.IsWreck);
 
             float? aimYaw = null;
             if (!string.IsNullOrEmpty(State.LockedDesignator) && _contactRigs.TryGetValue(State.LockedDesignator, out var lockedRig) && lockedRig?.Root != null)
@@ -1932,42 +2082,129 @@ namespace TacSim.Arena
             }
         }
 
+        private void TriggerPlayerMuzzleFlash(bool isLaser)
+        {
+            if (_playerMuzzleFlash == null || PlayerRig == null) return;
+            Transform anchor = PlayerRig.MuzzlePoint != null ? PlayerRig.MuzzlePoint : PlayerRig.Root?.transform;
+            if (anchor == null) return;
+            _playerMuzzleFlash.position = anchor.position;
+            _playerMuzzleFlash.rotation = anchor.rotation;
+            _playerMuzzleFlash.localScale = isLaser ? new Vector3(1.1f, 1.1f, 1.8f) : new Vector3(1.7f, 1.7f, 2.5f);
+            if (_playerMuzzleFlashRenderer != null)
+            {
+                Color col = isLaser ? new Color(1.0f, 0.25f, 0.42f) : new Color(1.0f, 0.88f, 0.36f);
+                _playerMuzzleFlashRenderer.sharedMaterial = UrpMaterialFactory.GetEmissive(
+                    isLaser ? "ArenaMuzzleLaser" : "ArenaMuzzleBallistic",
+                    col,
+                    col * 3.4f);
+            }
+            _playerMuzzleFlashUntil = 0.09f;
+            _playerMuzzleFlash.gameObject.SetActive(true);
+        }
+
         private void SpawnShotTracer(Vector3 startWorld, Vector3 endWorld, bool isLaser)
         {
             if (_vfxRoot == null) return;
             var go = new GameObject("ShotTracer");
             go.transform.SetParent(_vfxRoot, false);
             var lr = go.AddComponent<LineRenderer>();
+            lr.useWorldSpace = true;
             lr.positionCount = 2;
             lr.SetPosition(0, startWorld);
-            lr.SetPosition(1, endWorld);
-            lr.startWidth = isLaser ? 0.36f : 0.24f;
-            lr.endWidth = isLaser ? 0.24f : 0.12f;
+            lr.SetPosition(1, isLaser ? endWorld : Vector3.Lerp(startWorld, endWorld, 0.28f));
+            lr.startWidth = isLaser ? 0.42f : 0.26f;
+            lr.endWidth = isLaser ? 0.26f : 0.10f;
             Color col = isLaser ? new Color(1.0f, 0.22f, 0.35f, 0.95f) : new Color(1.0f, 0.85f, 0.32f, 0.95f);
             lr.sharedMaterial = UrpMaterialFactory.GetHologramUnlit(isLaser ? "ArenaLaser" : "ArenaShell", col);
 
+            Transform boltTransform = null;
+            if (!isLaser)
+            {
+                var bolt = GameObject.CreatePrimitive(PrimitiveType.Cube);
+                bolt.name = "ShellBolt";
+                bolt.transform.SetParent(_vfxRoot, false);
+                bolt.transform.position = startWorld;
+                Vector3 dir = endWorld - startWorld;
+                if (dir.sqrMagnitude > 1e-4f)
+                    bolt.transform.rotation = Quaternion.LookRotation(dir.normalized, Vector3.up);
+                bolt.transform.localScale = new Vector3(0.45f, 0.45f, 3.6f);
+                var bc = bolt.GetComponent<Collider>();
+                if (bc != null)
+                {
+                    if (Application.isPlaying) Destroy(bc);
+                    else DestroyImmediate(bc);
+                }
+                bolt.GetComponent<MeshRenderer>().sharedMaterial = UrpMaterialFactory.GetEmissive("ArenaShellBolt", col, col * 3.2f);
+                boltTransform = bolt.transform;
+            }
+
             var flash = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+            flash.name = "ImpactFlash";
             flash.transform.SetParent(_vfxRoot, false);
             flash.transform.position = endWorld;
-            flash.transform.localScale = Vector3.one * 2.4f;
+            flash.transform.localScale = isLaser ? Vector3.one * 2.4f : Vector3.one * 0.4f;
             var fc = flash.GetComponent<Collider>();
             if (fc != null)
             {
                 if (Application.isPlaying) Destroy(fc);
                 else DestroyImmediate(fc);
             }
-            flash.GetComponent<MeshRenderer>().sharedMaterial = UrpMaterialFactory.GetEmissive("HitFlash", col, col * 2.5f);
+            flash.GetComponent<MeshRenderer>().sharedMaterial = UrpMaterialFactory.GetEmissive("HitFlash", col, col * 2.8f);
+            if (!isLaser)
+                flash.SetActive(false);
+
+            var ring = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            ring.name = "ImpactShockwave";
+            ring.transform.SetParent(_vfxRoot, false);
+            ring.transform.position = endWorld;
+            ring.transform.localScale = new Vector3(1.2f, 0.08f, 1.2f);
+            var rc = ring.GetComponent<Collider>();
+            if (rc != null)
+            {
+                if (Application.isPlaying) Destroy(rc);
+                else DestroyImmediate(rc);
+            }
+            ring.GetComponent<MeshRenderer>().sharedMaterial = UrpMaterialFactory.GetHologramUnlit(
+                isLaser ? "ArenaLaserShock" : "ArenaShellShock",
+                new Color(col.r, col.g, col.b, 0.55f));
+            if (!isLaser)
+                ring.SetActive(false);
 
             _activeTracers.Add(new ActiveShotTracer
             {
                 Line = lr,
+                ProjectileBolt = boltTransform,
                 ImpactFlash = flash.transform,
-                ExpireTime = Time.time + (isLaser ? 0.32f : 0.20f)
+                ShockwaveRing = ring.transform,
+                StartWorld = startWorld,
+                EndWorld = endWorld,
+                IsLaser = isLaser,
+                Elapsed = 0f,
+                Duration = isLaser ? 0.34f : 0.28f
             });
+        }
+
+        public void StepTracersForTests(float dt)
+        {
+            UpdateTracers(Mathf.Max(0.0001f, dt));
         }
 
         private void UpdateTracers(float dt)
         {
+            if (_playerMuzzleFlashUntil > 0f && _playerMuzzleFlash != null)
+            {
+                _playerMuzzleFlashUntil -= dt;
+                if (_playerMuzzleFlashUntil <= 0f)
+                {
+                    _playerMuzzleFlashUntil = -1f;
+                    _playerMuzzleFlash.gameObject.SetActive(false);
+                }
+                else if (PlayerRig?.MuzzlePoint != null)
+                {
+                    _playerMuzzleFlash.position = PlayerRig.MuzzlePoint.position;
+                }
+            }
+
             if (_radarPulseScale >= 0f && _radarPulseRing != null)
             {
                 _radarPulseScale += dt * 420f;
@@ -1983,21 +2220,88 @@ namespace TacSim.Arena
 
             for (int i = _activeTracers.Count - 1; i >= 0; i--)
             {
-                if (Time.time >= _activeTracers[i].ExpireTime)
+                var tr = _activeTracers[i];
+                tr.Elapsed += dt;
+                float u = Mathf.Clamp01(tr.Elapsed / Mathf.Max(0.01f, tr.Duration));
+
+                if (tr.Elapsed >= tr.Duration)
                 {
-                    if (_activeTracers[i].Line != null)
-                    {
-                        if (Application.isPlaying) Destroy(_activeTracers[i].Line.gameObject);
-                        else DestroyImmediate(_activeTracers[i].Line.gameObject);
-                    }
-                    if (_activeTracers[i].ImpactFlash != null)
-                    {
-                        if (Application.isPlaying) Destroy(_activeTracers[i].ImpactFlash.gameObject);
-                        else DestroyImmediate(_activeTracers[i].ImpactFlash.gameObject);
-                    }
+                    DestroyTracerObject(tr.Line != null ? tr.Line.gameObject : null);
+                    DestroyTracerObject(tr.ProjectileBolt != null ? tr.ProjectileBolt.gameObject : null);
+                    DestroyTracerObject(tr.ImpactFlash != null ? tr.ImpactFlash.gameObject : null);
+                    DestroyTracerObject(tr.ShockwaveRing != null ? tr.ShockwaveRing.gameObject : null);
                     _activeTracers.RemoveAt(i);
+                    continue;
+                }
+
+                if (tr.IsLaser)
+                {
+                    float fade = 1f - u;
+                    if (tr.Line != null)
+                    {
+                        tr.Line.startWidth = 0.42f * fade;
+                        tr.Line.endWidth = 0.24f * fade;
+                    }
+                    if (tr.ImpactFlash != null)
+                    {
+                        float s = 2.6f * (0.4f + fade * 0.8f);
+                        tr.ImpactFlash.localScale = Vector3.one * s;
+                    }
+                    if (tr.ShockwaveRing != null)
+                    {
+                        float ringDia = 1.6f + u * 6.5f;
+                        tr.ShockwaveRing.localScale = new Vector3(ringDia, 0.08f, ringDia);
+                    }
+                }
+                else
+                {
+                    // Ballistic shell travels during u in [0..0.55], bursts into impact flash & shockwave during [0.55..1.0]
+                    float flightU = Mathf.Clamp01(u / 0.55f);
+                    float tailU = Mathf.Clamp01((u - 0.16f) / 0.55f);
+                    Vector3 headPos = Vector3.Lerp(tr.StartWorld, tr.EndWorld, flightU);
+                    Vector3 tailPos = Vector3.Lerp(tr.StartWorld, tr.EndWorld, tailU);
+
+                    if (tr.Line != null)
+                    {
+                        tr.Line.SetPosition(0, tailPos);
+                        tr.Line.SetPosition(1, headPos);
+                        float fade = 1f - u * 0.7f;
+                        tr.Line.startWidth = 0.14f * fade;
+                        tr.Line.endWidth = 0.26f * fade;
+                    }
+                    if (tr.ProjectileBolt != null)
+                    {
+                        bool inFlight = u < 0.58f;
+                        if (tr.ProjectileBolt.gameObject.activeSelf != inFlight)
+                            tr.ProjectileBolt.gameObject.SetActive(inFlight);
+                        if (inFlight)
+                            tr.ProjectileBolt.position = headPos;
+                    }
+                    if (u >= 0.52f)
+                    {
+                        float impU = Mathf.Clamp01((u - 0.52f) / 0.48f);
+                        if (tr.ImpactFlash != null)
+                        {
+                            if (!tr.ImpactFlash.gameObject.activeSelf) tr.ImpactFlash.gameObject.SetActive(true);
+                            float fScale = Mathf.Lerp(3.2f, 0.5f, impU);
+                            tr.ImpactFlash.localScale = Vector3.one * fScale;
+                        }
+                        if (tr.ShockwaveRing != null)
+                        {
+                            if (!tr.ShockwaveRing.gameObject.activeSelf) tr.ShockwaveRing.gameObject.SetActive(true);
+                            float ringDia = 1.4f + impU * 8.5f;
+                            tr.ShockwaveRing.localScale = new Vector3(ringDia, 0.10f, ringDia);
+                        }
+                    }
                 }
             }
+        }
+
+        private static void DestroyTracerObject(GameObject go)
+        {
+            if (go == null) return;
+            if (Application.isPlaying) Destroy(go);
+            else DestroyImmediate(go);
         }
     }
 }
