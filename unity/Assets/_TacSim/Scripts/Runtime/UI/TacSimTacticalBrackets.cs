@@ -9,6 +9,15 @@ using UnityEngine.UI;
 
 namespace TacSim.UI
 {
+    public enum ArenaHitmarkerKind
+    {
+        None = 0,
+        Hit = 1,
+        SectionCrit = 2,
+        Kill = 3,
+        Miss = 4
+    }
+
     /// <summary>
     /// Pooled 3D Screen-Space Tactical HUD Brackets &amp; Diegetic Combat Schematics:
     /// - Orbital Space (`ShipHelmSeated`): interactive click-to-lock/approach corner brackets projected over
@@ -75,6 +84,28 @@ namespace TacSim.UI
         private RectTransform _compassObjectivePip;
         private Text _compassObjectivePipLabel;
 
+        // Arena Screen-Center Hitmarker, 4-Quadrant Directional Damage Arcs & Critical Status Banner
+        private GameObject _arenaHitmarkerRoot;
+        private readonly Image[] _hitmarkerTicks = new Image[4];
+        private readonly RectTransform[] _hitmarkerTickRects = new RectTransform[4];
+        private ArenaHitmarkerKind _activeHitmarkerKind = ArenaHitmarkerKind.None;
+        private float _hitmarkerRemainSec;
+        private float _hitmarkerTotalSec = 0.35f;
+
+        private GameObject _arenaDamageArcsRoot;
+        private Image _dmgArcFront;
+        private Image _dmgArcRear;
+        private Image _dmgArcLeft;
+        private Image _dmgArcRight;
+        private float _dmgAlphaFront;
+        private float _dmgAlphaRear;
+        private float _dmgAlphaLeft;
+        private float _dmgAlphaRight;
+
+        private GameObject _arenaCritBannerRoot;
+        private Image _arenaCritBannerBg;
+        private Text _arenaCritBannerText;
+
         // Surface Rover Compass & Drill Strip (bottom-center above SurfaceRoverActions)
         private GameObject _surfaceCompassWidget;
         private Text _surfaceCompassText;
@@ -113,6 +144,151 @@ namespace TacSim.UI
         public bool DockingReticleAllGreen { get; private set; }
         public string SurfaceCompassSnapshot => _surfaceCompassText != null ? _surfaceCompassText.text : string.Empty;
         public string ArenaArmorSummarySnapshot => _arenaDriveStrip != null ? _arenaDriveStrip.text : string.Empty;
+        public bool IsHitmarkerVisible => _arenaHitmarkerRoot != null && _arenaHitmarkerRoot.activeSelf && _hitmarkerRemainSec > 0f;
+        public ArenaHitmarkerKind ActiveHitmarkerKind => _activeHitmarkerKind;
+        public bool IsCriticalStatusBannerVisible => _arenaCritBannerRoot != null && _arenaCritBannerRoot.activeSelf;
+        public string CriticalStatusBannerText => _arenaCritBannerText != null ? _arenaCritBannerText.text : string.Empty;
+
+        public float GetDamageArcAlpha(string facetLabel)
+        {
+            string up = (facetLabel ?? string.Empty).Trim().ToUpperInvariant();
+            switch (up)
+            {
+                case "FRONT": return _dmgAlphaFront;
+                case "REAR": return _dmgAlphaRear;
+                case "LEFT": return _dmgAlphaLeft;
+                case "RIGHT": return _dmgAlphaRight;
+                default: return Mathf.Max(Mathf.Max(_dmgAlphaFront, _dmgAlphaRear), Mathf.Max(_dmgAlphaLeft, _dmgAlphaRight));
+            }
+        }
+
+        public void TriggerArenaHitmarker(ArenaHitmarkerKind kind)
+        {
+            if (kind == ArenaHitmarkerKind.None || _arenaHitmarkerRoot == null) return;
+            _activeHitmarkerKind = kind;
+            _hitmarkerTotalSec = kind == ArenaHitmarkerKind.Kill
+                ? 0.65f
+                : (kind == ArenaHitmarkerKind.SectionCrit ? 0.45f : (kind == ArenaHitmarkerKind.Miss ? 0.22f : 0.30f));
+            _hitmarkerRemainSec = _hitmarkerTotalSec;
+            _arenaHitmarkerRoot.SetActive(true);
+            ApplyHitmarkerVisual(1f);
+        }
+
+        public void TriggerDirectionalDamageArc(string facetLabel, bool internalBreach)
+        {
+            string up = (facetLabel ?? string.Empty).Trim().ToUpperInvariant();
+            if (internalBreach || up == "INTERNALS" || up == "HULL")
+            {
+                _dmgAlphaFront = Mathf.Max(_dmgAlphaFront, 0.85f);
+                _dmgAlphaRear = Mathf.Max(_dmgAlphaRear, 0.85f);
+                _dmgAlphaLeft = Mathf.Max(_dmgAlphaLeft, 0.85f);
+                _dmgAlphaRight = Mathf.Max(_dmgAlphaRight, 0.85f);
+            }
+            else if (up == "FRONT") _dmgAlphaFront = 0.92f;
+            else if (up == "REAR") _dmgAlphaRear = 0.92f;
+            else if (up == "LEFT") _dmgAlphaLeft = 0.92f;
+            else if (up == "RIGHT") _dmgAlphaRight = 0.92f;
+            else _dmgAlphaFront = Mathf.Max(_dmgAlphaFront, 0.72f);
+
+            if (_arenaDamageArcsRoot != null)
+                _arenaDamageArcsRoot.SetActive(true);
+            ApplyDamageArcAlphas();
+        }
+
+        public void StepCombatFeedbackForTests(float dt) => StepCombatFeedback(Mathf.Max(0f, dt));
+
+        private void Update()
+        {
+            StepCombatFeedback(Time.unscaledDeltaTime);
+        }
+
+        private void StepCombatFeedback(float dt)
+        {
+            if (dt <= 0f) return;
+
+            if (_hitmarkerRemainSec > 0f)
+            {
+                _hitmarkerRemainSec = Mathf.Max(0f, _hitmarkerRemainSec - dt);
+                float frac = _hitmarkerTotalSec > 0.001f ? Mathf.Clamp01(_hitmarkerRemainSec / _hitmarkerTotalSec) : 0f;
+                if (_hitmarkerRemainSec <= 0f)
+                {
+                    _activeHitmarkerKind = ArenaHitmarkerKind.None;
+                    if (_arenaHitmarkerRoot != null) _arenaHitmarkerRoot.SetActive(false);
+                }
+                else
+                {
+                    ApplyHitmarkerVisual(frac);
+                }
+            }
+
+            if (_dmgAlphaFront > 0f || _dmgAlphaRear > 0f || _dmgAlphaLeft > 0f || _dmgAlphaRight > 0f)
+            {
+                float decay = dt * 0.95f;
+                _dmgAlphaFront = Mathf.Max(0f, _dmgAlphaFront - decay);
+                _dmgAlphaRear = Mathf.Max(0f, _dmgAlphaRear - decay);
+                _dmgAlphaLeft = Mathf.Max(0f, _dmgAlphaLeft - decay);
+                _dmgAlphaRight = Mathf.Max(0f, _dmgAlphaRight - decay);
+                ApplyDamageArcAlphas();
+                bool any = _dmgAlphaFront > 0.005f || _dmgAlphaRear > 0.005f || _dmgAlphaLeft > 0.005f || _dmgAlphaRight > 0.005f;
+                if (!any && _arenaDamageArcsRoot != null && _arenaDamageArcsRoot.activeSelf)
+                    _arenaDamageArcsRoot.SetActive(false);
+            }
+        }
+
+        private void ApplyHitmarkerVisual(float lifeFrac)
+        {
+            Color col;
+            float baseSpread;
+            float tickLen;
+            switch (_activeHitmarkerKind)
+            {
+                case ArenaHitmarkerKind.Kill:
+                    col = new Color(1.0f, 0.24f, 0.20f, Mathf.Clamp01(lifeFrac * 1.4f));
+                    baseSpread = 14f + (1f - lifeFrac) * 14f;
+                    tickLen = 18f;
+                    break;
+                case ArenaHitmarkerKind.SectionCrit:
+                    col = new Color(1.0f, 0.72f, 0.16f, Mathf.Clamp01(lifeFrac * 1.4f));
+                    baseSpread = 12f + (1f - lifeFrac) * 10f;
+                    tickLen = 15f;
+                    break;
+                case ArenaHitmarkerKind.Miss:
+                    col = new Color(0.54f, 0.86f, 0.96f, Mathf.Clamp01(lifeFrac * 0.9f));
+                    baseSpread = 10f + (1f - lifeFrac) * 6f;
+                    tickLen = 9f;
+                    break;
+                default:
+                    col = new Color(1.0f, 0.96f, 0.82f, Mathf.Clamp01(lifeFrac * 1.4f));
+                    baseSpread = 10f + (1f - lifeFrac) * 8f;
+                    tickLen = 13f;
+                    break;
+            }
+
+            Vector2[] dirs =
+            {
+                new Vector2(0.7071f, 0.7071f),
+                new Vector2(-0.7071f, 0.7071f),
+                new Vector2(-0.7071f, -0.7071f),
+                new Vector2(0.7071f, -0.7071f)
+            };
+            for (int i = 0; i < 4; i++)
+            {
+                if (_hitmarkerTicks[i] != null) _hitmarkerTicks[i].color = col;
+                if (_hitmarkerTickRects[i] != null)
+                {
+                    _hitmarkerTickRects[i].anchoredPosition = dirs[i] * baseSpread;
+                    _hitmarkerTickRects[i].sizeDelta = new Vector2(tickLen, _activeHitmarkerKind == ArenaHitmarkerKind.Kill ? 3.5f : 2.5f);
+                }
+            }
+        }
+
+        private void ApplyDamageArcAlphas()
+        {
+            if (_dmgArcFront != null) _dmgArcFront.color = new Color(1.0f, 0.18f, 0.14f, _dmgAlphaFront * 0.55f);
+            if (_dmgArcRear != null) _dmgArcRear.color = new Color(1.0f, 0.18f, 0.14f, _dmgAlphaRear * 0.55f);
+            if (_dmgArcLeft != null) _dmgArcLeft.color = new Color(1.0f, 0.18f, 0.14f, _dmgAlphaLeft * 0.55f);
+            if (_dmgArcRight != null) _dmgArcRight.color = new Color(1.0f, 0.18f, 0.14f, _dmgAlphaRight * 0.55f);
+        }
 
         public void BuildLayer(Transform hudRoot, Font sharedFont)
         {
@@ -132,6 +308,7 @@ namespace TacSim.UI
             BuildSurfaceCompassStrip(_layerRect);
             BuildArenaArmorSchematic(_layerRect);
             BuildArenaCompassTape(_layerRect);
+            BuildArenaCombatFeedbackWidgets(_layerRect);
         }
 
         public void BindControllers(SpaceFlightController space, SurfaceMiningController surface, OocArenaController arena)
@@ -149,6 +326,12 @@ namespace TacSim.UI
             if (_surfaceCompassWidget != null) _surfaceCompassWidget.SetActive(false);
             if (_arenaArmorWidget != null) _arenaArmorWidget.SetActive(false);
             if (_arenaCompassWidget != null) _arenaCompassWidget.SetActive(false);
+            if (_arenaHitmarkerRoot != null) _arenaHitmarkerRoot.SetActive(false);
+            if (_arenaDamageArcsRoot != null) _arenaDamageArcsRoot.SetActive(false);
+            if (_arenaCritBannerRoot != null) _arenaCritBannerRoot.SetActive(false);
+            _activeHitmarkerKind = ArenaHitmarkerKind.None;
+            _hitmarkerRemainSec = 0f;
+            _dmgAlphaFront = _dmgAlphaRear = _dmgAlphaLeft = _dmgAlphaRight = 0f;
             DockingRollBarAngleDeg = 0f;
             DockingReticleAllGreen = false;
         }
@@ -260,6 +443,7 @@ namespace TacSim.UI
                 if (_surfaceCompassWidget != null) _surfaceCompassWidget.SetActive(false);
                 if (_arenaArmorWidget != null) _arenaArmorWidget.SetActive(false);
                 if (_arenaCompassWidget != null) _arenaCompassWidget.SetActive(false);
+                if (_arenaCritBannerRoot != null) _arenaCritBannerRoot.SetActive(false);
                 return;
             }
 
@@ -280,6 +464,8 @@ namespace TacSim.UI
                 _arenaArmorWidget.SetActive(stage == TacSimActiveStage.SimulatorArena);
             if (_arenaCompassWidget != null)
                 _arenaCompassWidget.SetActive(stage == TacSimActiveStage.SimulatorArena);
+            if (_arenaCritBannerRoot != null && stage != TacSimActiveStage.SimulatorArena)
+                _arenaCritBannerRoot.SetActive(false);
 
             if (dockingActive)
             {
@@ -444,6 +630,7 @@ namespace TacSim.UI
             }
 
             SyncArenaCompassTape();
+            SyncArenaCriticalBanner();
 
             if (cam == null)
             {
@@ -896,6 +1083,99 @@ namespace TacSim.UI
                     : (string.Equals(st.Scope, "unidentified", StringComparison.OrdinalIgnoreCase) || (st.HasReceiver && st.ReceiverReachPercent < 85)
                         ? new Color(1.0f, 0.80f, 0.34f)
                         : new Color(0.68f, 0.92f, 1.0f));
+            }
+        }
+
+        private void BuildArenaCombatFeedbackWidgets(Transform parent)
+        {
+            // 1. Dynamic 4-stroke screen-center hitmarker
+            _arenaHitmarkerRoot = new GameObject("ArenaCenterHitmarker", typeof(RectTransform));
+            _arenaHitmarkerRoot.transform.SetParent(parent, false);
+            var hrt = _arenaHitmarkerRoot.GetComponent<RectTransform>();
+            SetRect(hrt, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-44f, -44f), new Vector2(44f, 44f));
+
+            float[] angles = { 45f, 135f, 225f, 315f };
+            for (int i = 0; i < 4; i++)
+            {
+                var tickGo = new GameObject($"HitTick_{i}", typeof(RectTransform), typeof(Image));
+                tickGo.transform.SetParent(_arenaHitmarkerRoot.transform, false);
+                var trt = tickGo.GetComponent<RectTransform>();
+                trt.anchorMin = new Vector2(0.5f, 0.5f);
+                trt.anchorMax = new Vector2(0.5f, 0.5f);
+                trt.pivot = new Vector2(0.5f, 0.5f);
+                trt.sizeDelta = new Vector2(13f, 2.5f);
+                trt.localRotation = Quaternion.Euler(0f, 0f, angles[i]);
+                var img = tickGo.GetComponent<Image>();
+                img.color = Color.white;
+                img.raycastTarget = false;
+                _hitmarkerTicks[i] = img;
+                _hitmarkerTickRects[i] = trt;
+            }
+            _arenaHitmarkerRoot.SetActive(false);
+
+            // 2. 4-Quadrant Directional Incoming-Hit Damage Arcs (non-blocking perimeter flash strips)
+            _arenaDamageArcsRoot = new GameObject("ArenaDirectionalDamageArcs", typeof(RectTransform));
+            _arenaDamageArcsRoot.transform.SetParent(parent, false);
+            SetRect(_arenaDamageArcsRoot.GetComponent<RectTransform>(), Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero);
+
+            _dmgArcFront = CreateStroke(_arenaDamageArcsRoot.transform, new Vector2(0.22f, 1f), new Vector2(0.78f, 1f), new Vector2(0f, -14f), Vector2.zero, Color.clear);
+            _dmgArcRear = CreateStroke(_arenaDamageArcsRoot.transform, new Vector2(0.22f, 0f), new Vector2(0.78f, 0f), Vector2.zero, new Vector2(0f, 14f), Color.clear);
+            _dmgArcLeft = CreateStroke(_arenaDamageArcsRoot.transform, new Vector2(0f, 0.22f), new Vector2(0f, 0.78f), Vector2.zero, new Vector2(14f, 0f), Color.clear);
+            _dmgArcRight = CreateStroke(_arenaDamageArcsRoot.transform, new Vector2(1f, 0.22f), new Vector2(1f, 0.78f), new Vector2(-14f, 0f), Vector2.zero, Color.clear);
+            _arenaDamageArcsRoot.SetActive(false);
+
+            // 3. Thermal Overheat / Critical Hull Warning Bar (sits cleanly below compass tape at y=-192..-164)
+            _arenaCritBannerRoot = CreatePanel(
+                parent,
+                "ArenaCriticalStatusBanner",
+                new Vector2(0.5f, 1f),
+                new Vector2(0.5f, 1f),
+                new Vector2(-210f, -192f),
+                new Vector2(210f, -164f),
+                new Color(0.58f, 0.12f, 0.10f, 0.90f));
+            _arenaCritBannerBg = _arenaCritBannerRoot.GetComponent<Image>();
+            _arenaCritBannerBg.raycastTarget = false;
+            _arenaCritBannerText = CreateText(_arenaCritBannerRoot.transform, string.Empty, 11, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(1f, 0.92f, 0.78f));
+            SetRect(_arenaCritBannerText.rectTransform, Vector2.zero, Vector2.one, new Vector2(8f, 0f), new Vector2(-8f, 0f));
+            _arenaCritBannerRoot.SetActive(false);
+        }
+
+        private void SyncArenaCriticalBanner()
+        {
+            if (_arenaCritBannerRoot == null || _arena?.State == null) return;
+            var st = _arena.State;
+            string msg = string.Empty;
+            Color bg = new Color(0.58f, 0.12f, 0.10f, 0.90f);
+
+            if (st.IsWreck)
+            {
+                msg = "VEHICLE DESTROYED — EXIT POD OR WATCH MATCH";
+                bg = new Color(0.52f, 0.08f, 0.10f, 0.94f);
+            }
+            else if (st.Overheated)
+            {
+                msg = $"THERMAL OVERHEAT ({st.Heat}/{st.HeatMax}) — VENTING HEAT";
+                bg = new Color(0.68f, 0.22f, 0.08f, 0.92f);
+            }
+            else if (st.Immobile)
+            {
+                msg = "DRIVETRAIN DISABLED — HULL IMMOBILE";
+                bg = new Color(0.62f, 0.30f, 0.08f, 0.92f);
+            }
+            else if (st.InternalsPct < 40)
+            {
+                msg = $"CRITICAL INTERNAL DAMAGE ({st.InternalsPct}% STRUCTURE)";
+                bg = new Color(0.62f, 0.10f, 0.10f, 0.92f);
+            }
+
+            bool show = !string.IsNullOrEmpty(msg);
+            if (_arenaCritBannerRoot.activeSelf != show)
+                _arenaCritBannerRoot.SetActive(show);
+            if (show)
+            {
+                float pulse = 0.80f + 0.20f * Mathf.Sin(Time.unscaledTime * 6.5f);
+                if (_arenaCritBannerBg != null) _arenaCritBannerBg.color = new Color(bg.r, bg.g, bg.b, bg.a * pulse);
+                if (_arenaCritBannerText != null) _arenaCritBannerText.text = msg;
             }
         }
 

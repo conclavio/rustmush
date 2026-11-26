@@ -423,6 +423,7 @@ namespace TacSim.Core
             ArenaStage.OnPlayerArmorDamaged += (facetLabel, deltaPct, internalHit) =>
             {
                 CameraRig?.TriggerCameraShake(internalHit ? 0.72f : 0.45f, internalHit ? 0.42f : 0.30f);
+                Hud?.TacticalBrackets?.TriggerDirectionalDamageArc(facetLabel, internalHit);
                 if (Audio != null)
                 {
                     if (internalHit) Audio.PlayRedAlertKlaxon();
@@ -434,6 +435,7 @@ namespace TacSim.Core
                     internalHit ? new Color(1f, 0.20f, 0.18f, 1f) : new Color(1f, 0.62f, 0.22f, 1f),
                     internalHit ? 2.4f : 1.7f);
             };
+            ArenaStage.OnArenaNoticeReceived += HandleArenaCombatNotice;
             ArenaStage.OnRequestArenaMapSubscribe += () =>
             {
                 if (_ws != null && _ws.IsConnected)
@@ -3450,6 +3452,68 @@ namespace TacSim.Core
                 if (Player != null) CameraRig.SnapBehindTarget(Player.transform.eulerAngles.y);
                 Audio?.SetSoundscape(AmbientSoundscape.StationRing);
                 Hud.UpdateTopBar("OOC SIMULATOR POD BAY", $"{_currentClockStr} | {_currentHullBadge}");
+            }
+        }
+
+        private void HandleArenaCombatNotice(ArenaCombatNotice notice)
+        {
+            if (notice == null || string.IsNullOrEmpty(notice.Kind)) return;
+            string safeDesig = MushProtocol.EscapeUnityRichText(notice.Designator ?? string.Empty);
+            string safeSec = MushProtocol.EscapeUnityRichText((notice.Section ?? string.Empty).Replace("_", " ").ToUpperInvariant());
+            switch (notice.Kind)
+            {
+                case "kill":
+                    Hud?.TacticalBrackets?.TriggerArenaHitmarker(ArenaHitmarkerKind.Kill);
+                    CameraRig?.TriggerCameraShake(0.32f, 0.28f);
+                    Audio?.PlayMarketChime();
+                    Hud?.FloatingCallouts?.ShowCallout(
+                        string.IsNullOrEmpty(safeDesig) ? "TARGET DESTROYED!" : $"TARGET DESTROYED: {safeDesig}!",
+                        new Color(1.0f, 0.34f, 0.24f, 1f), 2.6f);
+                    break;
+                case "target_section_lost":
+                    Hud?.TacticalBrackets?.TriggerArenaHitmarker(ArenaHitmarkerKind.SectionCrit);
+                    Hud?.FloatingCallouts?.ShowCallout(
+                        $"{safeDesig} {safeSec} DESTROYED!",
+                        new Color(1.0f, 0.74f, 0.18f, 1f), 2.2f);
+                    break;
+                case "hit":
+                    Hud?.TacticalBrackets?.TriggerArenaHitmarker(ArenaHitmarkerKind.Hit);
+                    break;
+                case "miss":
+                    Hud?.TacticalBrackets?.TriggerArenaHitmarker(ArenaHitmarkerKind.Miss);
+                    break;
+                case "section_lost":
+                    Hud?.TacticalBrackets?.TriggerDirectionalDamageArc("INTERNALS", internalBreach: true);
+                    CameraRig?.TriggerCameraShake(0.65f, 0.38f);
+                    Audio?.PlayRedAlertKlaxon();
+                    Hud?.FloatingCallouts?.ShowCallout(
+                        $"SECTION LOST: {(string.IsNullOrEmpty(safeSec) ? "HULL" : safeSec)}!",
+                        new Color(1.0f, 0.20f, 0.18f, 1f), 2.6f);
+                    break;
+                case "destroyed":
+                    Hud?.TacticalBrackets?.TriggerDirectionalDamageArc("INTERNALS", internalBreach: true);
+                    CameraRig?.TriggerCameraShake(0.90f, 0.55f);
+                    Audio?.PlayRedAlertKlaxon();
+                    Hud?.FloatingCallouts?.ShowCallout("VEHICLE DESTROYED!", new Color(1.0f, 0.18f, 0.16f, 1f), 3.2f);
+                    break;
+                case "disabled":
+                    Audio?.PlayRedAlertKlaxon();
+                    Hud?.FloatingCallouts?.ShowCallout("MOBILITY DISABLED!", new Color(1.0f, 0.52f, 0.18f, 1f), 2.4f);
+                    break;
+                case "refused":
+                case "blocked":
+                    string reason = !string.IsNullOrEmpty(notice.Refusal) ? notice.Refusal : notice.Cause;
+                    if (!string.IsNullOrEmpty(reason))
+                        Hud?.FloatingCallouts?.ShowCallout($"ORDER {notice.Kind.ToUpperInvariant()}: {reason.ToUpperInvariant()}", new Color(1.0f, 0.62f, 0.22f, 1f), 1.8f);
+                    break;
+                case "receiver_degraded":
+                    Audio?.PlayRedAlertKlaxon();
+                    Hud?.FloatingCallouts?.ShowCallout("ECM JAMMING DETECTED!", new Color(1.0f, 0.72f, 0.22f, 1f), 2.2f);
+                    break;
+                case "drive_arrived":
+                    Audio?.PlayUiClick();
+                    Hud?.FloatingCallouts?.ShowCallout("WAYPOINT ARRIVED", new Color(0.32f, 0.96f, 1.0f, 1f), 1.6f);
+                    break;
             }
         }
 
