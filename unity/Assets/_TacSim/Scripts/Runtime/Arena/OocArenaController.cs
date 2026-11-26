@@ -280,7 +280,10 @@ namespace TacSim.Arena
         public bool IsSpectatorTheaterActive => !IsArenaActive && (IsReplayModeActive || IsLiveObserverActive);
         public bool IsStageVisible => IsArenaActive || IsReplayModeActive || IsLiveObserverActive;
         public bool KeyboardSuspended { get; set; }
-        public float TargetCruiseSpeedKph => _desiredLiveSpeedKph;
+        public ArenaPredictiveHelm Helm { get; } = new ArenaPredictiveHelm();
+        public ArenaCoalescedThrottle Throttle { get; } = new ArenaCoalescedThrottle();
+        public float TargetCruiseSpeedKph => Throttle.OrderedKph.HasValue ? Throttle.OrderedKph.Value : Throttle.PredictedKph();
+        public float PredictedHeadingDeg => Helm.PredictedHeadingDeg(CurrentHelmClockMs()) ?? State.HeadingDeg;
         public ulong CachedMapMatchId { get; private set; }
 
         public ArenaReplayDocument ActiveReplayDoc { get; private set; }
@@ -390,6 +393,10 @@ namespace TacSim.Arena
             _lastSentSpeedKph = 0f;
             _lastSentHeadingDeg = -999f;
             _lastNotifiedDetachmentOrderKey = string.Empty;
+            _nextHeldThrottleBumpMs = 0L;
+            _lastFrameAnchorMs = 0L;
+            Helm.Reset();
+            Throttle.Reset();
             LiveLobbyMatchState = "idle";
             LiveLobbySlotSummary = string.Empty;
             State = new ArenaCockpitState();
@@ -408,6 +415,8 @@ namespace TacSim.Arena
             OnReplayStateChanged?.Invoke();
         }
 
+        private static long CurrentHelmClockMs() => (long)Math.Round(Time.unscaledTime * 1000.0);
+
         private Transform _terrainRoot;
         private Transform _beaconsRoot;
         private Transform _unitsRoot;
@@ -420,6 +429,8 @@ namespace TacSim.Arena
         private readonly List<ActiveShotTracer> _activeTracers = new List<ActiveShotTracer>();
         private int _pendingOpenKeyframeIndex = -1;
         private string _lastNotifiedDetachmentOrderKey = string.Empty;
+        private long _nextHeldThrottleBumpMs;
+        private long _lastFrameAnchorMs;
 
         private float _desiredLiveSpeedKph;
         private float _desiredLiveHeadingDeg = 90f;
@@ -952,10 +963,46 @@ namespace TacSim.Arena
 
             State.Xm = d.Int("x_cm", (int)(State.Xm * 100f)) * 0.01f;
             State.Zm = d.Int("y_cm", (int)(State.Zm * 100f)) * 0.01f;
-            State.HeadingDeg = d.Float("heading_deg", d.Int("heading_mdeg", 90000) * 0.001f);
+            int headingMdeg = d["heading_mdeg"].Kind == JsonKind.Int || d["heading_mdeg"].Kind == JsonKind.Float
+                ? d.Int("heading_mdeg", 90_000)
+                : Mathf.RoundToInt(d.Float("heading_deg", 90f) * 1000f);
+            State.HeadingDeg = ArenaPredictiveHelm.Wrap360Mdeg(headingMdeg) * 0.001f;
             State.SpeedKph = d.Float("speed_kph", d.Int("speed_cms", 0) * 0.036f);
             State.MaxSpeedKph = Mathf.Max(10f, d.Float("max_speed_kph", 54f));
             State.ReverseSpeedKph = Mathf.Max(5f, d.Float("reverse_kph", 20f));
+
+            long nowMs = CurrentHelmClockMs();
+            _lastFrameAnchorMs = nowMs;
+            long? frameTMs = (d["t_ms"].Kind == JsonKind.Int || d["t_ms"].Kind == JsonKind.Float)
+                ? d.Long("t_ms", 0)
+                : (long?)null;
+            int? turnRateMdegS = (d["turn_rate_mdeg_s"].Kind == JsonKind.Int || d["turn_rate_mdeg_s"].Kind == JsonKind.Float)
+                ? d.Int("turn_rate_mdeg_s", 0)
+                : (int?)null;
+            bool canTurn = !State.IsWreck && !State.Immobile &&
+                           !string.Equals(State.Power, "off", StringComparison.OrdinalIgnoreCase) &&
+                           !string.Equals(State.Power, "offline", StringComparison.OrdinalIgnoreCase) &&
+                           !string.Equals(State.Power, "starting", StringComparison.OrdinalIgnoreCase);
+            Helm.Observe(new ArenaHelmFrame
+            {
+                TMs = frameTMs,
+                HeadingMdeg = headingMdeg,
+                Tempo = d.Str("tempo", string.Empty),
+                TurnRateMdegS = turnRateMdegS,
+                CanTurn = canTurn
+            }, nowMs);
+
+            Throttle.Observe(new ArenaThrottleFrame
+            {
+                SpeedKph = Mathf.RoundToInt(State.SpeedKph),
+                MaxKph = (d["max_speed_kph"].Kind == JsonKind.Int || d["max_speed_kph"].Kind == JsonKind.Float)
+                    ? Mathf.RoundToInt(State.MaxSpeedKph)
+                    : (int?)null,
+                ReverseKph = (d["reverse_kph"].Kind == JsonKind.Int || d["reverse_kph"].Kind == JsonKind.Float)
+                    ? Mathf.RoundToInt(State.ReverseSpeedKph)
+                    : (int?)null,
+                Stuck = State.IsWreck || State.Immobile
+            });
 
             var heatObj = d["heat"];
             if (heatObj.IsObject)
@@ -1305,6 +1352,8 @@ namespace TacSim.Arena
         {
             IsArenaActive = false;
             _desiredLiveSpeedKph = 0f;
+            Helm.Reset();
+            Throttle.Reset();
             OnArenaStateUpdated?.Invoke();
         }
 
@@ -1323,6 +1372,7 @@ namespace TacSim.Arena
                 // COCKPIT_VERBS has no "stop" verb; stopping requires "speed 0" (cockpit.rs:217-235).
                 _desiredLiveSpeedKph = 0f;
                 _lastSentSpeedKph = 0f;
+                Throttle.SyncExternalSpeedOrder(0);
                 trimmed = "speed 0";
             }
             else if (low == "emcon")
@@ -1349,8 +1399,10 @@ namespace TacSim.Arena
                 else if (arg == "half") _desiredLiveSpeedKph = State.MaxSpeedKph * 0.5f;
                 else if (arg == "cruise") _desiredLiveSpeedKph = State.MaxSpeedKph * 0.75f;
                 else if (arg == "full") _desiredLiveSpeedKph = State.MaxSpeedKph;
-                trimmed = $"speed {Mathf.RoundToInt(_desiredLiveSpeedKph)}";
-                _lastSentSpeedKph = _desiredLiveSpeedKph;
+                int rounded = Mathf.RoundToInt(_desiredLiveSpeedKph);
+                trimmed = $"speed {rounded}";
+                _lastSentSpeedKph = rounded;
+                Throttle.SyncExternalSpeedOrder(rounded);
             }
 
             OnLiveCockpitVerbRequested?.Invoke(trimmed);
@@ -1489,59 +1541,75 @@ namespace TacSim.Arena
 
         private void StepLiveClientInterpolationAndHelm(float dt)
         {
-            bool changed = false;
+            long nowMs = CurrentHelmClockMs();
+            int turnDir = 0;
+
             if (!KeyboardSuspended)
             {
-                if (Input.GetKey(KeyCode.W) || Input.GetKey(KeyCode.UpArrow))
+                bool fwdDown = Input.GetKeyDown(KeyCode.W) || Input.GetKeyDown(KeyCode.UpArrow);
+                bool revDown = Input.GetKeyDown(KeyCode.S) || Input.GetKeyDown(KeyCode.DownArrow);
+                bool fwdHeld = Input.GetKey(KeyCode.W) || Input.GetKey(KeyCode.UpArrow);
+                bool revHeld = Input.GetKey(KeyCode.S) || Input.GetKey(KeyCode.DownArrow);
+
+                if (fwdDown)
                 {
-                    _desiredLiveSpeedKph = Mathf.Clamp(_desiredLiveSpeedKph + 36f * dt, -State.ReverseSpeedKph, State.MaxSpeedKph);
-                    changed = true;
+                    Throttle.Bump(+1, nowMs);
+                    _nextHeldThrottleBumpMs = nowMs + ArenaCoalescedThrottle.CoalesceMs;
                 }
-                else if (Input.GetKey(KeyCode.S) || Input.GetKey(KeyCode.DownArrow))
+                else if (revDown)
                 {
-                    _desiredLiveSpeedKph = Mathf.Clamp(_desiredLiveSpeedKph - 42f * dt, -State.ReverseSpeedKph, State.MaxSpeedKph);
-                    changed = true;
+                    Throttle.Bump(-1, nowMs);
+                    _nextHeldThrottleBumpMs = nowMs + ArenaCoalescedThrottle.CoalesceMs;
                 }
+                else if (fwdHeld && !revHeld && nowMs >= _nextHeldThrottleBumpMs)
+                {
+                    Throttle.Bump(+1, nowMs);
+                    _nextHeldThrottleBumpMs = nowMs + ArenaCoalescedThrottle.CoalesceMs;
+                }
+                else if (revHeld && !fwdHeld && nowMs >= _nextHeldThrottleBumpMs)
+                {
+                    Throttle.Bump(-1, nowMs);
+                    _nextHeldThrottleBumpMs = nowMs + ArenaCoalescedThrottle.CoalesceMs;
+                }
+
                 if (Input.GetKeyDown(KeyCode.X))
                 {
-                    _desiredLiveSpeedKph = 0f;
-                    _lastSentSpeedKph = 0f;
-                    OnLiveCockpitVerbRequested?.Invoke("speed 0");
+                    Helm.Stop(nowMs);
+                    Throttle.Stop(nowMs);
                 }
 
-                if (Input.GetKey(KeyCode.D) || Input.GetKey(KeyCode.RightArrow))
-                {
-                    _desiredLiveHeadingDeg = (_desiredLiveHeadingDeg + 55f * dt + 360f) % 360f;
-                    changed = true;
-                }
-                else if (Input.GetKey(KeyCode.A) || Input.GetKey(KeyCode.LeftArrow))
-                {
-                    _desiredLiveHeadingDeg = (_desiredLiveHeadingDeg - 55f * dt + 360f) % 360f;
-                    changed = true;
-                }
+                bool rightHeld = Input.GetKey(KeyCode.D) || Input.GetKey(KeyCode.RightArrow);
+                bool leftHeld = Input.GetKey(KeyCode.A) || Input.GetKey(KeyCode.LeftArrow);
+                if (rightHeld && !leftHeld) turnDir = +1;
+                else if (leftHeld && !rightHeld) turnDir = -1;
             }
 
-            if (changed && Time.time >= _nextLiveHelmSendTime)
+            if (turnDir != Helm.Turning)
             {
-                _nextLiveHelmSendTime = Time.time + 0.35f;
-                if (Mathf.Abs(Mathf.DeltaAngle(_desiredLiveHeadingDeg, _lastSentHeadingDeg)) >= 4f)
-                {
-                    int hdgInt = (Mathf.RoundToInt(_desiredLiveHeadingDeg) % 360 + 360) % 360;
-                    _lastSentHeadingDeg = hdgInt;
-                    OnLiveCockpitVerbRequested?.Invoke($"heading {hdgInt}");
-                }
-                if (Mathf.Abs(_desiredLiveSpeedKph - _lastSentSpeedKph) >= 3f)
-                {
-                    int spdInt = Mathf.RoundToInt(_desiredLiveSpeedKph);
-                    _lastSentSpeedKph = spdInt;
-                    OnLiveCockpitVerbRequested?.Invoke($"speed {spdInt}");
-                }
+                if (turnDir == 0) Helm.Stop(nowMs);
+                else Helm.Start(turnDir, nowMs);
             }
 
-            if (!State.IsWreck && Mathf.Abs(State.SpeedKph) > 0.2f)
+            Helm.Tick(nowMs);
+            Throttle.Tick(nowMs);
+
+            var headingOrders = Helm.TakeOrders();
+            for (int i = 0; i < headingOrders.Count; i++)
+                OnLiveCockpitVerbRequested?.Invoke(headingOrders[i]);
+
+            var speedOrders = Throttle.TakeOrders();
+            for (int i = 0; i < speedOrders.Count; i++)
+                OnLiveCockpitVerbRequested?.Invoke(speedOrders[i]);
+
+            float smoothHeading = PredictedHeadingDeg;
+            _desiredLiveHeadingDeg = smoothHeading;
+            _desiredLiveSpeedKph = TargetCruiseSpeedKph;
+
+            bool withinReckonCap = _lastFrameAnchorMs <= 0L || (nowMs - _lastFrameAnchorMs) <= Helm.ReckonCapMs;
+            if (!State.IsWreck && withinReckonCap && Mathf.Abs(State.SpeedKph) > 0.2f)
             {
                 float mps = State.SpeedKph / 3.6f;
-                Vector3 fwd = Quaternion.Euler(0f, State.HeadingDeg, 0f) * Vector3.forward;
+                Vector3 fwd = Quaternion.Euler(0f, smoothHeading, 0f) * Vector3.forward;
                 float siteCellM = TerrainGrid.CellSizeM / Math.Max(1, TerrainGrid.SpanCells);
                 float minWorldX = TerrainGrid.OriginCellX * siteCellM + 10f;
                 float minWorldZ = TerrainGrid.OriginCellY * siteCellM + 10f;
@@ -1557,8 +1625,9 @@ namespace TacSim.Arena
         {
             if (PlayerRig?.Root == null || TerrainGrid == null) return;
             Vector3 targetPos = ArenaStageOrigin + ArenaWorldMetersToLocalPos(State.Xm, State.Zm);
+            float shownHeading = PredictedHeadingDeg;
             PlayerRig.Root.transform.position = Vector3.Lerp(PlayerRig.Root.transform.position, targetPos, 1f - Mathf.Exp(-14f * dt));
-            PlayerRig.Root.transform.rotation = Quaternion.Slerp(PlayerRig.Root.transform.rotation, Quaternion.Euler(0f, State.HeadingDeg, 0f), 1f - Mathf.Exp(-12f * dt));
+            PlayerRig.Root.transform.rotation = Quaternion.Slerp(PlayerRig.Root.transform.rotation, Quaternion.Euler(0f, shownHeading, 0f), 1f - Mathf.Exp(-18f * dt));
             PlayerRig.SetWrecked(State.IsWreck);
 
             float? aimYaw = null;
