@@ -106,6 +106,33 @@ fn cells_apart(a: (u16, u16), b: (u16, u16)) -> u16 {
 }
 
 impl Arena {
+    /// **Whether a unit is still on its way home** (the field-close branch of doc 36a lane 3): a
+    /// unit its crew is driving home: its mind holds a WITHDRAW, it could still come in under its
+    /// own power, and no absent player stands behind it. While one is, a quiet field has not
+    /// disengaged: the raid that turned for home is still leaving, and a close now would stand its
+    /// hull on the ground outside any field, neither aboard nor on the site record. A hull its
+    /// kernel keeps ([`WithdrawRefusal::CarrierLost`]) has its WITHDRAW lifted by the host, and one
+    /// that can no longer drive is not under way, so neither holds the field; the idle bound
+    /// (`[tacsim.field].idle_demote_s`) still closes a field whose way home is blocked.
+    ///
+    /// An absent player's unit is not counted (doc 44 cut MW.7): its house mind lays every such
+    /// unit a WITHDRAW, a rig on its own pad among them, which has no ramp to reach, and a close
+    /// checks it in where it stands as ever.
+    #[must_use]
+    pub fn homeward_under_way(&self) -> bool {
+        self.units.iter().any(|state| {
+            !state.absent
+                && self
+                    .minds
+                    .get(&state.id)
+                    .and_then(|row| row.order.as_ref())
+                    .is_some_and(|order| {
+                        order.objective == crate::arena::perception::MindObjective::Withdraw
+                    })
+                && under_own_power(state)
+        })
+    }
+
     /// **Take `unit` out of the field at the ramp standing at `ramp` (cm)**, answering its
     /// check-in row (this module's head). `None` is a carrier lifting off its pad (doc 32 F-6):
     /// no ramp and no drive, so only [`WithdrawRefusal::NotHere`] refuses it.
