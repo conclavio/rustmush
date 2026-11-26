@@ -165,6 +165,22 @@ namespace TacSim.Space
         private Transform _lockAspectSectorPlate;
         private TextMeshPro _lockAspectLabel;
 
+        // Homeworld/EVE 3D Orbital Tactical Reference Plane, Heading Vector, Lock Tether & Contact Drop-Lines
+        private const float TacticalPlaneOffsetY = -6.0f;
+        private const int MaxDropLines = 24;
+        private GameObject _tacticalGridRoot;
+        private LineRenderer _headingVectorLine;
+        private LineRenderer _lockTetherLine;
+        private readonly List<LineRenderer> _dropLinePool = new List<LineRenderer>(MaxDropLines);
+        public bool IsTacticalGridVisible => _tacticalGridRoot != null && _tacticalGridRoot.activeSelf;
+        public int ActiveDropLineCount { get; private set; }
+        public bool HasActiveLockTether => _lockTetherLine != null && _lockTetherLine.enabled;
+
+        public void SetTacticalGridVisible(bool visible)
+        {
+            if (_tacticalGridRoot != null) _tacticalGridRoot.SetActive(visible);
+        }
+
         private LineRenderer _activeBeamRenderer;
         private Transform _activeBeamEndGlow;
         private Transform _activeTorpedoVisual;
@@ -465,6 +481,145 @@ namespace TacSim.Space
             bb.NameplateText = _lockAspectLabel;
 
             _lockAspectIndicator.gameObject.SetActive(false);
+            BuildOrbitalTacticalGrid();
+        }
+
+        private void BuildOrbitalTacticalGrid()
+        {
+            _dropLinePool.Clear();
+            ActiveDropLineCount = 0;
+
+            _tacticalGridRoot = new GameObject("OrbitalTacticalHoloGrid");
+            _tacticalGridRoot.transform.SetParent(transform, false);
+            _tacticalGridRoot.transform.position = OrbitalStageOrigin;
+
+            Material ringMat = UrpMaterialFactory.GetHologramUnlit("OrbitalTacRingMat", new Color(0.18f, 0.72f, 0.88f, 0.28f));
+            float[] ringRadii = { 36f, 82f, 148f };
+            const int Segments = 48;
+            for (int r = 0; r < ringRadii.Length; r++)
+            {
+                var rGo = new GameObject($"TacRing_{r}");
+                rGo.transform.SetParent(_tacticalGridRoot.transform, false);
+                var lr = rGo.AddComponent<LineRenderer>();
+                lr.useWorldSpace = true;
+                lr.loop = true;
+                lr.startWidth = 0.28f;
+                lr.endWidth = 0.28f;
+                lr.sharedMaterial = ringMat;
+                lr.positionCount = Segments;
+                float rad = ringRadii[r];
+                for (int s = 0; s < Segments; s++)
+                {
+                    float ang = (s / (float)Segments) * Mathf.PI * 2f;
+                    lr.SetPosition(s, OrbitalStageOrigin + new Vector3(Mathf.Cos(ang) * rad, TacticalPlaneOffsetY, Mathf.Sin(ang) * rad));
+                }
+            }
+
+            Material axisMat = UrpMaterialFactory.GetHologramUnlit("OrbitalTacAxisMat", new Color(0.20f, 0.64f, 0.78f, 0.20f));
+            CreateTacGridAxis(_tacticalGridRoot.transform, "AxisNS",
+                OrbitalStageOrigin + new Vector3(0f, TacticalPlaneOffsetY, -152f),
+                OrbitalStageOrigin + new Vector3(0f, TacticalPlaneOffsetY, 152f), axisMat);
+            CreateTacGridAxis(_tacticalGridRoot.transform, "AxisEW",
+                OrbitalStageOrigin + new Vector3(-152f, TacticalPlaneOffsetY, 0f),
+                OrbitalStageOrigin + new Vector3(152f, TacticalPlaneOffsetY, 0f), axisMat);
+
+            var hdgGo = new GameObject("OwnshipHeadingVector");
+            hdgGo.transform.SetParent(_tacticalGridRoot.transform, false);
+            _headingVectorLine = hdgGo.AddComponent<LineRenderer>();
+            _headingVectorLine.useWorldSpace = true;
+            _headingVectorLine.positionCount = 2;
+            _headingVectorLine.startWidth = 0.42f;
+            _headingVectorLine.endWidth = 0.14f;
+            _headingVectorLine.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("OwnHeadingMat", new Color(0.28f, 0.96f, 1.0f, 0.78f));
+
+            var tetherGo = new GameObject("TargetLockTether");
+            tetherGo.transform.SetParent(_tacticalGridRoot.transform, false);
+            _lockTetherLine = tetherGo.AddComponent<LineRenderer>();
+            _lockTetherLine.useWorldSpace = true;
+            _lockTetherLine.positionCount = 2;
+            _lockTetherLine.startWidth = 0.30f;
+            _lockTetherLine.endWidth = 0.22f;
+            _lockTetherLine.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("LockTetherMat", new Color(1.0f, 0.40f, 0.24f, 0.75f));
+            _lockTetherLine.enabled = false;
+
+            Material dropMat = UrpMaterialFactory.GetHologramUnlit("ContactDropLineMat", new Color(0.32f, 0.85f, 0.98f, 0.38f));
+            for (int i = 0; i < MaxDropLines; i++)
+            {
+                var dGo = new GameObject($"ContactDropLine_{i}");
+                dGo.transform.SetParent(_tacticalGridRoot.transform, false);
+                var dlr = dGo.AddComponent<LineRenderer>();
+                dlr.useWorldSpace = true;
+                dlr.positionCount = 2;
+                dlr.startWidth = 0.22f;
+                dlr.endWidth = 0.16f;
+                dlr.sharedMaterial = dropMat;
+                dlr.enabled = false;
+                _dropLinePool.Add(dlr);
+            }
+
+            SyncOrbitalTacticalVisuals();
+        }
+
+        private static void CreateTacGridAxis(Transform parent, string name, Vector3 a, Vector3 b, Material mat)
+        {
+            var go = new GameObject(name);
+            go.transform.SetParent(parent, false);
+            var lr = go.AddComponent<LineRenderer>();
+            lr.useWorldSpace = true;
+            lr.positionCount = 2;
+            lr.startWidth = 0.20f;
+            lr.endWidth = 0.20f;
+            lr.sharedMaterial = mat;
+            lr.SetPosition(0, a);
+            lr.SetPosition(1, b);
+        }
+
+        private void SyncOrbitalTacticalVisuals()
+        {
+            if (_headingVectorLine != null && PlayerShipTransform != null)
+            {
+                float len = 18f + Mathf.Clamp01(ThrottlePermille / 1000f) * 32f;
+                Vector3 fwd = PlayerShipTransform.rotation * Vector3.forward;
+                _headingVectorLine.SetPosition(0, PlayerShipTransform.position + fwd * 8f);
+                _headingVectorLine.SetPosition(1, PlayerShipTransform.position + fwd * (8f + len));
+            }
+
+            int usedDrops = 0;
+            float planeY = OrbitalStageOrigin.y + TacticalPlaneOffsetY;
+            foreach (var kv in _namedOrbitalTargets)
+            {
+                if (usedDrops >= _dropLinePool.Count) break;
+                if (kv.Value == null) continue;
+                Vector3 p = kv.Value.position;
+                var dlr = _dropLinePool[usedDrops++];
+                dlr.SetPosition(0, p);
+                dlr.SetPosition(1, new Vector3(p.x, planeY, p.z));
+                dlr.enabled = true;
+            }
+            ActiveDropLineCount = usedDrops;
+            for (int i = usedDrops; i < _dropLinePool.Count; i++)
+                _dropLinePool[i].enabled = false;
+
+            if (_lockTetherLine != null && PlayerShipTransform != null)
+            {
+                string targetKey = ActiveLock != null && !string.IsNullOrEmpty(ActiveLock.ShipId)
+                    ? ActiveLock.ShipId
+                    : (!string.IsNullOrEmpty(LockedContactId) ? LockedContactId : SelectedRockId);
+                if (!string.IsNullOrEmpty(targetKey) && TryGetTargetPosition(targetKey, out Vector3 tPos))
+                {
+                    bool isRock = _knownRockIds.Contains(targetKey);
+                    Color col = isRock ? new Color(0.95f, 0.78f, 0.25f, 0.72f) : new Color(1.0f, 0.36f, 0.22f, 0.80f);
+                    _lockTetherLine.startColor = col;
+                    _lockTetherLine.endColor = col;
+                    _lockTetherLine.SetPosition(0, PlayerShipTransform.position);
+                    _lockTetherLine.SetPosition(1, tPos);
+                    _lockTetherLine.enabled = true;
+                }
+                else
+                {
+                    _lockTetherLine.enabled = false;
+                }
+            }
         }
 
         /// <summary>
@@ -522,6 +677,7 @@ namespace TacSim.Space
                 PlayerShipTransform.rotation = Quaternion.identity;
             UpdateDrivePlume();
             SyncLockedAspectIndicator();
+            SyncOrbitalTacticalVisuals();
             OnSpaceTelemetryChanged?.Invoke();
         }
 
@@ -736,6 +892,7 @@ namespace TacSim.Space
                 LockedContactId = string.Empty;
 
             SyncLockedAspectIndicator();
+            SyncOrbitalTacticalVisuals();
             OnSpaceTelemetryChanged?.Invoke();
         }
 
@@ -1451,6 +1608,7 @@ namespace TacSim.Space
                 PlayerShipTransform.rotation = ComputePlayerShipRotation(ShipYawDeg, ShipPitchDeg, ShipRollDeg);
             UpdateDrivePlume();
             SyncLockedAspectIndicator();
+            SyncOrbitalTacticalVisuals();
             OnSpaceTelemetryChanged?.Invoke();
         }
 
@@ -1526,6 +1684,7 @@ namespace TacSim.Space
             }
 
             _lockAspectIndicator.gameObject.SetActive(true);
+            SyncOrbitalTacticalVisuals();
         }
 
         public void SetLocalHelmPreview(float yawDeg, float pitchDeg, float throttlePermille)
@@ -1556,6 +1715,7 @@ namespace TacSim.Space
                 if (burning)
                     _particlePlumeInstance.localScale = Vector3.one * (0.65f + t * 0.95f);
             }
+            SyncOrbitalTacticalVisuals();
         }
 
         public void StartDockingFromFeed(JsonNode dockingFeed)

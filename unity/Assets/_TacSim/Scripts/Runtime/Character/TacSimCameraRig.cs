@@ -10,7 +10,8 @@ namespace TacSim.Character
         OrbitalExterior = 2,
         BowDockingCollar = 3,
         GroundVehicleChase = 4,
-        GroundVehicleCupola = 5
+        GroundVehicleCupola = 5,
+        OrbitalTacticalHigh = 6
     }
 
     /// <summary>
@@ -38,6 +39,7 @@ namespace TacSim.Character
         public float minWalkDistance = 1.6f;
         public float maxWalkDistance = 6.5f;
         public float orbitalDistance = 26f;
+        public float orbitalTacticalDistance = 138f;
         public float vehicleDistance = 18f;
         public float mouseSensitivity = 2.8f;
 
@@ -48,6 +50,8 @@ namespace TacSim.Character
         private float _pitchDeg = 16f;
         private float _orbitalYawDeg = 25f;
         private float _orbitalPitchDeg = 20f;
+        private float _tacticalYawDeg = 32f;
+        private float _tacticalPitchDeg = 52f;
         private float _vehicleYawOffsetDeg = 0f;
         private float _vehiclePitchDeg = 22f;
         private Vector3 _smoothedPivot;
@@ -80,7 +84,7 @@ namespace TacSim.Character
             if (ControlledCamera != null)
             {
                 ControlledCamera.nearClipPlane = mode == CameraRigMode.BowDockingCollar ? 0.05f : 0.15f;
-                ControlledCamera.farClipPlane = (mode == CameraRigMode.OrbitalExterior || mode == CameraRigMode.GroundVehicleChase || mode == CameraRigMode.GroundVehicleCupola) ? 8000f : 1500f;
+                ControlledCamera.farClipPlane = (mode == CameraRigMode.OrbitalExterior || mode == CameraRigMode.OrbitalTacticalHigh || mode == CameraRigMode.GroundVehicleChase || mode == CameraRigMode.GroundVehicleCupola) ? 8000f : 1500f;
                 ControlledCamera.fieldOfView = mode == CameraRigMode.BowDockingCollar ? 66f : 62f;
             }
         }
@@ -118,6 +122,10 @@ namespace TacSim.Character
 
                 case CameraRigMode.OrbitalExterior:
                     UpdateOrbitalChase(dt);
+                    break;
+
+                case CameraRigMode.OrbitalTacticalHigh:
+                    UpdateOrbitalTacticalHigh(dt);
                     break;
 
                 case CameraRigMode.BowDockingCollar:
@@ -236,6 +244,37 @@ namespace TacSim.Character
             Quaternion rot = Quaternion.Euler(_orbitalPitchDeg, _orbitalYawDeg, 0f);
             Vector3 desiredPos = OrbitalShipTarget.position + rot * (Vector3.back * orbitalDistance) + Vector3.up * 2.2f;
             ControlledCamera.transform.position = Vector3.Lerp(ControlledCamera.transform.position, desiredPos, 1f - Mathf.Exp(-10f * dt));
+            Vector3 toShip = OrbitalShipTarget.position - ControlledCamera.transform.position;
+            if (toShip.sqrMagnitude > 1e-6f)
+                ControlledCamera.transform.rotation = Quaternion.LookRotation(toShip.normalized, Vector3.up);
+        }
+
+        private void UpdateOrbitalTacticalHigh(float dt)
+        {
+            if (OrbitalShipTarget == null) return;
+
+            bool overUi = EventSystem.current != null && EventSystem.current.IsPointerOverGameObject();
+            if (OrbitInputEnabled)
+            {
+                if (UpdateRmbOrbitDragState(overUi))
+                {
+                    _tacticalYawDeg += Input.GetAxis("Mouse X") * mouseSensitivity * 1.6f;
+                    _tacticalPitchDeg = Mathf.Clamp(_tacticalPitchDeg - Input.GetAxis("Mouse Y") * mouseSensitivity * 1.2f, 18f, 82f);
+                }
+                float scroll = Input.mouseScrollDelta.y;
+                if (!overUi && Mathf.Abs(scroll) > 0.01f)
+                {
+                    orbitalTacticalDistance = Mathf.Clamp(orbitalTacticalDistance - scroll * 8.5f, 52f, 260f);
+                }
+            }
+            else
+            {
+                _rmbOrbitDragging = false;
+            }
+
+            Quaternion rot = Quaternion.Euler(_tacticalPitchDeg, _tacticalYawDeg, 0f);
+            Vector3 desiredPos = OrbitalShipTarget.position + rot * (Vector3.back * orbitalTacticalDistance);
+            ControlledCamera.transform.position = Vector3.Lerp(ControlledCamera.transform.position, desiredPos, 1f - Mathf.Exp(-8f * dt));
             Vector3 toShip = OrbitalShipTarget.position - ControlledCamera.transform.position;
             if (toShip.sqrMagnitude > 1e-6f)
                 ControlledCamera.transform.rotation = Quaternion.LookRotation(toShip.normalized, Vector3.up);
