@@ -90,6 +90,7 @@ namespace TacSim.UI
         public TacSimEconomyPanels EconomyPanels { get; private set; }
         public TacSimDisplayOptions DisplayOptions { get; private set; }
         public TacSimSolarSystemMap SolarMap { get; private set; }
+        public TacSimGroundChartModal GroundChart { get; private set; }
         public TacSimUnitFrames UnitFrames { get; private set; }
         public TacSimTacticalMinimap Minimap { get; private set; }
         public TacSimCharacterSheet CharacterSheet { get; private set; }
@@ -136,6 +137,7 @@ namespace TacSim.UI
                        (SocialModal != null && SocialModal.IsOpen) ||
                        (QuestJournal != null && QuestJournal.IsOpen) ||
                        (SceneIntelModal != null && SceneIntelModal.IsOpen) ||
+                       (GroundChart != null && GroundChart.IsOpen) ||
                        (Overlays != null && Overlays.IsLobbyModalOpen) ||
                        (term != null && term.IsTerminalOpen);
             }
@@ -531,6 +533,7 @@ namespace TacSim.UI
             EconomyPanels?.ResetSessionState();
             Overlays?.ResetSessionState();
             SolarMap?.ResetSessionState();
+            GroundChart?.ResetSessionState();
             CharacterSheet?.ResetSessionState();
             OpsDirectory?.ResetSessionState();
             CommandPalette?.ResetSessionState();
@@ -611,6 +614,9 @@ namespace TacSim.UI
 
             SolarMap = gameObject.GetComponent<TacSimSolarSystemMap>() ?? gameObject.AddComponent<TacSimSolarSystemMap>();
             SolarMap.BuildModal(_hudRoot.transform, _uiFont);
+
+            GroundChart = gameObject.GetComponent<TacSimGroundChartModal>() ?? gameObject.AddComponent<TacSimGroundChartModal>();
+            GroundChart.BuildModal(_hudRoot.transform, _uiFont);
 
             CharacterSheet = gameObject.GetComponent<TacSimCharacterSheet>() ?? gameObject.AddComponent<TacSimCharacterSheet>();
             CharacterSheet.BuildModal(_hudRoot.transform, _uiFont);
@@ -1398,6 +1404,11 @@ namespace TacSim.UI
                 SolarMap.SetOpen(false);
                 return true;
             }
+            if (GroundChart != null && GroundChart.IsOpen)
+            {
+                GroundChart.SetOpen(false);
+                return true;
+            }
             if (CharacterSheet != null && CharacterSheet.IsOpen)
             {
                 CharacterSheet.SetOpen(false);
@@ -1483,6 +1494,14 @@ namespace TacSim.UI
                 (_loginPanel == null || !_loginPanel.activeSelf))
             {
                 SolarMap?.SetOpen(!(SolarMap != null && SolarMap.IsOpen));
+            }
+
+            if (Input.GetKeyDown(KeyCode.G) && !IsTextInputFocused && !IsDockingHudVisible &&
+                !Input.GetKey(KeyCode.LeftControl) && !Input.GetKey(KeyCode.RightControl) &&
+                !Input.GetKey(KeyCode.LeftAlt) && !Input.GetKey(KeyCode.RightAlt) &&
+                (_loginPanel == null || !_loginPanel.activeSelf))
+            {
+                GroundChart?.ToggleOpen();
             }
 
             if (Input.GetKeyDown(KeyCode.C) && !IsTextInputFocused &&

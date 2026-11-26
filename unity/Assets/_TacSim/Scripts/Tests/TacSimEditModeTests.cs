@@ -6588,5 +6588,130 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void GroundChartModalAndMultiRigQuarryOps_DecodesBodyGroundSwitchesRigsAndDispatchesPlans()
+        {
+            // 1. Equirectangular lat/lon projection & wash palette
+            var uvEq = TacSim.UI.GroundChartFrame.ProjectLatLonToUv(latMdeg: 0, lonMdeg: 180000);
+            Assert.AreEqual(0.5f, uvEq.x, 0.001f);
+            Assert.AreEqual(0.5f, uvEq.y, 0.001f);
+            Assert.AreEqual(218, TacSim.UI.TacSimGroundChartModal.WashColorForGlyph('*').r);
+
+            var rootGo = new UnityEngine.GameObject("Wave4PR1_GroundChartTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                Assert.IsNotNull(hud.GroundChart, "BuildHud must wire [G] Planetary Ground Survey modal");
+
+                string lastCmd = null;
+                string lastRefreshFam = null;
+                string lastSailingVenue = null;
+                hud.GroundChart.OnCommandRequested += c => lastCmd = c;
+                hud.GroundChart.OnRefreshGroundChartRequested += f => lastRefreshFam = f;
+                hud.GroundChart.OnOpenSailingPlanRequested += v => lastSailingVenue = v;
+
+                // 2. Decode live `body.ground` frame with RLE rows, ports & sites
+                hud.GroundChart.ApplyGroundFrame(JsonNode.Parse(@"{
+                    ""width"": 8, ""height"": 4, ""title"": ""Ceres — Volatiles Wash"",
+                    ""rows"": [ ""8."", ""4-4+"", ""2+4*2."", ""8."" ],
+                    ""ground"": {
+                        ""body"": ""ceres"", ""name"": ""Ceres"",
+                        ""family"": ""volatiles"", ""family_word"": ""volatiles"",
+                        ""families"": [ ""volatiles"", ""metals"", ""strategic"" ],
+                        ""footer"": ""Registry R0 survey — Ceres"",
+                        ""ports"": [
+                            { ""glyph"": ""P"", ""port"": ""Ceres Freeport"", ""lat_mdeg"": 12000, ""lon_mdeg"": 90000, ""drawn"": true }
+                        ],
+                        ""sites"": [
+                            { ""letter"": ""A"", ""site"": ""Occator Rim"", ""venue"": ""occator"", ""lat_mdeg"": 19800, ""lon_mdeg"": 239300, ""survey"": ""rich volatiles"", ""tenure"": ""open"", ""passage"": ""1h 20m / 0.8 t"", ""here"": true, ""best"": ""rich"", ""dark"": false, ""best_line"": ""Best: rich brines at rim"" },
+                            { ""letter"": ""B"", ""site"": ""Juling Shadow"", ""venue"": ""juling"", ""lat_mdeg"": -35900, ""lon_mdeg"": 168200, ""survey"": ""fair ice"", ""tenure"": ""claimed"", ""passage"": ""2h 10m / 1.3 t"", ""here"": false, ""best"": ""fair"", ""dark"": true, ""best_line"": ""Best: dark permanent ice"" }
+                        ],
+                        ""lines"": [ ""A Occator Rim — rich volatiles"" ]
+                    }
+                }"));
+
+                Assert.IsNotNull(hud.GroundChart.CurrentFrame);
+                Assert.AreEqual(2, hud.GroundChart.CurrentFrame.Sites.Count);
+                Assert.AreEqual("occator", hud.GroundChart.SelectedSiteVenue, "Default selection should highlight active `here` landing site");
+
+                // Selecting site B & dispatching verified commands
+                hud.GroundChart.SelectSite("juling", "B");
+                hud.GroundChart.DispatchPlanPassage();
+                Assert.AreEqual("+ship/plan juling", lastCmd);
+                hud.GroundChart.DispatchQueueDepart();
+                Assert.AreEqual("+ship/order depart juling", lastCmd);
+                hud.GroundChart.DispatchChartWindow();
+                Assert.AreEqual("+chart juling", lastCmd);
+
+                hud.GroundChart.SelectFamily("metals");
+                Assert.AreEqual("metals", hud.GroundChart.ActiveFamily);
+                Assert.AreEqual("metals", lastRefreshFam);
+
+                hud.GroundChart.SetOpen(true);
+                Assert.IsTrue(hud.IsModalOpen);
+                hud.GroundChart.DispatchOpenSailingPlan();
+                Assert.IsFalse(hud.GroundChart.IsOpen);
+                Assert.AreEqual("juling", lastSailingVenue);
+
+                // Esc closes GroundChart cleanly
+                hud.GroundChart.SetOpen(true);
+                Assert.IsTrue(hud.TryCloseTopmostModal());
+                Assert.IsFalse(hud.GroundChart.IsOpen);
+
+                // 3. Multi-Rig Quarry Operations (`site.map` with 2 rigs, run, plan, queued & presence_line)
+                var catalog = TacSimAssetCatalog.LoadOrDefault();
+                var surfGo = new UnityEngine.GameObject("Wave4PR1_MultiRigSurface");
+                surfGo.transform.SetParent(rootGo.transform);
+                var surf = surfGo.AddComponent<TacSim.Surface.SurfaceMiningController>();
+                surf.BuildSurfaceStage(catalog, "occator_rim");
+
+                int selectedSlotEvent = 0;
+                surf.OnRigSlotSelected += s => selectedSlotEvent = s;
+
+                surf.ApplySiteMapFrame(JsonNode.Parse(@"{
+                    ""width"": 4, ""height"": 4, ""title"": ""Occator Rim"",
+                    ""rows"": [ ""4,"", ""4,"", ""4,"", ""4,"" ],
+                    ""you"": [ 1, 1 ],
+                    ""site"": {
+                        ""site"": ""Occator Rim"", ""family_word"": ""volatiles"", ""addressed"": 1,
+                        ""grid"": { ""x0"": 120, ""y0"": 120, ""span"": 1, ""cell_cm"": 1000 },
+                        ""hold"": { ""room_t"": 74 },
+                        ""presence_line"": ""Presence: 1 other flight in basin."",
+                        ""rigs"": [
+                            {
+                                ""slot"": 1, ""mark"": ""@"", ""cell"": [121, 121], ""charge_pct"": 82, ""hopper"": ""3 of 6 t"",
+                                ""line"": ""Rig 1 (82%, 3/6 t)"",
+                                ""run"": { ""text"": ""Drilling pocket A (2/4 cycles)"" },
+                                ""plan"": { ""text"": ""Plan #3 live: step 2/5"" },
+                                ""queued"": ""Unload queued at pad""
+                            },
+                            {
+                                ""slot"": 2, ""mark"": ""2"", ""cell"": [122, 122], ""charge_pct"": 95, ""hopper"": ""0 of 6 t"",
+                                ""line"": ""Rig 2 (95%, 0/6 t)""
+                            }
+                        ]
+                    }
+                }"));
+
+                Assert.AreEqual(2, surf.OwnedRigs.Count, "All owned rigs from site.rigs[] must be retained for multi-rig switching");
+                Assert.AreEqual("Drilling pocket A (2/4 cycles)", surf.ActiveRunSummary);
+                Assert.AreEqual("Plan #3 live: step 2/5", surf.ActivePlanSummary);
+                Assert.AreEqual("Unload queued at pad", surf.ActiveQueuedSummary);
+                Assert.AreEqual("Presence: 1 other flight in basin.", surf.PresenceLine);
+
+                surf.SelectRigSlot(2);
+                Assert.AreEqual(2, surf.AddressedRigSlot);
+                Assert.AreEqual(2, selectedSlotEvent);
+
+                hud.ResetSessionState();
+                Assert.IsNull(hud.GroundChart.CurrentFrame);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

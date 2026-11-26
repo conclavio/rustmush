@@ -359,6 +359,7 @@ namespace TacSim.UI
             // 1. UI Windows & Quick Controls
             _allEntries.Add(new PaletteEntry("UI", "Open Pilot & Vessel Dossier [C]", "Avatar swap, cargo, space fit & ground rigs", () => OnUiActionRequested?.Invoke("ui:sheet")));
             _allEntries.Add(new PaletteEntry("UI", "Open Solar System Holo-Orrery [M]", "2D/3D heliocentric navigation chart", () => OnUiActionRequested?.Invoke("ui:solar_map")));
+            _allEntries.Add(new PaletteEntry("UI", "Open Planetary Ground Survey Chart [G]", "Live body.ground mineral wash & landing sites", () => OnUiActionRequested?.Invoke("ui:ground_chart")));
             _allEntries.Add(new PaletteEntry("UI", "Open Nav Directory & Room Roster [N]", "3D wayfinder directory, cast & active ops", () => OnUiActionRequested?.Invoke("ui:ops_dir")));
             _allEntries.Add(new PaletteEntry("UI", "Open Social, Online Pilots, IC Mail & Channels [O]", "Live WHO roster, @mail inbox/compose & comsys channels", () => OnUiActionRequested?.Invoke("ui:social")));
             _allEntries.Add(new PaletteEntry("UI", "Open Mission, Passage, Survey & Claims Journal [J]", "Active quests, passages, surveys, claims & HUD objective pin", () => OnUiActionRequested?.Invoke("ui:journal")));
@@ -423,6 +424,7 @@ namespace TacSim.UI
             AddCmd(curatedVerbs, "RP", "Start Room Timestop Scene", "+timestop");
             AddCmd(curatedVerbs, "SPACE", "Ping Asteroid Cluster", "+mine/ping");
             AddCmd(curatedVerbs, "SPACE", "Solar Ephemeris Table", "+chart");
+            AddCmd(curatedVerbs, "SPACE", "Planetary Ground Survey", "+chart/ground");
             AddCmd(curatedVerbs, "WORLD", "Step Out of Character", "+ooc");
             AddCmd(curatedVerbs, "WORLD", "Return In Character", "+ic");
             AddCmd(curatedVerbs, "ARENA", "Simulator Match History (Replay IDs)", "sim history");

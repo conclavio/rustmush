@@ -20,6 +20,7 @@ namespace TacSim.UI
         public event Action OnRefreshChartRequested;
         public event Action<string> OnCommandRequested;
         public event Action<string> OnOpenSailingPlanRequested;
+        public event Action OnOpenGroundChartRequested;
 
         public bool IsOpen => _overlay != null && _overlay.activeSelf;
         public TacSimSolarChartFrame CurrentFrame { get; private set; }
@@ -124,6 +125,7 @@ namespace TacSim.UI
             CreateButton(toolbar.transform, "ZOOM -", new Color(0.14f, 0.26f, 0.38f), () => AdjustZoom(-0.25f));
             CreateButton(toolbar.transform, "ZOOM +", new Color(0.14f, 0.26f, 0.38f), () => AdjustZoom(+0.25f));
             CreateButton(toolbar.transform, "RESET", new Color(0.22f, 0.26f, 0.34f), ResetView);
+            CreateButton(toolbar.transform, "GROUND [G]", new Color(0.14f, 0.44f, 0.38f), () => OnOpenGroundChartRequested?.Invoke());
 
             var viewportGo = new GameObject("OrreryViewport", typeof(RectTransform), typeof(RawImage));
             viewportGo.transform.SetParent(leftPane.transform, false);
