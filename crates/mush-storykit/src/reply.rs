@@ -175,12 +175,29 @@ fn next_answer(text: &str, from: usize) -> Option<(usize, bool)> {
     None
 }
 
-/// Whether anything but the echoes of `asked` and the sentinel came in `text`.
+/// Whether anything but the echoes of `asked` and the sentinel came in `text`,
+/// after the echo of `asked` itself when the session echoed it.
+///
+/// Unsolicited traffic (room looks, channel joins, match start notices) can
+/// land after `mark` and before `asked` is echoed; ignoring lines before
+/// `asked`'s echo ensures a busy refusal of `asked` is not mistaken for a
+/// busy refusal of the trailing sentinel.
 fn answered(asked: &str, text: &str) -> bool {
-    text.lines().any(|line| {
-        let body = line.trim();
-        !body.is_empty() && !body.starts_with("zzq-") && body != asked.trim()
-    })
+    let wanted = asked.trim();
+    let lines: Vec<&str> = text.lines().map(str::trim).collect();
+    let start = if wanted.is_empty() {
+        0
+    } else {
+        lines
+            .iter()
+            .position(|body| *body == wanted)
+            .map_or(0, |at| at + 1)
+    };
+    lines
+        .get(start..)
+        .unwrap_or_default()
+        .iter()
+        .any(|body| !body.is_empty() && !body.starts_with("zzq-") && *body != wanted)
 }
 
 /// How one try ended.
@@ -377,6 +394,67 @@ mod tests {
         let reply = ask(&mut term, "+tv/1").await;
         assert!(reply.contains("Rig 1: idle"), "{reply}");
         assert_eq!(term.typed, ["+tv/1", SENTINEL]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unsolicited_text_before_the_echo_does_not_mask_a_busy_refusal() {
+        // Replays the exact SSH interleaving from sim_rematch: delayed pod room
+        // + match-start banner lands after `mark` and before `STATUS`'s echo,
+        // then `STATUS` gets CommitTimedOut while the trailing sentinel gets
+        // `Huh?`. `whole_through` must drain `Huh?` and retry `STATUS`.
+        struct Interleaved {
+            seen: String,
+            typed: Vec<String>,
+            step: usize,
+        }
+
+        impl Session for Interleaved {
+            fn mark(&self) -> usize {
+                self.seen.len()
+            }
+
+            async fn send_line(&mut self, line: &str) {
+                self.typed.push(line.to_owned());
+                if self.step == 0 {
+                    self.seen.push_str(
+                        "Red Pod 1 #23\r\nMatch 2 is running. Good hunting.\r\n\
+                         STATUS\r\nzzq-sentinel\r\n\
+                         The world was busy too long for that line; please retry in a moment.\r\n\
+                         Huh?\r\n",
+                    );
+                } else if self.step == 2 {
+                    self.seen.push_str(
+                        "STATUS\r\n  at 65 m east, 975 m north; power online\r\n\
+                         zzq-sentinel\r\nHuh?\r\n",
+                    );
+                }
+                self.step += 1;
+            }
+
+            async fn expect_one_of_after(&mut self, mark: usize, needles: &[&str]) -> usize {
+                let tail = self.seen.get(mark..).unwrap_or("");
+                needles
+                    .iter()
+                    .position(|needle| tail.contains(needle))
+                    .unwrap_or_else(|| panic!("script ran dry waiting for {needles:?}"))
+            }
+
+            fn seen_after(&self, mark: usize) -> String {
+                self.seen.get(mark..).unwrap_or("").to_owned()
+            }
+        }
+
+        let mut term = Interleaved {
+            seen: String::new(),
+            typed: Vec::new(),
+            step: 0,
+        };
+        let whole = whole_through(&mut term, "STATUS").await;
+        assert!(
+            whole.contains("at 65 m east"),
+            "retry must return the real STATUS reply: {whole}"
+        );
+        assert_eq!(term.typed, ["STATUS", SENTINEL, "STATUS", SENTINEL]);
     }
 
     #[test]
