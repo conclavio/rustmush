@@ -86,7 +86,7 @@ namespace TacSim.UI
                 "<b>[C]</b> Pilot/Ship Sheet   <b>[M]</b> Solar Holo-Orrery\n" +
                 "<b>[N]</b> 3D Wayfinder Directory & Room Roster\n" +
                 "<b>[O]</b> Social, Online WHO, IC Mail & Channels\n" +
-                "<b>[J]</b> Mission/Passage/Survey/Claims Journal\n" +
+                "<b>[J]</b> Mission/Passage/Survey/Claims Journal   <b>[L]</b> RP Scene & Signal Intel\n" +
                 "<b>[F9]</b> Cinematic HUD  <b>[F10]</b> Minds  <b>[F11]</b> Fullscreen");
 
             BuildKeybindCard(

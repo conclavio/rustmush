@@ -100,6 +100,18 @@ namespace TacSim.Net
         public string TimeOfDay;
     }
 
+    public sealed class MushSceneAmbient
+    {
+        public long Id;
+        public string Title = string.Empty;
+        public string Kind = string.Empty;
+        public string Mode = string.Empty;
+        public string Status = string.Empty;
+        public int Round;
+        public int Turn;
+        public MushObjRef CurrentActor;
+    }
+
     public sealed class MushRoomView
     {
         public string Id;
@@ -112,6 +124,7 @@ namespace TacSim.Net
         public AtlasRoomAmbient Atlas;
         public TacSimRoomAmbient TacSim;
         public IcTimeAmbient IcTime;
+        public MushSceneAmbient Scene;
         public HashSet<string> NpcIds = new HashSet<string>(StringComparer.Ordinal);
         public HashSet<string> DormantNpcIds = new HashSet<string>(StringComparer.Ordinal);
         public HashSet<string> PlayerIds = new HashSet<string>(StringComparer.Ordinal);
@@ -701,6 +714,22 @@ namespace TacSim.Net
                 if (wx.IsObject)
                 {
                     rv.WeatherLine = wx.Str("line", string.Empty);
+                }
+
+                var sc = amb["scene"];
+                if (sc.IsObject && sc.ContainsKey("id"))
+                {
+                    rv.Scene = new MushSceneAmbient
+                    {
+                        Id = sc.Long("id", 0),
+                        Title = sc.Str("title", string.Empty),
+                        Kind = sc.Str("kind", string.Empty),
+                        Mode = sc.Str("mode", string.Empty),
+                        Status = sc.Str("status", "active"),
+                        Round = sc.Int("round", 1),
+                        Turn = sc.Int("turn", 0),
+                        CurrentActor = ParseObjRef(sc["current_actor"])
+                    };
                 }
             }
 

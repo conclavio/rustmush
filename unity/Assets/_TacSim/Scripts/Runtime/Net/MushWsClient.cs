@@ -699,7 +699,8 @@ namespace TacSim.Net
             foreach (string feed in _advertisedPanels)
             {
                 if (feed == "space.cockpit" || feed == "space.holotank" || feed == "space.docking" || feed == "sky.chart" ||
-                    feed == "tv.status" || feed == "arena.cockpit" || feed == "arena.observer" || feed == "arena.replay")
+                    feed == "tv.status" || feed == "arena.cockpit" || feed == "arena.observer" || feed == "arena.replay" ||
+                    feed == "scenes" || feed == "tactics.contacts")
                 {
                     SendPanelSubscribe(feed);
                 }

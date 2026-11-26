@@ -101,6 +101,7 @@ namespace TacSim.UI
         public TacSimQuestJournal QuestJournal { get; private set; }
         public TacSimTacticalOverview TacticalOverview { get; private set; }
         public TacSimReplayControlsHud ReplayHud { get; private set; }
+        public TacSimSceneAndIntelModal SceneIntelModal { get; private set; }
         public ChatLogTab ActiveChatTab { get; private set; } = ChatLogTab.All;
         public int QuickActionSlotCount => _quickSlotActions.Count;
         public bool IsDockingHudVisible => _dockingPanel != null && _dockingPanel.activeSelf;
@@ -133,6 +134,7 @@ namespace TacSim.UI
                        (KeybindHelp != null && KeybindHelp.IsOpen) ||
                        (SocialModal != null && SocialModal.IsOpen) ||
                        (QuestJournal != null && QuestJournal.IsOpen) ||
+                       (SceneIntelModal != null && SceneIntelModal.IsOpen) ||
                        (Overlays != null && Overlays.IsLobbyModalOpen) ||
                        (term != null && term.IsTerminalOpen);
             }
@@ -501,6 +503,7 @@ namespace TacSim.UI
             KeybindHelp?.ResetSessionState();
             SocialModal?.ResetSessionState();
             QuestJournal?.ResetSessionState();
+            SceneIntelModal?.ResetSessionState();
             TacticalOverview?.ResetSessionState();
             ReplayHud?.ResetSessionState();
             TacticalBrackets?.ResetSessionState();
@@ -583,6 +586,9 @@ namespace TacSim.UI
 
             QuestJournal = gameObject.GetComponent<TacSimQuestJournal>() ?? gameObject.AddComponent<TacSimQuestJournal>();
             QuestJournal.BuildUi(_hudRoot.transform, _uiFont);
+
+            SceneIntelModal = gameObject.GetComponent<TacSimSceneAndIntelModal>() ?? gameObject.AddComponent<TacSimSceneAndIntelModal>();
+            SceneIntelModal.BuildUi(_hudRoot.transform, _uiFont);
 
             SocialModal = gameObject.GetComponent<TacSimSocialAndMailModal>() ?? gameObject.AddComponent<TacSimSocialAndMailModal>();
             SocialModal.BuildModal(_hudRoot.transform, _uiFont);
@@ -1315,6 +1321,11 @@ namespace TacSim.UI
                 QuestJournal.SetOpen(false);
                 return true;
             }
+            if (SceneIntelModal != null && SceneIntelModal.IsOpen)
+            {
+                SceneIntelModal.SetOpen(false);
+                return true;
+            }
             if (SolarMap != null && SolarMap.IsOpen)
             {
                 SolarMap.SetOpen(false);
@@ -1439,6 +1450,14 @@ namespace TacSim.UI
                 QuestJournal?.ToggleOpen();
             }
 
+            if (Input.GetKeyDown(KeyCode.L) && !IsTextInputFocused &&
+                !Input.GetKey(KeyCode.LeftControl) && !Input.GetKey(KeyCode.RightControl) &&
+                !Input.GetKey(KeyCode.LeftAlt) && !Input.GetKey(KeyCode.RightAlt) &&
+                (_loginPanel == null || !_loginPanel.activeSelf))
+            {
+                SceneIntelModal?.ToggleOpen();
+            }
+
             // Up/Down command history recall inside the chat input bar
             if (_chatInput != null && _chatInput.isFocused && _commandHistory.Count > 0)
             {
@@ -1460,6 +1479,7 @@ namespace TacSim.UI
                 (KeybindHelp == null || !KeybindHelp.IsOpen) &&
                 (SocialModal == null || !SocialModal.IsOpen) &&
                 (QuestJournal == null || !QuestJournal.IsOpen) &&
+                (SceneIntelModal == null || !SceneIntelModal.IsOpen) &&
                 (DisplayOptions == null || !DisplayOptions.IsOpen) &&
                 !(ResolveActiveMindTerminal()?.IsTerminalOpen ?? false) &&
                 !(Overlays?.IsLobbyModalOpen ?? false);

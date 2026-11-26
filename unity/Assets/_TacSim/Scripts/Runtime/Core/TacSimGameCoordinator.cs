@@ -640,6 +640,7 @@ namespace TacSim.Core
                         case "ui:ops_dir": Hud.OpsDirectory?.SetOpen(true); break;
                         case "ui:social": Hud.SocialModal?.SetOpen(true); break;
                         case "ui:journal": Hud.QuestJournal?.SetOpen(true); break;
+                        case "ui:scene_intel": Hud.SceneIntelModal?.SetOpen(true); break;
                         case "ui:keybinds": Hud.KeybindHelp?.SetOpen(true); break;
                         case "ui:options": Hud.DisplayOptions?.SetOpen(true); break;
                         case "ui:toggle_cinematic_hud": Hud.DisplayOptions?.ToggleCinematicHudMode(); break;
@@ -687,6 +688,26 @@ namespace TacSim.Core
             if (Hud.QuestJournal != null)
             {
                 Hud.QuestJournal.OnCommandRequested += ExecutePlayerCommand;
+            }
+
+            if (Hud.SceneIntelModal != null)
+            {
+                Hud.SceneIntelModal.OnCommandRequested += ExecutePlayerCommand;
+                Hud.SceneIntelModal.OnRefreshScenesRequested += () =>
+                {
+                    if (_ws != null && _ws.IsConnected && _ws.HasAdvertisedPanel("scenes"))
+                        _ws.SendPanelSubscribe("scenes");
+                };
+                Hud.SceneIntelModal.OnRefreshContactsRequested += () =>
+                {
+                    if (_ws != null && _ws.IsConnected && _ws.HasAdvertisedPanel("tactics.contacts"))
+                        _ws.SendPanelSubscribe("tactics.contacts");
+                };
+                Hud.SceneIntelModal.OnLocalPlayerTurnStarted += title =>
+                {
+                    Audio?.PlayMarketChime();
+                    Hud?.FloatingCallouts?.ShowCallout($"YOUR TURN: {title.ToUpperInvariant()} [L]", new Color(0.35f, 1f, 0.68f, 1f), 2.4f);
+                };
             }
 
             _contentSync.OnSyncLog += msg =>
@@ -986,6 +1007,7 @@ namespace TacSim.Core
 
                 Hud.Minimap.SyncMinimap(stage, pos, yaw, rightCornerBusy);
                 Hud.QuestJournal?.SyncTrackerVisibility(stage, rightCornerBusy || compactHud);
+                Hud.SceneIntelModal?.SetBannerSuppressed(cinematicHud || stage == TacSimActiveStage.SimulatorArena || Hud.IsLoginOverlayVisible);
             }
 
             // Update 3D Holographic Wayfinder ribbon & compass banner every frame
@@ -2375,6 +2397,13 @@ namespace TacSim.Core
             if (rv.IcTime != null)
                 _currentClockStr = $"{rv.IcTime.Hour:D2}:{rv.IcTime.Minute:D2} IC ({rv.IcTime.TimeOfDay})";
 
+            if (Hud?.SceneIntelModal != null)
+            {
+                if (_ws?.ActiveCharacter != null)
+                    Hud.SceneIntelModal.SetLocalCharacter(_ws.ActiveCharacter.Id, _ws.ActiveCharacter.Name);
+                Hud.SceneIntelModal.ApplyRoomSceneGlance(rv.Scene);
+            }
+
             if (rv.TacSim != null)
             {
                 if (rv.TacSim.Stowage != null)
@@ -2807,6 +2836,7 @@ namespace TacSim.Core
                 Hud.AppendModalResponseLine(display);
             Hud.SocialModal?.IngestMailReadOutput(plainLine, richMarkup);
             Hud.QuestJournal?.IngestServerOutput(plainLine, richMarkup);
+            Hud.SceneIntelModal?.IngestServerOutput(plainLine, richMarkup);
 
             // Trigger surface/orbital action VFX only upon authoritative server outcome lines!
             if (!string.IsNullOrEmpty(plainLine))
@@ -2890,6 +2920,17 @@ namespace TacSim.Core
                     break;
                 case "comsys":
                     Hud?.SocialModal?.ApplyComsysPanel(data);
+                    break;
+                case "scenes":
+                    if (Hud?.SceneIntelModal != null)
+                    {
+                        if (_ws?.ActiveCharacter != null)
+                            Hud.SceneIntelModal.SetLocalCharacter(_ws.ActiveCharacter.Id, _ws.ActiveCharacter.Name);
+                        Hud.SceneIntelModal.ApplyScenesPanel(data);
+                    }
+                    break;
+                case "tactics.contacts":
+                    Hud?.SceneIntelModal?.ApplySignalContactsPanel(data);
                     break;
                 case "port.trade":
                 {
