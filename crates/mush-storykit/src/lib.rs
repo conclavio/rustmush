@@ -49,6 +49,16 @@
 //!
 //! The same gate counts a story file's reads of the wall clock.
 //!
+//! Added by unit FL.5, for the bot's stories (and any reader after them):
+//!
+//! - [`BUSY_SENTENCES`]: the one table of the sentences a server refuses a
+//!   typed line with for a moment, each held to the product file that writes
+//!   it; [`is_busy`] reads a line against it.
+//! - [`ask`] and [`Reply`]: a whole reply whose tries count their answers, so
+//!   a busy refusal never leaves a sentinel's answer owed to the next try,
+//!   and the readers a story parses it with (`row`, `section`,
+//!   `number_after`).
+//!
 //! Added by unit FL.6, for an in-process rig on tokio's paused clock:
 //!
 //! - [`idle`]: the barrier for "every other task on the runtime has parked",
@@ -74,19 +84,22 @@
 
 mod barrier;
 mod budget;
+mod busy;
 mod figures;
 mod odds;
 mod paused;
 mod phase;
+mod reply;
 mod scratch;
 mod wait;
 
 pub use barrier::{
-    BUSY, SENTINEL, SENTINEL_REFUSAL, Session, arena_frames, arena_seconds, arena_wake, ask_whole,
+    SENTINEL, SENTINEL_REFUSAL, Session, arena_frames, arena_seconds, arena_wake, ask_whole,
     at_one_wake, lift_floor, set_floor, settled, status_clock_seconds, status_frames,
     status_matches, the_match,
 };
 pub use budget::{NEXTEST_TERMINATE, StoryBudget, TERMINATE_MARGIN};
+pub use busy::{BUSY_NEEDLES, BUSY_SENTENCES, BusySentence, busy_needles, holds_busy, is_busy};
 pub use figures::{Figures, Mount, story_seed};
 pub use odds::{Odds, PULL_REQUEST_BAR};
 pub use paused::{IDLE_STEP, idle};
@@ -94,6 +107,7 @@ pub use phase::{
     BEFORE_DAY_TURN, BEFORE_MONTH_TURN_DAYS, Calendar, IC_DAY, IC_HOUR, IC_MONTH, PHASE_TESTS,
     PHASE_VAR, Phase, STORY_EPOCH,
 };
+pub use reply::{Reply, ask};
 pub use scratch::scratch_dir;
 pub use wait::{
     LOAD_FACTOR, POLL_INTERVAL, STEP_TIMEOUT, STEP_UNLOADED, loaded, wait_for, wait_until,

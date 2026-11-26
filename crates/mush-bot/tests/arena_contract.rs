@@ -1661,9 +1661,9 @@ fn the_parser_reads_what_the_cockpit_formatters_print() {
 // (2) The live centre: the canary
 // ---------------------------------------------------------------------------
 
-/// The nonsense word a whole answer is fenced with, and the parser's answer.
+/// A nonsense word typed behind `STATUS`, for the echo replay below. The live
+/// reads fence their answers with the story kit's own sentinel.
 const SENTINEL: &str = "zzq-arena-sentinel";
-const HUH: &str = "Huh?";
 
 /// Whether `raw` is the server's echo of a line in `typed`: the lane's own
 /// journal-filter rule (`Lane::line`), a line equal to one typed.
@@ -1778,24 +1778,17 @@ impl Live {
         seen
     }
 
-    /// `line` and then [`SENTINEL`]: the answer runs to the sentinel's `Huh?`,
-    /// so all of it is in and none of it is in flight.
+    /// `line` and then the kit's sentinel: the answer runs to the sentinel's
+    /// `Huh?`, so all of it is in and none of it is in flight. The story kit's
+    /// read (doc 51 rule S, unit FL.5), whose tries count their answers, so a
+    /// busy refusal never leaves the sentinel's `Huh?` owed to the next try;
+    /// this reader's own loop ended a try at the first `Huh?` it saw.
     async fn ask_whole(&mut self, line: &str) -> String {
         self.typed(line);
-        self.typed(SENTINEL);
-        for _ in 0..arena_rig::RETRY_BUDGET {
-            let from = self.client.seen.len();
-            self.client.send(line).await;
-            self.client.send(SENTINEL).await;
-            self.client.expect(HUH, arena_rig::STEP_TIMEOUT).await;
-            self.read();
-            let seen = self.client.seen.get(from..).unwrap_or("").to_owned();
-            if !arena_rig::TRANSIENTS.iter().any(|t| seen.contains(t)) {
-                return seen;
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
-        panic!("`{line}` never produced a whole answer");
+        self.typed(mush_storykit::SENTINEL);
+        let reply = self.client.ask_whole(line).await;
+        self.read();
+        reply.text().to_owned()
     }
 
     async fn wait_for(&mut self, needle: &str, timeout: Duration) {
@@ -3821,4 +3814,60 @@ fn the_field_escort_reads_what_the_field_cockpit_prints() {
         Some((131, 124)),
         "{header}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Doc 51 unit FL.5: the busy sentences are one table
+// ---------------------------------------------------------------------------
+
+/// **The bot's busy sentences and the story kit's are one set** (doc 51 §3.4).
+/// Row 5 of `docs/flaky-tests.md` was a busy sentence one reader did not know.
+/// The kit's table names the product file each sentence is written in, and its
+/// own test holds the table to those files; this holds the bot's own lists to
+/// the table, both ways. Every sentence of the bot's mining lane
+/// (`ENGINE_BUSY`, `TRANSIENT_TAILS`) is in the table, and every sentence of
+/// the table is typed again by the bot's readers, mining and arena alike, but
+/// for staff's `@newchar` refusal, which no player is answered with.
+#[test]
+fn the_bots_busy_sentences_are_the_story_kits() {
+    use mush_bot::mine::lines::{ENGINE_BUSY, TRANSIENT_TAILS, is_transient};
+    for busy in ENGINE_BUSY {
+        assert!(
+            mush_storykit::is_busy(busy),
+            "{busy:?} is not in the kit's table"
+        );
+    }
+    for tail in TRANSIENT_TAILS {
+        let tail = tail.trim_end_matches('.');
+        assert!(
+            mush_storykit::BUSY_SENTENCES
+                .iter()
+                .any(|busy| busy.ends.ends_with(tail)),
+            "no sentence of the kit's table ends {tail:?}"
+        );
+    }
+    for busy in mush_storykit::BUSY_SENTENCES {
+        if busy
+            .ends
+            .starts_with("the world is committing another action; please retry shortly")
+        {
+            continue;
+        }
+        let line = format!("{}.", busy.ends);
+        let line = if busy.ends == "control state unknown" {
+            format!("That cockpit will not wake for you: {}", busy.ends)
+        } else {
+            line
+        };
+        assert!(
+            matches!(classify(&line), Line::Transient(_)),
+            "the arena reader does not type a line again after {line:?}"
+        );
+        if busy.ends != "control state unknown" && !busy.ends.starts_with("The arena is busy") {
+            assert!(
+                is_transient(&line),
+                "the mining lane does not type a line again after {line:?}"
+            );
+        }
+    }
 }

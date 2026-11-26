@@ -5,9 +5,9 @@
 #   WAIT_BUDGET_BLESS=1 cargo test -p mush-contract-tests --test ci_policy wait_budget::
 # A raise carries a written reason; the prefer-instead is `mush-storykit`.
 #
-# total: 78 raw waits, 28 wall-clock reads
+# total: 73 raw waits, 28 wall-clock reads
 clock 1 1 tests/arena_commander.rs
-wait 5 5 tests/arena_contract.rs
+wait 4 4 tests/arena_contract.rs
 wait 9 9 tests/arena_e2e.rs
 wait 7 7 tests/arena_mind_author_story.rs
 clock 2 2 tests/arena_mind_author_story.rs
@@ -18,7 +18,7 @@ clock 1 1 tests/campaign.rs
 wait 20 20 tests/e2e.rs
 clock 1 1 tests/e2e.rs
 clock 1 1 tests/life.rs
-wait 25 25 tests/mining_cohort.rs
+wait 21 21 tests/mining_cohort.rs
 clock 7 7 tests/mining_cohort.rs
 wait 2 2 tests/mining_cohort/fr7_round.rs
 clock 2 2 tests/mining_cohort/fr7_round.rs

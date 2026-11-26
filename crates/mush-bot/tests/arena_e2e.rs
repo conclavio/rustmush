@@ -75,6 +75,19 @@ use wiremock::{Mock, MockServer, Request, ResponseTemplate, matchers::method};
 #[path = "support/arena.rs"]
 mod arena_rig;
 
+/// **The rig's preset with its dice pinned** (doc 51 rule D, unit FL.5): every
+/// story here opens its matches on one seed, fresh and printed, so a failure
+/// names the seed that replays its rolls (`STORY_SEED=<n>`). The bot moves its
+/// own tank, so a seed fixes the rolls and not where the tank stands when it
+/// fires: a story that leans on a hit states its odds ([`Solo`]). The win-rate
+/// lanes in other files keep the OS's draw, since a pinned seed gives every
+/// match of a world the same dice.
+fn seeded() -> tacsim::TacsimConfig {
+    let mut cfg = arena_rig::arena_config();
+    cfg.arena.seed = Some(mush_storykit::story_seed(None));
+    cfg
+}
+
 /// One arena world at a time in this binary.
 static ARENA: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
 
@@ -153,31 +166,114 @@ fn forbidden(line: &str) -> bool {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_bot_flies_a_match_alone_against_one_machine() {
     let _one_world = ARENA.lock().await;
-    tokio::time::timeout(Duration::from_secs(200), fly_alone())
-        .await
-        .expect("the solo flight finishes inside 200 s");
+    let solo = Solo::of(seeded());
+    // The bot's own run limit, then one step to land it.
+    tokio::time::timeout(
+        Duration::from_secs(solo.bot_seconds) + arena_rig::STEP_TIMEOUT,
+        fly_alone(solo),
+    )
+    .await
+    .expect("the solo flight finishes inside the bot's run limit and one step");
 }
 
-async fn fly_alone() {
-    let mut cfg = arena_rig::arena_config();
-    cfg.match_.startup_ms = 2_000;
-    cfg.match_.board_timeout_ms = 60_000;
-    cfg.match_.max_duration_ms = 60_000;
+/// **The solo flight's figures** (doc 51 rules F and D, unit FL.5), read off the
+/// content and configuration its server boots with, never written here.
+///
+/// Row 2 of `docs/flaky-tests.md` was a 60 s match written when the cannon
+/// cycled in a second: once doc 49 cut CC.2 set the cycle to 15 s it held about
+/// four rounds, and one match in eight landed none. Four rounds cannot meet the
+/// pull-request bar even at the rules' ceiling (`Odds`: 0.05 to the fourth is
+/// one run in 160,000). So the match's length is derived: enough of the
+/// cannon's own cycles that the ceiling meets the bar, and one round's limit
+/// more for the way to the first shot.
+struct Solo {
+    cfg: tacsim::TacsimConfig,
+    /// How many of the cannon's pulls the match holds.
+    pulls: u32,
+    /// The bot's own run limit, seconds: the boarding window, the match, and
+    /// one step for the lobby.
+    bot_seconds: u64,
+}
+
+impl Solo {
+    fn of(mut cfg: tacsim::TacsimConfig) -> Solo {
+        cfg.match_.startup_ms = 2_000;
+        cfg.match_.board_timeout_ms = 60_000;
+        let fig = mush_storykit::Figures::of(&cfg);
+        let cannon = fig.mount("line_tank", "cannon");
+        let (_, ceiling) = fig.chance_bounds();
+        let pulls = (1..=cannon.pulls())
+            .find(|&trials| {
+                mush_storykit::Odds {
+                    trials,
+                    need: 1,
+                    p_each: ceiling,
+                }
+                .false_failure()
+                    <= mush_storykit::PULL_REQUEST_BAR
+            })
+            .unwrap_or_else(|| panic!("the cannon's load cannot meet the bar at the ceiling"));
+        let window = cannon.cycle() * pulls + fig.after_one_round(cannon);
+        let floor = Duration::from_millis(u64::from(cfg.match_.max_duration_ms));
+        let length = window.max(floor);
+        cfg.match_.max_duration_ms = u32::try_from(length.as_millis()).unwrap_or(u32::MAX);
+        let bot_seconds = (Duration::from_millis(u64::from(cfg.match_.board_timeout_ms))
+            + length
+            + arena_rig::STEP_TIMEOUT)
+            .as_secs();
+        println!(
+            "SOLO FIGURES: a {} s match, {pulls} pull(s) of the cannon's {} s cycle; the bot's \
+             run limit {bot_seconds} s",
+            length.as_secs(),
+            cannon.cycle().as_secs()
+        );
+        Solo {
+            cfg,
+            pulls,
+            bot_seconds,
+        }
+    }
+}
+
+/// **The least chance the cockpit offered the pilot**: the smallest `N% to
+/// hit` its session was shown (a lock's line, a `WEAPONSTATUS` row), read off
+/// the transcript's observations, as a probability. `None` when it was shown
+/// none.
+fn least_offered(records: &[Value]) -> Option<f64> {
+    records
+        .iter()
+        .filter(|record| record["kind"] == "observation")
+        .filter_map(|record| record["data"].as_str())
+        .flat_map(str::lines)
+        .filter_map(|line| {
+            let (head, _) = line.split_once("% to hit")?;
+            let start = head
+                .rfind(|c: char| !c.is_ascii_digit())
+                .map_or(0, |at| at + 1);
+            head.get(start..)?.parse::<u32>().ok()
+        })
+        .min()
+        .map(|percent| f64::from(percent) / 100.0)
+}
+
+async fn fly_alone(solo: Solo) {
+    let Solo {
+        cfg,
+        pulls,
+        bot_seconds,
+    } = solo;
     let rig = arena_rig::boot(cfg, &[("pilot", "Pilot")]).await;
 
     // Staff pose both tanks 200 m apart on the road, on the idle centre, before
-    // anyone claims. Not the other flights' 500 m: since doc 49 cut CC.2 the cannon
-    // cycles in 15 s, so the 60 s match holds about four rounds, and at 500 m about
-    // one match in ten ended with none landed and failed `the pilot hit` (3 of 32 on
-    // conclav.dev; `docs/flaky-tests.md`). At 200 m the bot fired nine or ten and
-    // landed six or more in each of 32 matches.
+    // anyone claims, so they see each other at once. Not the other flights'
+    // 500 m, where the cockpit offered less.
     let mut god =
         arena_rig::Client::login(&rig, arena_rig::GOD_ACCOUNT, arena_rig::GOD_PASSWORD, "God")
             .await;
     arena_rig::pose(&mut god, "RA=100 97 90").await;
     arena_rig::pose(&mut god, "BA=120 97 270").await;
 
-    let config = arena_rig::bot_config(&rig, "pilot+Pilot", "");
+    let config = arena_rig::bot_config_with(&rig, "pilot+Pilot", bot_seconds, "");
     let transcript = rig.dir.join("bot").join("solo.jsonl");
     let report_path = rig.dir.join("bot").join("solo.json");
     let mut command = tokio::process::Command::from(arena_rig::bot_command(
@@ -195,9 +291,9 @@ async fn fly_alone() {
         .arg(&report_path)
         .kill_on_drop(true);
     let started = std::time::Instant::now();
-    let output = tokio::time::timeout(Duration::from_secs(150), command.output())
+    let output = tokio::time::timeout(Duration::from_secs(bot_seconds), command.output())
         .await
-        .expect("the bot finishes inside 150 s")
+        .unwrap_or_else(|_| panic!("the bot finishes inside its own {bot_seconds} s"))
         .expect("the bot runs");
     let wall = started.elapsed();
 
@@ -232,7 +328,36 @@ async fn fly_alone() {
         "a fought result, not {result}: {report_text}"
     );
     assert!(shots >= 1, "the pilot fired: {report_text}");
-    assert!(hits >= 1, "the pilot hit: {report_text}");
+    // **The hit, with its odds stated** (doc 51 rule D). The match held `pulls`
+    // of the cannon, enough at the rules' ceiling; what the pilot was offered is
+    // the cockpit's own figure. A match with no hit fails only when bad luck at
+    // the least chance it was offered cannot explain it, and says the odds
+    // either way: a lane that moves its own tank cannot be made certain by a
+    // seed.
+    let least = least_offered(&records);
+    let odds = least.map(|p_each| mush_storykit::Odds {
+        trials: u32::try_from(shots).unwrap_or(u32::MAX),
+        need: 1,
+        p_each,
+    });
+    println!(
+        "SOLO ODDS: {shots} shot(s), {hits} hit(s); the match held {pulls} pull(s) of the \
+         cannon; the least chance offered {least:?}; no hit by bad luck alone: {:?}",
+        odds.map(|odds| odds.false_failure())
+    );
+    if hits == 0 {
+        let odds = odds.unwrap_or_else(|| {
+            panic!("the pilot fired with no chance ever shown to it: {report_text}")
+        });
+        let chance = odds.false_failure();
+        assert!(
+            chance > mush_storykit::PULL_REQUEST_BAR,
+            "the pilot hit nothing in {shots} shot(s) at {:.2} or better each, which bad luck \
+             alone does {chance:.3e} of the time: {report_text}",
+            odds.p_each
+        );
+        println!("SOLO: no hit, which these odds allow; STORY_SEED replays the rolls");
+    }
 
     // Success exactly on the pilot's own side's word, and the exit code with it.
     let success = report["success"].as_bool().expect("success");
@@ -356,7 +481,7 @@ async fn the_bot_flies_as_a_wingman_beside_a_human() {
 }
 
 async fn fly_as_wingman() {
-    let mut cfg = arena_rig::arena_config();
+    let mut cfg = seeded();
     cfg.match_.startup_ms = 2_000;
     cfg.match_.board_timeout_ms = 60_000;
     cfg.match_.max_duration_ms = 100_000;
@@ -391,9 +516,10 @@ async fn fly_as_wingman() {
     // Until her board shows two red pilots (the bot's claim).
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
-        let (found, text) = ada.answer("SIM STATUS", &["AI fill:"]).await;
-        assert!(found.is_some(), "the board answers: {text}");
-        let reds = text
+        // The board read whole (doc 51 rule S), not to a needle.
+        let board = ada.ask_whole("SIM STATUS").await;
+        assert!(board.contains("AI fill:"), "the board answers: {board}");
+        let reds = board
             .lines()
             .find_map(|line| match classify(line) {
                 Line::BoardSide {
@@ -408,11 +534,11 @@ async fn fly_as_wingman() {
         }
         assert!(
             !flight.task.is_finished(),
-            "the bot ended before it claimed: {text}"
+            "the bot ended before it claimed: {board}"
         );
         assert!(
             Instant::now() < deadline,
-            "the bot never claimed beside her: {text}"
+            "the bot never claimed beside her: {board}"
         );
         ada.idle(Duration::from_secs(1)).await;
     }
@@ -530,7 +656,7 @@ async fn command_on_a_stub() {
         .mount(&stub)
         .await;
 
-    let mut cfg = arena_rig::arena_config();
+    let mut cfg = seeded();
     cfg.match_.startup_ms = 2_000;
     cfg.match_.board_timeout_ms = 60_000;
     cfg.match_.max_duration_ms = 60_000;
@@ -852,7 +978,7 @@ async fn command_through_the_runner() {
         .mount(&stub)
         .await;
 
-    let mut cfg = arena_rig::arena_config();
+    let mut cfg = seeded();
     cfg.match_.startup_ms = 2_000;
     cfg.match_.board_timeout_ms = 60_000;
     cfg.match_.max_duration_ms = 100_000;
@@ -1165,7 +1291,7 @@ async fn hand_the_pod_over() {
         .mount(&stub)
         .await;
 
-    let mut cfg = arena_rig::arena_config();
+    let mut cfg = seeded();
     cfg.match_.startup_ms = 2_000;
     cfg.match_.board_timeout_ms = 60_000;
     cfg.match_.max_duration_ms = 60_000;
@@ -1282,7 +1408,7 @@ async fn a_refused_pose_answers_at_once() {
 }
 
 async fn refuse_poses() {
-    let rig = arena_rig::boot(arena_rig::arena_config(), &[("pilot", "Pilot")]).await;
+    let rig = arena_rig::boot(seeded(), &[("pilot", "Pilot")]).await;
     let mut god =
         arena_rig::Client::login(&rig, arena_rig::GOD_ACCOUNT, arena_rig::GOD_PASSWORD, "God")
             .await;
@@ -1435,7 +1561,7 @@ async fn the_repl_pauses_and_resumes_a_flight() {
 }
 
 async fn pause_and_resume() {
-    let mut cfg = arena_rig::arena_config();
+    let mut cfg = seeded();
     cfg.match_.startup_ms = 2_000;
     cfg.match_.board_timeout_ms = 60_000;
     cfg.match_.max_duration_ms = 100_000;
@@ -1777,7 +1903,7 @@ async fn the_opening_reads_the_ground_at_the_muster() {
 }
 
 async fn open_at_the_muster() {
-    let mut cfg = arena_rig::arena_config();
+    let mut cfg = seeded();
     cfg.match_.startup_ms = 2_000;
     cfg.match_.board_timeout_ms = 60_000;
     cfg.match_.max_duration_ms = 180_000;
@@ -1933,11 +2059,32 @@ async fn open_at_the_muster() {
         held_after.as_secs_f64()
     );
     // The step is measured from its own origin (cut AO.1: after the move in,
-    // not the muster the pilot kept).
+    // not the muster the pilot kept). **How far is the pilot's own figure**
+    // (doc 51 rule F, unit FL.5): `opening_step` makes a step the hiding run's
+    // start, its allowance and `OPENING_COVER_M` long, so the hiding ground the
+    // brief named begins no farther out than the step less `OPENING_COVER_M`,
+    // and a tank held there or past it has stepped onto it. The test held 20 m,
+    // written by hand. The pilot ends its step on a dead-reckoned position
+    // (`OPENING_ARRIVE_M` short of the aim by its own reckoning), which runs
+    // ahead of the tank while it turns off the road: in 144 runs on a loaded
+    // box it held 21 to 40 m out on a 35 m step, 103 of them at 22, and the
+    // soak of 2026-11-25 failed the 20 at 19 (`docs/flaky-tests.md`, row 20).
+    let step_m = said
+        .get(step)
+        .and_then(|text| {
+            text.rsplit_once('(')?
+                .1
+                .split_once(" m)")?
+                .0
+                .parse::<f64>()
+                .ok()
+        })
+        .unwrap_or_else(|| panic!("the step's length in its own words: {said:?}"));
+    let onto_cover = step_m - mush_bot::arena::pilot::OPENING_COVER_M;
     assert!(
-        (own_y - step_from.1).abs() >= 20.0,
-        "stepped off the road: start ({start_x}, {start_y}), step from {step_from:?}, now \
-         ({own_x}, {own_y})"
+        (own_y - step_from.1).abs() >= onto_cover,
+        "stepped off the road onto the hiding ground, {onto_cover} m out on a {step_m} m step: \
+         start ({start_x}, {start_y}), step from {step_from:?}, now ({own_x}, {own_y})"
     );
     // Cut AO.1: red's room behind is its own x, at least the room the pilot
     // wants less the arrival and the brief's rounding.

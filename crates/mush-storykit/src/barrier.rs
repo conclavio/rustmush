@@ -25,6 +25,9 @@ use std::future::Future;
 
 use crate::wait::{STEP_TIMEOUT, wait_for, wait_until};
 
+// A whole reply whose try counts its answers is `crate::reply::ask` (unit
+// FL.5); `ask_whole` below is FL.3's, kept for mushd until FL.8 moves it.
+
 /// A line the parser refuses, typed to mark the end of a reply. The `zzq-`
 /// opening is the mushd rig's convention: its readers that walk a reply line by
 /// line drop a line that opens so as the reader's own traffic, wherever the
@@ -33,12 +36,6 @@ pub const SENTINEL: &str = "zzq-sentinel";
 
 /// The parser's refusal: the sentinel's answer.
 pub const SENTINEL_REFUSAL: &str = "Huh?";
-
-/// **The world's busy answers**: a line met with one of these was not run and
-/// is typed again. The first is the world's while a commit is in flight
-/// (`mush_server::world_task`), the second the control-lease mirror's, which
-/// is a 1 Hz projection.
-pub const BUSY: [&str; 2] = ["please retry in a moment", "control state unknown"];
 
 /// The last line of `@arena/status`: the readout is whole once it has come.
 const STATUS_END: &str = "ledger writes awaiting";
@@ -67,8 +64,9 @@ pub trait Session {
 
 /// The needles of a sentinel read: its refusal first, then the busy answers.
 fn sentinel_needles() -> Vec<&'static str> {
+    // The kit's one table of busy sentences (unit FL.5, `crate::busy`).
     let mut needles = vec![SENTINEL_REFUSAL];
-    needles.extend(BUSY);
+    needles.extend(crate::busy::busy_needles());
     needles
 }
 
@@ -169,7 +167,7 @@ pub fn status_clock_seconds(status: &str, id: u64) -> Option<u64> {
 /// `Err` is what came instead: an empty board, or a busy answer.
 async fn arena_status(staff: &mut impl Session) -> Result<String, String> {
     let mut needles = vec![STATUS_END, STATUS_EMPTY];
-    needles.extend(BUSY);
+    needles.extend(crate::busy::busy_needles());
     let mark = staff.mark();
     staff.send_line("@arena/status").await;
     let answered = staff.expect_one_of_after(mark, &needles).await;
@@ -295,7 +293,7 @@ pub async fn at_one_wake<S: Session>(
 pub async fn set_floor(staff: &mut impl Session, id: u64, floor_ms: u32) {
     let floor = format!("under a floor of {floor_ms} ms");
     let mut needles = vec![floor.as_str(), "Usage:", "is not running", "has ended"];
-    needles.extend(BUSY);
+    needles.extend(crate::busy::busy_needles());
     wait_for(
         STEP_TIMEOUT,
         &format!("a floor of {floor_ms} ms on match {id}"),
@@ -316,7 +314,7 @@ pub async fn set_floor(staff: &mut impl Session, id: u64, floor_ms: u32) {
 /// **Lift match `id`'s staff floor**: it runs at its own tempo again.
 pub async fn lift_floor(staff: &mut impl Session, id: u64) {
     let mut needles = vec!["its own tempo again"];
-    needles.extend(BUSY);
+    needles.extend(crate::busy::busy_needles());
     wait_for(
         STEP_TIMEOUT,
         &format!("match {id}'s floor to lift"),
@@ -431,7 +429,9 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn settled_types_the_sentinel_again_over_a_busy_answer() {
-        let mut term = Script::new(&["busy:The world is committing; please retry in a moment."]);
+        let mut term = Script::new(&[
+            "busy:The world is committing another action; please retry in a moment.",
+        ]);
         settled(&mut term).await;
         assert_eq!(term.typed, [SENTINEL, SENTINEL]);
     }

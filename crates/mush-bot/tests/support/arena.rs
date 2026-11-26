@@ -76,17 +76,17 @@ pub const PILOT_PASSWORD: &str = "arena-pilot-secret-1";
 pub const PASSWORD_ENV: &str = "MUSH_BOT_ARENA_PASSWORD";
 /// The front door's banner.
 pub const BANNER: &str = "Welcome to the simulator.";
-/// How long any one wait for a server answer may take.
-pub const STEP_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long any one wait for a server answer may take: the story kit's one
+/// step limit, which carries its load factor (doc 51 §3.7, unit FL.5). It was
+/// 20 s chosen here.
+pub const STEP_TIMEOUT: Duration = mush_storykit::STEP_TIMEOUT;
 
-/// The transients a line is sent again after (the four `Line::Transient`
-/// sentences, by a needle each).
-pub const TRANSIENTS: [&str; 4] = [
-    "please retry in a moment",
-    "please try again shortly",
-    "control state unknown",
-    "The arena is busy; try that again in a moment.",
-];
+/// **The busy sentences a line is typed again after**: the story kit's one
+/// table (doc 51 §3.4, unit FL.5), each sentence held to the product file
+/// that writes it. This list was four needles of its own, and lacked the
+/// engine's three back-pressure sentences, which is row 5's class of fault
+/// (`docs/flaky-tests.md`): a refusal read as the line's answer.
+pub const TRANSIENTS: [&str; mush_storykit::BUSY_NEEDLES.len()] = mush_storykit::BUSY_NEEDLES;
 /// How many times [`Client::say`] sends a line refused as transient.
 pub const RETRY_BUDGET: usize = 40;
 
@@ -647,6 +647,44 @@ impl Client {
 
     pub async fn close(self) {
         self.session.close().await;
+    }
+
+    /// **A whole reply** (doc 51 rule S, unit FL.5): `line`, then the kit's
+    /// sentinel, and everything printed before the sentinel's refusal. A line
+    /// refused busy is typed again once both answers of its try are in
+    /// ([`mush_storykit::ask`]). Text a story parses comes from here; a
+    /// needle read ([`Client::say`], [`Client::answer`]) waits, and is not
+    /// parsed.
+    pub async fn ask_whole(&mut self, line: &str) -> mush_storykit::Reply {
+        mush_storykit::ask(self, line).await
+    }
+}
+
+/// The client as the story kit's [`mush_storykit::Session`]: what its
+/// barriers and its whole-reply read type on and read from.
+impl mush_storykit::Session for Client {
+    fn mark(&self) -> usize {
+        self.seen.len()
+    }
+
+    async fn send_line(&mut self, line: &str) {
+        self.send(line).await;
+    }
+
+    async fn expect_one_of_after(&mut self, mark: usize, needles: &[&str]) -> usize {
+        self.until(mark, needles, STEP_TIMEOUT)
+            .await
+            .unwrap_or_else(|| {
+                panic!(
+                    "timed out waiting for one of {needles:?}; since the mark:
+{}",
+                    self.seen.get(mark..).unwrap_or("")
+                )
+            })
+    }
+
+    fn seen_after(&self, mark: usize) -> String {
+        self.seen.get(mark..).unwrap_or("").to_owned()
     }
 }
 

@@ -198,7 +198,7 @@ async fn close_baseline(server: &rig::Rig, pilot: &mut rig::Client, match_id: u6
 
 struct StatusSample {
     elapsed_us: u64,
-    transient_retries: [usize; 4],
+    transient_retries: [usize; rig::TRANSIENTS.len()],
 }
 async fn warm_cockpit(pilot: &mut rig::Client) {
     let from = pilot.seen.len();

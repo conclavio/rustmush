@@ -104,12 +104,14 @@ const MINERS: [Miner; 4] = [
 /// overrides it ([`mine::rate_lift`]), and `MINE_RATE=24` is the rate-24 run.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_mining_root_runs_under_the_bots_serde() {
-    tokio::time::timeout(Duration::from_secs(20 * 60), canary())
-        .await
-        .expect("the canary finishes inside 20 minutes");
+    // Doc 51 §3.7 (unit FL.5): every wait draws from one budget that ends before nextest's
+    // terminate, so a stall fails with the canary's own message. It was a 20-minute timeout,
+    // the terminate itself, and a 19-minute bound on the drive.
+    let budget = mush_storykit::StoryBudget::new(STORY_MINUTES);
+    budget.hold(canary(&budget)).await;
 }
 
-async fn canary() {
+async fn canary(budget: &mush_storykit::StoryBudget) {
     let started = std::time::Instant::now();
     let miner = Miner {
         account: "canary",
@@ -144,7 +146,8 @@ async fn canary() {
     // answered — under the boot rate the Rate line gates on.
     let lift = mine::rate_lift(mine::LIFTED_RATE);
     let drive_started = std::time::Instant::now();
-    let bound = Duration::from_secs(19 * 60);
+    // The drive's bound, from its start: what is left of the story's budget.
+    let bound = budget.left();
     let enrolled_now = |lane: &Lane| lane.step_line() == Some("+coop/refit prospector");
     let (_, mut sent) = mine::drive_lane_since(
         &mut client,
@@ -959,10 +962,13 @@ async fn float(god: &mut arena::Client, client: &mut arena::Client) {
         )
         .await;
     let source = id(&opened, "Opened account #");
-    let listed = client.say("@account/list", " tacsim.credit = ").await;
+    // The list read whole (doc 51 rule S): a needle inside the row could end
+    // the read with the row's number cut short.
+    let listed = client.ask_whole("@account/list").await;
     let row = listed
-        .lines()
-        .find(|line| line.trim_start().starts_with('#') && line.contains(" tacsim.credit = "))
+        .rows("#")
+        .into_iter()
+        .find(|line| line.contains(" tacsim.credit = "))
         .unwrap_or_else(|| panic!("no tacsim.credit account in the pilot's list:\n{listed}"));
     let pilot = id(row, "#");
     god.say(&format!("@econ/mint {source}={pilot} 5000000"), "Minted")
@@ -1766,82 +1772,87 @@ async fn cohort() {
 /// The actual standalone executable plays the entire detachment loop over public SSH.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_bot_hires_launches_mines_recovers_and_sells_with_a_detachment() {
-    tokio::time::timeout(Duration::from_secs(22 * 60), async {
-        let miner = Miner {
-            account: "expedition",
-            character: "Expedition",
-            site: Site::Ahuna,
-        };
-        let rig = mine::boot(&[miner]).await;
-        println!("detachment rig: {}", rig.dir.display());
-        let config = arena::bot_config_agent(&rig, "expedition+Expedition", 1200, 250, 250, "");
-        let flight = arena::launch(&rig, &config, "detachment", &["--mine-detachment", "ahuna"]);
-        let mut god =
-            arena::Client::login(&rig, arena::GOD_ACCOUNT, arena::GOD_PASSWORD, "God").await;
-        // Only the server fixture changes the clock, after the captain enrols at rate 24.
-        let started = std::time::Instant::now();
-        loop {
-            let log = std::fs::read_to_string(&flight.transcript).unwrap_or_default();
-            if log.contains("+coop/refit prospector") {
-                break;
+    // Doc 51 §3.7 (unit FL.5): one budget under nextest's terminate, every wait drawing from it.
+    // The story was a 22-minute timeout, past the 20-minute terminate, so a stall in its last
+    // two minutes printed nothing.
+    let budget = mush_storykit::StoryBudget::new(STORY_MINUTES);
+    budget
+        .hold(async {
+            let miner = Miner {
+                account: "expedition",
+                character: "Expedition",
+                site: Site::Ahuna,
+            };
+            let rig = mine::boot(&[miner]).await;
+            println!("detachment rig: {}", rig.dir.display());
+            let config = arena::bot_config_agent(&rig, "expedition+Expedition", 1200, 250, 250, "");
+            let flight =
+                arena::launch(&rig, &config, "detachment", &["--mine-detachment", "ahuna"]);
+            let mut god =
+                arena::Client::login(&rig, arena::GOD_ACCOUNT, arena::GOD_PASSWORD, "God").await;
+            // Only the server fixture changes the clock, after the captain enrols at rate 24.
+            mush_storykit::wait_for(budget.left(), "the bot to enroll", async || {
+                assert!(
+                    !flight.task.is_finished(),
+                    "the bot ended before it enrolled"
+                );
+                match std::fs::read_to_string(&flight.transcript) {
+                    Ok(log) if log.contains("+coop/refit prospector") => Ok(()),
+                    Ok(log) => Err(transcript_tail_of(&log)),
+                    Err(error) => Err(format!("no transcript yet: {error}")),
+                }
+            })
+            .await;
+            if let Some(rate) = mine::rate_lift(mine::LIFTED_RATE) {
+                mine::lift_rate(&mut god, rate).await;
+            }
+            let landed = arena::land(flight, budget.left()).await;
+            let report = &landed.report["mine"];
+            assert_eq!(
+                report["success"], true,
+                "{}\n{}\n{}",
+                landed.report_text, landed.stdout, landed.stderr
+            );
+            assert!(report["sold_t"].as_u64().is_some_and(|n| n > 0), "{report}");
+            assert_eq!(
+                report["plan"]["crew_days"], 2,
+                "the planner includes Ilya and the captain before bunkering: {report}"
+            );
+            let evidence = &report["detachment"];
+            for fact in [
+                "chat_received",
+                "wilco_received",
+                "returned",
+                "unseated",
+                "closed",
+            ] {
+                assert_eq!(evidence[fact], true, "{fact}: {report}");
             }
             assert!(
-                started.elapsed() < Duration::from_secs(600),
-                "bot never enrolled: {log}"
+                evidence["contract"]
+                    .as_str()
+                    .is_some_and(|s| s.contains("Contract recorded"))
             );
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
-        if let Some(rate) = mine::rate_lift(mine::LIFTED_RATE) {
-            mine::lift_rate(&mut god, rate).await;
-        }
-        let landed = arena::land(flight, Duration::from_secs(20 * 60)).await;
-        let report = &landed.report["mine"];
-        assert_eq!(
-            report["success"], true,
-            "{}\n{}\n{}",
-            landed.report_text, landed.stdout, landed.stderr
-        );
-        assert!(report["sold_t"].as_u64().is_some_and(|n| n > 0), "{report}");
-        assert_eq!(
-            report["plan"]["crew_days"], 2,
-            "the planner includes Ilya and the captain before bunkering: {report}"
-        );
-        let evidence = &report["detachment"];
-        for fact in [
-            "chat_received",
-            "wilco_received",
-            "returned",
-            "unseated",
-            "closed",
-        ] {
-            assert_eq!(evidence[fact], true, "{fact}: {report}");
-        }
-        assert!(
-            evidence["contract"]
-                .as_str()
-                .is_some_and(|s| s.contains("Contract recorded"))
-        );
-        assert_eq!(evidence["units"].as_array().map(Vec::len), Some(2));
-        let sends: Vec<_> = landed
-            .records
-            .iter()
-            .filter(|r| r["kind"] == "mine-send")
-            .filter_map(|r| r["data"]["line"].as_str())
-            .collect();
-        assert!(
-            sends
+            assert_eq!(evidence["units"].as_array().map(Vec::len), Some(2));
+            let sends: Vec<_> = landed
+                .records
                 .iter()
-                .all(|l| mush_bot::mine::lane::detachment::in_vocabulary(l)),
-            "{sends:?}"
-        );
-        assert!(
-            !sends.contains(&"+tv/1 launch go"),
-            "detachment must use real DT flights"
-        );
-        println!("detachment expedition sold {} tonnes", report["sold_t"]);
-    })
-    .await
-    .expect("the detachment expedition finishes within 22 minutes");
+                .filter(|r| r["kind"] == "mine-send")
+                .filter_map(|r| r["data"]["line"].as_str())
+                .collect();
+            assert!(
+                sends
+                    .iter()
+                    .all(|l| mush_bot::mine::lane::detachment::in_vocabulary(l)),
+                "{sends:?}"
+            );
+            assert!(
+                !sends.contains(&"+tv/1 launch go"),
+                "detachment must use real DT flights"
+            );
+            println!("detachment expedition sold {} tonnes", report["sold_t"]);
+        })
+        .await;
 }
 
 /// The shipped fixture raider at Ahuna Flank (`content/field/raiders.json`, doc 32 cut CF.6b).
@@ -1850,7 +1861,11 @@ const SKULKS: &str = "tacsim.raider.ahuna_skulks";
 /// The last lines the bot's session decoded, for a failure's message: each transcript record's
 /// text, the last 60.
 fn transcript_tail(flight: &arena::Flight) -> String {
-    let log = std::fs::read_to_string(&flight.transcript).unwrap_or_default();
+    transcript_tail_of(&std::fs::read_to_string(&flight.transcript).unwrap_or_default())
+}
+
+/// [`transcript_tail`] of a transcript already read.
+fn transcript_tail_of(log: &str) -> String {
     let lines: Vec<String> = log
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
@@ -1886,9 +1901,12 @@ async fn all_hold(flights: &[(&arena::Flight, &str)], limit: Duration) -> bool {
     false
 }
 
-/// The captain story's whole budget: 18 minutes, under nextest's 20-minute terminate, so a
-/// stalled wait fails with its transcripts rather than being killed silently.
-const STORY_BUDGET: Duration = Duration::from_secs(18 * 60);
+/// **The budget of every story here that a pull request runs**, in minutes: the longest the
+/// story kit allows, nextest's 20-minute terminate less two, so a stalled wait fails with its
+/// own message and the bots' transcripts rather than being killed silently (doc 51 §3.7). The
+/// `#[ignore]`d stories run by name under their own longer terminates and keep their own
+/// limits.
+const STORY_MINUTES: u64 = 18;
 
 /// **The captain and its escort in an IC field** (doc 32 G-4, Q-CF-47's bot run): two actual
 /// `mush-bot` executables over public SSH on the production root, at Ahuna Flank.
@@ -1944,11 +1962,10 @@ async fn a_captain_and_its_escort_fight_the_raider_in_an_ic_field() {
     // was killed by nextest before its assertion could print the two transcripts: six CI runs
     // ended in a bare `TIMEOUT [1200 s]` (2026-11-16..21, `docs/flaky-tests.md`). Now a stall
     // fails with the bots' own last lines.
-    let budget_ends = std::time::Instant::now() + STORY_BUDGET;
-    let within = |bound: Duration| {
-        bound.min(budget_ends.saturating_duration_since(std::time::Instant::now()))
-    };
-    tokio::time::timeout(STORY_BUDGET + Duration::from_secs(30), async {
+    // (Unit FL.5: the hand-built budget of #764 is the kit's `StoryBudget`.)
+    let budget = mush_storykit::StoryBudget::new(STORY_MINUTES);
+    let within = |bound: Duration| budget.limit(bound);
+    budget.hold(async {
         let captain = Miner {
             account: "fieldcap",
             character: "Fieldcap",
@@ -2280,6 +2297,5 @@ async fn a_captain_and_its_escort_fight_the_raider_in_an_ic_field() {
         );
         god.close().await;
     })
-    .await
-    .expect("the captain and its escort finish inside the story budget");
+    .await;
 }
