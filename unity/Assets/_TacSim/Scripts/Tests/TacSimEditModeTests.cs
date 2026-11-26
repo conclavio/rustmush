@@ -5490,5 +5490,126 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void SocialMailComsysAndQuestJournal_LivePanelsWhoMailChannelsAndPinnedObjectiveTracker()
+        {
+            // 1. Protocol builders & quick-mail validation
+            string whoReq = MushProtocol.BuildWhoQueryCommand(7UL);
+            StringAssert.Contains("\"who\"", whoReq);
+            string mailReq = MushProtocol.BuildMailListQueryCommand(8UL, "inbox");
+            StringAssert.Contains("\"mail_list\"", mailReq);
+            StringAssert.Contains("\"inbox\"", mailReq);
+
+            Assert.IsTrue(TacSim.UI.TacSimSocialAndMailModal.TryBuildQuickMailCommand("Voss", "Cargo Eta", "Arriving 14:00 UTC", out string mailCmd, out _));
+            Assert.AreEqual("@mail/quick Voss=Cargo Eta/Arriving 14:00 UTC", mailCmd);
+            Assert.IsFalse(TacSim.UI.TacSimSocialAndMailModal.TryBuildQuickMailCommand("Voss", "Bad/Subj", "Body", out _, out _));
+
+            var rootGo = new UnityEngine.GameObject("SocialAndJournalTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                Assert.IsNotNull(hud.SocialModal, "BuildHud must wire [O] Social/Mail/Comsys modal");
+                Assert.IsNotNull(hud.QuestJournal, "BuildHud must wire [J] Quest/Passage/Survey/Claims journal");
+
+                // 2. Live WHO, Mail & Comsys ingestion via MushWsClient events
+                using (var ws = new MushWsClient())
+                {
+                    List<MushWhoEntry> gotWho = null;
+                    int gotMailNotice = -1;
+                    ws.OnWhoReceived += list => gotWho = list;
+                    ws.OnMailNoticeReceived += u => gotMailNotice = u;
+
+                    ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{
+                        ""seq"": 1, ""t"": ""who"",
+                        ""d"": { ""entries"": [
+                            { ""name"": ""Kira"", ""alias"": ""KR"", ""idle_s"": 12, ""conn_s"": 720, ""doing"": ""Hauling volatiles"" },
+                            { ""name"": ""Soren"", ""idle_s"": 90, ""conn_s"": 3600 }
+                        ] }
+                    }"));
+                    ws.InjectSyntheticEnvelope(MushProtocol.ParseEnvelope(@"{
+                        ""seq"": 2, ""t"": ""mail_notice"", ""d"": { ""unread"": 3 }
+                    }"));
+                    ws.PumpMainThread();
+
+                    Assert.IsNotNull(gotWho);
+                    Assert.AreEqual(2, gotWho.Count);
+                    Assert.AreEqual(3, gotMailNotice);
+
+                    hud.SocialModal.ApplyWhoEntries(gotWho);
+                    Assert.AreEqual(2, hud.SocialModal.OnlinePilotCount);
+                }
+
+                // 3. Mail panel keyframe & unread badge sync
+                int lastUnreadBadge = -1;
+                hud.SocialModal.OnUnreadMailCountChanged += u => lastUnreadBadge = u;
+                hud.SocialModal.ApplyMailPanel(JsonNode.Parse(@"{
+                    ""folder"": ""inbox"",
+                    ""folders"": [{""name"": ""inbox"", ""count"": 2, ""unread"": 1}, {""name"": ""sent"", ""count"": 1, ""unread"": 0}],
+                    ""entries"": [
+                        {""index"": 1, ""id"": 101, ""from"": {""id"": ""#4"", ""name"": ""Dockmaster""}, ""subject"": ""Berth fee"", ""status"": ""unread""},
+                        {""index"": 2, ""id"": 102, ""from"": {""id"": ""#9"", ""name"": ""Co-op""}, ""subject"": ""Charter"", ""status"": ""read""}
+                    ],
+                    ""quota"": {""used"": 3, ""max"": 200}
+                }"));
+                Assert.AreEqual(2, hud.SocialModal.MailEntryCount);
+                Assert.AreEqual(1, hud.SocialModal.UnreadMailCount);
+                Assert.AreEqual(1, lastUnreadBadge);
+
+                // 4. Comsys panel keyframe & live channel message ingestion
+                hud.SocialModal.ApplyComsysPanel(JsonNode.Parse(@"{
+                    ""channels"": [
+                        {""name"": ""Public"", ""alias"": ""pub"", ""ic"": false, ""gagged"": false},
+                        {""name"": ""Corridor"", ""alias"": ""cor"", ""ic"": true, ""gagged"": false}
+                    ]
+                }"));
+                Assert.AreEqual(2, hud.SocialModal.ChannelCount);
+                Assert.AreEqual("Public", hud.SocialModal.SelectedChannelName);
+                hud.SocialModal.IngestChannelMessage(new MushChannelEvent
+                {
+                    Channel = "Corridor",
+                    Actor = new MushObjRef { Id = "#7", Name = "Kira" },
+                    Text = "Clear approach to Stickney."
+                });
+
+                // 5. [J] Quest Journal capture, tab queries & Pinned Objective Tracker card
+                var journalCmds = new List<string>();
+                hud.QuestJournal.OnCommandRequested += journalCmds.Add;
+                hud.QuestJournal.SetOpen(true, TacSim.UI.QuestJournalTab.Quests);
+                Assert.IsTrue(hud.QuestJournal.IsOpen);
+                Assert.IsTrue(hud.IsModalOpen);
+                Assert.Contains("+quest", journalCmds);
+
+                Assert.IsTrue(hud.QuestJournal.IngestServerOutput("Deliver 10t volatiles to Stickney Yards", null));
+                Assert.IsTrue(hud.QuestJournal.IngestServerOutput("Reward: 4,200 cr", null));
+                Assert.AreEqual(2, hud.QuestJournal.GetTabLineCount(TacSim.UI.QuestJournalTab.Quests));
+
+                hud.QuestJournal.SelectTab(TacSim.UI.QuestJournalTab.Claims, queryServer: true);
+                Assert.Contains("+claim/list", journalCmds);
+
+                hud.QuestJournal.SelectTab(TacSim.UI.QuestJournalTab.Quests, queryServer: false);
+                hud.QuestJournal.PinActiveTabSummary();
+                Assert.IsTrue(hud.QuestJournal.HasPinnedObjective);
+                StringAssert.Contains("Stickney", hud.QuestJournal.PinnedTitle);
+
+                hud.QuestJournal.SyncTrackerVisibility(TacSim.Core.TacSimActiveStage.StationWalk, rightCornerBusy: false);
+                Assert.IsTrue(hud.QuestJournal.IsTrackerVisible, "Pinned objective card must show below minimap when right corner is free");
+                hud.QuestJournal.SyncTrackerVisibility(TacSim.Core.TacSimActiveStage.SimulatorArena, rightCornerBusy: true);
+                Assert.IsFalse(hud.QuestJournal.IsTrackerVisible, "Pinned objective card must hide in Arena / busy HUD");
+
+                // 6. ESC closes SocialModal then QuestJournal cleanly
+                hud.SocialModal.SetOpen(true);
+                Assert.IsTrue(hud.TryCloseTopmostModal());
+                Assert.IsFalse(hud.SocialModal.IsOpen);
+                Assert.IsTrue(hud.QuestJournal.IsOpen);
+                Assert.IsTrue(hud.TryCloseTopmostModal());
+                Assert.IsFalse(hud.QuestJournal.IsOpen);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
