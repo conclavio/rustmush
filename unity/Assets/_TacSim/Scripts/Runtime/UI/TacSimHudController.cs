@@ -94,6 +94,8 @@ namespace TacSim.UI
         public TacSimTacticalBrackets TacticalBrackets { get; private set; }
         public TacSimOpsDirectory OpsDirectory { get; private set; }
         public TacSimFloatingCallouts FloatingCallouts { get; private set; }
+        public TacSimCommandPalette CommandPalette { get; private set; }
+        public TacSimKeybindHelp KeybindHelp { get; private set; }
         public ChatLogTab ActiveChatTab { get; private set; } = ChatLogTab.All;
         public int QuickActionSlotCount => _quickSlotActions.Count;
         public bool IsDockingHudVisible => _dockingPanel != null && _dockingPanel.activeSelf;
@@ -122,6 +124,8 @@ namespace TacSim.UI
                        (_tradePanel != null && _tradePanel.activeSelf) ||
                        (CharacterSheet != null && CharacterSheet.IsOpen) ||
                        (OpsDirectory != null && OpsDirectory.IsOpen) ||
+                       (CommandPalette != null && CommandPalette.IsOpen) ||
+                       (KeybindHelp != null && KeybindHelp.IsOpen) ||
                        (Overlays != null && Overlays.IsLobbyModalOpen) ||
                        (term != null && term.IsTerminalOpen);
             }
@@ -134,6 +138,8 @@ namespace TacSim.UI
                 var term = ResolveActiveMindTerminal();
                 return (_chatInput != null && _chatInput.isFocused) ||
                        (_npcSayInput != null && _npcSayInput.isFocused) ||
+                       (CommandPalette != null && CommandPalette.IsSearchFocused) ||
+                       (KeybindHelp != null && KeybindHelp.IsAnyInputFocused) ||
                        (EconomyPanels != null && EconomyPanels.IsAnyInputFocused) ||
                        (term != null && term.HasFocusedInput) ||
                        (Application.isPlaying && TacSimMindTerminal.IsAnyInputFocused) ||
@@ -477,6 +483,8 @@ namespace TacSim.UI
             SolarMap?.ResetSessionState();
             CharacterSheet?.ResetSessionState();
             OpsDirectory?.ResetSessionState();
+            CommandPalette?.ResetSessionState();
+            KeybindHelp?.ResetSessionState();
             TacticalBrackets?.ResetSessionState();
             FloatingCallouts?.ResetSessionState();
             UnitFrames?.ResetSessionState();
@@ -549,6 +557,12 @@ namespace TacSim.UI
             OpsDirectory = gameObject.GetComponent<TacSimOpsDirectory>() ?? gameObject.AddComponent<TacSimOpsDirectory>();
             OpsDirectory.BuildUi(_hudRoot.transform, _uiFont);
 
+            KeybindHelp = gameObject.GetComponent<TacSimKeybindHelp>() ?? gameObject.AddComponent<TacSimKeybindHelp>();
+            KeybindHelp.BuildModal(_hudRoot.transform, _uiFont);
+
+            CommandPalette = gameObject.GetComponent<TacSimCommandPalette>() ?? gameObject.AddComponent<TacSimCommandPalette>();
+            CommandPalette.BuildModal(_hudRoot.transform, _uiFont);
+
             DisplayOptions = gameObject.GetComponent<TacSimDisplayOptions>() ?? gameObject.AddComponent<TacSimDisplayOptions>();
             DisplayOptions.BuildModal(canvasGo.transform, _uiFont);
             DisplayOptions.ApplyStartupPreferences();
@@ -590,9 +604,12 @@ namespace TacSim.UI
             _netBadgeText = CreateText(topBar.transform, "[DISCONNECTED]", 13, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(0.62f, 0.72f, 0.82f));
             SetRect(_netBadgeText.rectTransform, new Vector2(0.42f, 0f), new Vector2(0.50f, 1f), Vector2.zero, Vector2.zero);
 
-            _shipAndClockText = CreateText(topBar.transform, "IC 08:00 UTC | HULL: UNCHARTERED | RMB: Orbit Camera", 14, FontStyle.Normal, TextAnchor.MiddleRight, new Color(0.62f, 0.84f, 0.96f));
-            // Reserve 578px at the far right of TopStrip for `[N] NAV` (`-570..-484`), `[C] SHEET` (`-478..-392`), `[M] CHART` (`-386..-300`), `OPTIONS` (`-294..-210`), and `[F10] MINDS & SEALING` (`-204..-6`).
-            SetRect(_shipAndClockText.rectTransform, new Vector2(0.50f, 0f), new Vector2(1f, 1f), Vector2.zero, new Vector2(-578f, 0f));
+            _shipAndClockText = CreateText(topBar.transform, "IC 08:00 UTC | HULL: UNCHARTERED | Ctrl+K: Palette", 14, FontStyle.Normal, TextAnchor.MiddleRight, new Color(0.62f, 0.84f, 0.96f));
+            // Reserve 634px at the far right of TopStrip for `[F1]` (`-626..-576`), `[N] NAV` (`-570..-484`), `[C] SHEET` (`-478..-392`), `[M] CHART` (`-386..-300`), `OPTIONS` (`-294..-210`), and `[F10] MINDS & SEALING` (`-204..-6`).
+            SetRect(_shipAndClockText.rectTransform, new Vector2(0.50f, 0f), new Vector2(1f, 1f), Vector2.zero, new Vector2(-634f, 0f));
+
+            var keysTopBtn = CreateButton(topBar.transform, "[F1]", new Color(0.14f, 0.30f, 0.42f), () => KeybindHelp?.ToggleOpen());
+            SetRect(keysTopBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-626f, 6f), new Vector2(-576f, -6f));
 
             var navTopBtn = CreateButton(topBar.transform, "[N] NAV", new Color(0.14f, 0.38f, 0.44f), () => OpsDirectory?.ToggleOpen());
             SetRect(navTopBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-570f, 6f), new Vector2(-484f, -6f));
@@ -1183,6 +1200,16 @@ namespace TacSim.UI
                 DisplayOptions.SetOpen(false);
                 return true;
             }
+            if (CommandPalette != null && CommandPalette.IsOpen)
+            {
+                CommandPalette.SetOpen(false);
+                return true;
+            }
+            if (KeybindHelp != null && KeybindHelp.IsOpen)
+            {
+                KeybindHelp.SetOpen(false);
+                return true;
+            }
             if (SolarMap != null && SolarMap.IsOpen)
             {
                 SolarMap.SetOpen(false);
@@ -1235,6 +1262,23 @@ namespace TacSim.UI
                 TryCloseTopmostModal();
             }
 
+            if ((Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl)) &&
+                Input.GetKeyDown(KeyCode.K) &&
+                (_loginPanel == null || !_loginPanel.activeSelf))
+            {
+                if (CommandPalette != null && CommandPalette.IsOpen)
+                    CommandPalette.SetOpen(false);
+                else if (!IsTextInputFocused)
+                    CommandPalette?.SetOpen(true);
+            }
+
+            if (Input.GetKeyDown(KeyCode.F1) &&
+                (_loginPanel == null || !_loginPanel.activeSelf) &&
+                (!IsTextInputFocused || (KeybindHelp != null && KeybindHelp.IsOpen && !KeybindHelp.IsAnyInputFocused)))
+            {
+                KeybindHelp?.ToggleOpen();
+            }
+
             if (Input.GetKeyDown(KeyCode.F11) && !IsTextInputFocused)
             {
                 DisplayOptions?.ToggleBorderlessFullscreen();
@@ -1272,7 +1316,7 @@ namespace TacSim.UI
                     RecallCommandHistory(+1);
             }
 
-            // WoW/EQ 1-9 numbered Action Hotbar & Tab target cycling when no modal or text box is active
+            // WoW/EQ 1-9 numbered Action Hotbar, F5-F8 Custom Macros & Tab target cycling when no modal or text box is active
             bool gameplayHotkeysReady = !IsTextInputFocused &&
                 (_loginPanel == null || !_loginPanel.activeSelf) &&
                 (_modalPanel == null || !_modalPanel.activeSelf) &&
@@ -1280,6 +1324,8 @@ namespace TacSim.UI
                 (SolarMap == null || !SolarMap.IsOpen) &&
                 (CharacterSheet == null || !CharacterSheet.IsOpen) &&
                 (OpsDirectory == null || !OpsDirectory.IsOpen) &&
+                (CommandPalette == null || !CommandPalette.IsOpen) &&
+                (KeybindHelp == null || !KeybindHelp.IsOpen) &&
                 (DisplayOptions == null || !DisplayOptions.IsOpen) &&
                 !(ResolveActiveMindTerminal()?.IsTerminalOpen ?? false) &&
                 !(Overlays?.IsLobbyModalOpen ?? false);
@@ -1297,6 +1343,22 @@ namespace TacSim.UI
                 else if (Input.GetKeyDown(KeyCode.Space))
                 {
                     OnSpaceQuickFireRequested?.Invoke();
+                }
+                else if (Input.GetKeyDown(KeyCode.F5))
+                {
+                    KeybindHelp?.TriggerMacroSlot(0);
+                }
+                else if (Input.GetKeyDown(KeyCode.F6))
+                {
+                    KeybindHelp?.TriggerMacroSlot(1);
+                }
+                else if (Input.GetKeyDown(KeyCode.F7))
+                {
+                    KeybindHelp?.TriggerMacroSlot(2);
+                }
+                else if (Input.GetKeyDown(KeyCode.F8))
+                {
+                    KeybindHelp?.TriggerMacroSlot(3);
                 }
                 else if (IsWalkQuickActionsVisible && _quickSlotActions.Count > 0)
                 {
