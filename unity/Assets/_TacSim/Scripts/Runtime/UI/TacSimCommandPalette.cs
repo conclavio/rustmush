@@ -310,6 +310,7 @@ namespace TacSim.UI
             AddCmd("SPACE", "Solar Ephemeris Table", "+chart");
             AddCmd("WORLD", "Step Out of Character", "+ooc");
             AddCmd("WORLD", "Return In Character", "+ic");
+            AddCmd("ARENA", "Simulator Match History (Replay IDs)", "sim history");
             AddCmd("WORLD", "Online Pilots", "WHO");
             AddCmd("WORLD", "Look Around", "look");
 

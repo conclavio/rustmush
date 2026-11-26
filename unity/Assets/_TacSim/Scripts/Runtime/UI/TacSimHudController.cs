@@ -76,6 +76,7 @@ namespace TacSim.UI
         public event Action OnCycleTargetRequested;
         public event Action OnCycleOrbitalCameraRequested;
         public event Action OnSpaceQuickFireRequested;
+        public event Action OnCloseReplayRequested;
 
         public static TacSimHudController ActiveInstance { get; private set; }
 
@@ -99,6 +100,7 @@ namespace TacSim.UI
         public TacSimSocialAndMailModal SocialModal { get; private set; }
         public TacSimQuestJournal QuestJournal { get; private set; }
         public TacSimTacticalOverview TacticalOverview { get; private set; }
+        public TacSimReplayControlsHud ReplayHud { get; private set; }
         public ChatLogTab ActiveChatTab { get; private set; } = ChatLogTab.All;
         public int QuickActionSlotCount => _quickSlotActions.Count;
         public bool IsDockingHudVisible => _dockingPanel != null && _dockingPanel.activeSelf;
@@ -497,6 +499,7 @@ namespace TacSim.UI
             SocialModal?.ResetSessionState();
             QuestJournal?.ResetSessionState();
             TacticalOverview?.ResetSessionState();
+            ReplayHud?.ResetSessionState();
             TacticalBrackets?.ResetSessionState();
             FloatingCallouts?.ResetSessionState();
             UnitFrames?.ResetSessionState();
@@ -553,6 +556,9 @@ namespace TacSim.UI
 
             Overlays = gameObject.GetComponent<TacSimMissionOverlays>() ?? gameObject.AddComponent<TacSimMissionOverlays>();
             Overlays.BuildOverlays(_hudRoot.transform, _uiFont);
+
+            ReplayHud = gameObject.GetComponent<TacSimReplayControlsHud>() ?? gameObject.AddComponent<TacSimReplayControlsHud>();
+            ReplayHud.BuildHud(_hudRoot.transform, _uiFont);
 
             UnitFrames = gameObject.GetComponent<TacSimUnitFrames>() ?? gameObject.AddComponent<TacSimUnitFrames>();
             UnitFrames.BuildFrames(_hudRoot.transform, _uiFont);
@@ -1314,6 +1320,11 @@ namespace TacSim.UI
             if (Overlays != null && Overlays.IsLobbyModalOpen)
             {
                 Overlays.ShowArenaLobbyModal(false);
+                return true;
+            }
+            if (ReplayHud != null && ReplayHud.IsVisible)
+            {
+                OnCloseReplayRequested?.Invoke();
                 return true;
             }
             return false;

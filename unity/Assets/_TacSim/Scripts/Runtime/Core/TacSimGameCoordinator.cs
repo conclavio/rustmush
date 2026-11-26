@@ -218,6 +218,8 @@ namespace TacSim.Core
             Hud.BindTradeState(TradeState);
             if (Hud.Overlays != null)
                 Hud.Overlays.BindControllers(SurfaceStage, ArenaStage, SpaceStage);
+            if (Hud.ReplayHud != null)
+                Hud.ReplayHud.BindArena(ArenaStage);
             if (Hud.Minimap != null)
                 Hud.Minimap.BindWorldSources(StationWorld, ShipInterior, SpaceStage, SurfaceStage, ArenaStage);
             if (Hud.CharacterSheet != null)
@@ -397,8 +399,36 @@ namespace TacSim.Core
                 if (_ws != null && _ws.IsConnected)
                     _ws.SendPanelSubscribe("arena.map");
             };
+            ArenaStage.OnRequestReplayDocumentSubscribe += () =>
+            {
+                if (_ws != null && _ws.IsConnected)
+                    _ws.SendPanelSubscribe("arena.replay");
+            };
+            ArenaStage.OnReplayStateChanged += () =>
+            {
+                if (ArenaStage != null && ArenaStage.IsSpectatorTheaterActive)
+                {
+                    _stageDirector?.SyncFrame(_isAboardShip, Hud != null && Hud.IsTextInputFocused);
+                    BindCameraToArenaRig();
+                    Hud?.ReplayHud?.RefreshView();
+                }
+            };
+            ArenaStage.OnReplayClosed += HandleReplayOrObserverClosed;
             ArenaStage.OnArenaCombatLog += ln => { if (Hud != null) Hud.AppendLogLine(ln); };
             ArenaStage.OnToggleCameraViewRequested += ToggleGroundVehicleCameraMode;
+
+            Hud.OnCloseReplayRequested += CloseActiveReplayOrObserver;
+            if (Hud.ReplayHud != null)
+            {
+                Hud.ReplayHud.OnCloseRequested += CloseActiveReplayOrObserver;
+                Hud.ReplayHud.OnStopLiveWatchRequested += () =>
+                {
+                    if (_ws != null && _ws.IsConnected)
+                        _ws.SendLine("@arena/watch off");
+                };
+                Hud.ReplayHud.OnToggleCameraModeRequested += ToggleGroundVehicleCameraMode;
+                Hud.ReplayHud.OnFocusUnitChanged += BindCameraToArenaRig;
+            }
 
             Hud.OnAuthSubmitted += HandleAuthSubmitted;
             Hud.OnCharacterSelected += HandleCharacterSelected;
@@ -897,6 +927,12 @@ namespace TacSim.Core
                     }
                 }
             }
+            else if (ActiveStage == TacSimActiveStage.SimulatorArena && ArenaStage != null && ArenaStage.IsSpectatorTheaterActive)
+            {
+                ArenaStage.CycleReplayFocusUnit(+1);
+                BindCameraToArenaRig();
+                Hud?.ReplayHud?.RefreshView();
+            }
             else if (ActiveStage == TacSimActiveStage.SimulatorArena && ArenaStage?.State != null)
             {
                 var contacts = ArenaStage.State.Contacts;
@@ -959,6 +995,7 @@ namespace TacSim.Core
             {
                 Camera activeCam = CameraRig != null && CameraRig.ControlledCamera != null ? CameraRig.ControlledCamera : Camera.main;
                 bool hideBrackets = Hud.IsLoginOverlayVisible || Hud.IsModalOpen ||
+                    (ArenaStage != null && ArenaStage.IsSpectatorTheaterActive) ||
                     (Hud.SolarMap != null && Hud.SolarMap.IsOpen) ||
                     (Hud.DisplayOptions != null && Hud.DisplayOptions.IsOpen);
                 Hud.TacticalBrackets.SyncBrackets(stage, activeCam, hideBrackets);
@@ -1093,6 +1130,32 @@ namespace TacSim.Core
                 }
                 case TacSimActiveStage.SimulatorArena:
                 {
+                    if (ArenaStage != null && ArenaStage.IsSpectatorTheaterActive)
+                    {
+                        var doc = ArenaStage.ActiveReplayDoc;
+                        var frame = ArenaStage.LatestReplayFrame;
+                        int fIdx = ArenaStage.ReplayFocusUnitIndex;
+                        string focusCs = (doc != null && fIdx >= 0 && fIdx < doc.Roster.Count) ? doc.Roster[fIdx].Callsign : "ARENA";
+                        bool isBlue = doc != null && fIdx >= 0 && fIdx < doc.Roster.Count && doc.Roster[fIdx].IsBlue;
+                        bool isLive = ArenaStage.IsLiveObserverActive;
+                        float prog = (doc != null && doc.EndMs > 0) ? Mathf.Clamp01(ArenaStage.ReplayCursorMs / doc.EndMs) : 1f;
+                        int redAlive = frame != null ? frame.RedAliveCount : 0;
+                        int blueAlive = frame != null ? frame.BlueAliveCount : 0;
+                        Hud.UnitFrames.UpdatePlayerFrame(
+                            isLive ? "LIVE" : "TAPE",
+                            isBlue ? new Color(0.18f, 0.38f, 0.72f, 0.96f) : new Color(0.68f, 0.24f, 0.20f, 0.96f),
+                            $"CAM: {focusCs} (MATCH #{ArenaStage.ActiveSpectatorMatchId})",
+                            isLive ? "Staff Live Observer (1 Hz)" : $"Replay {ArenaStage.ReplayPlaybackSpeed:0.#}x | SPACE: Play/Pause",
+                            prog,
+                            isLive ? "LIVE FEED" : $"TAPE {TacSimArenaReplayModel.FormatClockText((long)ArenaStage.ReplayCursorMs)}",
+                            new Color(0.24f, 0.78f, 0.96f, 0.95f),
+                            (redAlive + blueAlive) > 0 ? redAlive / (float)(redAlive + blueAlive) : 0.5f,
+                            $"RED {redAlive} vs BLUE {blueAlive}",
+                            new Color(0.86f, 0.34f, 0.28f, 0.95f),
+                            "TAB: Next Unit | V: Cupola | ESC: Close");
+                        Hud.UnitFrames.ClearTarget();
+                        break;
+                    }
                     var st = ArenaStage?.State;
                     if (st != null)
                     {
@@ -2904,8 +2967,36 @@ namespace TacSim.Core
                     if (ArenaStage != null)
                     {
                         ArenaStage.ApplyLiveArenaMap(data);
-                        if (ArenaStage.IsArenaActive)
+                        if (ArenaStage.IsStageVisible)
                             BindCameraToArenaRig();
+                    }
+                    break;
+                case "arena.replay":
+                    if (ArenaStage != null)
+                    {
+                        ArenaStage.HandleReplayPanelFrame(data);
+                        if (ArenaStage.IsReplayModeActive)
+                        {
+                            _stageDirector?.SyncFrame(_isAboardShip, Hud != null && Hud.IsTextInputFocused);
+                            BindCameraToArenaRig();
+                            Hud.UpdateTopBar(
+                                $"3D ARENA REPLAY THEATER — MATCH #{ArenaStage.ActiveSpectatorMatchId}",
+                                "SPACE: Play/Pause | Left/Right: Keyframe | TAB: Follow Unit | ESC: Exit");
+                        }
+                    }
+                    break;
+                case "arena.observer":
+                    if (ArenaStage != null)
+                    {
+                        ArenaStage.HandleObserverPanelFrame(data);
+                        if (ArenaStage.IsLiveObserverActive)
+                        {
+                            _stageDirector?.SyncFrame(_isAboardShip, Hud != null && Hud.IsTextInputFocused);
+                            BindCameraToArenaRig();
+                            Hud.UpdateTopBar(
+                                $"3D ARENA LIVE OBSERVER — MATCH #{ArenaStage.ActiveSpectatorMatchId}",
+                                "LIVE 1 Hz STAFF FEED | TAB: Follow Unit | V: Cupola | ESC: Stop Watch");
+                        }
                     }
                     break;
                 case "arena.cockpit":
@@ -3047,11 +3138,40 @@ namespace TacSim.Core
             }
         }
 
+        private void CloseActiveReplayOrObserver()
+        {
+            if (ArenaStage == null || !ArenaStage.IsSpectatorTheaterActive) return;
+            bool wasLive = ArenaStage.IsLiveObserverActive;
+            ArenaStage.CloseReplayOrObserver();
+            if (wasLive && _ws != null && _ws.IsConnected)
+                _ws.SendLine("@arena/watch off");
+        }
+
+        private void HandleReplayOrObserverClosed()
+        {
+            if (ArenaStage != null && ArenaStage.IsArenaActive) return;
+            _stageDirector?.SyncFrame(_isAboardShip, Hud != null && Hud.IsTextInputFocused);
+            Hud?.ReplayHud?.RefreshView();
+            if (CameraRig != null)
+            {
+                CameraRig.SetMode(CameraRigMode.ThirdPersonWalk);
+                if (Player != null) CameraRig.SnapBehindTarget(Player.transform.eulerAngles.y);
+            }
+            Audio?.SetSoundscape(_isAboardShip ? AmbientSoundscape.ShipInterior : AmbientSoundscape.StationRing);
+            if (_lastRoomView != null && !string.IsNullOrEmpty(_lastRoomView.Name))
+                Hud?.UpdateTopBar(_lastRoomView.Name.ToUpperInvariant(), $"{_currentClockStr} | {_currentHullBadge}");
+            else
+                Hud?.UpdateTopBar("OOC SIMULATOR CENTRE", $"{_currentClockStr} | {_currentHullBadge}");
+        }
+
         private void BindCameraToArenaRig()
         {
-            if (ArenaStage?.PlayerVehicleTransform == null) return;
-            CameraRig.GroundVehicleTarget = ArenaStage.PlayerVehicleTransform;
-            CameraRig.GroundCupolaAnchor = ArenaStage.PlayerCupolaAnchor;
+            if (ArenaStage == null) return;
+            Transform target = ArenaStage.IsArenaActive ? ArenaStage.PlayerVehicleTransform : ArenaStage.SpectatorFocusTransform;
+            Transform cupola = ArenaStage.IsArenaActive ? ArenaStage.PlayerCupolaAnchor : ArenaStage.SpectatorFocusCupolaAnchor;
+            if (target == null) return;
+            CameraRig.GroundVehicleTarget = target;
+            CameraRig.GroundCupolaAnchor = cupola;
             if (CameraRig.Mode != CameraRigMode.GroundVehicleChase && CameraRig.Mode != CameraRigMode.GroundVehicleCupola)
                 CameraRig.SetMode(CameraRigMode.GroundVehicleChase);
         }

@@ -59,7 +59,7 @@ namespace TacSim.Core
 
         public void SyncFrame(bool isAboardShip, bool isTextInputFocused)
         {
-            bool inArena = _arenaStage != null && _arenaStage.IsArenaActive;
+            bool inArena = _arenaStage != null && _arenaStage.IsStageVisible;
             bool inSurface = !inArena && _surfaceStage != null && _surfaceStage.IsExcursionActive;
             bool seatedAtHelm = !inArena && !inSurface && _player != null && _player.IsSeatedAtHelm;
 

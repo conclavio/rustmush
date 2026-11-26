@@ -5878,5 +5878,150 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ArenaReplayAndObserverTheater_DecodesInterpolatesSpawns3DRigsAndWiresHudControls()
+        {
+            // 1. Decode pushed grid trigger from `SIM REPLAY <match>`
+            var gridPayload = JsonNode.Parse(@"{
+                ""schema"": { ""shape"": ""grid"" },
+                ""match"": 42,
+                ""keyframe"": { ""index"": 1 }
+            }");
+            Assert.IsTrue(TacSim.Arena.TacSimArenaReplayModel.TryDecodeReplayGridTrigger(gridPayload, out ulong trigMatch, out int trigKf));
+            Assert.AreEqual(42UL, trigMatch);
+            Assert.AreEqual(1, trigKf);
+
+            // 2. Decode full `arena.replay` document & test smooth interpolation + shortest-arc heading turn
+            var docPayload = JsonNode.Parse(@"{
+                ""schema"": { ""shape"": ""replay"" },
+                ""match"": 42,
+                ""arena"": ""proving_ground"",
+                ""cell_cm"": 1000,
+                ""width"": 64,
+                ""height"": 64,
+                ""summary_ms"": 5000,
+                ""end_ms"": 12000,
+                ""outcome"": ""red"",
+                ""reason"": ""elimination"",
+                ""mode"": ""hold"",
+                ""roster"": [
+                    { ""callsign"": ""R1"", ""team"": ""red"" },
+                    { ""callsign"": ""B1"", ""team"": ""blue"" }
+                ],
+                ""keyframes"": [
+                    [0, [[10, 10, 350], [40, 40, 180]]],
+                    [5000, [[20, 10, 10], [30, 40, 180]]],
+                    [10000, [[24, 14, 45], [30, 40, 180]]]
+                ],
+                ""shots"": [
+                    [4500, 0, 1, ""hit""],
+                    [8000, 0, 1, ""hit""]
+                ],
+                ""destroyed"": [
+                    [8000, 1]
+                ]
+            }");
+            Assert.IsTrue(TacSim.Arena.TacSimArenaReplayModel.TryDecodeReplayDocument(docPayload, out var doc));
+            Assert.AreEqual(42UL, doc.MatchId);
+            Assert.AreEqual(2, doc.Roster.Count);
+            Assert.AreEqual(3, doc.Keyframes.Count);
+            Assert.AreEqual(2, doc.Shots.Count);
+            Assert.AreEqual(1, doc.Destroyed.Count);
+
+            // Halfway between t=0 (350 deg) and t=5000 (10 deg) -> x=15, heading=0 deg (shortest arc through north!)
+            var mid = TacSim.Arena.TacSimArenaReplayModel.SampleInterpolatedFrame(doc, 2500f);
+            Assert.IsTrue(mid.BetweenKeyframes);
+            Assert.IsFalse(mid.Held);
+            Assert.AreEqual(15f, mid.Units[0].Value.CellX, 0.01f);
+            Assert.AreEqual(0f, mid.Units[0].Value.HeadingDeg, 0.1f);
+            Assert.AreEqual(1, mid.RedAliveCount);
+            Assert.AreEqual(1, mid.BlueAliveCount);
+            StringAssert.Contains("Between keyframes 1 and 2", TacSim.Arena.TacSimArenaReplayModel.FormatFrameSourceLabel(doc, mid));
+
+            // After wreck at 8000 ms, B1 is marked wrecked and BlueAliveCount drops to 0
+            var afterWreck = TacSim.Arena.TacSimArenaReplayModel.SampleInterpolatedFrame(doc, 10000f);
+            Assert.IsFalse(afterWreck.BetweenKeyframes);
+            Assert.IsTrue(afterWreck.IsWrecked[1]);
+            Assert.AreEqual(1, afterWreck.RedAliveCount);
+            Assert.AreEqual(0, afterWreck.BlueAliveCount);
+
+            // 3. OocArenaController + TacSimReplayControlsHud integration (Replay -> Keyframe Step -> Live Observer -> Clear)
+            var rootGo = new UnityEngine.GameObject("ArenaReplayTheaterTest");
+            try
+            {
+                var arenaGo = new UnityEngine.GameObject("ArenaReplayCtrl");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(null, null);
+
+                int docSubRequests = 0;
+                arena.OnRequestReplayDocumentSubscribe += () => docSubRequests++;
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                Assert.IsNotNull(hud.ReplayHud, "BuildHud must wire TacSimReplayControlsHud");
+                hud.ReplayHud.BindArena(arena);
+
+                // Pushed grid trigger enters replay mode & asks for full replay doc once
+                arena.HandleReplayPanelFrame(gridPayload);
+                Assert.IsTrue(arena.IsReplayModeActive);
+                Assert.IsTrue(arena.IsStageVisible);
+                Assert.AreEqual(1, docSubRequests);
+
+                // Full replay document spawns 3D rigs for both teams and jumps to triggered keyframe index 1 (5000 ms)
+                arena.HandleReplayPanelFrame(docPayload);
+                Assert.AreEqual(5000f, arena.ReplayCursorMs, 0.1f);
+                Assert.AreEqual(2, arena.ActiveReplayRigCount);
+                Assert.IsNotNull(arena.SpectatorFocusTransform);
+
+                hud.ReplayHud.RefreshView();
+                Assert.IsTrue(hud.ReplayHud.IsVisible);
+                Assert.AreEqual(2, hud.ReplayHud.VisibleRosterRowCount);
+                StringAssert.Contains("MATCH #42", hud.ReplayHud.HeaderBannerText);
+                StringAssert.Contains("[HOLD]", hud.ReplayHud.HeaderBannerText);
+
+                // Step forward keyframe to 10000 ms & cycle focused unit to B1
+                arena.StepReplayKeyframe(+1);
+                Assert.AreEqual(10000f, arena.ReplayCursorMs, 0.1f);
+                arena.CycleReplayFocusUnit(+1);
+                Assert.AreEqual(1, arena.ReplayFocusUnitIndex);
+
+                // Live staff `arena.observer` snapshot seamlessly replaces replay mode
+                var obsPayload = JsonNode.Parse(@"{
+                    ""match"": 77,
+                    ""now_ms"": 18000,
+                    ""tempo"": ""Brisk"",
+                    ""floor_ms"": 1000,
+                    ""cell_cm"": 1000,
+                    ""width"": 64,
+                    ""height"": 64,
+                    ""in_flight"": 2,
+                    ""units"": [
+                        [""R1"", ""R"", 12, 14, 90, 501, ""p""],
+                        [""B1"", ""B"", 38, 22, 270, 502, ""pmw""]
+                    ]
+                }");
+                arena.HandleObserverPanelFrame(obsPayload);
+                Assert.IsTrue(arena.IsLiveObserverActive);
+                Assert.IsFalse(arena.IsReplayModeActive);
+                Assert.AreEqual(77UL, arena.ActiveSpectatorMatchId);
+                Assert.AreEqual(2, arena.ActiveReplayRigCount);
+                hud.ReplayHud.RefreshView();
+                StringAssert.Contains("[LIVE OBSERVER]", hud.ReplayHud.HeaderBannerText);
+                StringAssert.Contains("IN FLIGHT: 2", hud.ReplayHud.HeaderBannerText);
+
+                // `watching: false` clears live observer cleanly
+                arena.HandleObserverPanelFrame(JsonNode.Parse(@"{ ""watching"": false }"));
+                Assert.IsFalse(arena.IsLiveObserverActive);
+                Assert.IsFalse(arena.IsStageVisible);
+                hud.ReplayHud.RefreshView();
+                Assert.IsFalse(hud.ReplayHud.IsVisible);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

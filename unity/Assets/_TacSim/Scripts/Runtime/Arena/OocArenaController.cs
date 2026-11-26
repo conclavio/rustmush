@@ -105,9 +105,51 @@ namespace TacSim.Arena
         public Transform PlayerCupolaAnchor => PlayerRig?.CupolaCameraAnchor;
 
         public bool IsArenaActive { get; private set; }
+        public bool IsReplayModeActive { get; private set; }
+        public bool IsLiveObserverActive { get; private set; }
+        public bool IsSpectatorTheaterActive => !IsArenaActive && (IsReplayModeActive || IsLiveObserverActive);
+        public bool IsStageVisible => IsArenaActive || IsReplayModeActive || IsLiveObserverActive;
         public bool KeyboardSuspended { get; set; }
         public float TargetCruiseSpeedKph => _desiredLiveSpeedKph;
         public ulong CachedMapMatchId { get; private set; }
+
+        public ArenaReplayDocument ActiveReplayDoc { get; private set; }
+        public ArenaObserverPicture ActiveObserverPicture { get; private set; }
+        public ArenaReplaySampledFrame LatestReplayFrame { get; private set; }
+        public ulong ActiveSpectatorMatchId { get; private set; }
+        public float ReplayCursorMs { get; private set; }
+        public bool ReplayPlaying { get; set; }
+        public float ReplayPlaybackSpeed { get; set; } = 1f;
+        public int ReplayFocusUnitIndex { get; private set; }
+        public int ActiveReplayRigCount => _replayRigs.Count;
+
+        public Transform SpectatorFocusTransform
+        {
+            get
+            {
+                if (_replayRigs.Count > 0)
+                {
+                    if (_replayRigs.TryGetValue(ReplayFocusUnitIndex, out var focused) && focused?.Root != null && focused.Root.activeSelf)
+                        return focused.Root.transform;
+                    foreach (var kv in _replayRigs)
+                    {
+                        if (kv.Value?.Root != null && kv.Value.Root.activeSelf)
+                            return kv.Value.Root.transform;
+                    }
+                }
+                return _spectatorCenterAnchor;
+            }
+        }
+
+        public Transform SpectatorFocusCupolaAnchor
+        {
+            get
+            {
+                if (_replayRigs.TryGetValue(ReplayFocusUnitIndex, out var focused) && focused?.CupolaCameraAnchor != null)
+                    return focused.CupolaCameraAnchor;
+                return null;
+            }
+        }
 
         // Diegetic Simulator Selector Console preferences (sent via live `sim` verbs in `room.simulator_lobby`)
         public string SelectedLobbyTeam { get; set; } = "red";
@@ -119,7 +161,10 @@ namespace TacSim.Arena
 
         public event Action<string> OnLiveCockpitVerbRequested;
         public event Action OnRequestArenaMapSubscribe;
+        public event Action OnRequestReplayDocumentSubscribe;
         public event Action OnArenaStateUpdated;
+        public event Action OnReplayStateChanged;
+        public event Action OnReplayClosed;
         public event Action<string> OnArenaCombatLog;
         public event Action OnToggleCameraViewRequested;
         public event Action<bool> OnWeaponShotFired; // (isLaser)
@@ -158,6 +203,17 @@ namespace TacSim.Arena
         public void ResetSessionState()
         {
             IsArenaActive = false;
+            IsReplayModeActive = false;
+            IsLiveObserverActive = false;
+            ActiveReplayDoc = null;
+            ActiveObserverPicture = null;
+            LatestReplayFrame = null;
+            ActiveSpectatorMatchId = 0;
+            ReplayCursorMs = 0f;
+            ReplayPlaying = false;
+            ReplayPlaybackSpeed = 1f;
+            ReplayFocusUnitIndex = 0;
+            _pendingOpenKeyframeIndex = -1;
             CachedMapMatchId = 0;
             _desiredLiveSpeedKph = 0f;
             _lastSentSpeedKph = 0f;
@@ -175,16 +231,22 @@ namespace TacSim.Arena
                 }
             }
             _contactRigs.Clear();
+            ClearReplayRigs();
             OnArenaStateUpdated?.Invoke();
+            OnReplayStateChanged?.Invoke();
         }
 
         private Transform _terrainRoot;
         private Transform _beaconsRoot;
         private Transform _unitsRoot;
         private Transform _vfxRoot;
+        private Transform _spectatorCenterAnchor;
 
         private readonly Dictionary<string, SpawnedGroundVehicleRig> _contactRigs = new Dictionary<string, SpawnedGroundVehicleRig>(StringComparer.OrdinalIgnoreCase);
+        private readonly Dictionary<int, SpawnedGroundVehicleRig> _replayRigs = new Dictionary<int, SpawnedGroundVehicleRig>();
+        private readonly List<ArenaReplayShot> _scratchWindowShots = new List<ArenaReplayShot>(16);
         private readonly List<ActiveShotTracer> _activeTracers = new List<ActiveShotTracer>();
+        private int _pendingOpenKeyframeIndex = -1;
 
         private float _desiredLiveSpeedKph;
         private float _desiredLiveHeadingDeg = 90f;
@@ -232,9 +294,17 @@ namespace TacSim.Arena
             }
             _terrainRoot = null;
             _contactRigs.Clear();
+            _replayRigs.Clear();
             _activeTracers.Clear();
 
             transform.position = ArenaStageOrigin;
+
+            var centerGo = new GameObject("SpectatorCenterAnchor");
+            centerGo.transform.SetParent(transform, false);
+            float midX = TerrainGrid.Width * TerrainGrid.CellSizeM * 0.5f;
+            float midZ = TerrainGrid.Height * TerrainGrid.CellSizeM * 0.5f;
+            centerGo.transform.localPosition = new Vector3(midX, TerrainGrid.SampleElevationMeters(midX, midZ) + 2f, midZ);
+            _spectatorCenterAnchor = centerGo.transform;
 
             _terrainRoot = new GameObject("ArenaTerrainChunks").transform;
             _terrainRoot.SetParent(transform, false);
@@ -354,14 +424,292 @@ namespace TacSim.Arena
 
         public void ApplyLiveArenaMap(JsonNode mapData)
         {
-            if (mapData == null || !mapData.IsObject || !mapData.Bool("seated", true)) return;
+            if (mapData == null || !mapData.IsObject) return;
+            bool allowSpectatorMap = IsReplayModeActive || IsLiveObserverActive;
+            if (!mapData.Bool("seated", true) && !allowSpectatorMap) return;
             var decoded = TacSimTerrainDecoder.DecodeArenaMapFrame(mapData);
             if (decoded == null) return;
             CachedMapMatchId = (ulong)Math.Max(0L, mapData.Long("match", 0));
             BuildArenaTerrain(Catalog, decoded);
-            EnsurePlayerRigSpawned(State.UnitType, State.Callsign, State.Party);
+            if (IsArenaActive)
+            {
+                EnsurePlayerRigSpawned(State.UnitType, State.Callsign, State.Party);
+            }
+            else if (IsSpectatorTheaterActive && ActiveReplayDoc != null)
+            {
+                SyncReplay3DRigs(immediate: true);
+            }
             string safeDisplay = MushProtocol.EscapeUnityRichText(decoded.DisplayName);
             OnArenaCombatLog?.Invoke($"<color=#66EEAA>[ARENA MAP]</color> Loaded {decoded.Width}x{decoded.Height} heightfield ({safeDisplay}, {decoded.KeySpots.Count} key spots).");
+        }
+
+        public void HandleReplayPanelFrame(JsonNode data)
+        {
+            if (data == null || !data.IsObject) return;
+            // A pilot actively seated in a live arena pod stays in their cockpit.
+            if (IsArenaActive) return;
+
+            if (TacSimArenaReplayModel.IsReplayUnavailable(data))
+            {
+                if (IsReplayModeActive)
+                    CloseReplayOrObserver();
+                return;
+            }
+
+            if (TacSimArenaReplayModel.TryDecodeReplayGridTrigger(data, out ulong trigMatch, out int kfIndex))
+            {
+                bool sameMatch = IsReplayModeActive && ActiveSpectatorMatchId == trigMatch;
+                IsLiveObserverActive = false;
+                ActiveObserverPicture = null;
+                IsReplayModeActive = true;
+                ActiveSpectatorMatchId = trigMatch;
+                _pendingOpenKeyframeIndex = kfIndex;
+                if (TerrainGrid == null)
+                    BuildArenaTerrain(Catalog, TacSimTerrainDecoder.LoadStaticArena("proving_ground"));
+                if (!sameMatch)
+                {
+                    ActiveReplayDoc = null;
+                    LatestReplayFrame = null;
+                    ReplayCursorMs = 0f;
+                    ReplayFocusUnitIndex = 0;
+                    ReplayPlaying = false;
+                    ClearReplayRigs();
+                }
+                OnRequestReplayDocumentSubscribe?.Invoke();
+                if (trigMatch != 0 && trigMatch != CachedMapMatchId)
+                    OnRequestArenaMapSubscribe?.Invoke();
+                OnReplayStateChanged?.Invoke();
+                return;
+            }
+
+            if (TacSimArenaReplayModel.TryDecodeReplayDocument(data, out var doc))
+            {
+                IsLiveObserverActive = false;
+                ActiveObserverPicture = null;
+                IsReplayModeActive = true;
+                ActiveSpectatorMatchId = doc.MatchId;
+                ActiveReplayDoc = doc;
+                if (TerrainGrid == null)
+                    BuildArenaTerrain(Catalog, TacSimTerrainDecoder.LoadStaticArena("proving_ground"));
+                if (doc.MatchId != 0 && doc.MatchId != CachedMapMatchId)
+                    OnRequestArenaMapSubscribe?.Invoke();
+
+                if (_pendingOpenKeyframeIndex >= 0 && doc.Keyframes.Count > 0)
+                {
+                    int clampedKf = Mathf.Clamp(_pendingOpenKeyframeIndex, 0, doc.Keyframes.Count - 1);
+                    ReplayCursorMs = doc.Keyframes[clampedKf].TimeMs;
+                }
+                else
+                {
+                    ReplayCursorMs = Mathf.Clamp(ReplayCursorMs, 0f, doc.EndMs);
+                }
+                _pendingOpenKeyframeIndex = -1;
+                if (ReplayFocusUnitIndex >= doc.Roster.Count)
+                    ReplayFocusUnitIndex = 0;
+
+                ReplayPlaying = doc.EndMs > 0 && ReplayCursorMs < doc.EndMs;
+                ClearReplayRigs();
+                SyncReplay3DRigs(immediate: true);
+                OnReplayStateChanged?.Invoke();
+            }
+        }
+
+        public void HandleObserverPanelFrame(JsonNode data)
+        {
+            if (data == null || !data.IsObject) return;
+            if (IsArenaActive) return;
+
+            if (TacSimArenaReplayModel.IsObserverCleared(data))
+            {
+                if (IsLiveObserverActive)
+                    CloseReplayOrObserver();
+                return;
+            }
+
+            if (!TacSimArenaReplayModel.TryDecodeObserverPicture(data, out var pic))
+                return;
+
+            bool matchChanged = !IsLiveObserverActive || ActiveSpectatorMatchId != pic.MatchId;
+            IsReplayModeActive = false;
+            IsLiveObserverActive = true;
+            ReplayPlaying = false;
+            ActiveSpectatorMatchId = pic.MatchId;
+            ActiveObserverPicture = pic;
+            ActiveReplayDoc = TacSimArenaReplayModel.FromObserverPicture(pic);
+            ReplayCursorMs = pic.NowMs;
+            if (ReplayFocusUnitIndex >= pic.Units.Count)
+                ReplayFocusUnitIndex = 0;
+
+            if (TerrainGrid == null)
+                BuildArenaTerrain(Catalog, TacSimTerrainDecoder.LoadStaticArena("proving_ground"));
+            if (matchChanged)
+            {
+                ClearReplayRigs();
+                if (pic.MatchId != 0 && pic.MatchId != CachedMapMatchId)
+                    OnRequestArenaMapSubscribe?.Invoke();
+            }
+
+            SyncReplay3DRigs(immediate: matchChanged);
+            OnReplayStateChanged?.Invoke();
+        }
+
+        public void SeekReplayMs(float targetMs)
+        {
+            if (!IsReplayModeActive || ActiveReplayDoc == null) return;
+            ReplayCursorMs = Mathf.Clamp(targetMs, 0f, ActiveReplayDoc.EndMs);
+            SyncReplay3DRigs(immediate: true);
+            OnReplayStateChanged?.Invoke();
+        }
+
+        public void ToggleReplayPlaying()
+        {
+            if (!IsReplayModeActive || ActiveReplayDoc == null) return;
+            if (!ReplayPlaying && ReplayCursorMs >= ActiveReplayDoc.EndMs - 5f && ActiveReplayDoc.EndMs > 0)
+                ReplayCursorMs = 0f;
+            ReplayPlaying = !ReplayPlaying;
+            OnReplayStateChanged?.Invoke();
+        }
+
+        public void SetReplaySpeed(float speed)
+        {
+            ReplayPlaybackSpeed = Mathf.Clamp(speed, 0.25f, 8f);
+            OnReplayStateChanged?.Invoke();
+        }
+
+        public void StepReplayKeyframe(int delta)
+        {
+            if (!IsReplayModeActive || ActiveReplayDoc == null || ActiveReplayDoc.Keyframes.Count == 0) return;
+            ReplayPlaying = false;
+            float cur = ReplayCursorMs;
+            long target = (long)cur;
+            if (delta < 0)
+            {
+                for (int i = ActiveReplayDoc.Keyframes.Count - 1; i >= 0; i--)
+                {
+                    if (ActiveReplayDoc.Keyframes[i].TimeMs < cur - 1f)
+                    {
+                        target = ActiveReplayDoc.Keyframes[i].TimeMs;
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                for (int i = 0; i < ActiveReplayDoc.Keyframes.Count; i++)
+                {
+                    if (ActiveReplayDoc.Keyframes[i].TimeMs > cur + 1f)
+                    {
+                        target = ActiveReplayDoc.Keyframes[i].TimeMs;
+                        break;
+                    }
+                }
+            }
+            SeekReplayMs(target);
+        }
+
+        public void SelectReplayFocusUnit(int rosterIndex)
+        {
+            int n = ActiveReplayDoc != null ? ActiveReplayDoc.Roster.Count : 0;
+            if (n <= 0) return;
+            ReplayFocusUnitIndex = ((rosterIndex % n) + n) % n;
+            OnReplayStateChanged?.Invoke();
+        }
+
+        public void CycleReplayFocusUnit(int delta = 1)
+        {
+            SelectReplayFocusUnit(ReplayFocusUnitIndex + delta);
+        }
+
+        public void CloseReplayOrObserver()
+        {
+            if (!IsReplayModeActive && !IsLiveObserverActive) return;
+            IsReplayModeActive = false;
+            IsLiveObserverActive = false;
+            ReplayPlaying = false;
+            ActiveReplayDoc = null;
+            ActiveObserverPicture = null;
+            LatestReplayFrame = null;
+            ActiveSpectatorMatchId = 0;
+            ReplayCursorMs = 0f;
+            _pendingOpenKeyframeIndex = -1;
+            ClearReplayRigs();
+            OnReplayStateChanged?.Invoke();
+            OnReplayClosed?.Invoke();
+        }
+
+        private void ClearReplayRigs()
+        {
+            foreach (var kv in _replayRigs)
+            {
+                if (kv.Value?.Root != null)
+                {
+                    if (Application.isPlaying) Destroy(kv.Value.Root);
+                    else DestroyImmediate(kv.Value.Root);
+                }
+            }
+            _replayRigs.Clear();
+        }
+
+        private Vector3 ReplayCellToWorldPos(float cellX, float cellY)
+        {
+            if (TerrainGrid == null) return ArenaStageOrigin;
+            float siteCellM = TerrainGrid.CellSizeM / Math.Max(1, TerrainGrid.SpanCells);
+            float lx = (cellX - TerrainGrid.OriginCellX + 0.5f) * siteCellM;
+            float lz = (cellY - TerrainGrid.OriginCellY + 0.5f) * siteCellM;
+            float maxX = TerrainGrid.Width * TerrainGrid.CellSizeM;
+            float maxZ = TerrainGrid.Height * TerrainGrid.CellSizeM;
+            lx = Mathf.Clamp(lx, 0f, maxX);
+            lz = Mathf.Clamp(lz, 0f, maxZ);
+            float ly = TerrainGrid.SampleElevationMeters(lx, lz);
+            return ArenaStageOrigin + new Vector3(lx, ly, lz);
+        }
+
+        private void SyncReplay3DRigs(bool immediate, float dt = 0.016f)
+        {
+            if (ActiveReplayDoc == null || _unitsRoot == null || TerrainGrid == null) return;
+            LatestReplayFrame = TacSimArenaReplayModel.SampleInterpolatedFrame(ActiveReplayDoc, ReplayCursorMs);
+
+            if (PlayerRig?.Root != null && PlayerRig.Root.activeSelf)
+                PlayerRig.Root.SetActive(false);
+
+            int n = ActiveReplayDoc.Roster.Count;
+            for (int i = 0; i < n; i++)
+            {
+                var entry = ActiveReplayDoc.Roster[i];
+                ArenaReplayUnitPose? pose = i < LatestReplayFrame.Units.Length ? LatestReplayFrame.Units[i] : null;
+                bool wrecked = i < LatestReplayFrame.IsWrecked.Length && LatestReplayFrame.IsWrecked[i];
+
+                if (!pose.HasValue)
+                {
+                    if (_replayRigs.TryGetValue(i, out var hidden) && hidden?.Root != null && hidden.Root.activeSelf)
+                        hidden.Root.SetActive(false);
+                    continue;
+                }
+
+                Vector3 worldPos = ReplayCellToWorldPos(pose.Value.CellX, pose.Value.CellY);
+                if (!_replayRigs.TryGetValue(i, out var rig) || rig?.Root == null)
+                {
+                    string safeCs = MushProtocol.EscapeUnityRichText(entry.Callsign);
+                    rig = TacSimVehicleVisualFactory.SpawnArenaCombatUnit(Catalog, _unitsRoot, "line_tank", safeCs, entry.PartyCode, worldPos, pose.Value.HeadingDeg);
+                    rig.Root.name = $"ReplayUnit_{i}_{entry.Callsign}";
+                    _replayRigs[i] = rig;
+                }
+                else
+                {
+                    if (!rig.Root.activeSelf) rig.Root.SetActive(true);
+                    float blend = immediate ? 1f : (1f - Mathf.Exp(-14f * dt));
+                    rig.Root.transform.position = Vector3.Lerp(rig.Root.transform.position, worldPos, blend);
+                    rig.Root.transform.rotation = Quaternion.Slerp(rig.Root.transform.rotation, Quaternion.Euler(0f, pose.Value.HeadingDeg, 0f), blend);
+                }
+
+                rig.SetWrecked(wrecked);
+                if (rig.Billboard?.NameplateText != null)
+                {
+                    string focusMark = i == ReplayFocusUnitIndex ? "<color=#FFEE44>[CAM]</color> " : string.Empty;
+                    string wreckTag = wrecked ? " <color=#FF6666>[WRECK]</color>" : string.Empty;
+                    rig.Billboard.NameplateText.text = $"{focusMark}{MushProtocol.EscapeUnityRichText(entry.Callsign)}{wreckTag}";
+                }
+            }
         }
 
         public void ApplyLiveCockpitFrame(JsonNode d)
@@ -372,6 +720,18 @@ namespace TacSim.Arena
                 if (IsArenaActive)
                     ExitArena();
                 return;
+            }
+
+            if (IsReplayModeActive || IsLiveObserverActive)
+            {
+                IsReplayModeActive = false;
+                IsLiveObserverActive = false;
+                ReplayPlaying = false;
+                ActiveReplayDoc = null;
+                ActiveObserverPicture = null;
+                LatestReplayFrame = null;
+                ClearReplayRigs();
+                OnReplayStateChanged?.Invoke();
             }
 
             IsArenaActive = true;
@@ -801,11 +1161,70 @@ namespace TacSim.Arena
             float dt = Mathf.Max(0.0001f, Time.deltaTime);
             UpdateTracers(dt);
 
-            if (!IsArenaActive || TerrainGrid == null)
+            if (TerrainGrid == null)
                 return;
 
-            Handle3DBattlefieldMouseAndKeys();
-            StepLiveClientInterpolationAndHelm(dt);
+            if (IsArenaActive)
+            {
+                Handle3DBattlefieldMouseAndKeys();
+                StepLiveClientInterpolationAndHelm(dt);
+                return;
+            }
+
+            if (IsSpectatorTheaterActive)
+            {
+                UpdateSpectatorPlayback(dt);
+            }
+        }
+
+        private void UpdateSpectatorPlayback(float dt)
+        {
+            if (!KeyboardSuspended)
+            {
+                if (Input.GetKeyDown(KeyCode.V))
+                    OnToggleCameraViewRequested?.Invoke();
+                else if (IsReplayModeActive && Input.GetKeyDown(KeyCode.Space))
+                    ToggleReplayPlaying();
+                else if (IsReplayModeActive && Input.GetKeyDown(KeyCode.LeftArrow))
+                    StepReplayKeyframe(-1);
+                else if (IsReplayModeActive && Input.GetKeyDown(KeyCode.RightArrow))
+                    StepReplayKeyframe(+1);
+            }
+
+            if (IsReplayModeActive && ReplayPlaying && ActiveReplayDoc != null)
+            {
+                float prevMs = ReplayCursorMs;
+                ReplayCursorMs += dt * 1000f * ReplayPlaybackSpeed;
+                if (ReplayCursorMs >= ActiveReplayDoc.EndMs)
+                {
+                    ReplayCursorMs = ActiveReplayDoc.EndMs;
+                    ReplayPlaying = false;
+                    OnReplayStateChanged?.Invoke();
+                }
+
+                SyncReplay3DRigs(immediate: false, dt: dt);
+
+                TacSimArenaReplayModel.CollectShotsInWindow(ActiveReplayDoc, prevMs, ReplayCursorMs, _scratchWindowShots);
+                for (int i = 0; i < _scratchWindowShots.Count; i++)
+                {
+                    var shot = _scratchWindowShots[i];
+                    if (_replayRigs.TryGetValue(shot.ShooterIndex, out var shRig) &&
+                        _replayRigs.TryGetValue(shot.TargetIndex, out var tgRig) &&
+                        shRig?.Root != null && tgRig?.Root != null)
+                    {
+                        Vector3 start = shRig.MuzzlePoint != null ? shRig.MuzzlePoint.position : shRig.Root.transform.position + Vector3.up * 1.8f;
+                        Vector3 end = tgRig.Root.transform.position + Vector3.up * 1.5f;
+                        bool isHit = string.Equals(shot.Outcome, "hit", StringComparison.OrdinalIgnoreCase);
+                        SpawnShotTracer(start, end, isLaser: isHit);
+                        shRig.PlayWeaponRecoil();
+                        OnWeaponShotFired?.Invoke(isHit);
+                    }
+                }
+            }
+            else if (IsLiveObserverActive && ActiveReplayDoc != null)
+            {
+                SyncReplay3DRigs(immediate: false, dt: dt);
+            }
         }
 
         private void Handle3DBattlefieldMouseAndKeys()
