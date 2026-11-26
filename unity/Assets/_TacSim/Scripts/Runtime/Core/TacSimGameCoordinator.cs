@@ -313,6 +313,19 @@ namespace TacSim.Core
                 Hud?.FloatingCallouts?.ShowCallout($"HOLO CHART: {bodyOrPortId.ToUpperInvariant()}", new Color(0.40f, 0.92f, 1f, 1f), 1.5f);
                 Hud?.SolarMap?.FocusPort(bodyOrPortId);
             };
+            ShipInterior.OnAlertLevelChanged += alert =>
+            {
+                if (alert == ShipAlertLevel.RedAlert)
+                {
+                    Audio?.PlayRadarScanPing();
+                    Hud?.FloatingCallouts?.ShowCallout("RED ALERT — TORPEDO INBOUND!", new Color(1.0f, 0.24f, 0.18f, 1f), 2.4f);
+                }
+                else if (alert == ShipAlertLevel.Caution)
+                {
+                    Audio?.PlayRadarScanPing();
+                    Hud?.FloatingCallouts?.ShowCallout("YELLOW ALERT — HOSTILE CONTACT", new Color(1.0f, 0.76f, 0.24f, 1f), 2.0f);
+                }
+            };
 
             StationWorld.OnPortalCrossed += HandleStationPortalCrossed;
             ShipInterior.OnPortalCrossed += HandleShipPortalCrossed;
