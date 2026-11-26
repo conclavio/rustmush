@@ -5400,5 +5400,95 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void CommandPaletteAndKeybindMacros_FuzzyMatchFastTrailSolarInspectAndCustomMacros()
+        {
+            // 1. Multi-token & ordered subsequence fuzzy matching
+            Assert.Greater(TacSim.UI.TacSimCommandPalette.ScoreFuzzyMatch("solar port chart & plan: stickney yards", "stickney"), 0);
+            Assert.Greater(TacSim.UI.TacSimCommandPalette.ScoreFuzzyMatch("ship active sailing orders +ship/orders", "shor"), 0);
+            Assert.Greater(TacSim.UI.TacSimCommandPalette.ScoreFuzzyMatch("world step out of character +ooc", "+ooc"), 0);
+            Assert.AreEqual(-1, TacSim.UI.TacSimCommandPalette.ScoreFuzzyMatch("ceres freeport exchange", "titan"));
+
+            var rootGo = new UnityEngine.GameObject("CommandPaletteAndMacrosTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                Assert.IsNotNull(hud.CommandPalette, "BuildHud must wire Ctrl+K Command Palette");
+                Assert.IsNotNull(hud.KeybindHelp, "BuildHud must wire F1 Keybind Help & Custom Macros");
+
+                var stGo = new UnityEngine.GameObject("StationPal");
+                stGo.transform.SetParent(rootGo.transform, false);
+                var station = stGo.AddComponent<TacSim.World.StationWorldController>();
+                station.BuildStation(null, "neighborhood.ceres_freeport");
+
+                var shipGo = new UnityEngine.GameObject("ShipPal");
+                shipGo.transform.SetParent(rootGo.transform, false);
+                var ship = shipGo.AddComponent<TacSim.World.ShipInteriorController>();
+                ship.BuildInterior(null);
+
+                hud.CommandPalette.BindWorldSources(station, ship);
+                hud.CommandPalette.SetActiveStage(TacSim.Core.TacSimActiveStage.StationWalk);
+
+                // 2. Solar port search + execution
+                string inspectedPort = null;
+                hud.CommandPalette.OnInspectSolarPortRequested += p => inspectedPort = p;
+                hud.CommandPalette.SetOpen(true);
+                Assert.IsTrue(hud.CommandPalette.IsOpen);
+                Assert.IsTrue(hud.IsModalOpen);
+                hud.CommandPalette.SetQuery("stickney");
+                Assert.GreaterOrEqual(hud.CommandPalette.FilteredMatchCount, 1);
+                Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
+                Assert.AreEqual("stickney", inspectedPort);
+                Assert.IsFalse(hud.CommandPalette.IsOpen, "Executing a palette entry must close the palette");
+
+                // 3. 3D Station Wayfinder trail dispatch from palette
+                string plottedRoom = null;
+                hud.CommandPalette.OnPlotStationRoomRequested += r => plottedRoom = r;
+                hud.CommandPalette.SetOpen(true);
+                hud.CommandPalette.SetQuery("3d trail");
+                Assert.GreaterOrEqual(hud.CommandPalette.FilteredMatchCount, 1);
+                Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
+                Assert.IsFalse(string.IsNullOrEmpty(plottedRoom));
+
+                // 4. Verified +ooc command search + execution
+                string sentCmd = null;
+                hud.CommandPalette.OnCommandRequested += c => sentCmd = c;
+                hud.CommandPalette.SetOpen(true);
+                hud.CommandPalette.SetQuery("+ooc");
+                Assert.GreaterOrEqual(hud.CommandPalette.FilteredMatchCount, 1);
+                Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
+                Assert.AreEqual("+ooc", sentCmd);
+
+                // 5. F1 Keybinds & F5-F8 Custom Macros
+                hud.KeybindHelp.SetOpen(true);
+                Assert.IsTrue(hud.KeybindHelp.IsOpen);
+                Assert.IsTrue(hud.IsModalOpen);
+                Assert.AreEqual("+ship", hud.KeybindHelp.GetMacroCommand(0));
+                hud.KeybindHelp.SetMacroSlot(0, "Hold Check", "+ship/hold", persist: false);
+                Assert.AreEqual("Hold Check", hud.KeybindHelp.GetMacroLabel(0));
+                Assert.AreEqual("+ship/hold", hud.KeybindHelp.GetMacroCommand(0));
+
+                string macroLbl = null;
+                string macroCmd = null;
+                hud.KeybindHelp.OnMacroTriggered += (l, c) => { macroLbl = l; macroCmd = c; };
+                Assert.IsTrue(hud.KeybindHelp.TriggerMacroSlot(0));
+                Assert.AreEqual("Hold Check", macroLbl);
+                Assert.AreEqual("+ship/hold", macroCmd);
+
+                // 6. ESC closes CommandPalette before KeybindHelp
+                hud.CommandPalette.SetOpen(true);
+                Assert.IsTrue(hud.TryCloseTopmostModal());
+                Assert.IsFalse(hud.CommandPalette.IsOpen);
+                Assert.IsTrue(hud.KeybindHelp.IsOpen);
+                Assert.IsTrue(hud.TryCloseTopmostModal());
+                Assert.IsFalse(hud.KeybindHelp.IsOpen);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

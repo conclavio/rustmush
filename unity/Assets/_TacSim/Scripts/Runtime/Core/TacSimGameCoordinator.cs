@@ -238,6 +238,8 @@ namespace TacSim.Core
 
             if (Hud.OpsDirectory != null)
                 Hud.OpsDirectory.BindSources(StationWorld, ShipInterior, Wayfinder, TradeState, SpaceStage, SurfaceStage, ArenaStage);
+            if (Hud.CommandPalette != null)
+                Hud.CommandPalette.BindWorldSources(StationWorld, ShipInterior);
 
             if (_ws == null)
                 _ws = new MushWsClient();
@@ -511,6 +513,41 @@ namespace TacSim.Core
                 };
                 Hud.OpsDirectory.OnPrefillChatRequested += prefix => Hud?.PrefillChatInput(prefix);
                 Hud.OpsDirectory.OnCommandRequested += ExecutePlayerCommand;
+            }
+
+            if (Hud.CommandPalette != null)
+            {
+                Hud.CommandPalette.OnCommandRequested += ExecutePlayerCommand;
+                Hud.CommandPalette.OnPlotStationRoomRequested += roomId => PlotStationWayfinderRoute(roomId, autoWalk: true);
+                Hud.CommandPalette.OnPlotShipCompartmentRequested += compId => PlotShipWayfinderRoute(compId, autoWalk: true);
+                Hud.CommandPalette.OnInspectSolarPortRequested += portSlug => Hud.SolarMap?.FocusPort(portSlug);
+                Hud.CommandPalette.OnUiActionRequested += act =>
+                {
+                    if (Audio != null) Audio.PlayUiClick();
+                    switch (act)
+                    {
+                        case "ui:sheet": Hud.CharacterSheet?.SetOpen(true); break;
+                        case "ui:solar_map": Hud.SolarMap?.SetOpen(true); break;
+                        case "ui:ops_dir": Hud.OpsDirectory?.SetOpen(true); break;
+                        case "ui:keybinds": Hud.KeybindHelp?.SetOpen(true); break;
+                        case "ui:options": Hud.DisplayOptions?.SetOpen(true); break;
+                        case "ui:cycle_cam": HandleCycleOrbitalCamera(); break;
+                        case "ui:clear_wayfinder":
+                            Wayfinder?.ClearRoute();
+                            Hud.OpsDirectory?.SyncWayfinderBanner(ActiveStage);
+                            break;
+                    }
+                };
+            }
+
+            if (Hud.KeybindHelp != null)
+            {
+                Hud.KeybindHelp.OnMacroTriggered += (lbl, cmd) =>
+                {
+                    if (Audio != null) Audio.PlayUiClick();
+                    Hud.FloatingCallouts?.ShowCallout($"MACRO: {lbl.ToUpperInvariant()}", new Color(0.45f, 0.92f, 1f, 1f), 1.5f);
+                    ExecutePlayerCommand(cmd);
+                };
             }
 
             _contentSync.OnSyncLog += msg =>
@@ -801,6 +838,7 @@ namespace TacSim.Core
             _nextUnitFrameSyncAt = Time.unscaledTime + 0.15f;
 
             Hud.OpsDirectory?.UpdateLiveRoom(_lastRoomView, stage);
+            Hud.CommandPalette?.SetActiveStage(stage);
 
             if (Hud.CharacterSheet != null)
             {

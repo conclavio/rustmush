@@ -103,9 +103,18 @@ test-group = 'load-sensitive'
 #   FLAKY_KNOWN_BLESS=1 cargo test -p mush-contract-tests --test ci_policy flaky_known::
 [[profile.default.overrides]]
 filter = '''
-    (binary_id(mush-bot::mining_cohort) & test(=a_bot_hires_launches_mines_recovers_and_sells_with_a_detachment))
-  | (binary_id(mush-bot::mining_cohort) & test(=a_captain_and_its_escort_fight_the_raider_in_an_ic_field))
-  | (binary_id(mush-gateway::split_halves) & test(/^arena_story_split::/))
+    (binary_id(mush-gateway::split_halves) & test(/^arena_story_split::/))
+  | (binary_id(mush-gateway::split_halves) & test(/^gateway_generations_unit::/))
+  | (binary_id(mush-gateway::split_halves) & test(/^server_panic_relaunch::/))
+  | (binary_id(mush-gateway::split_halves) & test(/^two_gateways::/))
+  | (binary_id(mush-gateway::split_halves) & test(/^two_process_e2e::/))
+  | (binary_id(mush-gateway::split_halves) & test(=arena_custody_split::a_pilot_in_a_pod_across_a_boarding_crash_reads_the_hatch_line))
+  | (binary_id(mush-gateway::split_halves) & test(=arena_custody_split::the_arena_surface_survives_the_split_and_a_server_restart))
+  | (binary_id(mush-gateway::split_halves) & test(=gateway_generations::a_drains_while_b_serves_and_every_session_is_warned_then_moved))
+  | (binary_id(mush-gateway::split_halves) & test(=gateway_generations::a_finish_warns_once_closes_after_the_grace_and_leaves_no_marker))
+  | (binary_id(mush-gateway::split_halves) & test(=restart_survival::client_disconnect_during_gap_leaves_survivor_intact))
+  | (binary_id(mush-gateway::split_halves) & test(=restart_survival::restart_mid_scene_resumes_in_current_room))
+  | (binary_id(mush-gateway::split_halves) & test(=server_unit::a_gateway_started_before_its_server_serves_the_gap_then_heals))
   | (binary_id(mush-sim) & test(=journey::tests::e7c6_b2_a_leg_boundary_overflow_is_visible_not_silent))
   | (binary_id(mush-sim) & test(=journey::tests::e7c6_b2_the_leg_cursor_is_the_idempotency_key))
   | (binary_id(mush-sim) & test(=journey::tests::e7c6_b2_the_wire_re_runs_max_legs_and_every_invariant))

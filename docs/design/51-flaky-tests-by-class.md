@@ -695,6 +695,12 @@ are in `mush-storykit`; and `ArenaConfig::seed` is the one product change.
 **FL.4 is cut and built** (2026-11-23): the owner started its session. Its row below is as it
 was sketched; [the cut note](51-cut-notes.md) says where the build differs.
 
+**FL.5 is cut and built** (2026-11-25, with FL.6 to FL.10 on the owner's "Yes, cut them"). What
+it built and where it differs from its row below is in [the cut note](51-cut-notes.md), under FL.5.
+In short: one busy-sentence table and a counted whole-reply read in the kit, the bot's rig on both,
+`StoryBudget` in `mining_cohort`'s stories, the solo flight's match derived and its hit stated as
+odds; rows 5 and 6 leave `flaky-known.toml`, and the soak's new flake (row 20) is fixed.
+
 **FL.6 is cut and built** (cut 2026-11-25 with FL.5 to FL.10, "Yes, cut them"). Its row below is as
 it was sketched; [the cut note](51-cut-notes.md) says where the build differs. In short: the kit's
 `idle` is the paused clock's barrier, row 10 and the in-`src` tests it fits run on the paused

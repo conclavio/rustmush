@@ -724,8 +724,12 @@ async fn field_pilot_complete_production_author_story() {
         Duration::from_secs(30 * 60),
     )
     .await;
-    let report = author.say("@mind/report 1", "Win rate").await;
-    assert!(report.contains("of 30") && report.contains("Wilson"));
+    // Read whole (doc 51 rule S): what the report holds, and what it must not.
+    let report = author.ask_whole("@mind/report 1").await;
+    assert!(
+        report.contains("Win rate") && report.contains("of 30") && report.contains("Wilson"),
+        "{report}"
+    );
     let (denied, observer_report) = observer
         .answer("@mind/report 1", &["No such owned run or bench."])
         .await;
@@ -852,9 +856,14 @@ async fn field_pilot_complete_production_author_story() {
             "Bench step complete; reference hashes matched.",
         )
         .await;
-    let bench_pic = author.say("BENCH PIC", "Bench picture").await;
-    let bench_trace = author.say("BENCH TRACE 3", "Think ").await;
-    let bench_eval = author.say("BENCH EVAL 1 + 1", "EVAL 2 (").await;
+    // Read whole (doc 51 rule S): an absence is asserted on a whole reply,
+    // never on a read that stopped at a needle.
+    let bench_pic = author.ask_whole("BENCH PIC").await;
+    let bench_trace = author.ask_whole("BENCH TRACE 3").await;
+    let bench_eval = author.ask_whole("BENCH EVAL 1 + 1").await;
+    assert!(bench_pic.contains("Bench picture"), "{bench_pic}");
+    assert!(bench_trace.contains("Think "), "{bench_trace}");
+    assert!(bench_eval.contains("EVAL 2 ("), "{bench_eval}");
     assert!(!bench_pic.contains("fn think") && !bench_trace.contains("const MIND"));
     let (denied, foreign_bench) = observer
         .answer(
@@ -1014,7 +1023,7 @@ async fn field_pilot_complete_production_author_story() {
             "started_unix_ms":started,"first_definition":definition,"second_definition":definition2,
             "finished_unix_ms":SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis(),
             "first_seal":sealed,"substituted_seal":substituted,"checks":reports,
-            "trace":trace,"bench":{"picture":bench_pic,"trace":bench_trace,"eval":bench_eval},
+            "trace":trace,"bench":{"picture":bench_pic.text(),"trace":bench_trace.text(),"eval":bench_eval.text()},
             "proving_replay":proving_replay,"proving_bench_picture":proving_bench_pic,
         })).unwrap()).unwrap();
     }

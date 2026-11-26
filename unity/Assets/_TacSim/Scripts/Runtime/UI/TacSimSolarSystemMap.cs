@@ -304,6 +304,36 @@ namespace TacSim.UI
             RedrawOrreryTexture();
         }
 
+        public void FocusPort(string portSlug)
+        {
+            if (string.IsNullOrWhiteSpace(portSlug))
+            {
+                SetOpen(true);
+                return;
+            }
+            string cleanSlug = portSlug.Trim().ToLowerInvariant();
+            SelectedPortId = cleanSlug;
+            if (CurrentFrame != null)
+            {
+                var route = CurrentFrame.FindRouteForBodyOrPort(cleanSlug);
+                if (route != null)
+                {
+                    SelectedBodyId = !string.IsNullOrEmpty(route.Body) ? route.Body : route.To;
+                    SelectedPortId = route.To;
+                }
+                else
+                {
+                    var body = CurrentFrame.FindBody(cleanSlug);
+                    if (body != null)
+                        SelectedBodyId = body.Id;
+                }
+            }
+            SetOpen(true);
+            RefreshSelectedDossier();
+            _dirty = true;
+            RedrawOrreryTexture();
+        }
+
         public void ToggleTiltMode()
         {
             _tiltDeg = _tiltDeg > 5f ? 0f : 38f;
