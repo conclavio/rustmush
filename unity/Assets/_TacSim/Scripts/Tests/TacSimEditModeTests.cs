@@ -7594,5 +7594,148 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ArenaTargetInspectionPaperDollScanActionAnd3DBattlefieldMarkers_DecodesConditionRendersContactDollEmitsScanAndPlacesMarkers()
+        {
+            // 1. Verify BandLetterColor & RenderContactScanToTexture for unscanned, scanned (g/y/r/d), and wrecked contacts
+            var tankDoll = TacSim.Arena.TacSimArmorPaperDoll.FindForUnitType("tacsim.unit.line_tank");
+            Assert.IsNotNull(tankDoll);
+            UnityEngine.Color32[] pix = null;
+            UnityEngine.Texture2D tex = null;
+            try
+            {
+                // Unscanned -> steel radar silhouette (distinct from green/yellow/red/destroyed)
+                tex = TacSim.Arena.TacSimArmorPaperDoll.RenderContactScanToTexture(tankDoll, null, null, false, tex, ref pix);
+                Assert.IsNotNull(tex);
+                var unscannedCol0 = TacSim.Arena.TacSimArmorPaperDoll.BandLetterColor('?', 0);
+                var greenCol0 = TacSim.Arena.TacSimArmorPaperDoll.BandLetterColor('g', 0);
+                var yellowCol0 = TacSim.Arena.TacSimArmorPaperDoll.BandLetterColor('y', 0);
+                var redCol0 = TacSim.Arena.TacSimArmorPaperDoll.BandLetterColor('r', 0);
+                var deadCol0 = TacSim.Arena.TacSimArmorPaperDoll.BandLetterColor('d', 0);
+                Assert.AreNotEqual(unscannedCol0, greenCol0);
+                Assert.AreNotEqual(greenCol0, yellowCol0);
+                Assert.AreNotEqual(yellowCol0, redCol0);
+                Assert.AreNotEqual(redCol0, deadCol0);
+
+                // Scanned -> hull='y', turret='g', left_track='r', right_track='d', engine='g'
+                var secs = new[] { "hull", "turret", "left_track", "right_track", "engine" };
+                tex = TacSim.Arena.TacSimArmorPaperDoll.RenderContactScanToTexture(tankDoll, secs, "ygrdg", false, tex, ref pix);
+                bool sawYellow = false, sawGreen = false, sawRed = false, sawDead = false;
+                for (int i = 0; i < pix.Length; i++)
+                {
+                    if (pix[i].Equals(yellowCol0) || pix[i].Equals(TacSim.Arena.TacSimArmorPaperDoll.BandLetterColor('y', 1))) sawYellow = true;
+                    if (pix[i].Equals(greenCol0) || pix[i].Equals(TacSim.Arena.TacSimArmorPaperDoll.BandLetterColor('g', 1))) sawGreen = true;
+                    if (pix[i].Equals(redCol0) || pix[i].Equals(TacSim.Arena.TacSimArmorPaperDoll.BandLetterColor('r', 1))) sawRed = true;
+                    if (pix[i].Equals(deadCol0) || pix[i].Equals(TacSim.Arena.TacSimArmorPaperDoll.BandLetterColor('d', 1))) sawDead = true;
+                }
+                Assert.IsTrue(sawYellow && sawGreen && sawRed && sawDead, "Scanned target paper-doll must color hull/turret/tracks by exact scan band letters");
+            }
+            finally
+            {
+                if (tex != null) UnityEngine.Object.DestroyImmediate(tex);
+            }
+
+            // 2. Full live arena frame integration: scan_tables, condition, aspect, band, moving, fatal, motor, 3D markers, and TargetInspectCard
+            var rootGo = new UnityEngine.GameObject("Wave6PR1_TargetInspectAndMarkersTest");
+            try
+            {
+                var catalog = TacSimAssetCatalog.LoadOrDefault();
+                var arenaGo = new UnityEngine.GameObject("Arena");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(catalog, TacSimTerrainDecoder.LoadStaticArena("proving_ground"));
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.Overlays.BindControllers(null, arena, null);
+
+                var emitted = new List<string>();
+                arena.OnLiveCockpitVerbRequested += emitted.Add;
+                hud.Overlays.OnArenaCockpitVerbRequested += v => arena.ExecuteCockpitAction(v);
+
+                // Frame without lock -> TargetInspectCard & 3D locked ground ring must both be hidden
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 101, ""seated"": true, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""mode"": ""skirmish"", ""power"": ""online"",
+                    ""x_cm"": 10000, ""y_cm"": 10000, ""heading_deg"": 90, ""speed_kph"": 10,
+                    ""lock_designator"": """",
+                    ""contacts"": []
+                }"));
+                hud.Overlays.RefreshArenaHud();
+                Assert.IsFalse(hud.Overlays.IsTargetInspectCardVisible);
+                Assert.IsFalse(arena.IsLockedTargetGroundRingVisible);
+                Assert.IsFalse(arena.IsDriveWaypointBeaconVisible);
+
+                // Frame with locked moving rear-exposed scanned contact B1 + active motor goal
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 101, ""seated"": true, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""mode"": ""skirmish"", ""power"": ""online"",
+                    ""x_cm"": 10000, ""y_cm"": 10000, ""heading_deg"": 90, ""speed_kph"": 24,
+                    ""lock_designator"": ""B1"", ""lock_range_m"": 160, ""lock_percent"": 82,
+                    ""motor"": { ""goal"": ""drive B"", ""outcome"": null },
+                    ""scan_tables"": [[""hull"", ""turret"", ""left_track"", ""right_track"", ""engine""]],
+                    ""contacts"": [
+                        {
+                            ""designator"": ""B1"", ""class"": ""line_tank"", ""unit_type"": ""tacsim.unit.line_tank"",
+                            ""party"": ""B"", ""friendly"": false, ""cell"": [116, 100], ""range_m"": 160,
+                            ""bearing_deg"": 90, ""facing"": ""rear"", ""aspect"": ""rear"", ""band"": ""close"",
+                            ""moving"": true, ""age_ms"": 400, ""health"": ""scarred"", ""reads_dead"": false,
+                            ""condition"": { ""table"": 0, ""bands"": ""ygrdg"", ""age_ms"": 1200 },
+                            ""fatal"": [""hull""],
+                            ""odds"": [{ ""weapon"": ""main_gun"", ""percent"": 82 }]
+                        }
+                    ]
+                }"));
+                hud.Overlays.RefreshArenaHud();
+
+                Assert.IsTrue(arena.TryGetLockedContact(out var lockedB1));
+                Assert.AreEqual("rear", lockedB1.Aspect);
+                Assert.AreEqual("close", lockedB1.Band);
+                Assert.IsTrue(lockedB1.Moving);
+                Assert.AreEqual(400, lockedB1.AgeMs);
+                Assert.AreEqual(0, lockedB1.ConditionTable);
+                Assert.AreEqual("ygrdg", lockedB1.ConditionBands);
+                CollectionAssert.AreEqual(new[] { "hull" }, lockedB1.FatalSections);
+                Assert.AreEqual("drive B", arena.State.MotorGoal);
+
+                Assert.IsTrue(arena.IsLockedTargetGroundRingVisible, "3D locked-target ground ring must highlight active locked contact");
+                Assert.IsTrue(hud.Overlays.IsTargetInspectCardVisible, "Target inspection card must appear when a contact is locked");
+                Assert.IsNotNull(hud.Overlays.TargetArmorDollTexture, "Locked contact paper-doll texture must be rendered");
+                StringAssert.Contains("B1", hud.Overlays.TargetInspectSummarySnapshot);
+                StringAssert.Contains("REAR", hud.Overlays.TargetInspectSummarySnapshot);
+                StringAssert.Contains("CLOSE", hud.Overlays.TargetInspectSummarySnapshot);
+                StringAssert.Contains("MOVING", hud.Overlays.TargetInspectSummarySnapshot);
+                StringAssert.Contains("FATAL", hud.Overlays.TargetInspectSummarySnapshot);
+
+                // One-click SCAN TARGET button emits verified `scan B1`, and injected scan target is refused
+                emitted.Clear();
+                hud.Overlays.ClickScanLockedTargetForTests();
+                CollectionAssert.AreEqual(new[] { "scan B1" }, emitted);
+
+                emitted.Clear();
+                arena.ExecuteCockpitAction("scan B1 --evil");
+                Assert.AreEqual(0, emitted.Count, "Injected scan token must be rejected");
+
+                // 3D Autopilot Drive Waypoint Beacon + Course Line: drive B and drive 132,108 activate beacon; speed 0 clears it
+                emitted.Clear();
+                arena.ExecuteCockpitAction("drive 132,108");
+                Assert.IsTrue(arena.State.HasDriveWaypoint);
+                Assert.AreEqual(132, arena.State.DriveWaypointCellX);
+                Assert.AreEqual(108, arena.State.DriveWaypointCellY);
+                Assert.IsTrue(arena.IsDriveWaypointBeaconVisible, "3D drive waypoint beacon must illuminate when DRIVE <x>,<y> is ordered");
+                Assert.IsTrue(arena.IsDriveCourseLineVisible, "3D drive course line must plot route from player to waypoint");
+                CollectionAssert.AreEqual(new[] { "drive 132,108" }, emitted);
+
+                arena.ExecuteCockpitAction("speed 0");
+                Assert.IsFalse(arena.State.HasDriveWaypoint, "ALL STOP must clear active drive waypoint");
+                Assert.IsFalse(arena.IsDriveWaypointBeaconVisible);
+                Assert.IsFalse(arena.IsDriveCourseLineVisible);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

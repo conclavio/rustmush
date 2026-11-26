@@ -37,9 +37,17 @@ namespace TacSim.Arena
         public float RangeM;
         public float BearingDeg;
         public float FacingDeg;
+        public string Aspect = "front"; // "front" | "left" | "right" | "rear"
+        public string Band = string.Empty; // "close" | "medium" | "far"
+        public bool Moving;
+        public int AgeMs;
         public string HealthWord;   // "intact", "scarred", "crippled", "wreck"
         public bool IsWreck;
         public int HitOddsPct;
+        public int ConditionTable = -1;
+        public string ConditionBands = string.Empty;
+        public int ConditionAgeMs;
+        public readonly List<string> FatalSections = new List<string>(2);
     }
 
     public sealed class ArenaDetachmentSlot
@@ -271,11 +279,18 @@ namespace TacSim.Arena
         public int ObjectiveRadiusCells = 6;
         public ArenaDetachmentState Detachment;
         public bool DetachmentProjectionInvalid;
+        public string MotorGoal = string.Empty;
+        public string MotorOutcome = string.Empty;
+        public bool HasDriveWaypoint;
+        public int DriveWaypointCellX;
+        public int DriveWaypointCellY;
+        public string DriveWaypointLabel = string.Empty;
 
         public readonly List<ArenaWeaponSlotState> Weapons = new List<ArenaWeaponSlotState>();
         public readonly List<ArenaContactState> Contacts = new List<ArenaContactState>();
         public readonly List<ArenaSectionState> Sections = new List<ArenaSectionState>();
         public readonly List<ArenaStandingRule> Rules = new List<ArenaStandingRule>(6);
+        public readonly List<List<string>> ScanTables = new List<List<string>>(4);
     }
 
     /// <summary>
@@ -367,6 +382,32 @@ namespace TacSim.Arena
 
         public int ActiveShotTracerCount => _activeTracers.Count;
         public bool IsMuzzleFlashActive => _playerMuzzleFlash != null && _playerMuzzleFlash.gameObject.activeSelf;
+        public bool IsLockedTargetGroundRingVisible => _lockedTargetGroundRing != null && _lockedTargetGroundRing.enabled;
+        public bool IsDriveWaypointBeaconVisible => _driveWaypointRoot != null && _driveWaypointRoot.gameObject.activeSelf;
+        public bool IsDriveCourseLineVisible => _driveCourseLine != null && _driveCourseLine.enabled;
+
+        public bool TryGetLockedContact(out ArenaContactState contact)
+        {
+            contact = null;
+            if (State == null || string.IsNullOrEmpty(State.LockedDesignator) || State.Contacts == null)
+                return false;
+            for (int i = 0; i < State.Contacts.Count; i++)
+            {
+                if (string.Equals(State.Contacts[i].Designator, State.LockedDesignator, StringComparison.OrdinalIgnoreCase))
+                {
+                    contact = State.Contacts[i];
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        public IReadOnlyList<string> TryGetContactScanSections(ArenaContactState contact)
+        {
+            if (contact == null || State == null || contact.ConditionTable < 0 || contact.ConditionTable >= State.ScanTables.Count)
+                return null;
+            return State.ScanTables[contact.ConditionTable];
+        }
 
         public bool TryGetContactWorldPosition(string designator, out Vector3 worldPos)
         {
@@ -645,6 +686,12 @@ namespace TacSim.Arena
             _playerMuzzleFlashUntil = -1f;
             if (_playerMuzzleFlash != null)
                 _playerMuzzleFlash.gameObject.SetActive(false);
+            if (_lockedTargetGroundRing != null)
+                _lockedTargetGroundRing.enabled = false;
+            if (_driveWaypointRoot != null)
+                _driveWaypointRoot.gameObject.SetActive(false);
+            if (_driveCourseLine != null)
+                _driveCourseLine.enabled = false;
             Helm.Reset();
             Throttle.Reset();
             LiveLobbyMatchState = "idle";
@@ -708,6 +755,10 @@ namespace TacSim.Arena
         private float _radarPulseScale = -1f;
         private LineRenderer _arenaRangeRing;
         private LineRenderer _arenaLockBeam;
+        private LineRenderer _lockedTargetGroundRing;
+        private Transform _driveWaypointRoot;
+        private TextMeshPro _driveWaypointLabel;
+        private LineRenderer _driveCourseLine;
 
         public bool IsArenaLockBeamActive => _arenaLockBeam != null && _arenaLockBeam.enabled;
         public bool IsArenaRangeRingVisible => _arenaRangeRing != null && _arenaRangeRing.enabled;
@@ -760,6 +811,10 @@ namespace TacSim.Arena
             _playerMuzzleFlash = null;
             _playerMuzzleFlashRenderer = null;
             _playerMuzzleFlashUntil = -1f;
+            _lockedTargetGroundRing = null;
+            _driveWaypointRoot = null;
+            _driveWaypointLabel = null;
+            _driveCourseLine = null;
             _contactRigs.Clear();
             _replayRigs.Clear();
             _activeTracers.Clear();
@@ -828,6 +883,67 @@ namespace TacSim.Arena
             _arenaLockBeam.endWidth = 0.16f;
             _arenaLockBeam.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("ArenaLockBeamMat", new Color(1.0f, 0.32f, 0.20f, 0.65f));
             _arenaLockBeam.enabled = false;
+
+            var lockRingGo = new GameObject("ArenaLockedTargetGroundRing");
+            lockRingGo.transform.SetParent(_vfxRoot, false);
+            _lockedTargetGroundRing = lockRingGo.AddComponent<LineRenderer>();
+            _lockedTargetGroundRing.useWorldSpace = true;
+            _lockedTargetGroundRing.loop = true;
+            _lockedTargetGroundRing.startWidth = 0.42f;
+            _lockedTargetGroundRing.endWidth = 0.42f;
+            _lockedTargetGroundRing.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("ArenaLockGroundRingMat", new Color(1.0f, 0.72f, 0.18f, 0.82f));
+            _lockedTargetGroundRing.positionCount = 28;
+            _lockedTargetGroundRing.enabled = false;
+
+            var wpGo = new GameObject("ArenaDriveWaypointBeacon");
+            wpGo.transform.SetParent(_vfxRoot, false);
+            _driveWaypointRoot = wpGo.transform;
+
+            var wpPillar = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            wpPillar.name = "WaypointPillar";
+            wpPillar.transform.SetParent(_driveWaypointRoot, false);
+            wpPillar.transform.localPosition = new Vector3(0f, 11f, 0f);
+            wpPillar.transform.localScale = new Vector3(0.95f, 11f, 0.95f);
+            var wpc = wpPillar.GetComponent<Collider>();
+            if (wpc != null) { if (Application.isPlaying) Destroy(wpc); else DestroyImmediate(wpc); }
+            wpPillar.GetComponent<MeshRenderer>().sharedMaterial = UrpMaterialFactory.GetHologramUnlit("ArenaDriveWpPillar", new Color(0.24f, 0.92f, 1.0f, 0.50f));
+
+            var wpRing = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            wpRing.name = "WaypointGroundRing";
+            wpRing.transform.SetParent(_driveWaypointRoot, false);
+            wpRing.transform.localPosition = new Vector3(0f, 0.35f, 0f);
+            wpRing.transform.localScale = new Vector3(11f, 0.12f, 11f);
+            var wrc = wpRing.GetComponent<Collider>();
+            if (wrc != null) { if (Application.isPlaying) Destroy(wrc); else DestroyImmediate(wrc); }
+            wpRing.GetComponent<MeshRenderer>().sharedMaterial = UrpMaterialFactory.GetHologramUnlit("ArenaDriveWpRing", new Color(0.24f, 0.92f, 1.0f, 0.34f));
+
+            var wpBbGo = new GameObject("WaypointLabel");
+            wpBbGo.transform.SetParent(_driveWaypointRoot, false);
+            wpBbGo.transform.localPosition = new Vector3(0f, 24f, 0f);
+            var wpBb = wpBbGo.AddComponent<WorldBillboard>();
+            var wpTxtGo = new GameObject("Txt");
+            wpTxtGo.transform.SetParent(wpBbGo.transform, false);
+            var wpTmp = wpTxtGo.AddComponent<TextMeshPro>();
+            wpTmp.richText = false;
+            wpTmp.text = "WAYPOINT";
+            wpTmp.fontSize = 15f;
+            wpTmp.color = new Color(0.45f, 0.96f, 1.0f);
+            wpTmp.alignment = TextAlignmentOptions.Center;
+            wpTmp.textWrappingMode = TextWrappingModes.NoWrap;
+            wpTmp.rectTransform.sizeDelta = new Vector2(84f, 8f);
+            wpBb.NameplateText = wpTmp;
+            _driveWaypointLabel = wpTmp;
+            wpGo.SetActive(false);
+
+            var courseGo = new GameObject("ArenaDriveCourseLine");
+            courseGo.transform.SetParent(_vfxRoot, false);
+            _driveCourseLine = courseGo.AddComponent<LineRenderer>();
+            _driveCourseLine.useWorldSpace = true;
+            _driveCourseLine.positionCount = 12;
+            _driveCourseLine.startWidth = 0.28f;
+            _driveCourseLine.endWidth = 0.28f;
+            _driveCourseLine.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("ArenaDriveCourseMat", new Color(0.24f, 0.92f, 1.0f, 0.56f));
+            _driveCourseLine.enabled = false;
 
             var sunGo = new GameObject("ArenaDirectionalFill");
             sunGo.transform.SetParent(transform, false);
@@ -1518,6 +1634,45 @@ namespace TacSim.Arena
                 }
             }
 
+            State.ScanTables.Clear();
+            var stArr = d["scan_tables"].AsArray();
+            if (stArr != null)
+            {
+                int tCap = Math.Min(stArr.Count, 16);
+                for (int t = 0; t < tCap; t++)
+                {
+                    var rowArr = stArr[t].AsArray();
+                    var table = new List<string>(8);
+                    if (rowArr != null)
+                    {
+                        int sCap = Math.Min(rowArr.Count, 24);
+                        for (int sIdx = 0; sIdx < sCap; sIdx++)
+                        {
+                            string secName = rowArr[sIdx].AsString(string.Empty);
+                            if (!string.IsNullOrEmpty(secName))
+                                table.Add(secName);
+                        }
+                    }
+                    State.ScanTables.Add(table);
+                }
+            }
+
+            var motorNode = d["motor"];
+            if (motorNode != null && motorNode.IsObject)
+            {
+                State.MotorGoal = motorNode.Str("goal", string.Empty);
+                State.MotorOutcome = motorNode["outcome"].IsNull ? string.Empty : motorNode.Str("outcome", string.Empty);
+                if (!string.IsNullOrEmpty(State.MotorOutcome))
+                    State.HasDriveWaypoint = false;
+            }
+            else
+            {
+                if (!string.IsNullOrEmpty(State.MotorGoal))
+                    State.HasDriveWaypoint = false;
+                State.MotorGoal = string.Empty;
+                State.MotorOutcome = string.Empty;
+            }
+
             State.Contacts.Clear();
             var activeDesignators = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var cArr = d["contacts"].AsArray();
@@ -1551,10 +1706,32 @@ namespace TacSim.Arena
                         RangeM = c.Float("range_m", 0f),
                         BearingDeg = bearingDeg,
                         FacingDeg = ParseFacingWordOrDeg(c["facing"], bearingDeg),
+                        Aspect = c.Str("aspect", "front"),
+                        Band = c.Str("band", string.Empty),
+                        Moving = c.Bool("moving", false),
+                        AgeMs = Mathf.Max(0, c.Int("age_ms", 0)),
                         HealthWord = c.Str("health", "intact"),
                         IsWreck = c.Bool("reads_dead", false) || c.Str("health") == "wreck",
                         HitOddsPct = ParseContactHitOddsPct(c["odds"])
                     };
+                    var condNode = c["condition"];
+                    if (condNode != null && condNode.IsObject)
+                    {
+                        cs.ConditionTable = condNode.Int("table", -1);
+                        cs.ConditionBands = condNode.Str("bands", string.Empty);
+                        cs.ConditionAgeMs = Mathf.Max(0, condNode.Int("age_ms", 0));
+                    }
+                    var fatalArr = c["fatal"].AsArray();
+                    if (fatalArr != null)
+                    {
+                        int fCap = Math.Min(fatalArr.Count, 8);
+                        for (int f = 0; f < fCap; f++)
+                        {
+                            string fs = fatalArr[f].AsString(string.Empty);
+                            if (!string.IsNullOrEmpty(fs))
+                                cs.FatalSections.Add(fs);
+                        }
+                    }
                     if (!cs.IsWreck)
                     {
                         if (cs.Party == "R") redVisibleAlive++;
@@ -1925,6 +2102,12 @@ namespace TacSim.Arena
             _playerMuzzleFlashUntil = -1f;
             if (_playerMuzzleFlash != null)
                 _playerMuzzleFlash.gameObject.SetActive(false);
+            if (_lockedTargetGroundRing != null)
+                _lockedTargetGroundRing.enabled = false;
+            if (_driveWaypointRoot != null)
+                _driveWaypointRoot.gameObject.SetActive(false);
+            if (_driveCourseLine != null)
+                _driveCourseLine.enabled = false;
             Helm.Reset();
             Throttle.Reset();
             OnArenaStateUpdated?.Invoke();
@@ -1948,15 +2131,37 @@ namespace TacSim.Arena
                     TriggerPlayerMuzzleFlash(isLaser);
                 }
             }
-            else if (low == "scan" || low.StartsWith("scan ", StringComparison.Ordinal))
+            else if (low == "scan")
+            {
                 TriggerRadarPulseVfx();
-            else if (low == "stop")
+            }
+            else if (low.StartsWith("scan ", StringComparison.Ordinal))
+            {
+                string target = trimmed.Substring("scan ".Length).Trim();
+                if (!MushProtocol.TryValidateSafeCommandToken(target, out string safeTarget))
+                    return;
+                trimmed = $"scan {safeTarget}";
+                TriggerRadarPulseVfx();
+            }
+            else if (low == "stop" || low == "speed 0")
             {
                 // COCKPIT_VERBS has no "stop" verb; stopping requires "speed 0" (cockpit.rs:217-235).
                 _desiredLiveSpeedKph = 0f;
                 _lastSentSpeedKph = 0f;
+                State.HasDriveWaypoint = false;
                 Throttle.SyncExternalSpeedOrder(0);
                 trimmed = "speed 0";
+                SyncArenaTacticalVisuals();
+            }
+            else if (low.StartsWith("drive ", StringComparison.Ordinal))
+            {
+                string dest = trimmed.Substring("drive ".Length).Trim();
+                TryRecordDriveWaypoint(dest);
+            }
+            else if (low.StartsWith("heading ", StringComparison.Ordinal))
+            {
+                State.HasDriveWaypoint = false;
+                SyncArenaTacticalVisuals();
             }
             else if (low == "emcon")
             {
@@ -2238,8 +2443,67 @@ namespace TacSim.Arena
                     aimYaw = Mathf.Atan2(d.x, d.z) * Mathf.Rad2Deg;
             }
             PlayerRig.UpdateArticulation(dt, State.SpeedKph, aimYaw);
+            SyncLiveContactsArticulation(dt);
             SyncPlayerDustPlume(shownHeading);
             SyncArenaTacticalVisuals();
+        }
+
+        private void SyncLiveContactsArticulation(float dt)
+        {
+            if (State?.Contacts == null || _contactRigs.Count == 0) return;
+            Vector3 ownWorld = PlayerRig?.Root != null
+                ? PlayerRig.Root.transform.position
+                : ArenaStageOrigin + ArenaWorldMetersToLocalPos(State.Xm, State.Zm);
+
+            for (int i = 0; i < State.Contacts.Count; i++)
+            {
+                var cs = State.Contacts[i];
+                if (cs.IsWreck) continue;
+                if (!_contactRigs.TryGetValue(cs.Designator, out var rig) || rig?.Root == null) continue;
+                float? contactAimYaw = null;
+                if (!cs.Friendly)
+                {
+                    Vector3 toOwn = ownWorld - rig.Root.transform.position;
+                    if (toOwn.sqrMagnitude > 1f)
+                        contactAimYaw = Mathf.Atan2(toOwn.x, toOwn.z) * Mathf.Rad2Deg;
+                }
+                rig.UpdateArticulation(dt, cs.Moving ? 28f : 0f, contactAimYaw);
+            }
+        }
+
+        private void TryRecordDriveWaypoint(string dest)
+        {
+            if (State == null || string.IsNullOrWhiteSpace(dest)) return;
+            string clean = dest.Trim();
+            int comma = clean.IndexOf(',');
+            if (comma > 0 && comma < clean.Length - 1 &&
+                int.TryParse(clean.Substring(0, comma).Trim(), out int cx) &&
+                int.TryParse(clean.Substring(comma + 1).Trim(), out int cy))
+            {
+                State.HasDriveWaypoint = true;
+                State.DriveWaypointCellX = cx;
+                State.DriveWaypointCellY = cy;
+                State.DriveWaypointLabel = $"CELL {cx},{cy}";
+                SyncArenaTacticalVisuals();
+                return;
+            }
+            if (TerrainGrid?.KeySpots != null)
+            {
+                for (int i = 0; i < TerrainGrid.KeySpots.Count; i++)
+                {
+                    var sp = TerrainGrid.KeySpots[i];
+                    if (string.Equals(sp.Letter, clean, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(sp.Name, clean, StringComparison.OrdinalIgnoreCase))
+                    {
+                        State.HasDriveWaypoint = true;
+                        State.DriveWaypointCellX = sp.CellX;
+                        State.DriveWaypointCellY = sp.CellY;
+                        State.DriveWaypointLabel = $"[{sp.Letter}] {(sp.Name ?? string.Empty).ToUpperInvariant()}";
+                        SyncArenaTacticalVisuals();
+                        return;
+                    }
+                }
+            }
         }
 
         private void SyncPlayerDustPlume(float headingDeg)
@@ -2298,6 +2562,9 @@ namespace TacSim.Arena
             {
                 if (_arenaRangeRing != null) _arenaRangeRing.enabled = false;
                 if (_arenaLockBeam != null) _arenaLockBeam.enabled = false;
+                if (_lockedTargetGroundRing != null) _lockedTargetGroundRing.enabled = false;
+                if (_driveWaypointRoot != null) _driveWaypointRoot.gameObject.SetActive(false);
+                if (_driveCourseLine != null) _driveCourseLine.enabled = false;
                 return;
             }
 
@@ -2325,10 +2592,13 @@ namespace TacSim.Arena
                 _arenaRangeRing.enabled = true;
             }
 
+            Vector3 targetPos = Vector3.zero;
+            bool hasLiveLock = TryGetLockedContact(out var lockedCt) &&
+                               !lockedCt.IsWreck &&
+                               TryGetContactWorldPosition(State.LockedDesignator, out targetPos);
             if (_arenaLockBeam != null)
             {
-                if (!string.IsNullOrEmpty(State.LockedDesignator) &&
-                    TryGetContactWorldPosition(State.LockedDesignator, out Vector3 targetPos))
+                if (hasLiveLock)
                 {
                     _arenaLockBeam.SetPosition(0, ownPos + Vector3.up * 2.4f);
                     _arenaLockBeam.SetPosition(1, targetPos);
@@ -2338,6 +2608,67 @@ namespace TacSim.Arena
                 {
                     _arenaLockBeam.enabled = false;
                 }
+            }
+
+            if (_lockedTargetGroundRing != null)
+            {
+                if (hasLiveLock)
+                {
+                    const int LockSegs = 28;
+                    float pulse = 5.6f + Mathf.Sin(Time.unscaledTime * 5.2f) * 0.65f;
+                    float rotOff = Time.unscaledTime * 1.4f;
+                    _lockedTargetGroundRing.positionCount = LockSegs;
+                    for (int i = 0; i < LockSegs; i++)
+                    {
+                        float ang = rotOff + (i / (float)LockSegs) * Mathf.PI * 2f;
+                        float wx = targetPos.x + Mathf.Cos(ang) * pulse;
+                        float wz = targetPos.z + Mathf.Sin(ang) * pulse;
+                        float wy = ArenaStageOrigin.y + TerrainGrid.SampleElevationMeters(wx - ArenaStageOrigin.x, wz - ArenaStageOrigin.z) + 0.55f;
+                        _lockedTargetGroundRing.SetPosition(i, new Vector3(wx, wy, wz));
+                    }
+                    _lockedTargetGroundRing.enabled = true;
+                }
+                else
+                {
+                    _lockedTargetGroundRing.enabled = false;
+                }
+            }
+
+            if (_driveWaypointRoot != null && _driveCourseLine != null)
+            {
+                bool showWp = State.HasDriveWaypoint;
+                if (showWp)
+                {
+                    Vector3 wpLocal = TerrainGrid.SiteCellToLocalPos(State.DriveWaypointCellX, State.DriveWaypointCellY, 0f);
+                    Vector3 wpWorld = ArenaStageOrigin + wpLocal;
+                    Vector2 flatDelta = new Vector2(wpWorld.x - ownPos.x, wpWorld.z - ownPos.z);
+                    if (flatDelta.magnitude < 14f && string.IsNullOrEmpty(State.MotorGoal))
+                    {
+                        State.HasDriveWaypoint = false;
+                        showWp = false;
+                    }
+                    else
+                    {
+                        _driveWaypointRoot.position = wpWorld;
+                        if (_driveWaypointLabel != null)
+                            _driveWaypointLabel.text = !string.IsNullOrEmpty(State.DriveWaypointLabel)
+                                ? $"WAYPOINT {State.DriveWaypointLabel}"
+                                : "DRIVE WAYPOINT";
+                        const int CoursePts = 12;
+                        _driveCourseLine.positionCount = CoursePts;
+                        for (int i = 0; i < CoursePts; i++)
+                        {
+                            float u = i / (float)(CoursePts - 1);
+                            float wx = Mathf.Lerp(ownPos.x, wpWorld.x, u);
+                            float wz = Mathf.Lerp(ownPos.z, wpWorld.z, u);
+                            float wy = ArenaStageOrigin.y + TerrainGrid.SampleElevationMeters(wx - ArenaStageOrigin.x, wz - ArenaStageOrigin.z) + 0.85f;
+                            _driveCourseLine.SetPosition(i, new Vector3(wx, wy, wz));
+                        }
+                    }
+                }
+                if (_driveWaypointRoot.gameObject.activeSelf != showWp)
+                    _driveWaypointRoot.gameObject.SetActive(showWp);
+                _driveCourseLine.enabled = showWp;
             }
         }
 
