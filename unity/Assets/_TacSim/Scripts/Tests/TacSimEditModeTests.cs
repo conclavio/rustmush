@@ -6949,5 +6949,144 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void LiveSheetVitalsAndUnitChassis_DecodesSchemaGuardsVitalsRevisionsAndRendersUnit()
+        {
+            // 1. Query::Sheet wire encoding
+            string sheetReq = MushProtocol.BuildSheetQueryCommand(9UL);
+            var parsedReq = JsonNode.Parse(sheetReq);
+            Assert.AreEqual("req", parsedReq.Str("t"));
+            Assert.AreEqual(9UL, parsedReq["d"].ULong("id", 0));
+            Assert.AreEqual("sheet", parsedReq["d"]["q"].Str("t"));
+
+            using (var ws = new MushWsClient())
+            {
+                ulong qid = ws.SendSheetQuery();
+                Assert.Greater(qid, 0UL);
+                Assert.IsTrue(ws.TryDequeueOutbound(out string rawOut));
+                StringAssert.Contains("\"sheet\"", rawOut);
+            }
+
+            var rootGo = new UnityEngine.GameObject("Wave4PR4_SheetVitalsUnitTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                Assert.IsNotNull(hud.CharacterSheet);
+
+                // 2. Schema-driven character sheet (`*.sheet`) with dots, track, enum, map, & hidden staff_only field
+                bool sheetOk = hud.CharacterSheet.ApplySheetPanel(JsonNode.Parse(@"{
+                    ""target"": ""#12"",
+                    ""approved"": { ""state"": ""approved"", ""approved"": true },
+                    ""schema"": {
+                        ""ruleset"": ""demo_ruleset"", ""version"": 2,
+                        ""sections"": [
+                            {
+                                ""id"": ""core"", ""label"": ""Attributes"", ""layout"": ""grid"",
+                                ""fields"": [
+                                    { ""id"": ""str"", ""label"": ""Strength"", ""ty"": { ""kind"": ""dots"", ""min"": 1, ""max"": 5 }, ""default"": 1 },
+                                    { ""id"": ""role"", ""label"": ""Role"", ""ty"": { ""kind"": ""enum"", ""options"": [""pilot"", ""medic""] }, ""default"": ""pilot"" },
+                                    { ""id"": ""secret"", ""label"": ""Staff Note"", ""staff_only"": true, ""ty"": { ""kind"": ""text"", ""max_len"": 80 }, ""default"": """" }
+                                ]
+                            },
+                            {
+                                ""id"": ""health"", ""label"": ""Tracks"", ""layout"": ""tracks"",
+                                ""fields"": [
+                                    {
+                                        ""id"": ""wound"", ""label"": ""Condition"",
+                                        ""ty"": { ""kind"": ""track"", ""size"": { ""fixed"": 4 }, ""levels"": [ { ""id"": ""bruised"", ""label"": ""Bruised"", ""penalty"": 0 }, { ""id"": ""hurt"", ""label"": ""Hurt"", ""penalty"": -1 } ] },
+                                        ""default"": []
+                                    }
+                                ]
+                            },
+                            {
+                                ""id"": ""powers"", ""label"": ""Specialties"", ""layout"": ""map"",
+                                ""fields"": [
+                                    { ""id"": ""specs"", ""label"": ""Specialties"", ""ty"": { ""kind"": ""map"", ""value"": { ""kind"": ""dots"", ""min"": 0, ""max"": 5 } }, ""default"": {} }
+                                ]
+                            }
+                        ]
+                    },
+                    ""data"": {
+                        ""str"": 4,
+                        ""role"": ""pilot"",
+                        ""wound"": [""lethal"", ""bashing"", null, null],
+                        ""specs"": { ""Gunnery"": 3, ""Astrogation"": 2 }
+                    }
+                }"));
+                Assert.IsTrue(sheetOk);
+                Assert.IsNotNull(hud.CharacterSheet.LiveSheet);
+                Assert.IsTrue(hud.CharacterSheet.LiveSheet.Approved);
+                hud.CharacterSheet.SelectTab(TacSim.UI.CharacterSheetTab.RulesetAndUnit);
+                StringAssert.Contains("DEMO_RULESET v2", hud.CharacterSheet.RulesetSheetSnapshot);
+                StringAssert.Contains("●●●●○ 4/5", hud.CharacterSheet.RulesetSheetSnapshot);
+                StringAssert.Contains("[X][/][ ][ ] Hurt (-1)", hud.CharacterSheet.RulesetSheetSnapshot);
+                StringAssert.Contains("Astrogation", hud.CharacterSheet.RulesetSheetSnapshot);
+                StringAssert.DoesNotContain("Staff Note", hud.CharacterSheet.RulesetSheetSnapshot, "Unset staff_only fields stripped by server must stay hidden");
+
+                // 3. Monotonic `*.vitals` store: stale revision ignored, revision 0 & subject change & null clear honored
+                Assert.IsTrue(hud.CharacterSheet.ApplyVitalsPanel("tactics.vitals", JsonNode.Parse(@"{
+                    ""subject"": { ""id"": ""#50"", ""name"": ""Ceres Dray"" }, ""revision"": 5,
+                    ""vitals"": [
+                        { ""id"": ""heat"", ""label"": ""Thermal"", ""role"": ""pool"", ""state"": ""warn"", ""value"": { ""kind"": ""bounded"", ""current"": 65, ""min"": 0, ""max"": 100 } },
+                        { ""id"": ""hull"", ""label"": ""Hull"", ""role"": ""dominant"", ""state"": ""ok"", ""value"": { ""kind"": ""text"", ""text"": ""Nominal"" } }
+                    ]
+                }")));
+                Assert.AreEqual(1, hud.CharacterSheet.LiveVitals.GroupCount);
+                StringAssert.Contains("Thermal", hud.CharacterSheet.PilotSummarySnapshot);
+                StringAssert.Contains("65/100 (65%)", hud.CharacterSheet.UnitChassisSnapshot);
+
+                // Stale lower revision for same subject MUST be rejected
+                Assert.IsFalse(hud.CharacterSheet.ApplyVitalsPanel("tactics.vitals", JsonNode.Parse(@"{
+                    ""subject"": { ""id"": ""#50"", ""name"": ""Ceres Dray"" }, ""revision"": 3,
+                    ""vitals"": []
+                }")));
+                // Watermark reset allows next frame after reconnect/world restart
+                hud.CharacterSheet.ResetVitalsWatermarks();
+                Assert.IsTrue(hud.CharacterSheet.ApplyVitalsPanel("tactics.vitals", JsonNode.Parse(@"{
+                    ""subject"": { ""id"": ""#50"", ""name"": ""Ceres Dray"" }, ""revision"": 1,
+                    ""vitals"": [
+                        { ""id"": ""heat"", ""label"": ""Thermal"", ""role"": ""pool"", ""state"": ""ok"", ""value"": { ""kind"": ""bounded"", ""current"": 10, ""min"": 0, ""max"": 100 } }
+                    ]
+                }")));
+                // Null payload clears group cleanly
+                Assert.IsTrue(hud.CharacterSheet.ApplyVitalsPanel("tactics.vitals", JsonNode.Null));
+                Assert.AreEqual(0, hud.CharacterSheet.LiveVitals.GroupCount);
+
+                // 4. Tactical Unit Chassis (`tactics.unit`) keyframe
+                Assert.IsTrue(hud.CharacterSheet.ApplyUnitChassisPanel(JsonNode.Parse(@"{
+                    ""object"": { ""id"": ""#77"", ""name"": ""Line Tank R1"" },
+                    ""schema"": ""tacsim:unit:line_tank@1#abc"", ""revision"": 12, ""state"": ""warn"", ""record"": ""HELD"",
+                    ""mobility"": { ""mode"": ""tracked"", ""switching"": null, ""modes"": [] },
+                    ""cells"": [
+                        { ""addr"": ""unit/heat"", ""label"": ""Heat"", ""current"": 340, ""min"": 0, ""max"": 1000, ""state"": ""ok"" },
+                        { ""addr"": ""facet/hull/front"", ""label"": ""Front"", ""current"": 72, ""min"": 0, ""max"": 100, ""state"": ""warn"" }
+                    ],
+                    ""sections"": [
+                        { ""id"": ""hull"", ""condition"": ""scarred"", ""state"": ""warn"", ""facets"": [ { ""id"": ""front"", ""cells"": [""facet/hull/front""] } ], ""slots"": [] }
+                    ],
+                    ""components"": [
+                        { ""id"": ""main_gun"", ""definition"": ""railgun"", ""install"": ""turret"", ""condition"": ""operational"", ""state"": ""ok"", ""asset"": false }
+                    ],
+                    ""capabilities"": [ { ""id"": ""direct_fire"", ""source"": ""main_gun"" } ],
+                    ""truncated"": false
+                }")));
+                Assert.IsNotNull(hud.CharacterSheet.LiveUnitChassis);
+                StringAssert.Contains("Line Tank R1", hud.CharacterSheet.UnitChassisSnapshot);
+                StringAssert.Contains("scarred", hud.CharacterSheet.UnitChassisSnapshot);
+                StringAssert.Contains("front:72/100", hud.CharacterSheet.UnitChassisSnapshot);
+                StringAssert.Contains("direct_fire", hud.CharacterSheet.UnitChassisSnapshot);
+
+                hud.CharacterSheet.ResetSessionState();
+                Assert.IsNull(hud.CharacterSheet.LiveSheet);
+                Assert.IsNull(hud.CharacterSheet.LiveUnitChassis);
+                Assert.AreEqual(0, hud.CharacterSheet.LiveVitals.GroupCount);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

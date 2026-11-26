@@ -17,12 +17,14 @@ namespace TacSim.UI
         Pilot = 0,
         ShipCargo = 1,
         SpaceFit = 2,
-        GroundArena = 3
+        GroundArena = 3,
+        RulesetAndUnit = 4
     }
 
     /// <summary>
-    /// WoW / EverQuest / EVE-style `[C]` Character, Ship, Stowage, Weapon Fit &amp; Ground/Arena Rig
-    /// inspection sheet. Supports live 3D Ida Faber avatar swapping and authoritative `mushd` refresh verbs.
+    /// WoW / EverQuest / EVE-style `[C]` Character, Ship, Stowage, Weapon Fit, Ruleset Sheet,
+    /// Vitals &amp; Tactical Unit Chassis inspection sheet. Supports live 3D Ida Faber avatar swapping
+    /// and authoritative `mushd` refresh queries (`Query::Sheet`, `*.vitals`, `*.unit`).
     /// </summary>
     public sealed class TacSimCharacterSheet : MonoBehaviour
     {
@@ -31,13 +33,15 @@ namespace TacSim.UI
         public event Action OnOpenTradeTerminalRequested;
         public event Action OnOpenSailingPlanRequested;
         public event Action OnOpenSolarChartRequested;
+        public event Action OnRefreshSheetRequested;
+        public event Action OnRefreshUnitAndVitalsRequested;
 
         private Font _font;
         private GameObject _modalRoot;
         private Text _titleText;
         private Text _subtitleText;
         private readonly List<Image> _tabImages = new List<Image>();
-        private readonly GameObject[] _tabBodies = new GameObject[4];
+        private readonly GameObject[] _tabBodies = new GameObject[5];
 
         // Pilot tab
         private Text _pilotSummaryText;
@@ -64,6 +68,13 @@ namespace TacSim.UI
         private Text _surfaceRigText;
         private Text _arenaRigText;
 
+        // Ruleset Sheet, Vitals & Tactical Unit Chassis tab (`*.sheet`, `*.vitals`, `*.unit`)
+        private Text _rulesetSheetText;
+        private Text _unitChassisText;
+        public LiveSheetDocument LiveSheet { get; private set; }
+        public LiveVitalsStore LiveVitals { get; } = new LiveVitalsStore();
+        public LiveUnitChassisView LiveUnitChassis { get; private set; }
+
         // Bound live data sources
         private TacSimTradeAndShipState _trade;
         private SpaceFlightController _space;
@@ -81,6 +92,8 @@ namespace TacSim.UI
         public PlayerAvatarPreset SelectedAvatar => _selectedAvatar;
         public string PilotSummarySnapshot => _pilotSummaryText != null ? _pilotSummaryText.text : string.Empty;
         public string SpaceMountsSnapshot => _spaceMountsText != null ? _spaceMountsText.text : string.Empty;
+        public string RulesetSheetSnapshot => _rulesetSheetText != null ? _rulesetSheetText.text : string.Empty;
+        public string UnitChassisSnapshot => _unitChassisText != null ? _unitChassisText.text : string.Empty;
 
         public void BuildModal(Transform parent, Font sharedFont)
         {
@@ -124,7 +137,7 @@ namespace TacSim.UI
             tabHlg.childControlHeight = true;
             tabHlg.childForceExpandWidth = true;
 
-            string[] tabLabels = { "PILOT & AVATAR", "SHIP & CARGO", "SPACE TACTICAL FIT", "GROUND & ARENA RIGS" };
+            string[] tabLabels = { "PILOT & AVATAR", "SHIP & CARGO", "SPACE TACTICAL FIT", "GROUND & ARENA RIGS", "SHEET & CHASSIS" };
             for (int i = 0; i < tabLabels.Length; i++)
             {
                 var captured = (CharacterSheetTab)i;
@@ -136,6 +149,7 @@ namespace TacSim.UI
             BuildShipCargoTab(_modalRoot.transform);
             BuildSpaceFitTab(_modalRoot.transform);
             BuildGroundArenaTab(_modalRoot.transform);
+            BuildRulesetAndUnitTab(_modalRoot.transform);
 
             SelectTab(CharacterSheetTab.Pilot);
             _modalRoot.SetActive(false);
@@ -297,6 +311,78 @@ namespace TacSim.UI
             CreateButton(actRow.transform, "SIM LOBBY", new Color(0.24f, 0.34f, 0.52f), () => OnCommandRequested?.Invoke("sim status"));
         }
 
+        private void BuildRulesetAndUnitTab(Transform parent)
+        {
+            var body = CreatePanel(parent, "TabRulesetAndUnit", new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(16f, 14f), new Vector2(-16f, -92f), new Color(0.04f, 0.08f, 0.13f, 0.85f));
+            _tabBodies[4] = body;
+
+            var leftCard = CreatePanel(body.transform, "RulesetSheetCard", new Vector2(0f, 0f), new Vector2(0.49f, 1f), new Vector2(12f, 66f), new Vector2(-6f, -12f), new Color(0.05f, 0.09f, 0.15f, 0.94f));
+            _rulesetSheetText = CreateText(leftCard.transform, "RULESET CHARACTER SHEET\nWaiting for live `*.sheet` frame...", 12, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.88f, 0.94f, 0.98f));
+            _rulesetSheetText.supportRichText = true;
+            SetRect(_rulesetSheetText.rectTransform, Vector2.zero, Vector2.one, new Vector2(12f, 10f), new Vector2(-12f, -10f));
+
+            var rightCard = CreatePanel(body.transform, "UnitChassisCard", new Vector2(0.51f, 0f), new Vector2(1f, 1f), new Vector2(6f, 66f), new Vector2(-12f, -12f), new Color(0.05f, 0.10f, 0.14f, 0.94f));
+            _unitChassisText = CreateText(rightCard.transform, "TACTICAL UNIT CHASSIS & VITALS\nWaiting for live `*.unit` / `*.vitals` frames...", 12, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.90f, 0.94f, 0.98f));
+            _unitChassisText.supportRichText = true;
+            SetRect(_unitChassisText.rectTransform, Vector2.zero, Vector2.one, new Vector2(12f, 10f), new Vector2(-12f, -10f));
+
+            var actRow = CreatePanel(body.transform, "RulesetUnitActions", new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(12f, 14f), new Vector2(-12f, 56f), Color.clear);
+            var hlg = actRow.AddComponent<HorizontalLayoutGroup>();
+            hlg.spacing = 8f;
+            hlg.childControlWidth = true;
+            hlg.childControlHeight = true;
+            hlg.childForceExpandWidth = true;
+
+            CreateButton(actRow.transform, "REFRESH SHEET", new Color(0.16f, 0.44f, 0.56f), () => OnRefreshSheetRequested?.Invoke());
+            CreateButton(actRow.transform, "REFRESH UNIT & VITALS", new Color(0.18f, 0.48f, 0.40f), () => OnRefreshUnitAndVitalsRequested?.Invoke());
+        }
+
+        public bool ApplySheetPanel(JsonNode raw)
+        {
+            if (raw == null || raw.IsNull)
+            {
+                LiveSheet = null;
+                RefreshRulesetAndUnitTab();
+                return true;
+            }
+            if (!LiveSheetDocument.TryDecode(raw, out var doc))
+                return false;
+            LiveSheet = doc;
+            RefreshRulesetAndUnitTab();
+            return true;
+        }
+
+        public bool ApplyVitalsPanel(string feed, JsonNode raw)
+        {
+            bool ok = LiveVitals.Apply(feed, raw);
+            if (ok)
+            {
+                RefreshPilotTab();
+                RefreshRulesetAndUnitTab();
+            }
+            return ok;
+        }
+
+        public void ResetVitalsWatermarks()
+        {
+            LiveVitals.ResetWatermarks();
+        }
+
+        public bool ApplyUnitChassisPanel(JsonNode raw)
+        {
+            if (raw == null || raw.IsNull)
+            {
+                LiveUnitChassis = null;
+                RefreshRulesetAndUnitTab();
+                return true;
+            }
+            if (!LiveUnitChassisView.TryDecode(raw, out var view))
+                return false;
+            LiveUnitChassis = view;
+            RefreshRulesetAndUnitTab();
+            return true;
+        }
+
         public void BindSources(
             TacSimTradeAndShipState trade,
             SpaceFlightController space,
@@ -343,6 +429,9 @@ namespace TacSim.UI
             _locationName = "Ceres Freeport";
             _hullBadge = "NO CHARTER";
             _activeStage = TacSimActiveStage.StationWalk;
+            LiveSheet = null;
+            LiveUnitChassis = null;
+            LiveVitals.Clear();
             SetOpen(false);
         }
 
@@ -394,6 +483,7 @@ namespace TacSim.UI
             RefreshShipCargoTab();
             RefreshSpaceFitTab();
             RefreshGroundArenaTab();
+            RefreshRulesetAndUnitTab();
         }
 
         private void RefreshPilotTab()
@@ -403,7 +493,7 @@ namespace TacSim.UI
             string venue = _trade != null && !string.IsNullOrEmpty(_trade.ActiveVenue) ? _trade.ActiveVenue : _locationName;
             string hullRef = _trade != null && !string.IsNullOrEmpty(_trade.ShipHullId) ? _trade.ShipHullId : "—";
 
-            var sb = new StringBuilder(320);
+            var sb = new StringBuilder(384);
             sb.AppendFormat("<color=#66EEFF><b>PILOT:</b></color> <b>{0}</b>\n", MushProtocol.EscapeUnityRichText(_pilotName));
             sb.AppendFormat("<color=#66EEFF><b>LOCATION:</b></color> {0}\n", MushProtocol.EscapeUnityRichText(venue));
             sb.AppendFormat("<color=#66EEFF><b>ACTIVE STAGE:</b></color> {0}\n", FormatStageLabel(_activeStage));
@@ -411,8 +501,43 @@ namespace TacSim.UI
                 MushProtocol.EscapeUnityRichText(_hullBadge),
                 MushProtocol.EscapeUnityRichText(hullRef));
             sb.AppendFormat("<color=#66FFAA><b>AVAILABLE CREDITS:</b></color> <b>{0}</b>\n", MushProtocol.EscapeUnityRichText(credits));
-            sb.Append("<color=#88AAC8>Shortcuts: [Ctrl+K] Palette  [F1] Keys/Macros  [C] Sheet  [M] Chart  [N] Nav  [Tab] Target  [1-9] Hotbar</color>");
+            string vitalsCompact = LiveVitals.FormatRichSummary(compact: true);
+            if (!string.IsNullOrEmpty(vitalsCompact))
+                sb.Append(vitalsCompact).Append('\n');
+            sb.Append("<color=#88AAC8>Shortcuts: [Ctrl+K] Palette  [F1] Keys/Macros  [C] Sheet  [M] Chart  [G] Ground  [N] Nav  [Tab] Target</color>");
             _pilotSummaryText.text = sb.ToString();
+        }
+
+        private void RefreshRulesetAndUnitTab()
+        {
+            if (_rulesetSheetText != null)
+            {
+                _rulesetSheetText.text = LiveSheet != null
+                    ? LiveSheet.FormatRichSummary()
+                    : "<color=#66EEFF><b>RULESET CHARACTER SHEET</b></color>\n\nNo live `*.sheet` payload received for this world yet.\nClick <b>REFRESH SHEET</b> to query the server.";
+            }
+
+            if (_unitChassisText != null)
+            {
+                var sb = new StringBuilder(512);
+                if (LiveUnitChassis != null)
+                {
+                    sb.AppendLine(LiveUnitChassis.FormatRichSummary());
+                }
+                else
+                {
+                    sb.AppendLine("<color=#FFCC66><b>TACTICAL UNIT CHASSIS</b></color>");
+                    sb.AppendLine("No tactical unit active: take a station or click <b>REFRESH UNIT &amp; VITALS</b>.");
+                }
+
+                string vitalsFull = LiveVitals.FormatRichSummary(compact: false);
+                if (!string.IsNullOrEmpty(vitalsFull))
+                {
+                    sb.AppendLine();
+                    sb.Append(vitalsFull);
+                }
+                _unitChassisText.text = sb.ToString().TrimEnd();
+            }
         }
 
         private void RefreshShipCargoTab()

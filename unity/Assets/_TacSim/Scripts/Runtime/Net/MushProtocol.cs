@@ -1030,6 +1030,23 @@ namespace TacSim.Net
         }
 
         /// <summary>
+        /// Builds canonical ClientCommand::Req with Query::Sheet (`<ruleset>.sheet` keyframe):
+        /// {"t":"req","d":{"id":1,"q":{"t":"sheet"}}}
+        /// </summary>
+        public static string BuildSheetQueryCommand(ulong id)
+        {
+            var obj = JsonNode.NewObject();
+            obj["t"] = JsonNode.FromString("req");
+            var d = JsonNode.NewObject();
+            d["id"] = JsonNode.FromULong(id);
+            var q = JsonNode.NewObject();
+            q["t"] = JsonNode.FromString("sheet");
+            d["q"] = q;
+            obj["d"] = d;
+            return obj.ToJson();
+        }
+
+        /// <summary>
         /// Builds canonical ClientCommand::Req with Query::ChannelBacklog (`comsys` panel delta with `backlog`):
         /// {"t":"req","d":{"id":1,"q":{"t":"channel_backlog","d":{"channel":"Public","before_seq":null,"limit":40}}}}
         /// </summary>
