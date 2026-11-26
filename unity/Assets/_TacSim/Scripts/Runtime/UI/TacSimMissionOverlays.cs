@@ -125,9 +125,46 @@ namespace TacSim.UI
         private const int MaxPooledContactRows = 8;
         private readonly List<PooledContactRow> _contactRowPool = new List<PooledContactRow>(MaxPooledContactRows);
 
+        // OOC Arena Standing Auto-Lock / Auto-Fire Rules & Pooled Per-Weapon Fire Deck
+        private Button _autoLockRuleBtn;
+        private Image _autoLockRuleBg;
+        private Text _autoLockRuleLabel;
+        private Button _autoFireRuleBtn;
+        private Image _autoFireRuleBg;
+        private Text _autoFireRuleLabel;
+        private Button _autoFireOddsBtn;
+        private Text _autoFireOddsLabel;
+        private int _autoFireOddsPct = 60;
+        private static readonly int[] AutoFireOddsPresets = { 40, 60, 80 };
+
+        private sealed class PooledWeaponSlotButton
+        {
+            public GameObject Root;
+            public Button Button;
+            public Image Background;
+            public Text Label;
+            public string BoundWeaponId;
+        }
+
+        private const int MaxPooledWeaponSlotButtons = 4;
+        private readonly List<PooledWeaponSlotButton> _weaponSlotPool = new List<PooledWeaponSlotButton>(MaxPooledWeaponSlotButtons);
+
         public bool IsLobbyModalOpen => _arenaLobbyModal != null && _arenaLobbyModal.activeSelf;
         public bool IsSpaceFireCardVisible => _spaceFireCard != null && _spaceFireCard.activeSelf;
         public bool IsDetachmentBarVisible => _detachmentBar != null && _detachmentBar.activeSelf;
+        public bool IsAutoLockArmedUi => _arena != null && _arena.HasAutoLockRule;
+        public bool IsAutoFireArmedUi => _arena != null && _arena.HasAutoFireRule;
+        public int AutoFireOddsThresholdPct => _autoFireOddsPct;
+        public int ActiveWeaponSlotButtonCount
+        {
+            get
+            {
+                int count = 0;
+                for (int i = 0; i < _weaponSlotPool.Count; i++)
+                    if (_weaponSlotPool[i].Root != null && _weaponSlotPool[i].Root.activeSelf) count++;
+                return count;
+            }
+        }
         public bool IsDetachmentOrderBannerVisible => _detachmentOrderRow != null && _detachmentOrderRow.activeSelf;
         public string DetachmentOrderText => _detachmentOrderText != null ? _detachmentOrderText.text : string.Empty;
         public bool IsArmorDollVisible => _arenaArmorDollImg != null && _arenaArmorDollImg.gameObject.activeSelf && _arenaArmorDollTex != null;
@@ -883,7 +920,7 @@ namespace TacSim.UI
 
             _arenaBannerText = CreateTxt(_arenaBattleHudRoot.transform, "", 24, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(1f, 0.88f, 0.35f));
             _arenaBannerText.supportRichText = false;
-            SetRect(_arenaBannerText.rectTransform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(-420f, -166f), new Vector2(420f, -124f));
+            SetRect(_arenaBannerText.rectTransform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(-420f, -206f), new Vector2(420f, -166f));
 
             var tacCard = CreatePanel(_arenaBattleHudRoot.transform, "ArenaContactsPanel", new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-390f, -422f), new Vector2(-16f, -74f), new Color(0.03f, 0.07f, 0.12f, 0.90f));
             var cHdr = CreateTxt(tacCard.transform, "SENSORS & CLICK-TO-LOCK CONTACTS", 13, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.55f, 0.90f, 1f));
@@ -921,12 +958,12 @@ namespace TacSim.UI
                 _contactRowPool.Add(pooled);
             }
 
-            var hullCard = CreatePanel(_arenaBattleHudRoot.transform, "OwnPlatformCard", new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-430f, 18f), new Vector2(-16f, 276f), new Color(0.03f, 0.07f, 0.12f, 0.93f));
+            var hullCard = CreatePanel(_arenaBattleHudRoot.transform, "OwnPlatformCard", new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-430f, 18f), new Vector2(-16f, 326f), new Color(0.03f, 0.07f, 0.12f, 0.93f));
             _arenaOwnArmorText = CreateTxt(hullCard.transform, "", 11, FontStyle.Normal, TextAnchor.UpperLeft, Color.white);
             _arenaOwnArmorText.supportRichText = true;
-            SetRect(_arenaOwnArmorText.rectTransform, new Vector2(0f, 0.54f), new Vector2(0.68f, 1f), new Vector2(10f, 0f), new Vector2(-4f, -8f));
+            SetRect(_arenaOwnArmorText.rectTransform, new Vector2(0f, 0.62f), new Vector2(0.68f, 1f), new Vector2(10f, 0f), new Vector2(-4f, -8f));
 
-            var dollFrame = CreatePanel(hullCard.transform, "ArmorPaperDollFrame", new Vector2(0.69f, 0.54f), new Vector2(1f, 1f), new Vector2(0f, 4f), new Vector2(-10f, -8f), new Color(0.02f, 0.04f, 0.08f, 0.96f));
+            var dollFrame = CreatePanel(hullCard.transform, "ArmorPaperDollFrame", new Vector2(0.69f, 0.62f), new Vector2(1f, 1f), new Vector2(0f, 4f), new Vector2(-10f, -8f), new Color(0.02f, 0.04f, 0.08f, 0.96f));
             var dollGo = new GameObject("ArmorPaperDollImg", typeof(RectTransform), typeof(RawImage));
             dollGo.transform.SetParent(dollFrame.transform, false);
             _arenaArmorDollImg = dollGo.GetComponent<RawImage>();
@@ -935,16 +972,53 @@ namespace TacSim.UI
             SetRect(_arenaArmorDollImg.rectTransform, Vector2.zero, Vector2.one, new Vector2(6f, 6f), new Vector2(-6f, -6f));
             dollGo.SetActive(false);
 
-            _arenaWeaponText = CreateTxt(hullCard.transform, "", 11, FontStyle.Bold, TextAnchor.UpperLeft, new Color(0.65f, 0.95f, 0.80f));
+            // Doc 21 Standing Rules Row: AUTO-LOCK, AUTO-FIRE, ODDS threshold stepper
+            var autoRulesRow = CreatePanel(hullCard.transform, "ArenaStandingRulesRow", new Vector2(0f, 0.50f), new Vector2(1f, 0.61f), new Vector2(10f, 0f), new Vector2(-10f, 0f), Color.clear);
+            var arHlg = autoRulesRow.AddComponent<HorizontalLayoutGroup>();
+            arHlg.spacing = 4f; arHlg.childControlWidth = true; arHlg.childControlHeight = true; arHlg.childForceExpandWidth = true;
+
+            _autoLockRuleBtn = CreateBtn(autoRulesRow.transform, "AUTO-LOCK: OFF [L]", new Color(0.14f, 0.24f, 0.34f), HandleAutoLockRuleClick);
+            _autoLockRuleBg = _autoLockRuleBtn.GetComponent<Image>();
+            _autoLockRuleLabel = _autoLockRuleBtn.GetComponentInChildren<Text>();
+            if (_autoLockRuleLabel != null) _autoLockRuleLabel.fontSize = 10;
+
+            _autoFireRuleBtn = CreateBtn(autoRulesRow.transform, "AUTO-FIRE: OFF", new Color(0.14f, 0.24f, 0.34f), HandleAutoFireRuleClick);
+            _autoFireRuleBg = _autoFireRuleBtn.GetComponent<Image>();
+            _autoFireRuleLabel = _autoFireRuleBtn.GetComponentInChildren<Text>();
+            if (_autoFireRuleLabel != null) _autoFireRuleLabel.fontSize = 10;
+
+            _autoFireOddsBtn = CreateBtn(autoRulesRow.transform, "ODDS >= 60%", new Color(0.20f, 0.28f, 0.38f), CycleAutoFireOddsPreset);
+            _autoFireOddsLabel = _autoFireOddsBtn.GetComponentInChildren<Text>();
+            if (_autoFireOddsLabel != null) _autoFireOddsLabel.fontSize = 10;
+
+            // Pooled clickable per-weapon fire buttons ([1]..[4])
+            var wpnSlotsRow = CreatePanel(hullCard.transform, "ArenaWeaponSlotsRow", new Vector2(0f, 0.36f), new Vector2(1f, 0.49f), new Vector2(10f, 0f), new Vector2(-10f, 0f), Color.clear);
+            var wsHlg = wpnSlotsRow.AddComponent<HorizontalLayoutGroup>();
+            wsHlg.spacing = 4f; wsHlg.childControlWidth = true; wsHlg.childControlHeight = true; wsHlg.childForceExpandWidth = true;
+            for (int wIdx = 0; wIdx < MaxPooledWeaponSlotButtons; wIdx++)
+            {
+                int capturedIdx = wIdx;
+                var wSlot = new PooledWeaponSlotButton();
+                var wBtn = CreateBtn(wpnSlotsRow.transform, string.Empty, new Color(0.18f, 0.32f, 0.26f), () => FireWeaponSlotAt(capturedIdx));
+                wSlot.Root = wBtn.gameObject;
+                wSlot.Button = wBtn;
+                wSlot.Background = wBtn.GetComponent<Image>();
+                wSlot.Label = wBtn.GetComponentInChildren<Text>();
+                if (wSlot.Label != null) wSlot.Label.fontSize = 10;
+                wSlot.Root.SetActive(false);
+                _weaponSlotPool.Add(wSlot);
+            }
+
+            _arenaWeaponText = CreateTxt(hullCard.transform, "", 10, FontStyle.Bold, TextAnchor.UpperLeft, new Color(0.65f, 0.95f, 0.80f));
             _arenaWeaponText.supportRichText = true;
-            SetRect(_arenaWeaponText.rectTransform, new Vector2(0f, 0.23f), new Vector2(1f, 0.54f), new Vector2(10f, 0f), new Vector2(-10f, 0f));
+            SetRect(_arenaWeaponText.rectTransform, new Vector2(0f, 0.17f), new Vector2(1f, 0.35f), new Vector2(10f, 0f), new Vector2(-10f, 0f));
 
             var fireBtn = CreateBtn(hullCard.transform, "FIRE MAIN WEAPON [SPACE]", new Color(0.72f, 0.18f, 0.16f), () => OnArenaCockpitVerbRequested?.Invoke("fire"));
-            SetRect(fireBtn.GetComponent<RectTransform>(), new Vector2(0f, 0f), new Vector2(0.64f, 0.22f), new Vector2(12f, 8f), new Vector2(-4f, -2f));
+            SetRect(fireBtn.GetComponent<RectTransform>(), new Vector2(0f, 0f), new Vector2(0.64f, 0.17f), new Vector2(10f, 8f), new Vector2(-4f, -2f));
             _fireBtnLabel = fireBtn.GetComponentInChildren<Text>();
 
-            var volleyBtn = CreateBtn(hullCard.transform, "VOLLEY ALL", new Color(0.54f, 0.26f, 0.14f), () => OnArenaCockpitVerbRequested?.Invoke("fire all"));
-            SetRect(volleyBtn.GetComponent<RectTransform>(), new Vector2(0.64f, 0f), new Vector2(1f, 0.22f), new Vector2(4f, 8f), new Vector2(-12f, -2f));
+            var volleyBtn = CreateBtn(hullCard.transform, "VOLLEY [G]", new Color(0.54f, 0.26f, 0.14f), () => OnArenaCockpitVerbRequested?.Invoke("fire all"));
+            SetRect(volleyBtn.GetComponent<RectTransform>(), new Vector2(0.64f, 0f), new Vector2(1f, 0.17f), new Vector2(4f, 8f), new Vector2(-10f, -2f));
 
             // Anchored strictly between CommsDrawer (x=14..436) and OwnPlatformCard (x=-430..-16) so zero overlap on any aspect ratio.
             var squadBar = CreatePanel(_arenaBattleHudRoot.transform, "ArenaSquadOrderBar", new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(452f, 16f), new Vector2(-446f, 108f), new Color(0.04f, 0.08f, 0.14f, 0.94f));
@@ -1095,8 +1169,90 @@ namespace TacSim.UI
             RebuildKeySpotButtonsIfChanged();
             UpdateAdvanceButtonVisual();
             UpdateDetachmentCommandDeck(s);
+            UpdateStandingRulesAndWeaponDeck(s);
             UpdateArmorPaperDoll(s);
             UpdatePooledContactRows(s);
+        }
+
+        public void ClickAutoLockToggleForTests() => HandleAutoLockRuleClick();
+        public void ClickAutoFireToggleForTests() => HandleAutoFireRuleClick();
+        public void CycleAutoFireOddsForTests() => CycleAutoFireOddsPreset();
+        public void ClickWeaponSlotButtonForTests(int index) => FireWeaponSlotAt(index);
+
+        private void HandleAutoLockRuleClick()
+        {
+            _arena?.ToggleAutoLockRule();
+        }
+
+        private void HandleAutoFireRuleClick()
+        {
+            _arena?.ToggleAutoFireRule(_autoFireOddsPct, "ALL");
+        }
+
+        private void CycleAutoFireOddsPreset()
+        {
+            int idx = Array.IndexOf(AutoFireOddsPresets, _autoFireOddsPct);
+            _autoFireOddsPct = AutoFireOddsPresets[(idx + 1) % AutoFireOddsPresets.Length];
+            if (_autoFireOddsLabel != null)
+                _autoFireOddsLabel.text = $"ODDS >= {_autoFireOddsPct}%";
+            if (_arena != null && _arena.HasAutoFireRule)
+                _arena.SetAutoFireRule(_autoFireOddsPct, enable: true, weaponId: "ALL");
+        }
+
+        private void FireWeaponSlotAt(int index)
+        {
+            if (index < 0 || index >= _weaponSlotPool.Count) return;
+            string wpnId = _weaponSlotPool[index].BoundWeaponId;
+            if (!MushProtocol.TryValidateSafeCommandToken(wpnId, out string safeWpn, maxLen: 32))
+                return;
+            OnArenaCockpitVerbRequested?.Invoke($"fire {safeWpn}");
+        }
+
+        private void UpdateStandingRulesAndWeaponDeck(ArenaCockpitState s)
+        {
+            if (s == null) return;
+
+            bool autoLockOn = _arena != null && _arena.HasAutoLockRule;
+            if (_autoLockRuleLabel != null)
+                _autoLockRuleLabel.text = autoLockOn ? "AUTO-LOCK: ON [L]" : "AUTO-LOCK: OFF [L]";
+            if (_autoLockRuleBg != null)
+                _autoLockRuleBg.color = autoLockOn ? new Color(0.14f, 0.52f, 0.36f) : new Color(0.14f, 0.24f, 0.34f);
+
+            bool autoFireOn = _arena != null && _arena.HasAutoFireRule;
+            if (_autoFireRuleLabel != null)
+                _autoFireRuleLabel.text = autoFireOn ? "AUTO-FIRE: ON" : "AUTO-FIRE: OFF";
+            if (_autoFireRuleBg != null)
+                _autoFireRuleBg.color = autoFireOn ? new Color(0.64f, 0.30f, 0.14f) : new Color(0.14f, 0.24f, 0.34f);
+
+            if (_autoFireOddsLabel != null)
+                _autoFireOddsLabel.text = $"ODDS >= {_autoFireOddsPct}%";
+
+            int shown = Mathf.Min(s.Weapons.Count, _weaponSlotPool.Count);
+            for (int i = 0; i < shown; i++)
+            {
+                var w = s.Weapons[i];
+                var slot = _weaponSlotPool[i];
+                slot.BoundWeaponId = w.Id ?? string.Empty;
+                string shortName = (w.Id ?? $"W{i + 1}").ToUpperInvariant();
+                if (shortName.Length > 9) shortName = shortName.Substring(0, 9);
+                string rdyTxt = w.Ready ? "RDY" : $"{w.ReadyInMs / 1000f:F1}s";
+                if (slot.Label != null)
+                    slot.Label.text = $"[{i + 1}] {shortName} {rdyTxt}";
+                if (slot.Background != null)
+                {
+                    slot.Background.color = w.ArmedSlot > 0
+                        ? new Color(0.16f, 0.38f, 0.54f)
+                        : (w.Ready ? new Color(0.18f, 0.42f, 0.28f) : new Color(0.28f, 0.22f, 0.16f));
+                }
+                if (slot.Root != null && !slot.Root.activeSelf)
+                    slot.Root.SetActive(true);
+            }
+            for (int i = shown; i < _weaponSlotPool.Count; i++)
+            {
+                _weaponSlotPool[i].BoundWeaponId = string.Empty;
+                if (_weaponSlotPool[i].Root != null && _weaponSlotPool[i].Root.activeSelf)
+                    _weaponSlotPool[i].Root.SetActive(false);
+            }
         }
 
         private void UpdateArmorPaperDoll(ArenaCockpitState s)

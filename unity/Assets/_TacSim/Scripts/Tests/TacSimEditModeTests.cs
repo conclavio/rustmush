@@ -7446,5 +7446,153 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ArenaCompassTapeStandingRulesAndWeaponsDeck_ScrollsBearingsTogglesMindRulesFiresIndividualWeaponsAndHandlesHotkeys()
+        {
+            // 1. Pure compass tape wrap-around math across North (355 -> 005 = +10 deg, 005 -> 355 = -10 deg)
+            float posRight = TacSim.UI.TacSimTacticalBrackets.ComputeCompassTapeOffsetPx(355f, 5f, 420f, 140f, out bool visRight);
+            float posLeft = TacSim.UI.TacSimTacticalBrackets.ComputeCompassTapeOffsetPx(5f, 355f, 420f, 140f, out bool visLeft);
+            Assert.IsTrue(visRight && visLeft, "+/- 10 deg across North must remain visible inside 140 deg FOV tape");
+            Assert.Greater(posRight, 0f, "005 deg must plot right of 355 deg");
+            Assert.Less(posLeft, 0f, "355 deg must plot left of 005 deg");
+            Assert.AreEqual(posRight, -posLeft, 0.01f);
+
+            TacSim.UI.TacSimTacticalBrackets.ComputeCompassTapeOffsetPx(90f, 270f, 420f, 140f, out bool visBehind);
+            Assert.IsFalse(visBehind, "Bearing directly behind (180 deg delta) must report withinTape=false");
+
+            var rootGo = new UnityEngine.GameObject("Wave5PR3_CompassRulesWeaponsTest");
+            try
+            {
+                var catalog = TacSimAssetCatalog.LoadOrDefault();
+                var arenaGo = new UnityEngine.GameObject("Arena");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(catalog, TacSimTerrainDecoder.LoadStaticArena("proving_ground"));
+
+                var camGo = new UnityEngine.GameObject("Cam", typeof(UnityEngine.Camera));
+                camGo.transform.SetParent(rootGo.transform, false);
+                var cam = camGo.GetComponent<UnityEngine.Camera>();
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.Overlays.BindControllers(null, arena, null);
+                hud.TacticalBrackets.BindControllers(null, null, arena);
+
+                var emittedVerbs = new List<string>();
+                arena.OnLiveCockpitVerbRequested += emittedVerbs.Add;
+                hud.Overlays.OnArenaCockpitVerbRequested += v => arena.ExecuteCockpitAction(v);
+
+                // 2. Hydrate frame with receiver, posture, standing rules, detachment order, weapons, locked contact, objective
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 95, ""seated"": true, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""mode"": ""hold"", ""power"": ""online"",
+                    ""x_cm"": 10000, ""y_cm"": 10000, ""heading_deg"": 90, ""speed_kph"": 18,
+                    ""sight_m"": 240, ""scope"": ""hostile"", ""tempo"": ""engaged"", ""posture"": ""guard"",
+                    ""weapons_free"": false,
+                    ""receiver"": { ""budget"": 40, ""budget_max"": 100, ""reach_percent"": 72 },
+                    ""objective"": { ""cell"": [150, 100], ""letter"": ""B"", ""radius_cells"": 4 },
+                    ""lock_designator"": ""B1"", ""lock_range_m"": 180, ""lock_percent"": 68,
+                    ""rules"": [],
+                    ""weapons"": [
+                        { ""id"": ""main_gun"", ""ready"": true, ""ready_in_ms"": 0, ""rounds"": 12, ""rounds_max"": 12, ""percent"": 68 },
+                        { ""id"": ""coax_laser"", ""ready"": false, ""ready_in_ms"": 1400, ""rounds"": 99, ""rounds_max"": 99, ""percent"": 54 }
+                    ],
+                    ""contacts"": [
+                        { ""designator"": ""B1"", ""class"": ""line_tank"", ""unit_type"": ""tacsim.unit.line_tank"", ""party"": ""B"", ""friendly"": false, ""cell"": [118, 100], ""range_m"": 180, ""bearing_deg"": 90, ""facing"": ""front"", ""health"": ""intact"" }
+                    ],
+                    ""detachment"": {
+                        ""id"": ""7"", ""revision"": ""2"", ""term"": ""1"",
+                        ""leader_slot"": 1,
+                        ""all_order_prefill"": ""ORDER DT:7:2:1 ALL "",
+                        ""slots"": [
+                            { ""slot"": 1, ""callsign"": ""R1"", ""pilot"": ""Alpha"", ""controller"": ""player"", ""order_prefill"": ""ORDER DT:7:2:1 1 "" }
+                        ],
+                        ""my_order"": { ""sequence"": ""3"", ""from"": ""Alpha"", ""objective"": ""Hold B"", ""response"": null },
+                        ""wilco_command"": ""WILCO DT:7:2 3"",
+                        ""negative_command"": ""NEGATIVE DT:7:2 3""
+                    }
+                }"));
+
+                hud.Overlays.RefreshArenaHud();
+                hud.TacticalBrackets.SyncBrackets(TacSimActiveStage.SimulatorArena, cam, hideForOverlay: false);
+
+                // Compass tape & receiver/posture telemetry
+                Assert.IsTrue(arena.State.HasReceiver);
+                Assert.AreEqual(72, arena.State.ReceiverReachPercent);
+                Assert.AreEqual("guard", arena.State.Posture);
+                Assert.IsTrue(hud.TacticalBrackets.IsArenaCompassVisible);
+                Assert.AreEqual("090°", hud.TacticalBrackets.ArenaCompassHeadingSnapshot);
+                StringAssert.Contains("SCOPE HOSTILE", hud.TacticalBrackets.ArenaCompassTelemetrySnapshot);
+                StringAssert.Contains("SIGHT 240m", hud.TacticalBrackets.ArenaCompassTelemetrySnapshot);
+                StringAssert.Contains("GUARD", hud.TacticalBrackets.ArenaCompassTelemetrySnapshot);
+                StringAssert.Contains("RCVR 72%", hud.TacticalBrackets.ArenaCompassTelemetrySnapshot);
+                Assert.IsTrue(hud.TacticalBrackets.ArenaCompassLockPipVisible, "Locked hostile bearing must plot on compass tape");
+                Assert.IsTrue(hud.TacticalBrackets.ArenaCompassObjectivePipVisible, "Dynamic objective bearing must plot on compass tape");
+
+                // 3. Standing Rules UI: Auto-Lock ON, Auto-Fire ON (emits FIRE FREE first because weapons_free=false!), Odds cycle
+                Assert.IsFalse(hud.Overlays.IsAutoLockArmedUi);
+                Assert.IsFalse(hud.Overlays.IsAutoFireArmedUi);
+                Assert.AreEqual(2, hud.Overlays.ActiveWeaponSlotButtonCount, "Two weapon slots must populate pooled buttons");
+
+                hud.Overlays.ClickAutoLockToggleForTests();
+                CollectionAssert.Contains(emittedVerbs, "LOCK nearest WHEN nolock");
+
+                emittedVerbs.Clear();
+                hud.Overlays.ClickAutoFireToggleForTests();
+                CollectionAssert.AreEqual(new[] { "FIRE FREE", "FIRE ALL WHEN odds >= 60" }, emittedVerbs);
+
+                // Server confirms slots #1 (lock) and #2 (fire) -> cycling odds updates rule immediately; toggling disarms via exact MIND RULE <slot> OFF
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 95, ""seated"": true, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""weapons_free"": true,
+                    ""rules"": [
+                        { ""slot"": 1, ""action"": ""lock"" },
+                        { ""slot"": 2, ""action"": ""fire"" }
+                    ],
+                    ""weapons"": [
+                        { ""id"": ""main_gun"", ""ready"": true, ""ready_in_ms"": 0, ""rounds"": 12, ""rounds_max"": 12, ""percent"": 68 },
+                        { ""id"": ""coax_laser"", ""ready"": true, ""ready_in_ms"": 0, ""rounds"": 99, ""rounds_max"": 99, ""percent"": 54 }
+                    ],
+                    ""contacts"": []
+                }"));
+                hud.Overlays.RefreshArenaHud();
+                Assert.IsTrue(hud.Overlays.IsAutoLockArmedUi);
+                Assert.IsTrue(hud.Overlays.IsAutoFireArmedUi);
+
+                emittedVerbs.Clear();
+                hud.Overlays.CycleAutoFireOddsForTests();
+                Assert.AreEqual(80, hud.Overlays.AutoFireOddsThresholdPct);
+                CollectionAssert.AreEqual(new[] { "FIRE ALL WHEN odds >= 80" }, emittedVerbs);
+
+                emittedVerbs.Clear();
+                hud.Overlays.ClickAutoLockToggleForTests();
+                hud.Overlays.ClickAutoFireToggleForTests();
+                CollectionAssert.AreEqual(new[] { "MIND RULE 1 OFF", "MIND RULE 2 OFF" }, emittedVerbs);
+
+                // 4. Individual weapon slot fire buttons
+                emittedVerbs.Clear();
+                hud.Overlays.ClickWeaponSlotButtonForTests(1);
+                CollectionAssert.AreEqual(new[] { "fire coax_laser" }, emittedVerbs);
+
+                // 5. Doc 21 Combat Hotkeys (F, G, N, M, Z, L, Y) + KeyboardSuspended gate
+                emittedVerbs.Clear();
+                Assert.IsTrue(arena.HandleArenaCombatHotkey(UnityEngine.KeyCode.F));
+                Assert.IsTrue(arena.HandleArenaCombatHotkey(UnityEngine.KeyCode.G));
+                Assert.IsTrue(arena.HandleArenaCombatHotkey(UnityEngine.KeyCode.N));
+                Assert.IsTrue(arena.HandleArenaCombatHotkey(UnityEngine.KeyCode.M));
+                Assert.IsTrue(arena.HandleArenaCombatHotkey(UnityEngine.KeyCode.Z));
+                CollectionAssert.AreEqual(new[] { "fire hold", "fire all", "scan", "emcon off", "startup" }, emittedVerbs);
+
+                arena.KeyboardSuspended = true;
+                emittedVerbs.Clear();
+                Assert.IsFalse(arena.HandleArenaCombatHotkey(UnityEngine.KeyCode.G), "Hotkeys must be ignored while chat/modal suspends keyboard");
+                Assert.AreEqual(0, emittedVerbs.Count);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
