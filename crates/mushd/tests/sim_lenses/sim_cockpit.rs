@@ -31,6 +31,7 @@
 //! wait for.
 
 use crate::support;
+use support::ask_whole;
 
 use support::{STEP_TIMEOUT, wait_until};
 
@@ -64,8 +65,6 @@ const COMMIT_PENDING: &str = "please retry in a moment";
 /// tick, and a server that has not ticked since boot fails closed rather than
 /// reading ignorance as a vacancy.
 const CONTROL_UNKNOWN: &str = "control state unknown";
-/// How many times a line is re-sent on a transient before the test gives up.
-const RETRY_BUDGET: usize = 40;
 
 /// The two pilot characters, created before the world task spawns so their ids
 /// are stable.
@@ -305,57 +304,6 @@ async fn login(
     (handle, term)
 }
 
-/// Run one line and wait for `needle`, retrying the two transients.
-async fn say(term: &mut Term, line: &str, needle: &str) {
-    assert!(
-        !line.contains(needle),
-        "`{needle}` appears in `{line}`'s own echo; pick a needle from the ANSWER"
-    );
-    for _ in 0..RETRY_BUDGET {
-        let mark = term.mark();
-        term.send_line(line).await;
-        match term
-            .expect_one_of_after(mark, &[needle, COMMIT_PENDING, CONTROL_UNKNOWN])
-            .await
-        {
-            0 => return,
-            _ => tokio::time::sleep(Duration::from_millis(200)).await,
-        }
-    }
-    panic!("`{line}` was refused as transient {RETRY_BUDGET} times running");
-}
-
-/// Run one line, wait for `needle`, and hand back everything that arrived.
-async fn ask(term: &mut Term, line: &str, needle: &str) -> String {
-    let mark = term.mark();
-    say(term, line, needle).await;
-    strip_ansi(&term.seen[mark..])
-}
-
-/// The nonsense line [`ask_whole`] fences an answer with (16b cut AG.1), and the
-/// parser's refusal, which is its answer.
-const SENTINEL: &str = "zzq-cockpit-sentinel";
-/// As [`SENTINEL`].
-const HUH: &str = "Huh?";
-
-/// **A whole answer, never half of one** (16b cut AG.1; `observer_rule.rs`'s
-/// twin — a test binary cannot import another): the line, then [`SENTINEL`],
-/// and the slice runs to the sentinel's `Huh?`, so everything the line produced
-/// is in it and nothing is still in flight. A world mid-commit answers both
-/// lines with the transient, which is a retry.
-async fn ask_whole(term: &mut Term, line: &str) -> String {
-    for _ in 0..RETRY_BUDGET {
-        let mark = term.mark();
-        term.send_line(line).await;
-        term.send_line(SENTINEL).await;
-        if term.expect_one_of_after(mark, &[HUH, COMMIT_PENDING]).await == 0 {
-            return strip_ansi(&term.seen[mark..]);
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    panic!("`{line}` never produced a whole answer")
-}
-
 /// One object's dbref, out of an `@find` listing.
 fn dbref_of(listing: &str, name: &str) -> u32 {
     listing
@@ -371,32 +319,33 @@ fn dbref_of(listing: &str, name: &str) -> u32 {
 /// Walk every pilot into the simulator lobby, and put staff wherever `staff_at`
 /// names (by `@find` name), so a test can wait on a room announce.
 async fn open_the_centre(god: &mut Term, staff_at: &str) {
-    let listing = ask(god, "@find Simulator Lobby", "END OF LIST").await;
+    let listing = god
+        .ask_settled("@find Simulator Lobby", "END OF LIST")
+        .await;
     let lobby = dbref_of(&listing, "Simulator Lobby");
     for pilot in [ADA, BO] {
-        say(
-            god,
-            &format!("@teleport #{}=#{lobby}", pilot.0),
-            "Teleported",
-        )
-        .await;
+        god.say(&format!("@teleport #{}=#{lobby}", pilot.0), "Teleported")
+            .await;
     }
-    let listing = ask(god, &format!("@find {staff_at}"), "END OF LIST").await;
+    let listing = god
+        .ask_settled(&format!("@find {staff_at}"), "END OF LIST")
+        .await;
     let room = dbref_of(&listing, staff_at);
     // Teleporting YOURSELF renders the room you land in rather than saying
     // "Teleported.", so the room's own name is the needle.
-    say(god, &format!("@teleport #{}=#{room}", GOD.0), staff_at).await;
+    god.say(&format!("@teleport #{}=#{room}", GOD.0), staff_at)
+        .await;
 }
 
 /// Claim, start, walk and board: the state every cockpit test starts from.
 async fn take_off(ada: &mut Term, bo: &mut Term) {
-    say(ada, "SIM TEAM red", "takes red slot 1").await;
-    say(bo, "SIM TEAM blue", "takes blue slot 1").await;
-    say(ada, "SIM START", "is boarding").await;
-    say(ada, "red", "Red Room").await;
-    say(bo, "blue", "Blue Room").await;
-    say(ada, "BOARD", "climb into").await;
-    say(bo, "BOARD", "climb into").await;
+    ada.say("SIM TEAM red", "takes red slot 1").await;
+    bo.say("SIM TEAM blue", "takes blue slot 1").await;
+    ada.say("SIM START", "is boarding").await;
+    ada.say("red", "Red Room").await;
+    bo.say("blue", "Blue Room").await;
+    ada.say("BOARD", "climb into").await;
+    bo.say("BOARD", "climb into").await;
     // The second seat fires the trigger, and the centre says so in every room.
     ada.expect("Good hunting").await;
 }
@@ -486,11 +435,15 @@ fn domain_of(listing: &str, host: &str) -> u64 {
 /// does — on [`RED_CELL`] and [`BLUE_CELL`], facing each other. Answers the two
 /// tanks' dbrefs, which are the units' ids in the ledger.
 async fn pose_for_the_burst(god: &mut Term) -> (u32, u32) {
-    let listing = ask(god, &format!("@find {RED_TANK}"), "END OF LIST").await;
+    let listing = god
+        .ask_settled(&format!("@find {RED_TANK}"), "END OF LIST")
+        .await;
     let red = dbref_of(&listing, RED_TANK);
-    let listing = ask(god, &format!("@find {BLUE_TANK}"), "END OF LIST").await;
+    let listing = god
+        .ask_settled(&format!("@find {BLUE_TANK}"), "END OF LIST")
+        .await;
     let blue = dbref_of(&listing, BLUE_TANK);
-    let listing = ask(god, "@domain", &format!("host {MUSTER}")).await;
+    let listing = god.ask_settled("@domain", &format!("host {MUSTER}")).await;
     let domain = domain_of(&listing, MUSTER);
     for (unit, (x, y), heading) in [(red, RED_CELL, 90_000), (blue, BLUE_CELL, 270_000)] {
         let pose = format!(
@@ -498,8 +451,7 @@ async fn pose_for_the_burst(god: &mut Term) -> (u32, u32) {
             x * 1_000 + 500,
             y * 1_000 + 500
         );
-        say(
-            god,
+        god.say(
             &format!("@spatial/place/domain #{unit}={domain},{pose}"),
             "Placed",
         )
@@ -537,7 +489,7 @@ async fn wait_for_contact(term: &mut Term, designator: &str) {
         async || {
             let mark = term.mark();
             pump(term, "CONTACTS", &["(rel ", NO_CONTACTS]).await;
-            holds_contact(&strip_ansi(&term.seen[mark..]), designator)
+            holds_contact(&strip_ansi(&term.raw()[mark..]), designator)
         },
     )
     .await;
@@ -551,7 +503,7 @@ async fn wait_for_notice(term: &mut Term, mark: usize, notice: &str) {
         &format!("the `{notice}` notice"),
         async || {
             pump(term, "STATUS", &["power"]).await;
-            strip_ansi(&term.seen[mark..]).contains(notice)
+            strip_ansi(&term.raw()[mark..]).contains(notice)
         },
     )
     .await;
@@ -581,26 +533,26 @@ async fn two_pilots_board_fly_and_climb_out_twice_in_a_row() {
         }
 
         // A pilot in a pod is flying: the cockpit answers.
-        let seen = ask(&mut ada, "STATUS", "power").await;
+        let seen = ada.ask_settled("STATUS", "power").await;
         assert!(seen.contains("Red Tank 1"), "run {run}: {seen}");
 
         // And climbs out again: the seat, the lease and the focus go back, and
         // the body stands in the team room.
-        say(&mut ada, "EXIT", "climb out").await;
-        say(&mut bo, "EXIT", "climb out").await;
-        let seen = ask(&mut ada, "STATUS", OUTSIDE_COCKPIT).await;
+        ada.say("EXIT", "climb out").await;
+        bo.say("EXIT", "climb out").await;
+        let seen = ada.ask_settled("STATUS", OUTSIDE_COCKPIT).await;
         assert!(seen.contains(OUTSIDE_COCKPIT), "run {run}: {seen}");
 
         // `Running -> Aborted -> Idle`, by a pilot who still holds the slot. The
         // check-in is the arena's own answer, so the reset waits for it — staff
         // watch from the lobby, where the centre says so.
         let mark = god.mark();
-        say(&mut ada, "SIM ABORT", "aborts match").await;
+        ada.say("SIM ABORT", "aborts match").await;
         god.expect_after(mark, "is over").await;
-        say(&mut god, "@arena/reset", "is reset").await;
+        god.say("@arena/reset", "is reset").await;
         // Back in the lobby for the next run.
-        say(&mut ada, "lobby", "Simulator Lobby").await;
-        say(&mut bo, "lobby", "Simulator Lobby").await;
+        ada.say("lobby", "Simulator Lobby").await;
+        bo.say("lobby", "Simulator Lobby").await;
     }
 }
 
@@ -651,9 +603,9 @@ async fn a_pilot_who_types_fire_then_exit_in_one_burst_fires_nothing() {
 
     // Both tanks online, each holding the other classified.
     let ada_up = ada.mark();
-    say(&mut ada, "STARTUP", "Startup sequence").await;
+    ada.say("STARTUP", "Startup sequence").await;
     let bo_up = bo.mark();
-    say(&mut bo, "STARTUP", "Startup sequence").await;
+    bo.say("STARTUP", "Startup sequence").await;
     wait_for_notice(&mut ada, ada_up, "Power online.").await;
     wait_for_notice(&mut bo, bo_up, "Power online.").await;
     // Doc 32 cut CF.0 (Q-CF-11): each tank's unit letter is drawn at
@@ -665,8 +617,7 @@ async fn a_pilot_who_types_fire_then_exit_in_one_burst_fires_nothing() {
 
     // The lock, and the frame that carries it.
     let locking = ada.mark();
-    say(
-        &mut ada,
+    ada.say(
         &format!("LOCK {blue_callsign}"),
         &format!("Locking {blue_callsign}."),
     )
@@ -680,8 +631,7 @@ async fn a_pilot_who_types_fire_then_exit_in_one_burst_fires_nothing() {
     ada.expect_after(mark, "climb out").await;
     // The release bound's marker, typed the moment `climb out` was read.
     let marked = bo.mark();
-    say(
-        &mut bo,
+    bo.say(
         &format!("LOCK {red_callsign}"),
         &format!("Locking {red_callsign}."),
     )
@@ -689,7 +639,7 @@ async fn a_pilot_who_types_fire_then_exit_in_one_burst_fires_nothing() {
     wait_for_notice(&mut bo, marked, &format!("Locked on {red_callsign}")).await;
     // Everything Ada was sent up to the pulse that bound drained.
     pump(&mut ada, "STATUS", &[OUTSIDE_COCKPIT]).await;
-    let seen = strip_ansi(&ada.seen[mark..]);
+    let seen = strip_ansi(&ada.raw()[mark..]);
     let (before, after) = seen
         .split_once("climb out")
         .unwrap_or_else(|| panic!("no `climb out` in:\n{seen}"));
@@ -720,7 +670,7 @@ async fn a_pilot_who_types_fire_then_exit_in_one_burst_fires_nothing() {
     );
 
     // And the arena's own record.
-    say(&mut ada, "SIM ABORT", "aborts match").await;
+    ada.say("SIM ABORT", "aborts match").await;
     let mut events = Vec::new();
     wait_until(
         STEP_TIMEOUT,
@@ -779,7 +729,7 @@ async fn a_dropped_line_keeps_the_tank_rolling_and_the_seat_is_reclaimed_on_reco
     let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
     let (ada_handle, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
     take_off(&mut ada, &mut bo).await;
-    say(&mut ada, "STARTUP", "Startup sequence").await;
+    ada.say("STARTUP", "Startup sequence").await;
     // Power comes online behind the startup; the orders are taken once it is.
     wait_until(
         STEP_TIMEOUT,
@@ -802,7 +752,7 @@ async fn a_dropped_line_keeps_the_tank_rolling_and_the_seat_is_reclaimed_on_reco
         },
     )
     .await;
-    say(&mut ada, "SPEED 20", "Making 20 kph").await;
+    ada.say("SPEED 20", "Making 20 kph").await;
     // The tank accelerates at a metre a second squared, so it takes a moment to
     // be **making way** rather than merely ordered to. The drop waits for that,
     // because an order still in flight when the line goes is one the epoch raise
@@ -810,7 +760,7 @@ async fn a_dropped_line_keeps_the_tank_rolling_and_the_seat_is_reclaimed_on_reco
     // is the claim under test.
     let mut rolling = 0;
     wait_until(STEP_TIMEOUT, "the tank to make way", async || {
-        rolling = kph_of(&ask(&mut ada, "STATUS", "kph").await);
+        rolling = kph_of(&ada.ask_settled("STATUS", "kph").await);
         rolling > 0
     })
     .await;
@@ -835,7 +785,7 @@ async fn a_dropped_line_keeps_the_tank_rolling_and_the_seat_is_reclaimed_on_reco
     // is still rolling on the heading it was given.
     let (_a2, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
     ada.expect("back at your station").await;
-    let seen = ask(&mut ada, "STATUS", "heading").await;
+    let seen = ada.ask_settled("STATUS", "heading").await;
     assert!(
         seen.contains("heading 90"),
         "the tank kept its continuous orders: {seen}"
@@ -845,7 +795,7 @@ async fn a_dropped_line_keeps_the_tank_rolling_and_the_seat_is_reclaimed_on_reco
         "and it never stopped rolling ({rolling} kph when the line went): {seen}"
     );
     // And the reclaimed seat takes a fresh order under its new epoch.
-    say(&mut ada, "HEADING 180", "Steering to 180").await;
+    ada.say("HEADING 180", "Steering to 180").await;
 }
 
 /// A real SSH client behind a relay. Tests can close TCP or stop forwarding
@@ -977,7 +927,7 @@ async fn verify_cockpit_recovery(silent_loss: bool) {
     let (_gm, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
     open_the_centre(&mut god, "Simulator Lobby").await;
     let red = dbref_of(
-        &ask(&mut god, "@find Red Tank 1", "END OF LIST").await,
+        &god.ask_settled("@find Red Tank 1", "END OF LIST").await,
         RED_TANK,
     );
     let (_bo, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
@@ -1049,7 +999,7 @@ async fn verify_cockpit_recovery(silent_loss: bool) {
         Some(session)
     );
     ada.expect_squeezed_after(0, "Nolock").await;
-    let frame: String = strip_ansi(&ada.seen)
+    let frame: String = strip_ansi(ada.raw())
         .chars()
         .filter(|c| !c.is_whitespace())
         .collect();
@@ -1059,7 +1009,7 @@ async fn verify_cockpit_recovery(silent_loss: bool) {
     );
     assert!(!frame.contains("oldcockpitnotice"));
     assert!(
-        !ada.seen.contains('\x07'),
+        !ada.raw().contains('\x07'),
         "no sound from the old connection"
     );
 
@@ -1091,7 +1041,7 @@ async fn past_the_grace_the_machine_flies_the_tank_until_the_pilot_boards_again(
     let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
     open_the_centre(&mut god, "Simulator Lobby").await;
     let red = dbref_of(
-        &ask(&mut god, "@find Red Tank 1", "END OF LIST").await,
+        &god.ask_settled("@find Red Tank 1", "END OF LIST").await,
         "Red Tank 1",
     );
     let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
@@ -1100,7 +1050,7 @@ async fn past_the_grace_the_machine_flies_the_tank_until_the_pilot_boards_again(
     let ticket = ada_handle.ticket("issue", None, "issued").await.unwrap();
     take_off(&mut ada, &mut bo).await;
     // Power first, so the reclaimed tank can be ordered the moment it is hers.
-    say(&mut ada, "STARTUP", "Startup sequence").await;
+    ada.say("STARTUP", "Startup sequence").await;
     // **16b cut Y.4**: and under way, so the catch-up has somewhere to say
     // the tank went — it drives on through the grace, then the machine has it.
     wait_until(
@@ -1124,12 +1074,12 @@ async fn past_the_grace_the_machine_flies_the_tank_until_the_pilot_boards_again(
         },
     )
     .await;
-    say(&mut ada, "SPEED 20", "Making 20 kph").await;
+    ada.say("SPEED 20", "Making 20 kph").await;
     // At the full order before the line goes — 555 cm/s, which `STATUS` rounds
     // down to 19 kph — so the two-second grace is more than ten metres of road,
     // more than a cell, and the report's two cells cannot be one.
     wait_until(STEP_TIMEOUT, "the tank to make its 20 kph", async || {
-        kph_of(&ask(&mut ada, "STATUS", "kph").await) >= 19
+        kph_of(&ada.ask_settled("STATUS", "kph").await) >= 19
     })
     .await;
 
@@ -1164,12 +1114,12 @@ async fn past_the_grace_the_machine_flies_the_tank_until_the_pilot_boards_again(
     ada.expect("is flying on its mind; BOARD takes it back.")
         .await;
     assert!(
-        !ada.seen.contains("back at your station"),
+        !ada.raw().contains("back at your station"),
         "past the grace a reconnect is not a revival: {}",
-        strip_ansi(&ada.seen)
+        strip_ansi(ada.raw())
     );
     // Nothing is hers until she boards.
-    let seen = ask(&mut ada, "STATUS", OUTSIDE_COCKPIT).await;
+    let seen = ada.ask_settled("STATUS", OUTSIDE_COCKPIT).await;
     assert!(seen.contains(OUTSIDE_COCKPIT), "{seen}");
 
     // `BOARD`, from the pod: told to wait until the floor passes, then hers.
@@ -1197,7 +1147,7 @@ async fn past_the_grace_the_machine_flies_the_tank_until_the_pilot_boards_again(
     let back_aboard = format!("Back aboard {callsign} after");
     ada.expect(&back_aboard).await;
     ada.expect("Power ").await;
-    let seen = strip_ansi(&ada.seen);
+    let seen = strip_ansi(ada.raw());
     let block = seen
         .get(seen.find(&back_aboard).unwrap_or(0)..)
         .unwrap_or_default();
@@ -1221,7 +1171,7 @@ async fn past_the_grace_the_machine_flies_the_tank_until_the_pilot_boards_again(
         async || {
             let mark = ada.mark();
             pump(&mut ada, "STATUS", &["power", OUTSIDE_COCKPIT]).await;
-            let seen = strip_ansi(&ada.seen[mark..]);
+            let seen = strip_ansi(&ada.raw()[mark..]);
             seen.contains("heading") && !seen.contains(OUTSIDE_COCKPIT)
         },
     )
@@ -1279,23 +1229,23 @@ async fn the_cockpit_verbs_are_contextual_and_the_window_is_a_map() {
         "VIEW BRIEF",
         "VIEW nonsense",
     ] {
-        let seen = ask(&mut ada, verb, OUTSIDE_COCKPIT).await;
+        let seen = ada.ask_settled(verb, OUTSIDE_COCKPIT).await;
         assert!(seen.contains(OUTSIDE_COCKPIT), "{verb}: {seen}");
     }
-    let seen = ask(&mut ada, "BOARD", OUTSIDE_TEAM_ROOM).await;
+    let seen = ada.ask_settled("BOARD", OUTSIDE_TEAM_ROOM).await;
     assert!(seen.contains(OUTSIDE_TEAM_ROOM), "{seen}");
-    let seen = ask(&mut ada, "EXIT", NOT_IN_A_POD).await;
+    let seen = ada.ask_settled("EXIT", NOT_IN_A_POD).await;
     assert!(seen.contains(NOT_IN_A_POD), "{seen}");
 
     take_off(&mut ada, &mut bo).await;
 
     // (4) A cold tank refuses to steer, in the arena's own words.
-    let seen = ask(&mut ada, "HEADING 90", POWER_NOT_ONLINE).await;
+    let seen = ada.ask_settled("HEADING 90", POWER_NOT_ONLINE).await;
     assert!(seen.contains(POWER_NOT_ONLINE), "{seen}");
 
     // (5) The window, as a map: the line renderer draws the grid frame the same
     // verb hands the web panel.
-    let seen = ask(&mut ada, "VIEW", "Arena window").await;
+    let seen = ada.ask_settled("VIEW", "Arena window").await;
     assert!(seen.contains("legend:"), "the map has a legend: {seen}");
     assert!(seen.contains("@ you"), "and the platform's glyph: {seen}");
     assert!(seen.contains("you at ("), "and says where it is: {seen}");
@@ -1357,19 +1307,19 @@ async fn the_cockpit_verbs_are_contextual_and_the_window_is_a_map() {
         !brief.contains("legend:") && !brief.contains("Arena window"),
         "the brief pushed the map: {brief}"
     );
-    let seen = ask(
-        &mut ada,
-        "VIEW nonsense",
-        "VIEW [BRIEF]; BRIEF says the window in sentences.",
-    )
-    .await;
+    let seen = ada
+        .ask_settled(
+            "VIEW nonsense",
+            "VIEW [BRIEF]; BRIEF says the window in sentences.",
+        )
+        .await;
     assert!(
         seen.contains("VIEW [BRIEF]; BRIEF says the window in sentences."),
         "{seen}"
     );
 
     // And `WEAPONSTATUS` reads the tank's own components.
-    let seen = ask(&mut ada, "WEAPONSTATUS", "cannon").await;
+    let seen = ada.ask_settled("WEAPONSTATUS", "cannon").await;
     assert!(seen.contains("round(s)"), "{seen}");
 }
 
@@ -1401,17 +1351,13 @@ async fn board_takes_the_bus_outside_the_centre_and_sim_reads_the_board_inside_i
 
     // (a) The tour bus. Ada stands at the Bus Stop and types the word the room's
     // own exit list advertises.
-    let listing = ask(&mut god, "@find Bus Stop", "END OF LIST").await;
+    let listing = god.ask_settled("@find Bus Stop", "END OF LIST").await;
     let stop = dbref_of(&listing, "Bus Stop");
-    say(
-        &mut god,
-        &format!("@teleport #{}=#{stop}", ADA.0),
-        "Teleported",
-    )
-    .await;
-    say(&mut ada, "board", "Studio Tour Bus").await;
+    god.say(&format!("@teleport #{}=#{stop}", ADA.0), "Teleported")
+        .await;
+    ada.say("board", "Studio Tour Bus").await;
     // And back off it, which is the alias the bus's own exit carries.
-    say(&mut ada, "off", "Bus Stop").await;
+    ada.say("off", "Bus Stop").await;
 
     // The stand-aside is one early-out over all eleven verbs, not a `BOARD`
     // special case, so the other ten are typed here too: out at the Bus Stop the
@@ -1430,35 +1376,35 @@ async fn board_takes_the_bus_outside_the_centre_and_sim_reads_the_board_inside_i
         "WEAPONSTATUS",
         "STATUS",
     ] {
-        let seen = ask(&mut ada, verb, OUTSIDE_COCKPIT).await;
+        let seen = ada.ask_settled(verb, OUTSIDE_COCKPIT).await;
         assert!(
             seen.contains(OUTSIDE_COCKPIT),
             "{verb} at the Bus Stop: {seen}"
         );
     }
-    let seen = ask(&mut ada, "EXIT", NOT_IN_A_POD).await;
+    let seen = ada.ask_settled("EXIT", NOT_IN_A_POD).await;
     assert!(seen.contains(NOT_IN_A_POD), "EXIT at the Bus Stop: {seen}");
 
     // (b) Inside the centre the cockpit gate is unchanged: `BOARD` in the lobby
     // is still refused with the sentence that says where boarding happens.
     open_the_centre(&mut god, "Simulator Lobby").await;
-    let seen = ask(&mut ada, "BOARD", OUTSIDE_TEAM_ROOM).await;
+    let seen = ada.ask_settled("BOARD", OUTSIDE_TEAM_ROOM).await;
     assert!(seen.contains(OUTSIDE_TEAM_ROOM), "{seen}");
 
     // And the one thing `help simulator` tells a newcomer to type in this room
     // actually resolves. (`look selector` does not: the item carries no alias
     // and `matchit` takes a whole `;`-segment or a segment prefix, which is why
     // the topic names the console.)
-    let seen = ask(&mut ada, "look Simulator Selector", "console").await;
+    let seen = ada.ask_settled("look Simulator Selector", "console").await;
     assert!(seen.contains("SIM TEAM red"), "{seen}");
 
     // (c) A bare `SIM` in a team room reads the board instead of walking the
     // pilot back to the lobby.
-    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
-    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
-    say(&mut ada, "SIM START", "is boarding").await;
-    say(&mut ada, "red", "Red Room").await;
-    let seen = ask(&mut ada, "SIM", "Simulator center:").await;
+    ada.say("SIM TEAM red", "takes red slot 1").await;
+    bo.say("SIM TEAM blue", "takes blue slot 1").await;
+    ada.say("SIM START", "is boarding").await;
+    ada.say("red", "Red Room").await;
+    let seen = ada.ask_settled("SIM", "Simulator center:").await;
     assert!(seen.contains("boarding"), "{seen}");
     assert!(
         !seen.contains("Simulator Lobby"),
@@ -1466,13 +1412,13 @@ async fn board_takes_the_bus_outside_the_centre_and_sim_reads_the_board_inside_i
     );
 
     // Which the next line proves outright: `BOARD` only works from in here.
-    say(&mut ada, "BOARD", "climb into").await;
+    ada.say("BOARD", "climb into").await;
 
     // And the walking words the pack kept still walk.
-    say(&mut bo, "blue", "Blue Room").await;
-    say(&mut bo, "lobby", "Simulator Lobby").await;
-    say(&mut bo, "blue", "Blue Room").await;
-    say(&mut bo, "BOARD", "climb into").await;
+    bo.say("blue", "Blue Room").await;
+    bo.say("lobby", "Simulator Lobby").await;
+    bo.say("blue", "Blue Room").await;
+    bo.say("BOARD", "climb into").await;
 }
 
 // ---------------------------------------------------------------------------
@@ -1482,10 +1428,10 @@ async fn board_takes_the_bus_outside_the_centre_and_sim_reads_the_board_inside_i
 /// The raw byte offset just past the first `needle` after `mark`, so a later
 /// `expect_after` can ask what arrived AFTER that sentence.
 fn past(term: &Term, mark: usize, needle: &str) -> usize {
-    term.seen[mark..]
+    term.raw()[mark..]
         .find(needle)
         .map(|at| mark + at + needle.len())
-        .unwrap_or_else(|| panic!("{needle:?} after the mark in: {:?}", &term.seen[mark..]))
+        .unwrap_or_else(|| panic!("{needle:?} after the mark in: {:?}", &term.raw()[mark..]))
 }
 
 /// **`BOARD` shows the pod and `EXIT` the team room, each after the sentence
@@ -1504,18 +1450,18 @@ async fn b4_board_and_exit_show_the_room_after_the_sentence() {
     let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
     let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
 
-    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
-    say(&mut bo, "SIM TEAM blue", "takes blue slot 1").await;
-    say(&mut ada, "SIM START", "is boarding").await;
-    say(&mut ada, "red", "Red Room").await;
-    say(&mut bo, "blue", "Blue Room").await;
+    ada.say("SIM TEAM red", "takes red slot 1").await;
+    bo.say("SIM TEAM blue", "takes blue slot 1").await;
+    ada.say("SIM START", "is boarding").await;
+    ada.say("red", "Red Room").await;
+    bo.say("blue", "Blue Room").await;
 
     // BOARD: the sentence, then the pod's own name again as the room view's
     // head — the interior `look` would show from inside it.
     let mark = ada.mark();
-    say(&mut ada, "BOARD", "climb into").await;
+    ada.say("BOARD", "climb into").await;
     ada.expect_after(mark, "EXIT to get out").await;
-    let said = strip_ansi(&ada.seen[mark..]);
+    let said = strip_ansi(&ada.raw()[mark..]);
     let pod = said
         .split_once("You climb into ")
         .and_then(|(_, rest)| rest.split_once(". The panel wakes"))
@@ -1524,12 +1470,12 @@ async fn b4_board_and_exit_show_the_room_after_the_sentence() {
     let after_sentence = past(&ada, mark, "for the rest of it.");
     ada.expect_after(after_sentence, &pod).await;
 
-    say(&mut bo, "BOARD", "climb into").await;
+    bo.say("BOARD", "climb into").await;
     ada.expect("Good hunting").await;
 
     // EXIT: the sentence, then the team room's view.
     let mark = ada.mark();
-    say(&mut ada, "EXIT", "climb out").await;
+    ada.say("EXIT", "climb out").await;
     ada.expect_after(mark, "cannot take it back.").await;
     let after_sentence = past(&ada, mark, "cannot take it back.");
     ada.expect_after(after_sentence, "Red Room").await;
@@ -1693,37 +1639,34 @@ async fn m1a4_a_pilot_drives_to_a_spot_and_a_cell_and_takes_the_helm_back() {
     take_off(&mut ada, &mut bo).await;
 
     // Cold, it is refused as `HEADING` is.
-    let seen = ask(&mut ada, "DRIVE The Ford", POWER_NOT_ONLINE).await;
+    let seen = ada.ask_settled("DRIVE The Ford", POWER_NOT_ONLINE).await;
     assert!(seen.contains(POWER_NOT_ONLINE), "{seen}");
     let up = ada.mark();
-    say(&mut ada, "STARTUP", "Startup sequence").await;
+    ada.say("STARTUP", "Startup sequence").await;
     wait_for_notice(&mut ada, up, "Power online.").await;
 
-    let seen = ask(&mut ada, "DRIVE The Ford", "Steering for").await;
+    let seen = ada.ask_settled("DRIVE The Ford", "Steering for").await;
     assert!(seen.contains("Steering for The Ford (A)."), "{seen}");
-    say(&mut ada, "DRIVE HOLD", "Holding here.").await;
+    ada.say("DRIVE HOLD", "Holding here.").await;
     let brief = ask_whole(&mut ada, "VIEW BRIEF").await;
     let (x, y) = m1a4_you_at(&brief);
     let to = (x + 4, y);
     let mark = ada.mark();
-    let seen = ask(
-        &mut ada,
-        &format!("DRIVE {},{}", to.0, to.1),
-        "Steering for cell",
-    )
-    .await;
+    let seen = ada
+        .ask_settled(&format!("DRIVE {},{}", to.0, to.1), "Steering for cell")
+        .await;
     assert!(
         seen.contains(&format!("Steering for cell {},{}.", to.0, to.1)),
         "{seen}"
     );
     ada.expect_after(mark, "DRIVE: arrived.").await;
-    let told = strip_ansi(&ada.seen[mark..]);
+    let told = strip_ansi(&ada.raw()[mark..]);
     assert!(!told.contains("DRIVE refused"), "{told}");
     assert!(!told.contains("no route"), "{told}");
 
-    let seen = ask(&mut ada, "STATUS", "power").await;
+    let seen = ada.ask_settled("STATUS", "power").await;
     assert!(!seen.contains("heading 180°"), "the premise: {seen}");
-    say(&mut ada, "HEADING 180", "Steering to 180").await;
+    ada.say("HEADING 180", "Steering to 180").await;
     // `STATUS` prints the heading unpadded (`heading 180°`); the tank turns in
     // place, and `STATUS` reads the last frame, so the wait is on the readout.
     let mut seen = String::new();
@@ -1732,7 +1675,7 @@ async fn m1a4_a_pilot_drives_to_a_spot_and_a_cell_and_takes_the_helm_back() {
         seen.contains("heading 180°")
     })
     .await;
-    let told = strip_ansi(&ada.seen[mark..]);
+    let told = strip_ansi(&ada.raw()[mark..]);
     assert_eq!(
         told.matches("DRIVE: arrived.").count(),
         1,

@@ -56,11 +56,6 @@ use support::{Term, play_client, scratch_dir, strip_ansi};
 
 const PASSWORD: &str = "front-door-1";
 
-/// The world's transient authoritative refusal: a commit is in flight.
-const COMMIT_PENDING: &str = "please retry in a moment";
-/// How many times a line is re-sent on a transient before the test gives up.
-const RETRY_BUDGET: usize = 40;
-
 // ---------------------------------------------------------------------------
 // The rig
 // ---------------------------------------------------------------------------
@@ -196,33 +191,6 @@ async fn boot(tag: &str) -> Server {
 // The terminal
 // ---------------------------------------------------------------------------
 
-/// Run one line and wait for `needle`, retrying the world's one transient.
-async fn say(term: &mut Term, line: &str, needle: &str) {
-    assert!(
-        !line.contains(needle),
-        "`{needle}` appears in `{line}`'s own echo; pick a needle from the ANSWER"
-    );
-    for _ in 0..RETRY_BUDGET {
-        let mark = term.mark();
-        term.send_line(line).await;
-        match term
-            .expect_one_of_after(mark, &[needle, COMMIT_PENDING])
-            .await
-        {
-            0 => return,
-            _ => tokio::time::sleep(Duration::from_millis(200)).await,
-        }
-    }
-    panic!("`{line}` was refused as transient {RETRY_BUDGET} times running");
-}
-
-/// Run one line, wait for `needle`, and hand back everything that arrived.
-async fn ask(term: &mut Term, line: &str, needle: &str) -> String {
-    let mark = term.mark();
-    say(term, line, needle).await;
-    strip_ansi(&term.seen[mark..])
-}
-
 /// **Make an account and a character at the welcome screen** — the front door,
 /// with nothing seeded behind it.
 async fn register(
@@ -241,12 +209,12 @@ async fn register(
 /// aliases. `simulator` rather than `sim`, because cut F.4 took `sim` off the
 /// exit: it is the verb's word.
 async fn walk_to_the_lobby(term: &mut Term) {
-    say(term, "ooc", "Welcome Hall").await;
+    term.say("ooc", "Welcome Hall").await;
     // 16b cut D.5 (16c `B-11`): `l` looks. It used to be the Welcome Hall's
     // exit to the Lounge, so the room every pilot crosses to the simulator
     // walked them out of it. The hall's own name coming back is the proof.
-    say(term, "l", "Welcome Hall").await;
-    say(term, "simulator", "Simulator Lobby").await;
+    term.say("l", "Welcome Hall").await;
+    term.say("simulator", "Simulator Lobby").await;
 }
 
 // ---------------------------------------------------------------------------
@@ -271,13 +239,13 @@ async fn two_accounts_made_after_boot_walk_in_and_each_claims_a_slot() {
     // (3) Both claims succeed — and the announce reaches the other person in the
     // room, which is how each of them knows the other really holds a slot.
     let watching = blue.mark();
-    say(&mut red, "SIM TEAM red", "takes red slot 1").await;
+    red.say("SIM TEAM red", "takes red slot 1").await;
     blue.expect_after(watching, "Rowan takes red slot 1").await;
-    say(&mut blue, "SIM TEAM blue", "takes blue slot 1").await;
+    blue.say("SIM TEAM blue", "takes blue slot 1").await;
 
     // (4) The board agrees, which is the centre's own record rather than the
     // claim's echo.
-    let status = ask(&mut red, "SIM STATUS", "blue:").await;
+    let status = red.ask_settled("SIM STATUS", "blue:").await;
     assert!(status.contains("selection"), "{status}");
     assert!(status.contains("Rowan"), "{status}");
     assert!(status.contains("Bly"), "{status}");
@@ -285,8 +253,8 @@ async fn two_accounts_made_after_boot_walk_in_and_each_claims_a_slot() {
     // (5) And the refusal that used to stand here is nowhere in either
     // transcript, in either of its spellings.
     for (who, seen) in [
-        ("Rowan", strip_ansi(&red.seen)),
-        ("Bly", strip_ansi(&blue.seen)),
+        ("Rowan", strip_ansi(red.raw())),
+        ("Bly", strip_ansi(blue.raw())),
     ] {
         assert!(
             !seen.contains("not mapped yet"),
@@ -310,10 +278,10 @@ async fn an_alt_made_after_boot_shares_its_account_and_cannot_take_a_second_slot
 
     let (_r, mut red) = register(server.addr, "Quill").await;
     walk_to_the_lobby(&mut red).await;
-    say(&mut red, "SIM TEAM red", "takes red slot 1").await;
+    red.say("SIM TEAM red", "takes red slot 1").await;
 
     // The alt, made from inside the game on the caller's own account.
-    say(&mut red, "@newchar Quillon", "created Quillon").await;
+    red.say("@newchar Quillon", "created Quillon").await;
 
     // Play it: the account now owns two characters, so the welcome screen offers
     // the character select and the alt is picked by name.
@@ -329,7 +297,8 @@ async fn an_alt_made_after_boot_shares_its_account_and_cannot_take_a_second_slot
     walk_to_the_lobby(&mut alt).await;
     // One slot per **account**, not per character: the alt is told which slot its
     // account already holds, which is only sayable because the alt maps at all.
-    say(&mut alt, "SIM TEAM blue", "You already hold red slot 1.").await;
+    alt.say("SIM TEAM blue", "You already hold red slot 1.")
+        .await;
 }
 
 /// **A macro made at the front door survives a reconnect** (16b cut AD.1, 16c
@@ -341,14 +310,11 @@ async fn a_macro_made_at_the_front_door_survives_a_reconnect() {
     let server = boot("front-door-macro").await;
 
     let (_r, mut rowan) = register(server.addr, "Rowan").await;
-    say(
-        &mut rowan,
-        "@macro hey=say hello, $1",
-        "Macro hey set: say hello, $1",
-    )
-    .await;
-    say(&mut rowan, "hey Bly", "hello, Bly").await;
-    let listed = ask(&mut rowan, "@macro", "hey").await;
+    rowan
+        .say("@macro hey=say hello, $1", "Macro hey set: say hello, $1")
+        .await;
+    rowan.say("hey Bly", "hello, Bly").await;
+    let listed = rowan.ask_settled("@macro", "hey").await;
     assert!(listed.contains("Your macros (1 of 20):"), "{listed}");
 
     rowan.send_line("QUIT").await;
@@ -358,5 +324,5 @@ async fn a_macro_made_at_the_front_door_survives_a_reconnect() {
     back.expect("Welcome to the simulator.").await;
     back.send_line(&format!("connect Rowan {PASSWORD}")).await;
     back.expect("Connected as Rowan").await;
-    say(&mut back, "hey again", "hello, again").await;
+    back.say("hey again", "hello, again").await;
 }

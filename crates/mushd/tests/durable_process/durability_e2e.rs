@@ -102,7 +102,7 @@ async fn kill9_mid_play_world_survives_redis_gated() {
 
     god.send_line("@dig Vault = east;e, west;w").await;
     god.expect("Vault created with room number #").await;
-    let vault_id = parse_id_after(&strip_ansi(&god.seen), "Vault created with room number #");
+    let vault_id = parse_id_after(&strip_ansi(god.raw()), "Vault created with room number #");
     god.send_line("@desc here = A featureless white plain.")
         .await;
     god.expect("Set.").await;
@@ -115,7 +115,7 @@ async fn kill9_mid_play_world_survives_redis_gated() {
 
     god.send_line("@create orb").await;
     god.expect("Created: orb(#").await;
-    let orb_id = parse_id_after(&strip_ansi(&god.seen), "Created: orb(#");
+    let orb_id = parse_id_after(&strip_ansi(god.raw()), "Created: orb(#");
 
     // Ack barrier: `@dump` rides the writer queue, so its acknowledgement
     // proves every batch above it is in Redis — "the last acked command".
@@ -188,7 +188,7 @@ async fn kill9_mid_play_world_survives_redis_gated() {
     // pre-crash object (orb held the highest pre-crash id).
     god2.send_line("@create relic").await;
     god2.expect("Created: relic(#").await;
-    let relic_id = parse_id_after(&strip_ansi(&god2.seen), "Created: relic(#");
+    let relic_id = parse_id_after(&strip_ansi(god2.raw()), "Created: relic(#");
     assert!(
         relic_id > orb_id,
         "next_id regressed after kill -9: relic got #{relic_id}, pre-crash orb was #{orb_id}"
@@ -520,7 +520,7 @@ async fn relay_queue_and_frozen_leg_survive_process_death_redis_gated() {
                 let mark = term.mark();
                 term.send_line(line).await;
                 let done = term.expect_one_of_after(mark, &needles).await == 0;
-                reply = strip_ansi(&term.seen[mark..]);
+                reply = strip_ansi(&term.raw()[mark..]);
                 if !done && connect {
                     tokio::time::sleep(Duration::from_secs(2)).await;
                 }

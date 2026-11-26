@@ -60,11 +60,6 @@ use serde_json::Value;
 use support::{Term, play_client, scratch_dir};
 
 const GM_PASSWORD: &str = "gm-secret-1";
-/// The world's transient authoritative refusal (`mush_server`'s
-/// `RefusalReason::CommitPending`): a commit is in flight, so try again.
-const COMMIT_PENDING: &str = "please retry in a moment";
-/// How many times a line is re-sent on that refusal before the test gives up.
-const RETRY_BUDGET: usize = 8;
 /// The shipped unit schema (16b cut C.2's `content/units/line_tank.json`).
 const SCHEMA: &str = "tacsim.unit.line_tank";
 /// The arena `@arena/start` names.
@@ -319,48 +314,15 @@ async fn staff_session(addr: SocketAddr) -> (russh::client::Handle<support::Acce
     (handle, term)
 }
 
-/// Run one line and wait for `needle` to come back on the same span, retrying
-/// while the world answers the **transient** authoritative refusal.
-///
-/// Two rules, both learned the hard way:
-///
-/// * Every needle is chosen so it cannot appear in the **echo** of the line that
-///   produced it. A terminal echoes what was typed, so `@behavior/add
-///   #2=sim.domain` matched on `sim.domain` would pass before the world had even
-///   seen the command, and the next line would race it.
-/// * `@arena`'s switches are on the authoritative lane, which answers "the world
-///   is committing another action; please retry in a moment" when a commit is in
-///   flight. That is a real answer a real client retries, not a failure.
-async fn say(term: &mut Term, line: &str, needle: &str) {
-    assert!(
-        !line.contains(needle),
-        "`{needle}` appears in `{line}`'s own echo; pick a needle from the ANSWER"
-    );
-    for _ in 0..RETRY_BUDGET {
-        let mark = term.mark();
-        term.send_line(line).await;
-        if term
-            .expect_one_of_after(mark, &[needle, COMMIT_PENDING])
-            .await
-            == 0
-        {
-            return;
-        }
-    }
-    panic!("`{line}` was refused as commit-pending {RETRY_BUDGET} times running");
-}
-
 /// The world, ready to run a match: a domain on the field and both tanks placed
 /// in it as units.
 async fn prepare(term: &mut Term) {
-    say(
-        term,
+    term.say(
         &format!("@behavior/add #{}=sim.domain", FIELD.0),
         "Attached",
     )
     .await;
-    say(
-        term,
+    term.say(
         &format!("@domain/create #{}=sim.passive", FIELD.0),
         "Created domain",
     )
@@ -371,20 +333,17 @@ async fn prepare(term: &mut Term) {
     // which would make "the unit nothing happened to never moved" false for a
     // reason that has nothing to do with custody.
     for (unit, x_cm) in [(RED, 500_i64), (BLUE, 20_500_i64)] {
-        say(
-            term,
+        term.say(
             &format!("@unit/create #{}={SCHEMA}", unit.0),
             "is now a tactical unit",
         )
         .await;
-        say(
-            term,
+        term.say(
             &format!("@behavior/add #{}=sim.participant", unit.0),
             "Attached",
         )
         .await;
-        say(
-            term,
+        term.say(
             &format!(
                 "@spatial/place/domain #{}=0,{{\"x_cm\":{x_cm},\"y_cm\":500}}",
                 unit.0
@@ -556,12 +515,8 @@ async fn a_match_takes_custody_of_two_units_and_gives_them_back() {
     ];
     for (unit, ops) in [(RED, unarmed.to_vec()), (BLUE, parked.to_vec())] {
         let plan = format!("{{\"ops\":[{}]}}", ops.join(","));
-        say(
-            &mut term,
-            &format!("@unit/damage #{}={plan}", unit.0),
-            "Applied",
-        )
-        .await;
+        term.say(&format!("@unit/damage #{}={plan}", unit.0), "Applied")
+            .await;
     }
     let before_red = record(&server.store, RED).await.expect("the red record");
     let before_blue = record(&server.store, BLUE).await.expect("the blue record");
@@ -573,8 +528,7 @@ async fn a_match_takes_custody_of_two_units_and_gives_them_back() {
     );
 
     // --- check-out -------------------------------------------------------
-    say(
-        &mut term,
+    term.say(
         &format!("@arena/start {ARENA}=#{}/#{}", RED.0, BLUE.0),
         "is running on",
     )
@@ -597,41 +551,27 @@ async fn a_match_takes_custody_of_two_units_and_gives_them_back() {
     }
     assert_eq!(stripped, before_red, "the marker is the only change");
     // And the admission sites refuse, by the one named error.
-    say(
-        &mut term,
+    term.say(
         &format!("@unit/damage #{}={{\"ops\":[]}}", RED.0),
         "deployed in arena match",
     )
     .await;
-    say(
-        &mut term,
+    term.say(
         &format!("@spatial/unplace #{}", RED.0),
         "deployed in arena match",
     )
     .await;
 
     // --- drive east, at the shipped tank's own pace ------------------------
-    say(
-        &mut term,
-        &format!("@arena/intent #{}=startup", RED.0),
-        "Ordered",
-    )
-    .await;
+    term.say(&format!("@arena/intent #{}=startup", RED.0), "Ordered")
+        .await;
     // The staff shortcut has no pilot frame; one reported arena second covers
     // this fixture's 300 ms startup before accepting motion orders.
     wait_arena_seconds(&mut term, 1).await;
-    say(
-        &mut term,
-        &format!("@arena/intent #{}=heading 90", RED.0),
-        "Ordered",
-    )
-    .await;
-    say(
-        &mut term,
-        &format!("@arena/intent #{}=speed 5000", RED.0),
-        "Ordered",
-    )
-    .await;
+    term.say(&format!("@arena/intent #{}=heading 90", RED.0), "Ordered")
+        .await;
+    term.say(&format!("@arena/intent #{}=speed 5000", RED.0), "Ordered")
+        .await;
     // Ten observed seconds of arena time. The order is above the tank's ceiling on
     // purpose — the arena caps it at `max_speed_cms`. **17b cut M4.3**: the red
     // hull's mind patrols the ground at the same time (a unit with no pilot is
@@ -644,16 +584,12 @@ async fn a_match_takes_custody_of_two_units_and_gives_them_back() {
     // drive on, which is why the pose is compared with the arena's last
     // summary — written every pulse here (`summary_ms` is the tempo's period)
     // — and not with a standstill.
-    say(
-        &mut term,
-        &format!("@arena/intent #{}=speed 0", RED.0),
-        "Ordered",
-    )
-    .await;
+    term.say(&format!("@arena/intent #{}=speed 0", RED.0), "Ordered")
+        .await;
     wait_arena_seconds(&mut term, 7).await;
 
     // --- check-in --------------------------------------------------------
-    say(&mut term, "@arena/abort", "is stopping").await;
+    term.say("@arena/abort", "is stopping").await;
     wait_until(STEP_TIMEOUT, "the check-in to land", async || {
         record(&server.store, RED)
             .await
@@ -753,8 +689,7 @@ async fn an_injected_panic_voids_the_match_and_the_world_keeps_serving() {
     prepare(&mut term).await;
     let before_red = record(&server.store, RED).await.expect("the red record");
 
-    say(
-        &mut term,
+    term.say(
         &format!("@arena/start {ARENA}=#{}/#{}", RED.0, BLUE.0),
         "is running on",
     )
@@ -766,7 +701,7 @@ async fn an_injected_panic_voids_the_match_and_the_world_keeps_serving() {
     })
     .await;
 
-    say(&mut term, "@arena/fault 1", "will panic").await;
+    term.say("@arena/fault 1", "will panic").await;
 
     // The match is voided and its units are checked back in — restored from
     // their check-out snapshots, with no arena-derived cell committed.
@@ -795,9 +730,8 @@ async fn an_injected_panic_voids_the_match_and_the_world_keeps_serving() {
 
     // And the world is still a world: the same connection still serves
     // commands, and the units are mutable again.
-    say(&mut term, "look", "Limbo").await;
-    say(
-        &mut term,
+    term.say("look", "Limbo").await;
+    term.say(
         &format!("@unit/damage #{}={{\"ops\":[]}}", RED.0),
         "Applied 0 op(s)",
     )
@@ -932,8 +866,7 @@ async fn ledger_entries(store: &Arc<dyn ObjectStore>, match_id: u64) -> Vec<Valu
 /// running match's documents to be in the store — the state a server that
 /// stops here leaves behind.
 async fn start_and_wait_for_the_snapshot(term: &mut Term, store: &Arc<dyn ObjectStore>) {
-    say(
-        term,
+    term.say(
         &format!("@arena/start {ARENA}=#{}/#{}", RED.0, BLUE.0),
         "is running on",
     )
@@ -1000,22 +933,24 @@ async fn a_restart_mid_match_resumes_the_match_and_the_units_stay_deployed() {
             unit.0
         );
     }
-    say(
-        &mut term2,
-        &format!("@unit/damage #{}={{\"ops\":[]}}", RED.0),
-        "is deployed in arena match 1",
-    )
-    .await;
+    term2
+        .say(
+            &format!("@unit/damage #{}={{\"ops\":[]}}", RED.0),
+            "is deployed in arena match 1",
+        )
+        .await;
 
     // (2) The match runs, and staff read that it resumed.
-    say(&mut term2, "@arena/status", "resumed: from a snapshot at").await;
+    term2
+        .say("@arena/status", "resumed: from a snapshot at")
+        .await;
     assert!(
         running_document(&store, "tacsim:match:1").await.is_none(),
         "a resumed match writes no result"
     );
 
     // (3) An abort ends it the ordinary way.
-    say(&mut term2, "@arena/abort 1", "is stopping").await;
+    term2.say("@arena/abort 1", "is stopping").await;
     wait_until(STEP_TIMEOUT, "the result", async || {
         running_document(&store, "tacsim:match:1").await.is_some()
     })
@@ -1104,13 +1039,13 @@ async fn a_restart_mid_match_resumes_the_match_and_the_units_stay_deployed() {
     );
 
     // (5) The next match is match 2.
-    say(
-        &mut term2,
-        &format!("@arena/start {ARENA}=#{}/#{}", RED.0, BLUE.0),
-        "Match 2 is running",
-    )
-    .await;
-    say(&mut term2, "@arena/abort 2", "is stopping").await;
+    term2
+        .say(
+            &format!("@arena/start {ARENA}=#{}/#{}", RED.0, BLUE.0),
+            "Match 2 is running",
+        )
+        .await;
+    term2.say("@arena/abort 2", "is stopping").await;
 }
 
 /// **Restart mid-match with a snapshot that is not what the arena wrote: a
@@ -1192,12 +1127,12 @@ async fn a_restart_mid_match_voids_a_match_whose_snapshot_is_wrong() {
         Some(before_red),
         "the restored record is the check-out snapshot exactly"
     );
-    say(
-        &mut term2,
-        &format!("@unit/damage #{}={{\"ops\":[]}}", RED.0),
-        "Applied 0 op(s)",
-    )
-    .await;
+    term2
+        .say(
+            &format!("@unit/damage #{}={{\"ops\":[]}}", RED.0),
+            "Applied 0 op(s)",
+        )
+        .await;
     let result = running_document(&store, "tacsim:match:1")
         .await
         .expect("the void writes the match's result");
@@ -1291,8 +1226,7 @@ async fn af2_the_two_documents_exist_while_a_match_runs_and_go_with_its_result()
     let server = boot("arena-af2", None, true).await;
     let (_handle, mut term) = staff_session(server.addr).await;
     prepare(&mut term).await;
-    say(
-        &mut term,
+    term.say(
         &format!("@arena/start {ARENA}=#{}/#{}", RED.0, BLUE.0),
         "is running on",
     )
@@ -1327,7 +1261,7 @@ async fn af2_the_two_documents_exist_while_a_match_runs_and_go_with_its_result()
     assert_eq!(live.match_id, tacsim::arena_task::MatchId(1));
     assert_eq!(live.record.state, tacsim::match_::MatchState::Running);
 
-    say(&mut term, "@arena/abort 1", "is stopping").await;
+    term.say("@arena/abort 1", "is stopping").await;
     wait_until(
         STEP_TIMEOUT,
         "the result, and the two documents gone",

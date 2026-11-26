@@ -53,6 +53,7 @@
 //! match that is over.
 
 use crate::support;
+use support::ask_whole;
 
 use support::{STEP_TIMEOUT, wait_until};
 
@@ -79,13 +80,6 @@ use support::{Term, play_client, scratch_dir, strip_ansi};
 
 const GM_PASSWORD: &str = "gm-secret-1";
 const PILOT_PASSWORD: &str = "pilot-secret-1";
-
-/// The world's transient authoritative refusal: a commit is in flight.
-const COMMIT_PENDING: &str = "please retry in a moment";
-/// `BOARD`'s one transient: the control-lease mirror is a 1 Hz projection.
-const CONTROL_UNKNOWN: &str = "control state unknown";
-/// How many times a line is re-sent on a transient before the test gives up.
-const RETRY_BUDGET: usize = 40;
 
 /// The two pilot characters, created before the world task spawns so their ids
 /// are stable.
@@ -301,53 +295,6 @@ async fn login(
     (handle, term)
 }
 
-/// Run one line and wait for `needle`, retrying the two transients.
-async fn say(term: &mut Term, line: &str, needle: &str) {
-    assert!(
-        !line.contains(needle),
-        "`{needle}` appears in `{line}`'s own echo; pick a needle from the ANSWER"
-    );
-    for _ in 0..RETRY_BUDGET {
-        let mark = term.mark();
-        term.send_line(line).await;
-        match term
-            .expect_one_of_after(mark, &[needle, COMMIT_PENDING, CONTROL_UNKNOWN])
-            .await
-        {
-            0 => return,
-            _ => tokio::time::sleep(Duration::from_millis(200)).await,
-        }
-    }
-    panic!("`{line}` was refused as transient {RETRY_BUDGET} times running");
-}
-
-/// Run one line, wait for `needle`, and hand back everything that arrived.
-async fn ask(term: &mut Term, line: &str, needle: &str) -> String {
-    let mark = term.mark();
-    say(term, line, needle).await;
-    strip_ansi(&term.seen[mark..])
-}
-
-/// The parser's refusal of [`SENTINEL`], which closes a whole answer.
-const HUH: &str = "Huh?";
-/// A line no command answers but the parser's refusal.
-const SENTINEL: &str = "zzz-sentinel";
-
-/// **A whole answer, never half of one**: the line, then a sentinel the parser
-/// refuses, so the whole of a multi-line answer has arrived by the refusal.
-async fn ask_whole(term: &mut Term, line: &str) -> String {
-    for _ in 0..RETRY_BUDGET {
-        let mark = term.mark();
-        term.send_line(line).await;
-        term.send_line(SENTINEL).await;
-        if term.expect_one_of_after(mark, &[HUH, COMMIT_PENDING]).await == 0 {
-            return strip_ansi(&term.seen[mark..]);
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    panic!("`{line}` never produced a whole answer")
-}
-
 /// One object's dbref, out of an `@find` listing.
 fn dbref_of(listing: &str, name: &str) -> u32 {
     listing
@@ -362,22 +309,16 @@ fn dbref_of(listing: &str, name: &str) -> u32 {
 
 /// Walk both pilots into the simulator lobby and put staff in there with them.
 async fn open_the_centre(god: &mut Term) {
-    let listing = ask(god, "@find Simulator Lobby", "END OF LIST").await;
+    let listing = god
+        .ask_settled("@find Simulator Lobby", "END OF LIST")
+        .await;
     let lobby = dbref_of(&listing, "Simulator Lobby");
     for pilot in [ADA, BO] {
-        say(
-            god,
-            &format!("@teleport #{}=#{lobby}", pilot.0),
-            "Teleported",
-        )
-        .await;
+        god.say(&format!("@teleport #{}=#{lobby}", pilot.0), "Teleported")
+            .await;
     }
-    say(
-        god,
-        &format!("@teleport #{}=#{lobby}", GOD.0),
-        "Simulator Lobby",
-    )
-    .await;
+    god.say(&format!("@teleport #{}=#{lobby}", GOD.0), "Simulator Lobby")
+        .await;
 }
 
 /// Claim, start, walk and board: the state both tests begin from.
@@ -388,16 +329,16 @@ async fn take_off(ada: &mut Term, bo: &mut Term) {
 /// The same, with **16b cut Q.7**'s `SIM AI <n>` asked for between the claims and
 /// the start — the one point in the lifecycle the fill's size can be set.
 async fn take_off_sized(ada: &mut Term, bo: &mut Term, ai: Option<u8>) {
-    say(ada, "SIM TEAM red", "takes red slot 1").await;
-    say(bo, "SIM TEAM blue", "takes blue slot 1").await;
+    ada.say("SIM TEAM red", "takes red slot 1").await;
+    bo.say("SIM TEAM blue", "takes blue slot 1").await;
     if let Some(size) = ai {
-        say(ada, &format!("SIM AI {size}"), "AI fill set to").await;
+        ada.say(&format!("SIM AI {size}"), "AI fill set to").await;
     }
-    say(ada, "SIM START", "is boarding").await;
-    say(ada, "red", "Red Room").await;
-    say(bo, "blue", "Blue Room").await;
-    say(ada, "BOARD", "climb into").await;
-    say(bo, "BOARD", "climb into").await;
+    ada.say("SIM START", "is boarding").await;
+    ada.say("red", "Red Room").await;
+    bo.say("blue", "Blue Room").await;
+    ada.say("BOARD", "climb into").await;
+    bo.say("BOARD", "climb into").await;
     ada.expect("Good hunting").await;
 }
 
@@ -409,7 +350,7 @@ async fn take_off_sized(ada: &mut Term, bo: &mut Term, ai: Option<u8>) {
 /// and leave its `STATUS` in flight, to land after whatever the caller marks
 /// next.
 async fn power_up(term: &mut Term) {
-    say(term, "STARTUP", "Startup sequence").await;
+    term.say("STARTUP", "Startup sequence").await;
     wait_until(STEP_TIMEOUT, "the tank to come online", async || {
         ask_whole(term, "STATUS").await.contains("power online")
     })
@@ -510,13 +451,11 @@ async fn past_the_grace_the_reflex_controller_drives_the_tank_home() {
 
     // Park Red Tank 1 out in the middle of the window, pointed west — see the
     // module head for both halves of why.
-    let listing = ask(&mut god, "@find Proving Ground", "END OF LIST").await;
+    let listing = god.ask_settled("@find Proving Ground", "END OF LIST").await;
     let ground = dbref_of(&listing, "Proving Ground");
-    let listing = ask(&mut god, "@find Red Tank 1", "END OF LIST").await;
+    let listing = god.ask_settled("@find Red Tank 1", "END OF LIST").await;
     let red = dbref_of(&listing, "Red Tank 1");
-    say(
-        &mut god,
-        &format!(
+    god.say(&format!(
             "@spatial/place/domain #{red}=#{ground},{{\"x_cm\":{PARKED_X_CM},\"y_cm\":{PARKED_Y_CM},\"heading_mdeg\":{WEST_MDEG}}}"
         ),
         "Placed",
@@ -550,12 +489,12 @@ async fn past_the_grace_the_reflex_controller_drives_the_tank_home() {
     // seconds on its own clock, independent of the session-reaper schedule.
     support::wait_arena_seconds(&mut god, 6).await;
     // The match ran on without her, and only then is the black box readable.
-    let seen = ask(&mut god, "@arena/status", "match 1").await;
+    let seen = god.ask_settled("@arena/status", "match 1").await;
     assert!(
         seen.contains("running"),
         "the match runs on without her: {seen}"
     );
-    say(&mut bo, "SIM ABORT", "aborts match").await;
+    bo.say("SIM ABORT", "aborts match").await;
     let mut events = Vec::new();
     wait_until(
         STEP_TIMEOUT,
@@ -611,13 +550,15 @@ async fn with_ai_fill_on_sim_ai_four_fields_four_a_side() {
     // pilot. Nobody typed `STARTUP` for them.
     support::wait_arena_seconds(&mut god, 3).await;
     // And the board says so, in the one line the slots cannot.
-    let seen = ask(&mut ada, "SIM STATUS", "machines take the unclaimed pods").await;
+    let seen = ada
+        .ask_settled("SIM STATUS", "machines take the unclaimed pods")
+        .await;
     assert!(seen.contains("running"), "{seen}");
     assert!(
         seen.contains("AI fill: each side fields 4; machines take the unclaimed pods."),
         "the board says what the fill is: {seen}"
     );
-    say(&mut ada, "SIM ABORT", "aborts match").await;
+    ada.say("SIM ABORT", "aborts match").await;
     let mut events = Vec::new();
     wait_until(STEP_TIMEOUT, "the filled match's ledger tail", async || {
         events = ledger_events(&server.store, 1).await;
@@ -654,10 +595,10 @@ async fn with_ai_fill_on_the_default_size_is_the_larger_side() {
     open_the_centre(&mut god).await;
     let (_b, mut bo) = login(server.addr, "bo", PILOT_PASSWORD, "Bo").await;
     let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
-    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
-    say(&mut bo, "SIM TEAM red", "takes red slot 2").await;
-    say(&mut ada, "SIM START", "is boarding").await;
-    say(&mut ada, "red", "Red Room").await;
+    ada.say("SIM TEAM red", "takes red slot 1").await;
+    bo.say("SIM TEAM red", "takes red slot 2").await;
+    ada.say("SIM START", "is boarding").await;
+    ada.say("red", "Red Room").await;
     // **Both pilots walk into the SAME room here**, which is what makes this the
     // one walk in the tree whose needle has to be the room's own description and
     // not its name. Bo is standing in the lobby watching Ada leave, so the line
@@ -666,18 +607,20 @@ async fn with_ai_fill_on_the_default_size_is_the_larger_side() {
     // Bo's walk can be answered with, and leave Bo in the lobby for `BOARD` to
     // fail on sixty seconds later. The description cannot be said by anybody
     // else's movement.
-    say(&mut bo, "red", "Six pods in a row under a red stripe").await;
-    say(&mut ada, "BOARD", "climb into").await;
-    say(&mut bo, "BOARD", "climb into").await;
+    bo.say("red", "Six pods in a row under a red stripe").await;
+    ada.say("BOARD", "climb into").await;
+    bo.say("BOARD", "climb into").await;
     ada.expect("Good hunting").await;
 
     support::wait_arena_seconds(&mut god, 3).await;
-    let seen = ask(&mut ada, "SIM STATUS", "machines take the unclaimed pods").await;
+    let seen = ada
+        .ask_settled("SIM STATUS", "machines take the unclaimed pods")
+        .await;
     assert!(
         seen.contains("AI fill: each side fields 2; machines take the unclaimed pods."),
         "two on red is a two a side: {seen}"
     );
-    say(&mut ada, "SIM ABORT", "aborts match").await;
+    ada.say("SIM ABORT", "aborts match").await;
     let mut events = Vec::new();
     wait_until(STEP_TIMEOUT, "the sized match's ledger tail", async || {
         events = ledger_events(&server.store, 1).await;
@@ -734,7 +677,7 @@ async fn m3_a_dropped_hull_is_told_to_its_side_lead_alone_and_staff() {
     let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
     // The fill's object, read while it is still an ordinary world object: a
     // tank the arena holds is not listed (the observer rule).
-    let listing = ask(&mut god, "@find Red Tank 2", "END OF LIST").await;
+    let listing = god.ask_settled("@find Red Tank 2", "END OF LIST").await;
     let fill = dbref_of(&listing, "Red Tank 2");
     take_off_sized(&mut ada, &mut bo, Some(2)).await;
     support::wait_arena_seconds(&mut god, 1).await;
@@ -778,7 +721,7 @@ async fn m3_a_dropped_hull_is_told_to_its_side_lead_alone_and_staff() {
         &format!("{fill_callsign}'s core tripped: over its 1,500-op budget"),
     )
     .await;
-    let told = strip_ansi(&ada.seen[ada_mark..]);
+    let told = strip_ansi(&ada.raw()[ada_mark..]);
     assert!(
         !told.contains(&format!("#{fill}")) && !told.contains(&fill.to_string()),
         "no object number reaches the lead: {told}"
@@ -788,11 +731,11 @@ async fn m3_a_dropped_hull_is_told_to_its_side_lead_alone_and_staff() {
     // Bo hears nothing of it: a whole answer to a line of his own closes
     // the window, by which time the world had told the other two.
     let heard = ask_whole(&mut bo, "SIM STATUS").await;
-    let since = strip_ansi(&bo.seen[bo_mark..]);
+    let since = strip_ansi(&bo.raw()[bo_mark..]);
     assert!(
         !since.contains("core tripped") && !since.contains("dropped to the ROM"),
         "the other side's pilot heard the drop: {since}"
     );
     assert!(heard.contains("running"), "{heard}");
-    say(&mut ada, "SIM ABORT", "aborts match").await;
+    ada.say("SIM ABORT", "aborts match").await;
 }

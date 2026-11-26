@@ -197,7 +197,7 @@ async fn boot(tag: &str, chargen_required: bool) -> Server {
 /// an `expect_after` on the same span, which is the round-trip barrier proving
 /// the command was processed.
 fn not_seen_since(term: &Term, mark: usize, needle: &str) -> bool {
-    !strip_ansi(&term.seen[mark..]).contains(needle)
+    !strip_ansi(&term.raw()[mark..]).contains(needle)
 }
 
 async fn send_and_expect(t: &mut Term, line: &str, needle: &str) {
@@ -225,7 +225,7 @@ async fn build_a_pilot_and_submit(t: &mut Term) -> u64 {
     send_and_expect(t, "+chargen/submit", "Submitted for approval as job").await;
 
     // Parse the job id out of the confirmation line.
-    let hay = strip_ansi(&t.seen);
+    let hay = strip_ansi(t.raw());
     let idx = hay
         .find("Submitted for approval as job ")
         .expect("submit confirmation present");
@@ -303,9 +303,9 @@ async fn new_player_signs_up_builds_a_pilot_is_approved_and_plays() {
     nick.expect("Connected as Nick").await;
     nick.expect("awaiting approval").await;
     assert!(
-        strip_ansi(&nick.seen).contains(&format!("job {job}")),
+        strip_ansi(nick.raw()).contains(&format!("job {job}")),
         "the greeting names the open job: {:?}",
-        nick.seen
+        nick.raw()
     );
 
     // --- Staff approves the chargen job. ---------------------------------

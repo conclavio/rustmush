@@ -67,7 +67,7 @@ async fn scripting_room_trigger_demo() {
     // ============ 2. a script:enter announces arrivals ============
     god.send_line("@dig Gallery=gallery,out").await;
     god.expect("Gallery created with room number #").await;
-    let gallery = parse_id_after(&strip_ansi(&god.seen), "Gallery created with room number #");
+    let gallery = parse_id_after(&strip_ansi(god.raw()), "Gallery created with room number #");
     god.send_line(&format!(
         "@set #{gallery}/script:enter=mush::emit(mush::me(), mush::name(mover) + \" strolls in.\")"
     ))

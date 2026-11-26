@@ -36,7 +36,6 @@ use std::time::Duration;
 
 use mushd::accounts::hash_password;
 use mushd::logging;
-use russh::ChannelMsg;
 
 /// How long one client step (a login, a line, an expected banner) may take
 /// against the child `mushd`: twice the rig's step limit, the 120 s this file
@@ -231,103 +230,9 @@ fn count(haystack: &str, needle: &str) -> usize {
 // The SSH client
 // ---------------------------------------------------------------------------
 
-struct AcceptAll;
-
-impl russh::client::Handler for AcceptAll {
-    type Error = russh::Error;
-
-    async fn check_server_key(
-        &mut self,
-        _key: &russh::keys::PublicKeyOrCertificate,
-    ) -> Result<bool, Self::Error> {
-        Ok(true)
-    }
-}
-
-/// Drop ANSI CSI sequences so assertions match what a player reads.
-fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                for f in chars.by_ref() {
-                    if ('\u{40}'..='\u{7e}').contains(&f) {
-                        break;
-                    }
-                }
-            }
-            continue;
-        }
-        out.push(c);
-    }
-    out
-}
-
-struct Term {
-    channel: russh::Channel<russh::client::Msg>,
-    seen: String,
-}
-
-impl Term {
-    /// Read until one of the two needles shows up, and say which. The
-    /// char-select screen is skipped for a single-character account on some
-    /// paths, so the login has to tolerate either landing.
-    async fn expect_either(&mut self, a: &str, b: &str) -> bool {
-        let deadline = tokio::time::Instant::now() + CHILD_STEP_TIMEOUT;
-        loop {
-            let text = strip_ansi(&self.seen);
-            if text.contains(a) {
-                return true;
-            }
-            if text.contains(b) {
-                return false;
-            }
-            let msg = tokio::time::timeout_at(deadline, self.channel.wait())
-                .await
-                .unwrap_or_else(|_| {
-                    panic!("timeout waiting for {a:?} or {b:?}; seen: {:?}", self.seen)
-                });
-            match msg {
-                Some(ChannelMsg::Data { data }) => {
-                    self.seen.push_str(&String::from_utf8_lossy(&data));
-                }
-                Some(_) => {}
-                None => panic!(
-                    "channel closed waiting for {a:?} or {b:?}; seen: {:?}",
-                    self.seen
-                ),
-            }
-        }
-    }
-
-    async fn expect(&mut self, needle: &str) {
-        let deadline = tokio::time::Instant::now() + CHILD_STEP_TIMEOUT;
-        while !strip_ansi(&self.seen).contains(needle) {
-            let msg = tokio::time::timeout_at(deadline, self.channel.wait())
-                .await
-                .unwrap_or_else(|_| {
-                    panic!("timeout waiting for {needle:?}; seen: {:?}", self.seen)
-                });
-            match msg {
-                Some(ChannelMsg::Data { data }) => {
-                    self.seen.push_str(&String::from_utf8_lossy(&data));
-                }
-                Some(_) => {}
-                None => panic!(
-                    "channel closed waiting for {needle:?}; seen: {:?}",
-                    self.seen
-                ),
-            }
-        }
-    }
-
-    async fn send_line(&mut self, line: &str) {
-        let bytes = format!("{line}\r").into_bytes();
-        self.channel.data(&bytes[..]).await.expect("send line");
-    }
-}
+// Doc 51 unit FL.8: the terminal is the story kit's, read under this file's
+// child-process limit where the login waits on a booting server.
+use crate::support::{AcceptAll, Term};
 
 /// Password-login the seeded staff account and land in God, through the real
 /// SSH front door.
@@ -350,16 +255,22 @@ async fn connect_as_god(addr: SocketAddr) -> (russh::client::Handle<AcceptAll>, 
         .await
         .expect("pty");
     channel.request_shell(true).await.expect("shell");
-    let mut term = Term {
-        channel,
-        seen: String::new(),
-    };
-    if !term
-        .expect_either("Connected as God", "Characters on")
+    let mut term = Term::new(channel);
+    // The char-select screen is skipped for a single-character account on
+    // some paths, so the login tolerates either landing.
+    if term
+        .expect_one_of_within(
+            0,
+            &["Connected as God", "Characters on"],
+            CHILD_STEP_TIMEOUT,
+        )
         .await
+        != 0
     {
+        let mark = term.mark();
         term.send_line("God").await;
-        term.expect("Connected as God").await;
+        term.expect_one_of_within(mark, &["Connected as God"], CHILD_STEP_TIMEOUT)
+            .await;
     }
     (handle, term)
 }

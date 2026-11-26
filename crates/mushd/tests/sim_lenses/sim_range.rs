@@ -26,6 +26,7 @@
 //! tempo test's and the cockpit rig's (paused time), where arena time is free.
 
 use crate::support;
+use support::ask_whole;
 
 use support::{Figures, STEP_TIMEOUT, wait_until};
 
@@ -55,10 +56,6 @@ const PILOT_PASSWORD: &str = "pilot-secret-1";
 
 /// The world's transient authoritative refusal: a commit is in flight.
 const COMMIT_PENDING: &str = "please retry in a moment";
-/// `BOARD`'s one transient: the control-lease mirror is a 1 Hz projection.
-const CONTROL_UNKNOWN: &str = "control state unknown";
-/// How many times a line is re-sent on a transient before the test gives up.
-const RETRY_BUDGET: usize = 40;
 /// How many times the arena may refuse a `FIRE` the cockpit forwarded before
 /// the test calls it. A refused order is no shot: it takes no number and rolls
 /// nothing, so the round typed after it is still the match's first.
@@ -79,9 +76,9 @@ const TARGET_POSE: &str = "@arena/pose BA=130 97 90";
 const SHOOTER_POSE: &str = "@arena/pose RA=126 97 90";
 
 /// A line the parser refuses, used to bracket a multi-line answer.
-const SENTINEL: &str = "zzz-sentinel";
+const SENTINEL: &str = mush_storykit::SENTINEL;
 /// The parser's refusal, which is the sentinel's answer.
-const HUH: &str = "Huh?";
+const HUH: &str = mush_storykit::SENTINEL_REFUSAL;
 
 // ---------------------------------------------------------------------------
 // The rig (`sim_units.rs`')
@@ -265,48 +262,6 @@ async fn login(
     (handle, term)
 }
 
-/// Run one line and wait for `needle`, retrying the two transients.
-async fn say(term: &mut Term, line: &str, needle: &str) {
-    assert!(
-        !line.contains(needle),
-        "`{needle}` appears in `{line}`'s own echo; pick a needle from the ANSWER"
-    );
-    for _ in 0..RETRY_BUDGET {
-        let mark = term.mark();
-        term.send_line(line).await;
-        match term
-            .expect_one_of_after(mark, &[needle, COMMIT_PENDING, CONTROL_UNKNOWN])
-            .await
-        {
-            0 => return,
-            _ => tokio::time::sleep(Duration::from_millis(200)).await,
-        }
-    }
-    panic!("`{line}` was refused as transient {RETRY_BUDGET} times running");
-}
-
-/// Run one line, wait for `needle`, and hand back everything that arrived.
-async fn ask(term: &mut Term, line: &str, needle: &str) -> String {
-    let mark = term.mark();
-    say(term, line, needle).await;
-    strip_ansi(&term.seen[mark..])
-}
-
-/// **A whole answer, never half of one**: the line, then a sentinel the parser
-/// refuses, so the whole of a multi-line answer has arrived by the refusal.
-async fn ask_whole(term: &mut Term, line: &str) -> String {
-    for _ in 0..RETRY_BUDGET {
-        let mark = term.mark();
-        term.send_line(line).await;
-        term.send_line(SENTINEL).await;
-        if term.expect_one_of_after(mark, &[HUH, COMMIT_PENDING]).await == 0 {
-            return strip_ansi(&term.seen[mark..]);
-        }
-        tokio::time::sleep(Duration::from_millis(200)).await;
-    }
-    panic!("`{line}` never produced a whole answer")
-}
-
 /// A read repeated until its answer carries `needle`.
 async fn poll_whole(term: &mut Term, line: &str, needle: &str) -> String {
     let mut seen = String::new();
@@ -351,7 +306,7 @@ fn designator_of(listing: &str) -> Option<String> {
 /// and leave its `STATUS` in flight, to land after whatever the caller marks
 /// next.
 async fn power_up(term: &mut Term) {
-    say(term, "STARTUP", "Startup sequence").await;
+    term.say("STARTUP", "Startup sequence").await;
     wait_until(STEP_TIMEOUT, "the tank to come online", async || {
         ask_whole(term, "STATUS").await.contains("power online")
     })
@@ -457,7 +412,7 @@ async fn sim_report(term: &mut Term) -> String {
         }
         term.send_line(SENTINEL).await;
         term.expect_after(mark, HUH).await;
-        report = strip_ansi(&term.seen[mark..]);
+        report = strip_ansi(&term.raw()[mark..]);
         true
     })
     .await;
@@ -480,28 +435,27 @@ fn hit_rate(report: &str, callsign: &str) -> Option<u64> {
 async fn one_pilot_on_the_range_hits_its_target_and_reads_her_own_rate() {
     let server = boot("sim-range").await;
     let (_god_handle, mut god) = login(server.addr, "boss", GM_PASSWORD, "God").await;
-    let listing = ask(&mut god, "@find Simulator Lobby", "END OF LIST").await;
+    let listing = god
+        .ask_settled("@find Simulator Lobby", "END OF LIST")
+        .await;
     let lobby = dbref_of(&listing, "Simulator Lobby");
-    say(
-        &mut god,
-        &format!("@teleport #{}=#{lobby}", ADA.0),
-        "Teleported",
-    )
-    .await;
-    let listing = ask(&mut god, &format!("@find {BLUE_TANK}"), "END OF LIST").await;
+    god.say(&format!("@teleport #{}=#{lobby}", ADA.0), "Teleported")
+        .await;
+    let listing = god
+        .ask_settled(&format!("@find {BLUE_TANK}"), "END OF LIST")
+        .await;
     let target = dbref_of(&listing, BLUE_TANK);
 
     let (_a, mut ada) = login(server.addr, "ada", PILOT_PASSWORD, "Ada").await;
 
     // ---- the range, set up by one pilot on a fill-off server ----------------
-    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
-    let seen = ask(&mut ada, "SIM AI", "AI fill").await;
+    ada.say("SIM TEAM red", "takes red slot 1").await;
+    let seen = ada.ask_settled("SIM AI", "AI fill").await;
     assert!(
         seen.contains("AI fill is off on this server."),
         "the fill is off here: {seen}"
     );
-    say(
-        &mut ada,
+    ada.say(
         "SIM RANGE 1",
         // The answer's head: a terminal wraps the whole sentence at eighty columns.
         "Range set: 1 target stands on the blue side;",
@@ -513,28 +467,26 @@ async fn one_pilot_on_the_range_hits_its_target_and_reads_her_own_rate() {
         flat.contains("mode: range \u{2014} 1 target on the blue side"),
         "{seen}"
     );
-    say(
-        &mut god,
+    god.say(
         TARGET_POSE,
         "BA opens at cell (130, 97) heading 90 for the next match.",
     )
     .await;
-    say(
-        &mut god,
+    god.say(
         SHOOTER_POSE,
         "RA opens at cell (126, 97) heading 90 for the next match.",
     )
     .await;
 
     // ---- the start, with the fill off, and the refit -----------------------
-    say(&mut ada, "SIM START", "is boarding").await;
+    ada.say("SIM START", "is boarding").await;
     let seen = ask_whole(&mut god, &format!("@unit/show #{target}")).await;
     assert!(
         seen.contains("section engine") && !seen.contains("component/cannon"),
         "blue 1's tank was not refitted into a target: {seen}"
     );
-    say(&mut ada, "red", "Red Room").await;
-    say(&mut ada, "BOARD", "climb into").await;
+    ada.say("red", "Red Room").await;
+    ada.say("BOARD", "climb into").await;
     ada.expect("Good hunting").await;
 
     // ---- the shooting --------------------------------------------------------
@@ -553,7 +505,7 @@ async fn one_pilot_on_the_range_hits_its_target_and_reads_her_own_rate() {
     // The lock is the arena's at its next pulse: a `FIRE` sent before it lands
     // is refused `No lock`, so the lock is waited for on the lock's own line.
     let locking = ada.mark();
-    say(&mut ada, &format!("LOCK {target_callsign}"), "Locking").await;
+    ada.say(&format!("LOCK {target_callsign}"), "Locking").await;
     ada.expect_after(locking, &format!("Locked on {target_callsign}"))
         .await;
     let hit_on = format!("Hit on {target_callsign}");
@@ -588,14 +540,14 @@ async fn one_pilot_on_the_range_hits_its_target_and_reads_her_own_rate() {
             1 => panic!(
                 "the match's first round missed a standing target, on a seed whose first roll \
                  lands at any odds:\n{}",
-                strip_ansi(&ada.seen[shot..])
+                strip_ansi(&ada.raw()[shot..])
             ),
             _ => {
                 refused += 1;
                 assert!(
                     refused <= ARENA_REFUSALS,
                     "the arena refused the round {refused} times:\n{}",
-                    strip_ansi(&ada.seen[shot..])
+                    strip_ansi(&ada.raw()[shot..])
                 );
             }
         }
@@ -639,9 +591,9 @@ async fn one_pilot_on_the_range_hits_its_target_and_reads_her_own_rate() {
     assert_eq!(count_by(&events, "fired", target), 0, "a target fired");
 
     // ---- the pod is a pod again ---------------------------------------------
-    say(&mut ada, "lobby", "Simulator Lobby").await;
+    ada.say("lobby", "Simulator Lobby").await;
     poll_whole(&mut ada, "SIM STATUS", "SIM TEAM red").await;
-    say(&mut ada, "SIM TEAM red", "takes red slot 1").await;
+    ada.say("SIM TEAM red", "takes red slot 1").await;
     let seen = ask_whole(&mut god, &format!("@unit/show #{target}")).await;
     assert!(
         seen.contains("section turret") && seen.contains("component/cannon"),

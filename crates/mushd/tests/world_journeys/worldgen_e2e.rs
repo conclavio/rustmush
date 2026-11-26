@@ -139,7 +139,7 @@ async fn worldgen_full_journey_over_ssh() {
     // --- A zone master carrying the theme. ------------------------------
     god.send_line("@create Districts").await;
     god.expect("Created: Districts(#").await;
-    let zone = parse_id_after(&strip_ansi(&god.seen), "Created: Districts(#");
+    let zone = parse_id_after(&strip_ansi(god.raw()), "Created: Districts(#");
     god.send_line(&format!("@set #{zone}=ZONE_MASTER")).await;
     god.expect("Set.").await;
     // S2b: the theme is the world's (an atlas document), not a zone attribute.
@@ -150,7 +150,7 @@ async fn worldgen_full_journey_over_ssh() {
     // --- Two adjacent rooms: Gallery (off Limbo), Study (off Gallery). ---
     god.send_line("@dig Gallery=gallery,out").await;
     god.expect("Gallery created with room number #").await;
-    let gallery = parse_id_after(&strip_ansi(&god.seen), "Gallery created with room number #");
+    let gallery = parse_id_after(&strip_ansi(god.raw()), "Gallery created with room number #");
     let mark = god.mark();
     god.send_line(&format!("@zone #{gallery}=#{zone}")).await;
     god.expect_after(mark, "Zoned.").await;
@@ -161,7 +161,7 @@ async fn worldgen_full_journey_over_ssh() {
 
     god.send_line("@dig Study=study,back").await;
     god.expect("Study created with room number #").await;
-    let study = parse_id_after(&strip_ansi(&god.seen), "Study created with room number #");
+    let study = parse_id_after(&strip_ansi(god.raw()), "Study created with room number #");
     let mark = god.mark();
     god.send_line(&format!("@zone #{study}=#{zone}")).await;
     god.expect_after(mark, "Zoned.").await;

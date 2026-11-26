@@ -52,7 +52,7 @@ async fn send_until(term: &mut Term, line: &str, needle: &str) -> usize {
     }
     panic!(
         "{line:?} kept bouncing on the busy signal; seen: {:?}",
-        term.seen
+        term.raw()
     );
 }
 
@@ -109,7 +109,7 @@ async fn rain_rolls_in_demo() {
     // output has arrived before we assert its absence.
     let mark = send_until(&mut bob, "look", "Forecourt & Bus Stop #").await;
     send_until(&mut bob, "think WEATHER-SENTINEL", "WEATHER-SENTINEL").await;
-    let slice = strip_ansi(&bob.seen[mark..]);
+    let slice = strip_ansi(&bob.raw()[mark..]);
     assert!(
         !slice.contains("Overhead:") && !slice.contains("thunder"),
         "indoor room must stay silent; Bob saw:\n{slice}"

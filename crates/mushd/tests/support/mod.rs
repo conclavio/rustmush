@@ -15,8 +15,6 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use russh::ChannelMsg;
-
 // Doc 51 cut FL.1: the one wait loop and the one step limit are the story
 // kit's. This rig re-exports them, so a story's `use support::{STEP_TIMEOUT,
 // wait_until}` reads the shared copy and there is no second definition here.
@@ -185,7 +183,7 @@ pub async fn wait_arena_pilot_out(term: &mut Term, callsign: &str, pilot: &str, 
             {
                 return false;
             }
-            strip_ansi(&term.seen[mark..])
+            strip_ansi(&term.raw()[mark..])
                 .lines()
                 .filter(|line| {
                     let line = line.trim_start();
@@ -247,7 +245,7 @@ pub async fn own_callsign(term: &mut Term) -> String {
             return false;
         }
         // A read that stopped mid-word parses nothing and is simply retried.
-        let seen = strip_ansi(&term.seen[mark..]);
+        let seen = strip_ansi(&term.raw()[mark..]);
         callsign = seen.split("Callsign ").nth(1).and_then(|rest| {
             let word: String = rest
                 .chars()
@@ -335,262 +333,54 @@ pub fn scratch_dir(tag: &str) -> PathBuf {
     dir
 }
 
-/// Drop ANSI CSI sequences so assertions match what a player (or an
-/// operator reading logs) actually reads.
-pub fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            if chars.peek() == Some(&'[') {
-                chars.next();
-                for f in chars.by_ref() {
-                    if ('\u{40}'..='\u{7e}').contains(&f) {
-                        break;
-                    }
-                }
-            }
-            continue;
-        }
-        out.push(c);
-    }
-    out
-}
+// Doc 51 unit FL.8: the terminal is the story kit's. mushd kept its own `Term`
+// (and three story files a private one each) until FL.8; the `one_reader`
+// gate now refuses a second `struct Term`, `ask_whole` or `strip_ansi` under
+// mushd's `tests/`. The kit's `Term` is the barriers' `Session`, so
+// `settled(&mut term)` and `ask_whole(&mut term, line)` take it as they are.
+#[allow(unused_imports)]
+pub use mush_storykit::{AcceptAll, TICK_MARK, Term, after_ticks, ask_whole, strip_ansi};
 
-/// Test-only SSH client handler: trust any host key.
-pub struct AcceptAll;
-
-impl russh::client::Handler for AcceptAll {
-    type Error = russh::Error;
-
-    async fn check_server_key(
-        &mut self,
-        _key: &russh::keys::PublicKeyOrCertificate,
-    ) -> Result<bool, Self::Error> {
-        Ok(true)
-    }
-}
-
-/// One player's terminal: an SSH channel plus everything it has printed.
-pub struct Term {
-    channel: russh::Channel<russh::client::Msg>,
-    pub seen: String,
-    /// **The terminal's own copy of the session's flood bucket** (doc 51 unit
-    /// FL.3). The server throttles a connection that types faster than
-    /// `SessionConfig::flood_rate` over a burst of `flood_burst`, and a
-    /// throttled line is dropped with `You're doing that too fast.`, which no
-    /// reader here types again. Stories used to sleep "a breath for the flood
-    /// bucket" before a battery of lines, for a span written by hand. This
-    /// bucket is the server's own type at the server's own figures, charged
-    /// with every line this terminal types, so a story can ask how much room
-    /// the session has ([`Term::room_for`]) instead of guessing a span.
-    pace: mush_session::FloodBucket,
-}
-
-/// Lines of room [`Term::room_for`] keeps beyond what it was asked for: lines
-/// that left here spaced can reach a busy server bunched, and five lines is
-/// half a second of that at the server's rate.
+/// Lines of room [`room_for`] keeps beyond what it was asked for: lines that
+/// left here spaced can reach a busy server bunched, and five lines is half a
+/// second of that at the server's rate.
 const PACE_MARGIN: u32 = 5;
 
-impl Term {
-    pub fn new(channel: russh::Channel<russh::client::Msg>) -> Self {
-        let server = mush_session::SessionConfig::default();
-        Self {
-            channel,
-            seen: String::new(),
-            pace: mush_session::FloodBucket::new(
-                server.flood_rate,
-                server.flood_burst,
-                std::time::Instant::now(),
-            ),
+/// **Wait until the session's flood bucket has room for a battery of
+/// `lines`** (doc 51 unit FL.3, rule F): the wait a story takes before it
+/// types several lines fast, in place of a sleep of a span it guessed.
+///
+/// The server throttles a connection that types faster than
+/// `SessionConfig::flood_rate` over a burst of `flood_burst`, and a throttled
+/// line is dropped with `You're doing that too fast.`, which no reader types
+/// again. The room is read off the server's own bucket type
+/// ([`mush_session::FloodBucket`]) at the server's own figures
+/// ([`mush_session::SessionConfig`]'s defaults, which every rig here boots
+/// with), replayed over every line this terminal typed (the kit's
+/// [`Term::sent_at`], since unit FL.8). It returns at once when there is room,
+/// which is the usual case.
+pub async fn room_for(term: &Term, lines: u32) {
+    let server = mush_session::SessionConfig::default();
+    // The bucket never holds more than its burst, so that is the most a
+    // story can wait for.
+    let want = (lines + PACE_MARGIN).min(server.flood_burst as u32);
+    let token = Duration::from_secs_f64(1.0 / server.flood_rate.max(1.0));
+    loop {
+        let sent = term.sent_at();
+        let start = sent
+            .first()
+            .copied()
+            .unwrap_or_else(std::time::Instant::now);
+        let mut probe =
+            mush_session::FloodBucket::new(server.flood_rate, server.flood_burst, start);
+        for &at in sent {
+            let _ = probe.check(at);
         }
-    }
-
-    /// Byte offset of "now" in the raw stream, for [`Term::expect_after`]
-    /// when the needle may already occur earlier in the scrollback.
-    pub fn mark(&self) -> usize {
-        self.seen.len()
-    }
-
-    pub async fn expect(&mut self, needle: &str) {
-        self.expect_after(0, needle).await;
-    }
-
-    pub async fn expect_after(&mut self, mark: usize, needle: &str) {
-        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
-        while !strip_ansi(&self.seen[mark..]).contains(needle) {
-            let msg = tokio::time::timeout_at(deadline, self.channel.wait())
-                .await
-                .unwrap_or_else(|_| {
-                    panic!("timeout waiting for {needle:?}; seen: {:?}", self.seen)
-                });
-            match msg {
-                Some(ChannelMsg::Data { data }) => {
-                    self.seen.push_str(&String::from_utf8_lossy(&data));
-                }
-                Some(_) => {}
-                None => panic!(
-                    "channel closed waiting for {needle:?}; seen: {:?}",
-                    self.seen
-                ),
-            }
+        let now = std::time::Instant::now();
+        if (0..want).all(|_| probe.check(now) == mush_session::FloodVerdict::Ok) {
+            return;
         }
-    }
-
-    /// Wait for `needle` in the post-mark output read the way a full-screen
-    /// paint has to be read: ANSI dropped AND every whitespace character
-    /// squeezed out, so `needle` is written without spaces (`Nolock`).
-    ///
-    /// The `@tui` screen paints only the cells that change, so a run of blanks
-    /// that was blank before goes out as a cursor jump: `No lock` can reach the
-    /// wire as `No`, a jump, `lock`, which [`Term::expect_after`] never sees.
-    /// Squeezed, the two spellings are one.
-    pub async fn expect_squeezed_after(&mut self, mark: usize, needle: &str) {
-        let squeezed = |raw: &str| -> String {
-            strip_ansi(raw)
-                .chars()
-                .filter(|c| !c.is_whitespace())
-                .collect()
-        };
-        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
-        while !squeezed(&self.seen[mark..]).contains(needle) {
-            let msg = tokio::time::timeout_at(deadline, self.channel.wait())
-                .await
-                .unwrap_or_else(|_| {
-                    panic!(
-                        "timeout waiting for {needle:?} squeezed; seen: {:?}",
-                        self.seen
-                    )
-                });
-            match msg {
-                Some(ChannelMsg::Data { data }) => {
-                    self.seen.push_str(&String::from_utf8_lossy(&data));
-                }
-                Some(_) => {}
-                None => panic!(
-                    "channel closed waiting for {needle:?} squeezed; seen: {:?}",
-                    self.seen
-                ),
-            }
-        }
-    }
-
-    /// Wait for one of several post-mark strings and return its index.
-    pub async fn expect_one_of_after(&mut self, mark: usize, needles: &[&str]) -> usize {
-        assert!(!needles.is_empty(), "at least one needle is required");
-        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
-        loop {
-            let output = strip_ansi(&self.seen[mark..]);
-            if let Some((index, _)) = needles
-                .iter()
-                .enumerate()
-                .find(|(_, needle)| output.contains(**needle))
-            {
-                return index;
-            }
-            let msg = tokio::time::timeout_at(deadline, self.channel.wait())
-                .await
-                .unwrap_or_else(|_| {
-                    panic!(
-                        "timeout waiting for one of {needles:?}; seen: {:?}",
-                        self.seen,
-                    )
-                });
-            match msg {
-                Some(ChannelMsg::Data { data }) => {
-                    self.seen.push_str(&String::from_utf8_lossy(&data));
-                }
-                Some(_) => {}
-                None => panic!(
-                    "channel closed waiting for one of {needles:?}; seen: {:?}",
-                    self.seen,
-                ),
-            }
-        }
-    }
-
-    pub async fn send_line(&mut self, line: &str) {
-        // Charged to this terminal's copy of the flood bucket, never waited on:
-        // the copy only keeps count, for `room_for`.
-        let _ = self.pace.check(std::time::Instant::now());
-        let bytes = format!("{line}\r").into_bytes();
-        self.channel.data(&bytes[..]).await.expect("send line");
-    }
-
-    /// **Wait until the session's flood bucket has room for a battery of
-    /// `lines`** (doc 51 unit FL.3, rule F): the wait a story takes before it
-    /// types several lines fast, in place of a sleep of a span it guessed.
-    ///
-    /// The room is read off this terminal's copy of the bucket: the server's
-    /// own type ([`mush_session::FloodBucket`]) at the server's own rate and
-    /// burst ([`mush_session::SessionConfig`]'s defaults, which every rig here
-    /// boots with), charged with every line typed. It returns at once when
-    /// there is room, which is the usual case.
-    pub async fn room_for(&mut self, lines: u32) {
-        let server = mush_session::SessionConfig::default();
-        // The bucket never holds more than its burst, so that is the most a
-        // story can wait for.
-        let want = (lines + PACE_MARGIN).min(server.flood_burst as u32);
-        let token = Duration::from_secs_f64(1.0 / server.flood_rate.max(1.0));
-        loop {
-            // A copy of the copy, drawn down: how many lines would pass now.
-            let mut probe = self.pace.clone();
-            let now = std::time::Instant::now();
-            if (0..want).all(|_| probe.check(now) == mush_session::FloodVerdict::Ok) {
-                return;
-            }
-            tokio::time::sleep(token).await;
-        }
-    }
-
-    /// Resize the PTY to `cols` by `rows` — the SSH window-change a terminal
-    /// sends when its window is resized (16b cut I.2). In `@tui` the server
-    /// clears and repaints every cell at the new size, which is how a test
-    /// reads a WHOLE frame: an ordinary paint writes only the cells that
-    /// changed.
-    pub async fn resize(&mut self, cols: u32, rows: u32) {
-        self.channel
-            .window_change(cols, rows, 0, 0)
-            .await
-            .expect("window change");
-    }
-
-    /// Await the channel closing (server-side boot/quit), collecting any
-    /// final output into `seen` on the way.
-    pub async fn expect_close(&mut self) {
-        let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
-        loop {
-            let msg = tokio::time::timeout_at(deadline, self.channel.wait())
-                .await
-                .unwrap_or_else(|_| panic!("timeout waiting for close; seen: {:?}", self.seen));
-            match msg {
-                None | Some(ChannelMsg::Close) => return,
-                Some(ChannelMsg::Data { data }) => {
-                    self.seen.push_str(&String::from_utf8_lossy(&data));
-                }
-                Some(_) => {}
-            }
-        }
-    }
-}
-
-/// Doc 51 unit FL.3: the story kit's barriers type on and read from this
-/// terminal. The kit's one `Term` arrives with units FL.7 and FL.8.
-impl mush_storykit::Session for Term {
-    fn mark(&self) -> usize {
-        Term::mark(self)
-    }
-
-    async fn send_line(&mut self, line: &str) {
-        Term::send_line(self, line).await;
-    }
-
-    async fn expect_one_of_after(&mut self, mark: usize, needles: &[&str]) -> usize {
-        Term::expect_one_of_after(self, mark, needles).await
-    }
-
-    fn seen_after(&self, mark: usize) -> String {
-        strip_ansi(&self.seen[mark..])
+        tokio::time::sleep(token).await;
     }
 }
 
@@ -620,7 +410,7 @@ pub async fn submit_action(term: &mut Term, line: &str, expected: &str) {
         return;
     }
 
-    let transaction = transaction_after(&term.seen, action_mark);
+    let transaction = transaction_after(term.raw(), action_mark);
     for _ in 0..100 {
         let status_mark = term.mark();
         term.send_line(&format!("action/status {transaction}"))
@@ -659,19 +449,7 @@ pub async fn play_client_sized(
     cols: u32,
     rows: u32,
 ) -> (russh::client::Handle<AcceptAll>, Term) {
-    let config = Arc::new(russh::client::Config::default());
-    let mut handle = russh::client::connect(config, addr, AcceptAll)
-        .await
-        .expect("connect");
-    let auth = handle.authenticate_none("play").await.expect("auth-none");
-    assert!(auth.success(), "play must be accepted with no auth");
-    let channel = handle.channel_open_session().await.expect("open channel");
-    channel
-        .request_pty(true, "xterm-256color", cols, rows, 0, 0, &[])
-        .await
-        .expect("pty");
-    channel.request_shell(true).await.expect("shell");
-    (handle, Term::new(channel))
+    Term::play_sized(addr, cols, rows).await
 }
 
 /// Rewrite a Redis URL to a specific logical database, dropping any db (or

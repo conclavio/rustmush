@@ -26,7 +26,7 @@ use std::future::Future;
 use crate::wait::{STEP_TIMEOUT, wait_for, wait_until};
 
 // A whole reply whose try counts its answers is `crate::reply::ask` (unit
-// FL.5); `ask_whole` below is FL.3's, kept for mushd until FL.8 moves it.
+// FL.5). `ask_whole` below is the same read since unit FL.8, answering text.
 
 /// A line the parser refuses, typed to mark the end of a reply. The `zzq-`
 /// opening is the mushd rig's convention: its readers that walk a reply line by
@@ -88,27 +88,16 @@ pub async fn settled(term: &mut impl Session) {
 }
 
 /// **A whole reply, never half of one**: `line`, then the sentinel, and
-/// everything printed up to the sentinel's refusal. A busy answer is typed
-/// again. Text is parsed only from a read like this one (doc 51 rule S).
+/// everything printed through the sentinel's refusal. Text is parsed only
+/// from a read like this one (doc 51 rule S).
+///
+/// A line refused busy is typed again, and **its tries count their answers**
+/// (unit FL.8, over FL.5's [`crate::ask`]): a try that was refused waits for
+/// its sentinel's own answer before the line is typed again, so that answer
+/// can never end the next try's read early. FL.3's first version shared that
+/// hazard with mushd's twelve private copies.
 pub async fn ask_whole(term: &mut impl Session, line: &str) -> String {
-    let needles = sentinel_needles();
-    let mut reply = String::new();
-    wait_until(
-        STEP_TIMEOUT,
-        &format!("`{line}` to be answered whole"),
-        async || {
-            let mark = term.mark();
-            term.send_line(line).await;
-            term.send_line(SENTINEL).await;
-            if term.expect_one_of_after(mark, &needles).await != 0 {
-                return false;
-            }
-            reply = term.seen_after(mark);
-            true
-        },
-    )
-    .await;
-    reply
+    crate::reply::whole_through(term, line).await
 }
 
 /// One match's row of `@arena/status`, with the terminal's wrapping undone:
