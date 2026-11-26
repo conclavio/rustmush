@@ -115,7 +115,7 @@ namespace TacSim.Core
         public void ApplySoundscapeForCamera(CameraRigMode mode, bool isAboardShip)
         {
             if (_audio == null) return;
-            if (mode == CameraRigMode.OrbitalExterior || mode == CameraRigMode.BowDockingCollar)
+            if (mode == CameraRigMode.OrbitalExterior || mode == CameraRigMode.OrbitalTacticalHigh || mode == CameraRigMode.BowDockingCollar)
                 _audio.SetSoundscape(AmbientSoundscape.OrbitalSpace);
             else if (isAboardShip)
                 _audio.SetSoundscape(AmbientSoundscape.ShipInterior);

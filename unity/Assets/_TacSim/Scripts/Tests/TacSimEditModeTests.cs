@@ -5003,5 +5003,402 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void MmorpgHud_UnitFramesMinimapTabbedChatHistoryAndNumberedHotbar()
+        {
+            // 1. Tabbed chat classification routes Combat / System / Comms / Local cleanly
+            Assert.AreEqual(TacSim.UI.ChatLogTab.Combat, TacSim.UI.TacSimHudController.ClassifyLogCategory("<color=#FFBB55>[TAC]</color> Lock acquired on R2."));
+            Assert.AreEqual(TacSim.UI.ChatLogTab.System, TacSim.UI.TacSimHudController.ClassifyLogCategory("<color=#88CCFF>[NET]</color> Connected."));
+            Assert.AreEqual(TacSim.UI.ChatLogTab.Comms, TacSim.UI.TacSimHudController.ClassifyLogCategory("<color=#66BBFF>[COMMS]</color> Welcome to Ceres Freeport."));
+            Assert.AreEqual(TacSim.UI.ChatLogTab.Local, TacSim.UI.TacSimHudController.ClassifyLogCategory("Dockmaster nods toward Berth 3."));
+
+            var rootGo = new UnityEngine.GameObject("MmorpgHudCoreTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                Assert.IsNotNull(hud.UnitFrames, "BuildHud must wire WoW/EQ Player & Target Unit Frames");
+                Assert.IsNotNull(hud.Minimap, "BuildHud must wire Unified Corner Tactical Minimap");
+
+                // 2. Numbered 1-9 action hotbar records slots and triggers commands cleanly
+                var dispatched = new List<string>();
+                hud.OnCommandSubmitted += dispatched.Add;
+                hud.RefreshContextualQuickActions("room.c07_exchange", isSeatedAtHelm: false);
+                Assert.GreaterOrEqual(hud.QuickActionSlotCount, 3);
+                Assert.IsTrue(hud.TriggerQuickActionSlot(0));
+                Assert.AreEqual("ui:open_exchange", dispatched[0]);
+
+                // 3. Command history recall (Up/Down)
+                hud.RecordCommandHistory("look");
+                hud.RecordCommandHistory("+ship");
+                Assert.AreEqual("+ship", hud.RecallCommandHistory(-1));
+                Assert.AreEqual("look", hud.RecallCommandHistory(-1));
+                Assert.AreEqual("+ship", hud.RecallCommandHistory(+1));
+
+                // 4. Tab switching & log filtering
+                hud.AppendLogLine("[TAC] Fired laser pulse.");
+                hud.AppendLogLine("[NET] Sync complete.");
+                hud.SelectChatLogTab(TacSim.UI.ChatLogTab.Combat);
+                Assert.AreEqual(TacSim.UI.ChatLogTab.Combat, hud.ActiveChatTab);
+
+                // 5. Player & Target unit frames update and clear cleanly
+                hud.UnitFrames.UpdatePlayerFrame(
+                    "STN", UnityEngine.Color.cyan, "Phoenix", "Ceres Freeport",
+                    0.5f, "HOLD 50/100 t", UnityEngine.Color.cyan,
+                    0.75f, "FUEL 60/80 t", UnityEngine.Color.yellow, "CREDITS: 12,000 cr");
+                Assert.AreEqual("Phoenix", hud.UnitFrames.PlayerTitleText);
+                Assert.IsFalse(hud.UnitFrames.IsTargetVisible);
+
+                hud.UnitFrames.SetTarget("NPC", UnityEngine.Color.green, "Dockmaster Voss", "Port Authority", 1f, "IN RANGE", UnityEngine.Color.green);
+                Assert.IsTrue(hud.UnitFrames.IsTargetVisible);
+                Assert.AreEqual("Dockmaster Voss", hud.UnitFrames.TargetTitleText);
+                hud.UnitFrames.ClearTarget();
+                Assert.IsFalse(hud.UnitFrames.IsTargetVisible);
+
+                // 6. Minimap renders Station blueprint, shifts mid-left when tactical panel busy, and handles click-to-navigate
+                var stGo = new UnityEngine.GameObject("MinimapStationTest");
+                stGo.transform.SetParent(rootGo.transform, false);
+                var station = stGo.AddComponent<TacSim.World.StationWorldController>();
+                station.BuildStation(null);
+                hud.Minimap.BindWorldSources(station, null, null, null, null);
+                hud.Minimap.SyncMinimap(TacSim.Core.TacSimActiveStage.StationWalk, UnityEngine.Vector3.zero, 90f, rightCornerOccupied: false, forceRedraw: true);
+                Assert.IsFalse(hud.Minimap.IsDockedMidLeft);
+                Assert.IsTrue(hud.Minimap.HeaderText.Contains("DECK"));
+
+                hud.Minimap.SyncMinimap(TacSim.Core.TacSimActiveStage.ShipHelmSeated, UnityEngine.Vector3.zero, 45f, rightCornerOccupied: true, forceRedraw: true);
+                Assert.IsTrue(hud.Minimap.IsDockedMidLeft, "Minimap must shift cleanly to Mid-Left when top-right combat/docking panel is open");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
+
+        [Test]
+        public void TacticalHudAndSheet_CharacterSheetTabsAvatarSwapAnd3DBracketProjection()
+        {
+            // 1. Pure-math 3D screen-space bracket projection: on-screen, off-screen clamp, behind-camera perimeter mirror
+            TacSim.UI.TacSimTacticalBrackets.ComputeCanvasPositionFromScreenPoint(
+                new UnityEngine.Vector3(960f, 540f, 25f), 1920f, 1080f, new UnityEngine.Vector2(1920f, 1080f), 50f,
+                out var centerPos, out bool behindCenter, out bool clampedCenter);
+            Assert.IsFalse(behindCenter);
+            Assert.IsFalse(clampedCenter);
+            Assert.AreEqual(0f, centerPos.x, 1f);
+            Assert.AreEqual(0f, centerPos.y, 1f);
+
+            TacSim.UI.TacSimTacticalBrackets.ComputeCanvasPositionFromScreenPoint(
+                new UnityEngine.Vector3(3500f, 540f, 25f), 1920f, 1080f, new UnityEngine.Vector2(1920f, 1080f), 50f,
+                out var offRightPos, out bool behindRight, out bool clampedRight);
+            Assert.IsFalse(behindRight);
+            Assert.IsTrue(clampedRight, "Off-screen target must clamp inside canvas margin");
+            Assert.AreEqual(910f, offRightPos.x, 1f);
+
+            TacSim.UI.TacSimTacticalBrackets.ComputeCanvasPositionFromScreenPoint(
+                new UnityEngine.Vector3(1200f, 700f, -15f), 1920f, 1080f, new UnityEngine.Vector2(1920f, 1080f), 50f,
+                out var behindPos, out bool isBehind, out bool clampedBehind);
+            Assert.IsTrue(isBehind, "Negative screen Z must flag target as behind camera");
+            Assert.IsTrue(clampedBehind, "Behind-camera target must clamp to viewport perimeter");
+            Assert.Less(behindPos.x, 0f, "Target behind-right should mirror to left edge indicator");
+
+            var rootGo = new UnityEngine.GameObject("TacticalHudAndSheetTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                Assert.IsNotNull(hud.CharacterSheet, "BuildHud must wire [C] Character/Ship Sheet modal");
+                Assert.IsNotNull(hud.TacticalBrackets, "BuildHud must wire pooled 3D Tactical Brackets layer");
+
+                var camGo = new UnityEngine.GameObject("MainCamera");
+                camGo.tag = "MainCamera";
+                camGo.transform.SetParent(rootGo.transform, false);
+                var cam = camGo.AddComponent<UnityEngine.Camera>();
+
+                var spaceGo = new UnityEngine.GameObject("SpaceTest");
+                spaceGo.transform.SetParent(rootGo.transform, false);
+                var space = spaceGo.AddComponent<TacSim.Space.SpaceFlightController>();
+                space.BuildSpaceStage(null);
+                space.ApplyHolotankFeed(JsonNode.Parse(@"{
+                    ""own"": { ""id"": ""own1"", ""x_km"": 0, ""y_km"": 0, ""z_km"": 0 },
+                    ""contacts"": [{ ""id"": ""V1"", ""label"": ""Vanguard"", ""x_km"": 12, ""y_km"": 4, ""z_km"": 0, ""iff"": ""hostile"" }],
+                    ""rocks"": [{ ""id"": ""A"", ""x_km"": -5, ""y_km"": 2, ""z_km"": 0 }]
+                }"));
+                space.ApplyCockpitFeed(JsonNode.Parse(@"{
+                    ""throttle_permille"": 500,
+                    ""emcon"": ""ghost"",
+                    ""fire"": {
+                        ""lock"": { ""ship_id"": ""V1"", ""label"": ""Vanguard"", ""range_m"": 12600, ""facet"": ""left"" },
+                        ""mounts"": [{ ""id"": ""L1"", ""family"": ""laser"", ""state"": ""ready"", ""damage_at_lock"": 42 }]
+                    }
+                }"));
+
+                var surfaceGo = new UnityEngine.GameObject("SurfaceTest");
+                surfaceGo.transform.SetParent(rootGo.transform, false);
+                var surface = surfaceGo.AddComponent<TacSim.Surface.SurfaceMiningController>();
+                surface.BuildSurfaceStage(null, "occator_rim");
+                surface.EnterSurfaceMode();
+
+                var arenaGo = new UnityEngine.GameObject("ArenaTest");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(null, null);
+                arena.State.Callsign = "R1";
+                arena.State.ArmorFrontPct = 82;
+                arena.State.ArmorLeftPct = 44;
+                arena.State.ArmorRearPct = 20;
+                arena.State.Heat = 650;
+                arena.State.HeatMax = 1000;
+                arena.State.LockedDesignator = "B1";
+                arena.State.LockHitPercent = 73;
+                arena.State.Contacts.Add(new TacSim.Arena.ArenaContactState
+                {
+                    Designator = "B1",
+                    ClassLabel = "line_tank",
+                    Party = "B",
+                    Friendly = false,
+                    CellX = 12,
+                    CellY = 14,
+                    RangeM = 480f
+                });
+
+                var trade = new TacSim.World.TacSimTradeAndShipState();
+
+                // 2. Character/Ship Sheet tabs, live avatar swap event, live mount readout & ESC close
+                hud.CharacterSheet.BindSources(trade, space, surface, arena);
+                hud.CharacterSheet.SetPilotContext("Captain Vance", "Ceres Freeport", "Phoenix", TacSim.Core.TacSimActiveStage.ShipHelmSeated);
+                hud.CharacterSheet.SetOpen(true);
+                Assert.IsTrue(hud.CharacterSheet.IsOpen);
+                Assert.IsTrue(hud.IsModalOpen, "Open CharacterSheet must report IsModalOpen=true");
+                StringAssert.Contains("Captain Vance", hud.CharacterSheet.PilotSummarySnapshot);
+
+                TacSim.Core.PlayerAvatarPreset? swapped = null;
+                hud.CharacterSheet.OnAvatarPresetSelected += p => swapped = p;
+                hud.CharacterSheet.ApplyAvatarChoice(TacSim.Core.PlayerAvatarPreset.CyberpunkStreetFighterMale, notify: true);
+                Assert.AreEqual(TacSim.Core.PlayerAvatarPreset.CyberpunkStreetFighterMale, swapped);
+
+                hud.CharacterSheet.SelectTab(TacSim.UI.CharacterSheetTab.SpaceFit);
+                Assert.AreEqual(TacSim.UI.CharacterSheetTab.SpaceFit, hud.CharacterSheet.ActiveTab);
+                StringAssert.Contains("L1", hud.CharacterSheet.SpaceMountsSnapshot);
+                StringAssert.Contains("READY", hud.CharacterSheet.SpaceMountsSnapshot);
+
+                Assert.IsTrue(hud.TryCloseTopmostModal(), "ESC must close CharacterSheet modal");
+                Assert.IsFalse(hud.CharacterSheet.IsOpen);
+
+                // 3. 3D Tactical Brackets & Schematics across Station, Space, Surface, and Arena stages
+                hud.TacticalBrackets.BindControllers(space, surface, arena);
+
+                hud.TacticalBrackets.SyncBrackets(TacSim.Core.TacSimActiveStage.StationWalk, cam);
+                Assert.AreEqual(0, hud.TacticalBrackets.ActiveBracketCount);
+                Assert.IsFalse(hud.TacticalBrackets.IsArenaArmorSchematicVisible);
+                Assert.IsFalse(hud.TacticalBrackets.IsSurfaceCompassVisible);
+
+                hud.TacticalBrackets.SyncBrackets(TacSim.Core.TacSimActiveStage.ShipHelmSeated, cam);
+                Assert.GreaterOrEqual(hud.TacticalBrackets.ActiveBracketCount, 1, "Orbital space stage must project contact/rock brackets");
+
+                hud.TacticalBrackets.SyncBrackets(TacSim.Core.TacSimActiveStage.PlanetarySurface, cam);
+                Assert.IsTrue(hud.TacticalBrackets.IsSurfaceCompassVisible, "Planetary surface stage must show rover compass strip");
+                StringAssert.Contains("HDG", hud.TacticalBrackets.SurfaceCompassSnapshot);
+
+                hud.TacticalBrackets.SyncBrackets(TacSim.Core.TacSimActiveStage.SimulatorArena, cam);
+                Assert.IsTrue(hud.TacticalBrackets.IsArenaArmorSchematicVisible, "Simulator arena stage must show 4-quadrant directional armor schematic");
+                Assert.GreaterOrEqual(hud.TacticalBrackets.ActiveBracketCount, 1, "Simulator arena stage must project enemy unit brackets");
+                StringAssert.Contains("LOCK B1", hud.TacticalBrackets.ArenaArmorSummarySnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
+
+        [Test]
+        public void Wayfinder3DAndOpsDirectory_PlotsMultiDeckRibbonDirectoryPresenceAndArrival()
+        {
+            // 1. Pure-math 3D ribbon vertex chain builder
+            var pts = TacSim.World.TacSimWayfinder3D.BuildRouteWorldPoints(
+                new UnityEngine.Vector3(0f, 6f, 0f),
+                new List<UnityEngine.Vector3> { new UnityEngine.Vector3(10f, 6f, 0f), new UnityEngine.Vector3(10f, 0f, 12f) },
+                floorLiftM: 0.3f);
+            Assert.AreEqual(3, pts.Count);
+            Assert.AreEqual(6.3f, pts[0].y, 0.01f);
+            Assert.AreEqual(0.3f, pts[2].y, 0.01f);
+
+            var rootGo = new UnityEngine.GameObject("WayfinderAndOpsDirTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                Assert.IsNotNull(hud.OpsDirectory, "BuildHud must wire [N] Ops Directory & Wayfinder Banner");
+
+                var stGo = new UnityEngine.GameObject("StationWf");
+                stGo.transform.SetParent(rootGo.transform, false);
+                var station = stGo.AddComponent<TacSim.World.StationWorldController>();
+                station.BuildStation(null, "neighborhood.ceres_freeport");
+
+                var shipGo = new UnityEngine.GameObject("ShipWf");
+                shipGo.transform.SetParent(rootGo.transform, false);
+                var ship = shipGo.AddComponent<TacSim.World.ShipInteriorController>();
+                ship.BuildInterior(null);
+
+                var wfGo = new UnityEngine.GameObject("WayfinderWf");
+                wfGo.transform.SetParent(rootGo.transform, false);
+                var wf = wfGo.AddComponent<TacSim.World.TacSimWayfinder3D>();
+                wf.EnsureVisuals();
+
+                var trade = new TacSim.World.TacSimTradeAndShipState();
+                hud.OpsDirectory.BindSources(station, ship, wf, trade, null, null, null);
+
+                // 2. Plot 3D station wayfinder trail from arrivals to exchange
+                string startRoom = station.ActiveRoomEntryId;
+                string targetRoom = null;
+                foreach (var r in station.Pack.Rooms.Values)
+                {
+                    if (!string.Equals(r.EntryId, startRoom, System.StringComparison.OrdinalIgnoreCase) &&
+                        station.FindExitPath(startRoom, r.EntryId).Count > 0)
+                    {
+                        targetRoom = r.EntryId;
+                        break;
+                    }
+                }
+                Assert.IsNotNull(targetRoom, "Ceres Freeport pack must have a reachable target room");
+                Assert.IsTrue(wf.PlotStationRoute(station, startRoom, targetRoom, station.GetRoomSpawnPosition(startRoom)));
+                Assert.IsTrue(wf.HasActiveRoute);
+                Assert.GreaterOrEqual(wf.RenderedPointCount, 2);
+                Assert.Greater(wf.DistanceMeters, 0.5f);
+
+                // 3. Top-center Wayfinder Compass Banner reflects active trail & hides in Arena
+                hud.OpsDirectory.SyncWayfinderBanner(TacSim.Core.TacSimActiveStage.StationWalk);
+                Assert.IsTrue(hud.OpsDirectory.IsWayfinderBannerVisible);
+                StringAssert.Contains("HOP", hud.OpsDirectory.WayfinderBannerText);
+
+                hud.OpsDirectory.SyncWayfinderBanner(TacSim.Core.TacSimActiveStage.SimulatorArena);
+                Assert.IsFalse(hud.OpsDirectory.IsWayfinderBannerVisible, "Wayfinder banner must yield to Arena scoreboard");
+
+                // 4. [N] Directory modal populates rooms, room presence cast, and Active Ops summary, and closes on ESC
+                var rv = new MushRoomView { Name = "Arrivals" };
+                rv.Contents.Add(new MushObjRef { Id = "#10", Name = "Dockmaster Voss" });
+                rv.NpcIds.Add("#10");
+                rv.Contents.Add(new MushObjRef { Id = "#20", Name = "Pilot Kira" });
+                rv.PlayerIds.Add("#20");
+                hud.OpsDirectory.UpdateLiveRoom(rv, TacSim.Core.TacSimActiveStage.StationWalk);
+                hud.OpsDirectory.SetOpen(true);
+                Assert.IsTrue(hud.OpsDirectory.IsOpen);
+                Assert.IsTrue(hud.IsModalOpen);
+                Assert.GreaterOrEqual(hud.OpsDirectory.VisibleDirectoryRowCount, 2);
+
+                hud.OpsDirectory.SelectTab(TacSim.UI.OpsDirectoryTab.RoomPresence);
+                Assert.AreEqual(2, hud.OpsDirectory.VisiblePresenceRowCount);
+
+                hud.OpsDirectory.SelectTab(TacSim.UI.OpsDirectoryTab.ActiveOps);
+                StringAssert.Contains(wf.TargetDisplayName, hud.OpsDirectory.OpsSummarySnapshot);
+
+                Assert.IsTrue(hud.TryCloseTopmostModal(), "ESC must close OpsDirectory modal");
+                Assert.IsFalse(hud.OpsDirectory.IsOpen);
+
+                // 5. Arrival auto-clears the 3D wayfinder ribbon and fires OnArrivedAtDestination
+                string arrivedName = null;
+                wf.OnArrivedAtDestination += n => arrivedName = n;
+                station.HighlightActiveRoom(targetRoom);
+                wf.SyncProgress(TacSim.Core.TacSimActiveStage.StationWalk, station, ship, station.GetRoomSpawnPosition(targetRoom), 0.016f);
+                Assert.IsFalse(wf.HasActiveRoute, "Arriving in destination room must auto-clear active wayfinder trail");
+                Assert.IsNotNull(arrivedName);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
+
+        [Test]
+        public void CombatSpaceSurfaceVfxAndCallouts_TacticalGridRoverSplineArenaLockBeamAndPopups()
+        {
+            var rootGo = new UnityEngine.GameObject("CombatVfxAndCalloutsTest");
+            try
+            {
+                // 1. SpaceFlightController 3D Homeworld/EVE tactical reference plane, drop-lines & lock tether
+                var spaceGo = new UnityEngine.GameObject("SpaceVfxTest");
+                spaceGo.transform.SetParent(rootGo.transform, false);
+                var space = spaceGo.AddComponent<TacSim.Space.SpaceFlightController>();
+                space.BuildSpaceStage(null);
+                Assert.IsTrue(space.IsTacticalGridVisible, "Orbital tactical reference plane must build active");
+                Assert.AreEqual(0, space.ActiveDropLineCount);
+
+                space.ApplyHolotankFeed(JsonNode.Parse(@"{
+                    ""own"": { ""id"": ""own1"", ""x_km"": 0, ""y_km"": 0, ""z_km"": 0 },
+                    ""contacts"": [{ ""id"": ""C1"", ""label"": ""Corsair"", ""x_km"": 18, ""y_km"": -6, ""z_km"": 4, ""iff"": ""hostile"", ""locked"": true }],
+                    ""rocks"": [{ ""id"": ""A"", ""x_km"": 5, ""y_km"": 7, ""z_km"": -2 }]
+                }"));
+                Assert.GreaterOrEqual(space.ActiveDropLineCount, 2, "Perceived orbital contacts & rocks must draw vertical drop-lines to tactical plane");
+                Assert.IsTrue(space.HasActiveLockTether, "Locked contact must render 3D trajectory lock tether");
+
+                space.SetTacticalGridVisible(false);
+                Assert.IsFalse(space.IsTacticalGridVisible);
+
+                // 2. OrbitalTacticalHigh camera mode configuration
+                var camGo = new UnityEngine.GameObject("CamRigTest", typeof(UnityEngine.Camera));
+                camGo.transform.SetParent(rootGo.transform, false);
+                var rig = camGo.AddComponent<TacSim.Character.TacSimCameraRig>();
+                rig.ControlledCamera = camGo.GetComponent<UnityEngine.Camera>();
+                rig.SetMode(TacSim.Character.CameraRigMode.OrbitalTacticalHigh);
+                Assert.AreEqual(TacSim.Character.CameraRigMode.OrbitalTacticalHigh, rig.Mode);
+                Assert.AreEqual(8000f, rig.ControlledCamera.farClipPlane, 1f);
+
+                // 3. SurfaceMiningController 3D rover route spline over live site.map leg
+                var surfGo = new UnityEngine.GameObject("SurfaceSplineTest");
+                surfGo.transform.SetParent(rootGo.transform, false);
+                var surf = surfGo.AddComponent<TacSim.Surface.SurfaceMiningController>();
+                surf.BuildSurfaceStage(null, "occator_rim");
+                surf.EnterSurfaceMode();
+                surf.ApplySiteMapFrame(JsonNode.Parse(@"{
+                    ""width"": 8,
+                    ""height"": 8,
+                    ""site"": {
+                        ""site"": ""Occator Rim"",
+                        ""grid"": { ""x0"": 0, ""y0"": 0, ""span"": 1, ""cell_cm"": 1000 },
+                        ""rigs"": [{
+                            ""slot"": 1,
+                            ""cell"": [1, 1],
+                            ""leg"": {
+                                ""started_ic"": 100,
+                                ""waypoints"": [{""x_cm"": 1500, ""y_cm"": 1500, ""at_s"": 0}, {""x_cm"": 6500, ""y_cm"": 6500, ""at_s"": 10}]
+                            }
+                        }]
+                    },
+                    ""rows"": [""........"",""........"",""........"",""........"",""........"",""........"",""........"",""........""],
+                    ""you"": [1, 1]
+                }"));
+                Assert.IsTrue(surf.IsRouteSplineVisible, "Active rover drive leg must render terrain-hugging 3D route spline");
+                Assert.GreaterOrEqual(surf.RouteSplinePointCount, 2);
+
+                // 4. OocArenaController 3D weapon range ring & target lock laser beam
+                var arenaGo = new UnityEngine.GameObject("ArenaVfxTest");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(null, null);
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""seated"": true, ""match"": 42, ""callsign"": ""R1"", ""party"": ""R"", ""unit_type"": ""tacsim.unit.line_tank"",
+                    ""x_cm"": 12000, ""y_cm"": 12000, ""lock_designator"": ""B1"", ""lock_range_m"": 260, ""lock_percent"": 78,
+                    ""contacts"": [{ ""designator"": ""B1"", ""party"": ""B"", ""relation"": ""hostile"", ""cell"": [18, 18], ""range_m"": 260 }]
+                }"));
+                arena.SyncArenaTacticalVisuals();
+                Assert.IsTrue(arena.IsArenaRangeRingVisible, "Live arena player rig must render 3D tactical range ring");
+                Assert.IsTrue(arena.IsArenaLockBeamActive, "Locked arena contact must render 3D target lock laser line");
+
+                // 5. Pooled Floating Combat & Telemetry Callouts lifecycle
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                Assert.IsNotNull(hud.FloatingCallouts);
+                hud.FloatingCallouts.ShowCallout("TORPEDO SALVO AWAY", UnityEngine.Color.yellow, durationSec: 1.0f);
+                Assert.AreEqual(1, hud.FloatingCallouts.ActivePopupCount);
+                Assert.AreEqual("TORPEDO SALVO AWAY", hud.FloatingCallouts.LastShownText);
+                hud.FloatingCallouts.StepAnimation(0.5f);
+                Assert.AreEqual(1, hud.FloatingCallouts.ActivePopupCount);
+                hud.FloatingCallouts.StepAnimation(0.6f);
+                Assert.AreEqual(0, hud.FloatingCallouts.ActivePopupCount, "Expired callouts must cleanly deactivate into pool");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

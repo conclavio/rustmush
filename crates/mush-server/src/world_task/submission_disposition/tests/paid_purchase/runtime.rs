@@ -358,6 +358,15 @@ impl Running {
         }
     }
 
+    /// **The world has answered everything sent before it** (doc 51 §3.3's
+    /// `settled`, for this rig; unit FL.6): the ordering barrier, re-asked
+    /// while the world sheds it. A barrier queued behind a commit is answered
+    /// once the commit's output is released, so an absence asserted after it
+    /// is an absence, where one asserted after a sleep was a guess.
+    pub(in crate::world_task::submission_disposition::tests) async fn settled(&self) -> TestResult {
+        self.barrier_retried().await
+    }
+
     /// The ordering barrier behind everything sent so far, re-asked while
     /// the world answers `Busy` (a full defer queue or waiter cap), bounded
     /// like `legal_actions` (50 tries, each under `STEP`, 50 ms apart).

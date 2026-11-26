@@ -12,6 +12,15 @@ using UnityEngine.UI;
 
 namespace TacSim.UI
 {
+    public enum ChatLogTab
+    {
+        All = 0,
+        Local = 1,
+        Comms = 2,
+        Combat = 3,
+        System = 4
+    }
+
     /// <summary>
     /// Self-constructing diegetic Sci-Fi HUD using built-in uGUI.
     /// Always rebuilds runtime listeners on Play Mode entry (IsInitialized is non-serialized) so
@@ -64,6 +73,9 @@ namespace TacSim.UI
         public event Action<MushServerRequest, string> OnRequestChoiceSubmitted;
         public event Action<CameraRigMode> OnCameraModeRequested;
         public event Action OnStandFromHelmRequested;
+        public event Action OnCycleTargetRequested;
+        public event Action OnCycleOrbitalCameraRequested;
+        public event Action OnSpaceQuickFireRequested;
 
         public static TacSimHudController ActiveInstance { get; private set; }
 
@@ -76,6 +88,15 @@ namespace TacSim.UI
         public TacSimEconomyPanels EconomyPanels { get; private set; }
         public TacSimDisplayOptions DisplayOptions { get; private set; }
         public TacSimSolarSystemMap SolarMap { get; private set; }
+        public TacSimUnitFrames UnitFrames { get; private set; }
+        public TacSimTacticalMinimap Minimap { get; private set; }
+        public TacSimCharacterSheet CharacterSheet { get; private set; }
+        public TacSimTacticalBrackets TacticalBrackets { get; private set; }
+        public TacSimOpsDirectory OpsDirectory { get; private set; }
+        public TacSimFloatingCallouts FloatingCallouts { get; private set; }
+        public ChatLogTab ActiveChatTab { get; private set; } = ChatLogTab.All;
+        public int QuickActionSlotCount => _quickSlotActions.Count;
+        public bool IsDockingHudVisible => _dockingPanel != null && _dockingPanel.activeSelf;
         public TradeTerminalTab ActiveTradeTab { get; private set; } = TradeTerminalTab.Exchange;
         public string ActiveHullRef => _activeHullRef;
         public string ActivePortHint => _activePortHint;
@@ -99,6 +120,8 @@ namespace TacSim.UI
                 var term = ResolveActiveMindTerminal();
                 return (_modalPanel != null && _modalPanel.activeSelf) ||
                        (_tradePanel != null && _tradePanel.activeSelf) ||
+                       (CharacterSheet != null && CharacterSheet.IsOpen) ||
+                       (OpsDirectory != null && OpsDirectory.IsOpen) ||
                        (Overlays != null && Overlays.IsLobbyModalOpen) ||
                        (term != null && term.IsTerminalOpen);
             }
@@ -152,11 +175,23 @@ namespace TacSim.UI
         private Text _interactTitleText;
         private Text _interactSubText;
 
-        // Contextual Quick Actions strip & Bridge Helm Flight Deck bar
+        // Contextual Quick Actions strip (WoW/EQ 1-9 Action Hotbar) & Bridge Helm Flight Deck bar
         private GameObject _quickActionsStripPanel;
         private Transform _quickActionsContainer;
+        private readonly List<Action> _quickSlotActions = new List<Action>();
         private GameObject _helmFlightBar;
         private Text _helmStatusLabel;
+
+        // Tabbed Comms / Combat Log & Command History
+        private RectTransform _commsPanelRect;
+        private bool _commsExpanded;
+        private Text _commsExpandLabel;
+        private readonly List<(ChatLogTab tab, string line)> _categorizedLogEntries = new List<(ChatLogTab, string)>();
+        private readonly List<Image> _chatTabImages = new List<Image>();
+        private readonly bool[] _chatTabUnread = new bool[5];
+        private readonly List<string> _commandHistory = new List<string>();
+        private int _commandHistoryCursor = -1;
+        private const int MaxCommandHistory = 40;
 
         // Slice 1C: Visual Commodity Exchange, Dual Hold Bars & Sailing Plan Terminal
         private GameObject _tradePanel;
@@ -421,6 +456,11 @@ namespace TacSim.UI
             if (_helmFlightBar != null) _helmFlightBar.SetActive(false);
 
             _logLines.Clear();
+            _categorizedLogEntries.Clear();
+            _commandHistoryCursor = _commandHistory.Count;
+            for (int i = 0; i < _chatTabUnread.Length; i++) _chatTabUnread[i] = false;
+            ActiveChatTab = ChatLogTab.All;
+            RefreshChatTabHighlights();
             if (_commsLogText != null) _commsLogText.text = string.Empty;
             if (_chatInput != null) _chatInput.text = string.Empty;
             if (_npcSayInput != null) _npcSayInput.text = string.Empty;
@@ -435,6 +475,12 @@ namespace TacSim.UI
             EconomyPanels?.ResetSessionState();
             Overlays?.ResetSessionState();
             SolarMap?.ResetSessionState();
+            CharacterSheet?.ResetSessionState();
+            OpsDirectory?.ResetSessionState();
+            TacticalBrackets?.ResetSessionState();
+            FloatingCallouts?.ResetSessionState();
+            UnitFrames?.ResetSessionState();
+            Minimap?.ResetSessionState();
             ResolveActiveMindTerminal()?.ResetSessionState();
         }
 
@@ -457,6 +503,8 @@ namespace TacSim.UI
             _qtyPresetImages.Clear();
             _destPortImages.Clear();
             _tradeTabBtnImages.Clear();
+            _chatTabImages.Clear();
+            _quickSlotActions.Clear();
             _listingCardPool.Clear();
             _emptyListingsRow = null;
             _emptyListingsText = null;
@@ -486,8 +534,20 @@ namespace TacSim.UI
             Overlays = gameObject.GetComponent<TacSimMissionOverlays>() ?? gameObject.AddComponent<TacSimMissionOverlays>();
             Overlays.BuildOverlays(_hudRoot.transform, _uiFont);
 
+            UnitFrames = gameObject.GetComponent<TacSimUnitFrames>() ?? gameObject.AddComponent<TacSimUnitFrames>();
+            UnitFrames.BuildFrames(_hudRoot.transform, _uiFont);
+
+            Minimap = gameObject.GetComponent<TacSimTacticalMinimap>() ?? gameObject.AddComponent<TacSimTacticalMinimap>();
+            Minimap.BuildMinimap(_hudRoot.transform, _uiFont);
+
             SolarMap = gameObject.GetComponent<TacSimSolarSystemMap>() ?? gameObject.AddComponent<TacSimSolarSystemMap>();
             SolarMap.BuildModal(_hudRoot.transform, _uiFont);
+
+            CharacterSheet = gameObject.GetComponent<TacSimCharacterSheet>() ?? gameObject.AddComponent<TacSimCharacterSheet>();
+            CharacterSheet.BuildModal(_hudRoot.transform, _uiFont);
+
+            OpsDirectory = gameObject.GetComponent<TacSimOpsDirectory>() ?? gameObject.AddComponent<TacSimOpsDirectory>();
+            OpsDirectory.BuildUi(_hudRoot.transform, _uiFont);
 
             DisplayOptions = gameObject.GetComponent<TacSimDisplayOptions>() ?? gameObject.AddComponent<TacSimDisplayOptions>();
             DisplayOptions.BuildModal(canvasGo.transform, _uiFont);
@@ -515,23 +575,36 @@ namespace TacSim.UI
         {
             _hudRoot = CreatePanel(root, "GameplayHud", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, Color.clear);
 
+            // 0. Pooled 3D Screen-Space Tactical Brackets & Floating Callouts Layers (rendered behind HUD panels & modals)
+            TacticalBrackets = gameObject.GetComponent<TacSimTacticalBrackets>() ?? gameObject.AddComponent<TacSimTacticalBrackets>();
+            TacticalBrackets.BuildLayer(_hudRoot.transform, _uiFont);
+
+            FloatingCallouts = gameObject.GetComponent<TacSimFloatingCallouts>() ?? gameObject.AddComponent<TacSimFloatingCallouts>();
+            FloatingCallouts.BuildLayer(_hudRoot.transform, _uiFont);
+
             // 1. Top Telemetry Strip
             var topBar = CreatePanel(_hudRoot.transform, "TopStrip", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(16f, -64f), new Vector2(-16f, -10f), new Color(0.04f, 0.07f, 0.11f, 0.86f));
             _locationText = CreateText(topBar.transform, "CERES FREEPORT — PORT WATCH ARRIVALS [PUBLIC DECK]", 18, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.82f, 0.94f, 1f));
-            SetRect(_locationText.rectTransform, new Vector2(0f, 0f), new Vector2(0.50f, 1f), new Vector2(18f, 0f), Vector2.zero);
+            SetRect(_locationText.rectTransform, new Vector2(0f, 0f), new Vector2(0.42f, 1f), new Vector2(18f, 0f), Vector2.zero);
 
             _netBadgeText = CreateText(topBar.transform, "[DISCONNECTED]", 13, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(0.62f, 0.72f, 0.82f));
-            SetRect(_netBadgeText.rectTransform, new Vector2(0.50f, 0f), new Vector2(0.61f, 1f), Vector2.zero, Vector2.zero);
+            SetRect(_netBadgeText.rectTransform, new Vector2(0.42f, 0f), new Vector2(0.50f, 1f), Vector2.zero, Vector2.zero);
 
-            _shipAndClockText = CreateText(topBar.transform, "IC 08:00 UTC | HULL: UNCHARTERED | RMB: Orbit Camera", 15, FontStyle.Normal, TextAnchor.MiddleRight, new Color(0.62f, 0.84f, 0.96f));
-            // Reserve 436px at the far right of TopStrip for `[M] CHART` (`-428..-324`), `OPTIONS` (`-316..-212`), and `[F10] MINDS & SEALING` (`-204..-6`).
-            SetRect(_shipAndClockText.rectTransform, new Vector2(0.50f, 0f), new Vector2(1f, 1f), Vector2.zero, new Vector2(-436f, 0f));
+            _shipAndClockText = CreateText(topBar.transform, "IC 08:00 UTC | HULL: UNCHARTERED | RMB: Orbit Camera", 14, FontStyle.Normal, TextAnchor.MiddleRight, new Color(0.62f, 0.84f, 0.96f));
+            // Reserve 578px at the far right of TopStrip for `[N] NAV` (`-570..-484`), `[C] SHEET` (`-478..-392`), `[M] CHART` (`-386..-300`), `OPTIONS` (`-294..-210`), and `[F10] MINDS & SEALING` (`-204..-6`).
+            SetRect(_shipAndClockText.rectTransform, new Vector2(0.50f, 0f), new Vector2(1f, 1f), Vector2.zero, new Vector2(-578f, 0f));
+
+            var navTopBtn = CreateButton(topBar.transform, "[N] NAV", new Color(0.14f, 0.38f, 0.44f), () => OpsDirectory?.ToggleOpen());
+            SetRect(navTopBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-570f, 6f), new Vector2(-484f, -6f));
+
+            var sheetTopBtn = CreateButton(topBar.transform, "[C] SHEET", new Color(0.16f, 0.36f, 0.44f), () => CharacterSheet?.ToggleOpen());
+            SetRect(sheetTopBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-478f, 6f), new Vector2(-392f, -6f));
 
             var chartTopBtn = CreateButton(topBar.transform, "[M] CHART", new Color(0.16f, 0.34f, 0.48f), () => SolarMap?.SetOpen(!(SolarMap != null && SolarMap.IsOpen)));
-            SetRect(chartTopBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-428f, 6f), new Vector2(-324f, -6f));
+            SetRect(chartTopBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-386f, 6f), new Vector2(-300f, -6f));
 
             var optionsTopBtn = CreateButton(topBar.transform, "OPTIONS", new Color(0.14f, 0.26f, 0.38f), () => DisplayOptions?.SetOpen(true));
-            SetRect(optionsTopBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-316f, 6f), new Vector2(-212f, -6f));
+            SetRect(optionsTopBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-294f, 6f), new Vector2(-210f, -6f));
 
             // 2. Center-Bottom [E] Contextual Interaction Banner
             _interactBanner = CreatePanel(_hudRoot.transform, "InteractBanner", new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(-240f, 128f), new Vector2(240f, 198f), new Color(0.05f, 0.12f, 0.18f, 0.92f));
@@ -555,9 +628,33 @@ namespace TacSim.UI
 
             BuildHelmFlightDeckBar(_hudRoot.transform);
 
-            // 4. Bottom-Left Compact Comms & Narrative Drawer (ScrollRect + RectMask2D pinned to newest bottom line)
-            var commsPanel = CreatePanel(_hudRoot.transform, "CommsDrawer", new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(14f, 16f), new Vector2(436f, 248f), new Color(0.03f, 0.05f, 0.08f, 0.88f));
-            var commsViewport = CreatePanel(commsPanel.transform, "CommsViewport", new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(12f, 44f), new Vector2(-12f, -10f), new Color(0f, 0f, 0f, 0.02f));
+            // 4. Bottom-Left Tabbed Comms & Combat Log Drawer (WoW/EQ tabs + expand toggle + Up/Down history)
+            var commsPanel = CreatePanel(_hudRoot.transform, "CommsDrawer", new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(14f, 16f), new Vector2(436f, 266f), new Color(0.03f, 0.05f, 0.08f, 0.90f));
+            _commsPanelRect = commsPanel.GetComponent<RectTransform>();
+            _commsExpanded = false;
+
+            var chatTabStrip = CreatePanel(commsPanel.transform, "CommsTabStrip", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(8f, -26f), new Vector2(-34f, -4f), Color.clear);
+            var ctHlg = chatTabStrip.AddComponent<HorizontalLayoutGroup>();
+            ctHlg.spacing = 4f;
+            ctHlg.childControlWidth = true;
+            ctHlg.childControlHeight = true;
+            ctHlg.childForceExpandWidth = true;
+            string[] chatTabLabels = { "ALL", "LOCAL", "COMMS", "COMBAT", "SYS" };
+            for (int i = 0; i < chatTabLabels.Length; i++)
+            {
+                var capturedTab = (ChatLogTab)i;
+                var tb = CreateButton(chatTabStrip.transform, chatTabLabels[i], new Color(0.10f, 0.18f, 0.26f), () => SelectChatLogTab(capturedTab));
+                var tTxt = tb.GetComponentInChildren<Text>();
+                if (tTxt != null) tTxt.fontSize = 10;
+                _chatTabImages.Add(tb.GetComponent<Image>());
+            }
+            var expBtn = CreateButton(commsPanel.transform, "^", new Color(0.14f, 0.24f, 0.34f), ToggleCommsExpanded);
+            SetRect(expBtn.GetComponent<RectTransform>(), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-30f, -26f), new Vector2(-8f, -4f));
+            _commsExpandLabel = expBtn.GetComponentInChildren<Text>();
+            if (_commsExpandLabel != null) _commsExpandLabel.fontSize = 11;
+            RefreshChatTabHighlights();
+
+            var commsViewport = CreatePanel(commsPanel.transform, "CommsViewport", new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(12f, 44f), new Vector2(-12f, -30f), new Color(0f, 0f, 0f, 0.02f));
             commsViewport.AddComponent<RectMask2D>();
             _commsScrollRect = commsViewport.AddComponent<ScrollRect>();
 
@@ -1067,6 +1164,14 @@ namespace TacSim.UI
             }
         }
 
+        public void PrefillChatInput(string prefixText)
+        {
+            if (_chatInput == null) return;
+            _chatInput.text = prefixText ?? string.Empty;
+            _chatInput.Select();
+            _chatInput.ActivateInputField();
+        }
+
         /// <summary>
         /// Closes ONLY the topmost active modal layer in deterministic priority order (`U-H30`):
         /// MindTerminal &gt; Detail/Request Modal &gt; Trade Terminal &gt; Arena Lobby.
@@ -1081,6 +1186,16 @@ namespace TacSim.UI
             if (SolarMap != null && SolarMap.IsOpen)
             {
                 SolarMap.SetOpen(false);
+                return true;
+            }
+            if (CharacterSheet != null && CharacterSheet.IsOpen)
+            {
+                CharacterSheet.SetOpen(false);
+                return true;
+            }
+            if (OpsDirectory != null && OpsDirectory.IsOpen)
+            {
+                OpsDirectory.SetOpen(false);
                 return true;
             }
             var term = ResolveActiveMindTerminal();
@@ -1130,6 +1245,70 @@ namespace TacSim.UI
                 (_loginPanel == null || !_loginPanel.activeSelf))
             {
                 SolarMap?.SetOpen(!(SolarMap != null && SolarMap.IsOpen));
+            }
+
+            if (Input.GetKeyDown(KeyCode.C) && !IsTextInputFocused &&
+                !Input.GetKey(KeyCode.LeftControl) && !Input.GetKey(KeyCode.RightControl) &&
+                !Input.GetKey(KeyCode.LeftAlt) && !Input.GetKey(KeyCode.RightAlt) &&
+                (_loginPanel == null || !_loginPanel.activeSelf))
+            {
+                CharacterSheet?.ToggleOpen();
+            }
+
+            if (Input.GetKeyDown(KeyCode.N) && !IsTextInputFocused &&
+                !Input.GetKey(KeyCode.LeftControl) && !Input.GetKey(KeyCode.RightControl) &&
+                !Input.GetKey(KeyCode.LeftAlt) && !Input.GetKey(KeyCode.RightAlt) &&
+                (_loginPanel == null || !_loginPanel.activeSelf))
+            {
+                OpsDirectory?.ToggleOpen();
+            }
+
+            // Up/Down command history recall inside the chat input bar
+            if (_chatInput != null && _chatInput.isFocused && _commandHistory.Count > 0)
+            {
+                if (Input.GetKeyDown(KeyCode.UpArrow))
+                    RecallCommandHistory(-1);
+                else if (Input.GetKeyDown(KeyCode.DownArrow))
+                    RecallCommandHistory(+1);
+            }
+
+            // WoW/EQ 1-9 numbered Action Hotbar & Tab target cycling when no modal or text box is active
+            bool gameplayHotkeysReady = !IsTextInputFocused &&
+                (_loginPanel == null || !_loginPanel.activeSelf) &&
+                (_modalPanel == null || !_modalPanel.activeSelf) &&
+                (_tradePanel == null || !_tradePanel.activeSelf) &&
+                (SolarMap == null || !SolarMap.IsOpen) &&
+                (CharacterSheet == null || !CharacterSheet.IsOpen) &&
+                (OpsDirectory == null || !OpsDirectory.IsOpen) &&
+                (DisplayOptions == null || !DisplayOptions.IsOpen) &&
+                !(ResolveActiveMindTerminal()?.IsTerminalOpen ?? false) &&
+                !(Overlays?.IsLobbyModalOpen ?? false);
+
+            if (gameplayHotkeysReady)
+            {
+                if (Input.GetKeyDown(KeyCode.Tab))
+                {
+                    OnCycleTargetRequested?.Invoke();
+                }
+                else if (Input.GetKeyDown(KeyCode.V))
+                {
+                    OnCycleOrbitalCameraRequested?.Invoke();
+                }
+                else if (Input.GetKeyDown(KeyCode.Space))
+                {
+                    OnSpaceQuickFireRequested?.Invoke();
+                }
+                else if (IsWalkQuickActionsVisible && _quickSlotActions.Count > 0)
+                {
+                    for (int s = 0; s < _quickSlotActions.Count && s < 9; s++)
+                    {
+                        if (Input.GetKeyDown(KeyCode.Alpha1 + s))
+                        {
+                            TriggerQuickActionSlot(s);
+                            break;
+                        }
+                    }
+                }
             }
 
             if (Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter))
@@ -1216,9 +1395,123 @@ namespace TacSim.UI
         {
             if (_chatInput == null || string.IsNullOrWhiteSpace(_chatInput.text)) return;
             string line = _chatInput.text.Trim();
+            RecordCommandHistory(line);
             _chatInput.text = string.Empty;
             SetComposingState(false);
             OnCommandSubmitted?.Invoke(line);
+        }
+
+        public void RecordCommandHistory(string line)
+        {
+            if (string.IsNullOrWhiteSpace(line)) return;
+            if (_commandHistory.Count == 0 || !string.Equals(_commandHistory[_commandHistory.Count - 1], line, StringComparison.Ordinal))
+                _commandHistory.Add(line);
+            while (_commandHistory.Count > MaxCommandHistory)
+                _commandHistory.RemoveAt(0);
+            _commandHistoryCursor = _commandHistory.Count;
+        }
+
+        public string RecallCommandHistory(int delta)
+        {
+            if (_commandHistory.Count == 0) return string.Empty;
+            _commandHistoryCursor = Mathf.Clamp(_commandHistoryCursor + delta, 0, _commandHistory.Count);
+            string recalled = _commandHistoryCursor < _commandHistory.Count ? _commandHistory[_commandHistoryCursor] : string.Empty;
+            if (_chatInput != null)
+                _chatInput.text = recalled;
+            return recalled;
+        }
+
+        public static ChatLogTab ClassifyLogCategory(string richLine)
+        {
+            if (string.IsNullOrEmpty(richLine)) return ChatLogTab.System;
+            if (richLine.IndexOf("[TAC]", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                richLine.IndexOf("[ARENA]", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                richLine.IndexOf("[COMBAT]", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                richLine.IndexOf("[HELM]", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                richLine.IndexOf("[MINING]", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                richLine.IndexOf("[SURFACE]", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return ChatLogTab.Combat;
+            }
+            if (richLine.IndexOf("[NET]", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                richLine.IndexOf("[PACK SYNC]", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                richLine.IndexOf("[AUDIO]", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                richLine.IndexOf("[SYS]", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                richLine.IndexOf("[QUOTE", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                richLine.IndexOf("[PRICE", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return ChatLogTab.System;
+            }
+            if (richLine.IndexOf("[COMMS]", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                richLine.IndexOf("[CH:", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                richLine.IndexOf("[PUBLIC]", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                richLine.IndexOf("[OOC]", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return ChatLogTab.Comms;
+            }
+            return ChatLogTab.Local;
+        }
+
+        public void SelectChatLogTab(ChatLogTab tab)
+        {
+            ActiveChatTab = tab;
+            int idx = (int)tab;
+            if (idx >= 0 && idx < _chatTabUnread.Length)
+                _chatTabUnread[idx] = false;
+            RefreshChatTabHighlights();
+            RebuildVisibleCommsLog();
+        }
+
+        public void ToggleCommsExpanded()
+        {
+            _commsExpanded = !_commsExpanded;
+            if (_commsPanelRect != null)
+                _commsPanelRect.offsetMax = new Vector2(436f, _commsExpanded ? 420f : 266f);
+            if (_commsExpandLabel != null)
+                _commsExpandLabel.text = _commsExpanded ? "v" : "^";
+        }
+
+        private void RefreshChatTabHighlights()
+        {
+            for (int i = 0; i < _chatTabImages.Count; i++)
+            {
+                if (_chatTabImages[i] == null) continue;
+                bool active = i == (int)ActiveChatTab;
+                bool unread = !active && i < _chatTabUnread.Length && _chatTabUnread[i];
+                _chatTabImages[i].color = active
+                    ? new Color(0.20f, 0.56f, 0.74f, 1f)
+                    : (unread ? new Color(0.56f, 0.38f, 0.14f, 0.96f) : new Color(0.09f, 0.16f, 0.24f, 0.92f));
+            }
+        }
+
+        private void RebuildVisibleCommsLog()
+        {
+            if (_commsLogText == null) return;
+            if (ActiveChatTab == ChatLogTab.All)
+            {
+                _commsLogText.text = string.Join("\n", _logLines);
+            }
+            else
+            {
+                var filtered = new List<string>();
+                for (int i = 0; i < _categorizedLogEntries.Count; i++)
+                {
+                    if (_categorizedLogEntries[i].tab == ActiveChatTab)
+                        filtered.Add(_categorizedLogEntries[i].line);
+                }
+                _commsLogText.text = filtered.Count > 0 ? string.Join("\n", filtered) : $"<color=#6888A0>No {ActiveChatTab.ToString().ToLowerInvariant()} entries yet.</color>";
+            }
+            LayoutRebuilder.ForceRebuildLayoutImmediate(_commsLogText.rectTransform);
+            if (_commsScrollRect != null)
+                _commsScrollRect.verticalNormalizedPosition = 0f;
+        }
+
+        public bool TriggerQuickActionSlot(int slotIndex)
+        {
+            if (slotIndex < 0 || slotIndex >= _quickSlotActions.Count)
+                return false;
+            _quickSlotActions[slotIndex]?.Invoke();
+            return true;
         }
 
         public void ShowLoginOverlay(bool visible, string statusMessage = null)
@@ -1291,15 +1584,23 @@ namespace TacSim.UI
         public void AppendLogLine(string richLine)
         {
             if (string.IsNullOrWhiteSpace(richLine)) return;
+            ChatLogTab cat = ClassifyLogCategory(richLine);
             _logLines.Enqueue(richLine);
             while (_logLines.Count > MaxLogLines) _logLines.Dequeue();
-            if (_commsLogText != null)
+
+            _categorizedLogEntries.Add((cat, richLine));
+            while (_categorizedLogEntries.Count > MaxLogLines * 2)
+                _categorizedLogEntries.RemoveAt(0);
+
+            if (ActiveChatTab != ChatLogTab.All && ActiveChatTab != cat)
             {
-                _commsLogText.text = string.Join("\n", _logLines);
-                LayoutRebuilder.ForceRebuildLayoutImmediate(_commsLogText.rectTransform);
-                if (_commsScrollRect != null)
-                    _commsScrollRect.verticalNormalizedPosition = 0f;
+                int ci = (int)cat;
+                if (ci >= 0 && ci < _chatTabUnread.Length)
+                    _chatTabUnread[ci] = true;
+                RefreshChatTabHighlights();
             }
+
+            RebuildVisibleCommsLog();
         }
 
         private string _lastQuickActionKey;
@@ -1336,6 +1637,7 @@ namespace TacSim.UI
 
             for (int i = _quickActionsContainer.childCount - 1; i >= 0; i--)
                 DestroySafe(_quickActionsContainer.GetChild(i).gameObject);
+            _quickSlotActions.Clear();
 
             if (_helmFlightBar != null)
                 _helmFlightBar.SetActive(isSeatedAtHelm);
@@ -1877,7 +2179,14 @@ namespace TacSim.UI
 
         private void AddQuickBtn(string label, Action onClick)
         {
-            CreateButton(_quickActionsContainer, label, new Color(0.11f, 0.24f, 0.34f, 0.95f), onClick);
+            int slotNum = _quickSlotActions.Count + 1;
+            _quickSlotActions.Add(onClick);
+            var btn = CreateButton(_quickActionsContainer, label, new Color(0.11f, 0.24f, 0.34f, 0.95f), onClick);
+            if (slotNum <= 9)
+            {
+                var badge = CreateText(btn.transform, slotNum.ToString(), 10, FontStyle.Bold, TextAnchor.UpperLeft, new Color(0.55f, 0.92f, 1f, 0.92f));
+                SetRect(badge.rectTransform, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(4f, -15f), new Vector2(18f, -1f));
+            }
         }
 
         public void CloseDetailModal(bool cancelServerRequest = true)

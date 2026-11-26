@@ -1,0 +1,615 @@
+using System;
+using System.Collections.Generic;
+using TacSim.Arena;
+using TacSim.Core;
+using TacSim.Space;
+using TacSim.Surface;
+using UnityEngine;
+using UnityEngine.UI;
+
+namespace TacSim.UI
+{
+    /// <summary>
+    /// Pooled 3D Screen-Space Tactical HUD Brackets &amp; Diegetic Combat Schematics:
+    /// - Orbital Space (`ShipHelmSeated`): interactive click-to-lock/approach corner brackets projected over
+    ///   3D ships &amp; ore asteroids with IFF colors, distance km, `[LOCKED]` reticle, and off-screen edge clamping.
+    /// - Planetary Surface (`PlanetarySurface`): projected 3D waypoint &amp; ore vein rings + bottom-center
+    ///   rover heading/speed/drill compass strip.
+    /// - OOC Simulator Arena (`SimulatorArena`): projected 3D tank/mech target brackets (`[HIT XX%]` + click-to-lock)
+    ///   and a live 4-quadrant MechWarrior/Tank directional armor + heat schematic at bottom-center.
+    /// Zero per-frame GameObject allocations.
+    /// </summary>
+    public sealed class TacSimTacticalBrackets : MonoBehaviour
+    {
+        public event Action<string, bool> OnOrbitalBracketClicked; // (id, isRock)
+        public event Action<string> OnArenaBracketClicked;         // (designator)
+
+        private const int MaxBrackets = 12;
+
+        private sealed class PooledBracket
+        {
+            public GameObject Root;
+            public RectTransform Rect;
+            public Button Button;
+            public readonly Image[] CornerStrokes = new Image[8];
+            public Image CenterFill;
+            public Text TagLabel;
+            public Text SubLabel;
+            public string BoundId;
+            public bool BoundIsRock;
+            public bool BoundIsArena;
+        }
+
+        private Font _font;
+        private RectTransform _layerRect;
+        private readonly List<PooledBracket> _pool = new List<PooledBracket>(MaxBrackets);
+
+        // Arena 4-Quadrant Directional Armor & Heat Schematic (bottom-center, zero overlap)
+        private GameObject _arenaArmorWidget;
+        private Image _armorFrontImg;
+        private Image _armorLeftImg;
+        private Image _armorRightImg;
+        private Image _armorRearImg;
+        private Image _armorCoreImg;
+        private Text _armorFrontTxt;
+        private Text _armorLeftTxt;
+        private Text _armorRightTxt;
+        private Text _armorRearTxt;
+        private Text _armorCoreTxt;
+        private Image _arenaHeatFill;
+        private Text _arenaHeatLabel;
+        private Text _arenaDriveStrip;
+
+        // Surface Rover Compass & Drill Strip (bottom-center above SurfaceRoverActions)
+        private GameObject _surfaceCompassWidget;
+        private Text _surfaceCompassText;
+        private Image _surfaceDrillIndicator;
+
+        // Space Center Flight Reticle (subtle center pip when seated at helm)
+        private GameObject _spaceReticleWidget;
+
+        private SpaceFlightController _space;
+        private SurfaceMiningController _surface;
+        private OocArenaController _arena;
+
+        public int ActiveBracketCount { get; private set; }
+        public bool IsArenaArmorSchematicVisible => _arenaArmorWidget != null && _arenaArmorWidget.activeSelf;
+        public bool IsSurfaceCompassVisible => _surfaceCompassWidget != null && _surfaceCompassWidget.activeSelf;
+        public string SurfaceCompassSnapshot => _surfaceCompassText != null ? _surfaceCompassText.text : string.Empty;
+        public string ArenaArmorSummarySnapshot => _arenaDriveStrip != null ? _arenaDriveStrip.text : string.Empty;
+
+        public void BuildLayer(Transform hudRoot, Font sharedFont)
+        {
+            _font = sharedFont != null ? sharedFont : Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
+            _pool.Clear();
+
+            var layerGo = new GameObject("TacticalBracketsLayer", typeof(RectTransform));
+            layerGo.transform.SetParent(hudRoot, false);
+            _layerRect = layerGo.GetComponent<RectTransform>();
+            SetRect(_layerRect, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero);
+
+            for (int i = 0; i < MaxBrackets; i++)
+                _pool.Add(CreatePooledBracket(_layerRect, i));
+
+            BuildSpaceCenterReticle(_layerRect);
+            BuildSurfaceCompassStrip(_layerRect);
+            BuildArenaArmorSchematic(_layerRect);
+        }
+
+        public void BindControllers(SpaceFlightController space, SurfaceMiningController surface, OocArenaController arena)
+        {
+            _space = space;
+            _surface = surface;
+            _arena = arena;
+        }
+
+        public void ResetSessionState()
+        {
+            HideAllBrackets();
+            if (_spaceReticleWidget != null) _spaceReticleWidget.SetActive(false);
+            if (_surfaceCompassWidget != null) _surfaceCompassWidget.SetActive(false);
+            if (_arenaArmorWidget != null) _arenaArmorWidget.SetActive(false);
+        }
+
+        /// <summary>
+        /// Pure-math viewport projection into normalized Canvas coordinates with smooth edge clamping
+        /// when a tracked target lies off-screen or behind the camera.
+        /// </summary>
+        public static void ComputeCanvasPositionFromScreenPoint(
+            Vector3 screenPos,
+            float screenWidth,
+            float screenHeight,
+            Vector2 canvasSize,
+            float edgeMarginPx,
+            out Vector2 anchoredPos,
+            out bool isBehind,
+            out bool isClamped)
+        {
+            float sw = Mathf.Max(1f, screenWidth);
+            float sh = Mathf.Max(1f, screenHeight);
+            float cw = Mathf.Max(100f, canvasSize.x);
+            float ch = Mathf.Max(100f, canvasSize.y);
+
+            isBehind = screenPos.z < 0f;
+            float nx = screenPos.x / sw;
+            float ny = screenPos.y / sh;
+
+            if (isBehind)
+            {
+                // Mirror behind-camera vector to perimeter edge so the pilot knows which way to turn
+                nx = 1f - nx;
+                ny = 1f - ny;
+                float dx = nx - 0.5f;
+                float dy = ny - 0.5f;
+                if (Mathf.Abs(dx) < 0.001f && Mathf.Abs(dy) < 0.001f) dy = -1f;
+                float scale = 0.48f / Mathf.Max(Mathf.Abs(dx), Mathf.Abs(dy));
+                nx = 0.5f + dx * scale;
+                ny = 0.5f + dy * scale;
+            }
+
+            float rawX = (nx - 0.5f) * cw;
+            float rawY = (ny - 0.5f) * ch;
+
+            float halfW = cw * 0.5f - edgeMarginPx;
+            float halfH = ch * 0.5f - edgeMarginPx;
+            float topLimit = ch * 0.5f - Mathf.Max(edgeMarginPx, 86f);
+            float botLimit = -ch * 0.5f + Mathf.Max(edgeMarginPx, 130f);
+
+            float clampedX = Mathf.Clamp(rawX, -halfW, halfW);
+            float clampedY = Mathf.Clamp(rawY, botLimit, topLimit);
+
+            isClamped = isBehind || Mathf.Abs(clampedX - rawX) > 0.5f || Mathf.Abs(clampedY - rawY) > 0.5f;
+            anchoredPos = new Vector2(clampedX, clampedY);
+        }
+
+        public void SyncBrackets(TacSimActiveStage stage, Camera cam, bool hideForOverlay = false)
+        {
+            if (_layerRect == null) return;
+
+            if (hideForOverlay || stage == TacSimActiveStage.StationWalk || stage == TacSimActiveStage.ShipInteriorWalk)
+            {
+                HideAllBrackets();
+                if (_spaceReticleWidget != null) _spaceReticleWidget.SetActive(false);
+                if (_surfaceCompassWidget != null) _surfaceCompassWidget.SetActive(false);
+                if (_arenaArmorWidget != null) _arenaArmorWidget.SetActive(false);
+                return;
+            }
+
+            Vector2 canvasSize = _layerRect.rect.width > 10f && _layerRect.rect.height > 10f
+                ? new Vector2(_layerRect.rect.width, _layerRect.rect.height)
+                : new Vector2(1920f, 1080f);
+            float sw = Mathf.Max(1f, Screen.width > 0 ? Screen.width : 1920f);
+            float sh = Mathf.Max(1f, Screen.height > 0 ? Screen.height : 1080f);
+
+            if (_spaceReticleWidget != null)
+                _spaceReticleWidget.SetActive(stage == TacSimActiveStage.ShipHelmSeated && (_space == null || !_space.IsDockingActive));
+            if (_surfaceCompassWidget != null)
+                _surfaceCompassWidget.SetActive(stage == TacSimActiveStage.PlanetarySurface);
+            if (_arenaArmorWidget != null)
+                _arenaArmorWidget.SetActive(stage == TacSimActiveStage.SimulatorArena);
+
+            switch (stage)
+            {
+                case TacSimActiveStage.ShipHelmSeated:
+                    SyncSpaceBrackets(cam, sw, sh, canvasSize);
+                    break;
+                case TacSimActiveStage.PlanetarySurface:
+                    SyncSurfaceBracketsAndCompass(cam, sw, sh, canvasSize);
+                    break;
+                case TacSimActiveStage.SimulatorArena:
+                    SyncArenaBracketsAndArmor(cam, sw, sh, canvasSize);
+                    break;
+                default:
+                    HideAllBrackets();
+                    break;
+            }
+        }
+
+        private void SyncSpaceBrackets(Camera cam, float sw, float sh, Vector2 canvasSize)
+        {
+            if (_space == null || cam == null || _space.IsDockingActive)
+            {
+                HideAllBrackets();
+                return;
+            }
+
+            var blips = _space.RadarBlips;
+            int used = 0;
+            for (int i = 0; i < blips.Count && used < MaxBrackets; i++)
+            {
+                var b = blips[i];
+                if (b.IsTorpedo || string.IsNullOrEmpty(b.Id)) continue;
+                if (!_space.TryGetTargetPosition(b.Id, out Vector3 worldPos)) continue;
+
+                Vector3 sp = cam.WorldToScreenPoint(worldPos);
+                ComputeCanvasPositionFromScreenPoint(sp, sw, sh, canvasSize, 52f, out Vector2 pos, out _, out bool clamped);
+
+                Color col = b.IsLocked
+                    ? new Color(1.0f, 0.34f, 0.24f, 0.96f)
+                    : (b.IsRock
+                        ? new Color(0.95f, 0.78f, 0.28f, 0.92f)
+                        : (b.IsHostile
+                            ? new Color(1.0f, 0.42f, 0.36f, 0.92f)
+                            : new Color(0.32f, 0.90f, 1.0f, 0.90f)));
+
+                string prefix = clamped ? "» " : string.Empty;
+                string tag = b.IsLocked
+                    ? $"{prefix}[LOCK] {(string.IsNullOrEmpty(b.Label) ? b.Id : b.Label)}"
+                    : (b.IsRock ? $"{prefix}ROCK {b.Id}" : $"{prefix}{(string.IsNullOrEmpty(b.Label) ? b.Id : b.Label)}");
+                string sub = b.RangeKm >= 1.0 ? $"{b.RangeKm:0.1} km" : $"{b.RangeKm * 1000.0:0} m";
+
+                ConfigureBracket(_pool[used], pos, b.IsLocked ? 72f : 56f, col, tag, sub, b.Id, b.IsRock, isArena: false, interactive: true);
+                used++;
+            }
+
+            HideUnusedBracketsFrom(used);
+        }
+
+        private void SyncSurfaceBracketsAndCompass(Camera cam, float sw, float sh, Vector2 canvasSize)
+        {
+            if (_surface == null)
+            {
+                HideAllBrackets();
+                return;
+            }
+
+            if (_surfaceCompassText != null)
+            {
+                float hdg = (_surface.RoverHeadingDeg % 360f + 360f) % 360f;
+                string drillStr = _surface.IsDrillingActive ? "DRILLING" : "DRILL READY";
+                _surfaceCompassText.text =
+                    $"HDG {hdg:000}°  |  {_surface.RoverSpeedKph:0} kph  |  CELL ({_surface.AuthoritativeSiteCellX},{_surface.AuthoritativeSiteCellY})  |  {drillStr}";
+            }
+            if (_surfaceDrillIndicator != null)
+            {
+                _surfaceDrillIndicator.color = _surface.IsDrillingActive
+                    ? new Color(1.0f, 0.72f, 0.18f, 1f)
+                    : new Color(0.22f, 0.80f, 0.56f, 0.9f);
+            }
+
+            if (cam == null)
+            {
+                HideAllBrackets();
+                return;
+            }
+
+            int used = 0;
+            if (_surface.TryGetActiveWaypointWorldPos(out Vector3 wpPos, out string wpLabel) && used < MaxBrackets)
+            {
+                Vector3 sp = cam.WorldToScreenPoint(wpPos);
+                ComputeCanvasPositionFromScreenPoint(sp, sw, sh, canvasSize, 52f, out Vector2 pos, out _, out bool clamped);
+                float distM = _surface.RoverTransform != null ? Vector3.Distance(_surface.RoverTransform.position, wpPos) : 0f;
+                ConfigureBracket(
+                    _pool[used],
+                    pos,
+                    58f,
+                    new Color(0.32f, 0.96f, 1.0f, 0.95f),
+                    clamped ? $"» {wpLabel}" : wpLabel,
+                    $"{distM:0} m",
+                    string.Empty,
+                    isRock: false,
+                    isArena: false,
+                    interactive: false);
+                used++;
+            }
+
+            var beacons = _surface.OreBeacons;
+            for (int i = 0; i < beacons.Count && used < MaxBrackets; i++)
+            {
+                var bc = beacons[i];
+                Vector3 sp = cam.WorldToScreenPoint(bc.WorldPos);
+                if (sp.z < 0f) continue; // Keep off-screen ore beacons clean so only active waypoint clamps
+                ComputeCanvasPositionFromScreenPoint(sp, sw, sh, canvasSize, 48f, out Vector2 pos, out _, out bool clamped);
+                if (clamped) continue;
+                float distM = _surface.RoverTransform != null ? Vector3.Distance(_surface.RoverTransform.position, bc.WorldPos) : 0f;
+                Color col = bc.IsRich ? new Color(0.24f, 1.0f, 0.58f, 0.94f) : new Color(0.95f, 0.78f, 0.28f, 0.88f);
+                ConfigureBracket(_pool[used], pos, 46f, col, bc.IsRich ? "RICH ORE" : "ORE VEIN", $"{distM:0} m", string.Empty, false, false, interactive: false);
+                used++;
+            }
+
+            HideUnusedBracketsFrom(used);
+        }
+
+        private void SyncArenaBracketsAndArmor(Camera cam, float sw, float sh, Vector2 canvasSize)
+        {
+            if (_arena == null || _arena.State == null)
+            {
+                HideAllBrackets();
+                return;
+            }
+
+            var st = _arena.State;
+            SetArmorPlate(_armorFrontImg, _armorFrontTxt, "F", st.ArmorFrontPct);
+            SetArmorPlate(_armorLeftImg, _armorLeftTxt, "L", st.ArmorLeftPct);
+            SetArmorPlate(_armorRightImg, _armorRightTxt, "R", st.ArmorRightPct);
+            SetArmorPlate(_armorRearImg, _armorRearTxt, "B", st.ArmorRearPct);
+            SetArmorPlate(_armorCoreImg, _armorCoreTxt, "INT", st.InternalsPct);
+
+            float heatFrac = st.HeatMax > 0 ? Mathf.Clamp01(st.Heat / (float)st.HeatMax) : 0f;
+            if (_arenaHeatFill != null)
+            {
+                _arenaHeatFill.rectTransform.anchorMax = new Vector2(Mathf.Max(0.02f, heatFrac), 1f);
+                _arenaHeatFill.color = st.Overheated || heatFrac > 0.78f
+                    ? new Color(1.0f, 0.24f, 0.20f, 0.98f)
+                    : (heatFrac > 0.45f ? new Color(0.96f, 0.64f, 0.16f, 0.96f) : new Color(0.24f, 0.76f, 0.95f, 0.94f));
+            }
+            if (_arenaHeatLabel != null)
+                _arenaHeatLabel.text = st.Overheated ? $"OVERHEAT {st.Heat}/{st.HeatMax}" : $"HEAT {st.Heat}/{st.HeatMax}";
+
+            if (_arenaDriveStrip != null)
+            {
+                float hdg = (st.HeadingDeg % 360f + 360f) % 360f;
+                string lockTag = !string.IsNullOrEmpty(st.LockedDesignator) ? $" | LOCK {st.LockedDesignator} ({st.LockHitPercent}%)" : " | TAB: LOCK";
+                _arenaDriveStrip.text = $"HDG {hdg:000}° | {st.SpeedKph:0} kph{lockTag}";
+            }
+
+            if (cam == null)
+            {
+                HideAllBrackets();
+                return;
+            }
+
+            int used = 0;
+            for (int i = 0; i < st.Contacts.Count && used < MaxBrackets; i++)
+            {
+                var ct = st.Contacts[i];
+                if (ct.IsWreck || string.IsNullOrEmpty(ct.Designator)) continue;
+                if (!_arena.TryGetContactWorldPosition(ct.Designator, out Vector3 worldPos)) continue;
+
+                bool isLocked = string.Equals(ct.Designator, st.LockedDesignator, StringComparison.OrdinalIgnoreCase);
+                Vector3 sp = cam.WorldToScreenPoint(worldPos);
+                if (!isLocked && sp.z < 0f) continue;
+
+                ComputeCanvasPositionFromScreenPoint(sp, sw, sh, canvasSize, 52f, out Vector2 pos, out _, out bool clamped);
+                if (!isLocked && clamped) continue;
+
+                Color col = isLocked
+                    ? new Color(1.0f, 0.30f, 0.22f, 0.98f)
+                    : (ct.Friendly
+                        ? new Color(0.28f, 0.88f, 0.66f, 0.90f)
+                        : new Color(1.0f, 0.56f, 0.24f, 0.92f));
+
+                string prefix = clamped ? "» " : string.Empty;
+                string tag = isLocked
+                    ? $"{prefix}[{ct.Designator}] HIT {st.LockHitPercent}%"
+                    : $"{prefix}[{ct.Designator}] {(string.IsNullOrEmpty(ct.ClassLabel) ? ct.Party : ct.ClassLabel)}";
+                string sub = $"{ct.RangeM:0} m";
+
+                ConfigureBracket(_pool[used], pos, isLocked ? 74f : 54f, col, tag, sub, ct.Designator, isRock: false, isArena: true, interactive: !ct.Friendly);
+                used++;
+            }
+
+            HideUnusedBracketsFrom(used);
+        }
+
+        private void ConfigureBracket(
+            PooledBracket b,
+            Vector2 anchoredPos,
+            float sizePx,
+            Color color,
+            string topTag,
+            string subTag,
+            string boundId,
+            bool isRock,
+            bool isArena,
+            bool interactive)
+        {
+            b.BoundId = boundId;
+            b.BoundIsRock = isRock;
+            b.BoundIsArena = isArena;
+            b.Rect.anchoredPosition = anchoredPos;
+            b.Rect.sizeDelta = new Vector2(sizePx, sizePx);
+            b.Button.interactable = interactive && !string.IsNullOrEmpty(boundId);
+            b.CenterFill.raycastTarget = b.Button.interactable;
+            b.CenterFill.color = new Color(color.r, color.g, color.b, interactive ? 0.05f : 0.01f);
+
+            for (int i = 0; i < b.CornerStrokes.Length; i++)
+                b.CornerStrokes[i].color = color;
+
+            b.TagLabel.text = topTag;
+            b.TagLabel.color = color;
+            b.SubLabel.text = subTag;
+            b.SubLabel.color = new Color(0.86f, 0.94f, 1f, 0.92f);
+
+            if (!b.Root.activeSelf)
+                b.Root.SetActive(true);
+        }
+
+        private void HideAllBrackets() => HideUnusedBracketsFrom(0);
+
+        private void HideUnusedBracketsFrom(int startIdx)
+        {
+            ActiveBracketCount = startIdx;
+            for (int i = startIdx; i < _pool.Count; i++)
+            {
+                if (_pool[i].Root != null && _pool[i].Root.activeSelf)
+                    _pool[i].Root.SetActive(false);
+            }
+        }
+
+        private PooledBracket CreatePooledBracket(Transform parent, int index)
+        {
+            var b = new PooledBracket();
+            var go = new GameObject($"TacBracket_{index}", typeof(RectTransform), typeof(Image), typeof(Button));
+            go.transform.SetParent(parent, false);
+            b.Root = go;
+            b.Rect = go.GetComponent<RectTransform>();
+            b.Rect.anchorMin = new Vector2(0.5f, 0.5f);
+            b.Rect.anchorMax = new Vector2(0.5f, 0.5f);
+            b.Rect.pivot = new Vector2(0.5f, 0.5f);
+            b.Rect.sizeDelta = new Vector2(56f, 56f);
+
+            b.CenterFill = go.GetComponent<Image>();
+            b.CenterFill.color = new Color(0f, 0f, 0f, 0.01f);
+            b.CenterFill.raycastTarget = true;
+
+            b.Button = go.GetComponent<Button>();
+            b.Button.targetGraphic = b.CenterFill;
+            b.Button.onClick.AddListener(() =>
+            {
+                if (string.IsNullOrEmpty(b.BoundId)) return;
+                if (b.BoundIsArena) OnArenaBracketClicked?.Invoke(b.BoundId);
+                else OnOrbitalBracketClicked?.Invoke(b.BoundId, b.BoundIsRock);
+            });
+
+            // 4 crisp sci-fi L-corners (8 thin strokes)
+            const float L = 12f;
+            const float T = 2.5f;
+            b.CornerStrokes[0] = CreateStroke(go.transform, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0f, -T), new Vector2(L, 0f));
+            b.CornerStrokes[1] = CreateStroke(go.transform, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0f, -L), new Vector2(T, 0f));
+            b.CornerStrokes[2] = CreateStroke(go.transform, new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-L, -T), new Vector2(0f, 0f));
+            b.CornerStrokes[3] = CreateStroke(go.transform, new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-T, -L), new Vector2(0f, 0f));
+            b.CornerStrokes[4] = CreateStroke(go.transform, new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(L, T));
+            b.CornerStrokes[5] = CreateStroke(go.transform, new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(T, L));
+            b.CornerStrokes[6] = CreateStroke(go.transform, new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-L, 0f), new Vector2(0f, T));
+            b.CornerStrokes[7] = CreateStroke(go.transform, new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-T, 0f), new Vector2(0f, L));
+
+            b.TagLabel = CreateText(go.transform, string.Empty, 11, FontStyle.Bold, TextAnchor.LowerCenter, Color.cyan);
+            SetRect(b.TagLabel.rectTransform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(-90f, 3f), new Vector2(90f, 20f));
+
+            b.SubLabel = CreateText(go.transform, string.Empty, 10, FontStyle.Normal, TextAnchor.UpperCenter, Color.white);
+            SetRect(b.SubLabel.rectTransform, new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(-70f, -17f), new Vector2(70f, -2f));
+
+            go.SetActive(false);
+            return b;
+        }
+
+        private void BuildSpaceCenterReticle(Transform parent)
+        {
+            _spaceReticleWidget = new GameObject("SpaceFlightCenterReticle", typeof(RectTransform));
+            _spaceReticleWidget.transform.SetParent(parent, false);
+            var rt = _spaceReticleWidget.GetComponent<RectTransform>();
+            SetRect(rt, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-24f, -24f), new Vector2(24f, 24f));
+
+            Color pip = new Color(0.42f, 0.88f, 1.0f, 0.45f);
+            CreateStroke(_spaceReticleWidget.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-20f, -1f), new Vector2(-7f, 1f), pip);
+            CreateStroke(_spaceReticleWidget.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(7f, -1f), new Vector2(20f, 1f), pip);
+            CreateStroke(_spaceReticleWidget.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-1f, 7f), new Vector2(1f, 20f), pip);
+            CreateStroke(_spaceReticleWidget.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-1f, -20f), new Vector2(1f, -7f), pip);
+            _spaceReticleWidget.SetActive(false);
+        }
+
+        private void BuildSurfaceCompassStrip(Transform parent)
+        {
+            _surfaceCompassWidget = CreatePanel(
+                parent,
+                "SurfaceRoverCompassStrip",
+                new Vector2(0.5f, 0f),
+                new Vector2(0.5f, 0f),
+                new Vector2(-215f, 72f),
+                new Vector2(215f, 102f),
+                new Color(0.03f, 0.07f, 0.11f, 0.88f));
+
+            var dotGo = CreatePanel(_surfaceCompassWidget.transform, "DrillLed", new Vector2(0f, 0.5f), new Vector2(0f, 0.5f), new Vector2(10f, -5f), new Vector2(20f, 5f), new Color(0.24f, 0.84f, 0.58f, 1f));
+            _surfaceDrillIndicator = dotGo.GetComponent<Image>();
+
+            _surfaceCompassText = CreateText(_surfaceCompassWidget.transform, "HDG 180°  |  0 kph  |  CELL (128,124)  |  DRILL READY", 12, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(0.84f, 0.95f, 1f));
+            SetRect(_surfaceCompassText.rectTransform, Vector2.zero, Vector2.one, new Vector2(26f, 0f), new Vector2(-10f, 0f));
+
+            _surfaceCompassWidget.SetActive(false);
+        }
+
+        private void BuildArenaArmorSchematic(Transform parent)
+        {
+            // Sits cleanly at bottom-center between CommsDrawer (x=14..436) and OwnPlatformCard (x=-430..-16)
+            _arenaArmorWidget = CreatePanel(
+                parent,
+                "ArenaArmorSchematic",
+                new Vector2(0.5f, 0f),
+                new Vector2(0.5f, 0f),
+                new Vector2(-118f, 18f),
+                new Vector2(118f, 174f),
+                new Color(0.03f, 0.06f, 0.11f, 0.92f));
+
+            var hdr = CreateText(_arenaArmorWidget.transform, "ARMOR INTEGRITY & HEAT", 10, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(0.62f, 0.88f, 1f));
+            SetRect(hdr.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(6f, -18f), new Vector2(-6f, -2f));
+
+            // 4-quadrant directional armor plates + internals core
+            BuildArmorPlate(_arenaArmorWidget.transform, "FrontPlate", new Vector2(0.5f, 1f), new Vector2(-42f, -44f), new Vector2(42f, -22f), out _armorFrontImg, out _armorFrontTxt);
+            BuildArmorPlate(_arenaArmorWidget.transform, "LeftPlate", new Vector2(0.5f, 1f), new Vector2(-92f, -84f), new Vector2(-44f, -48f), out _armorLeftImg, out _armorLeftTxt);
+            BuildArmorPlate(_arenaArmorWidget.transform, "CorePlate", new Vector2(0.5f, 1f), new Vector2(-40f, -84f), new Vector2(40f, -48f), out _armorCoreImg, out _armorCoreTxt);
+            BuildArmorPlate(_arenaArmorWidget.transform, "RightPlate", new Vector2(0.5f, 1f), new Vector2(44f, -84f), new Vector2(92f, -48f), out _armorRightImg, out _armorRightTxt);
+            BuildArmorPlate(_arenaArmorWidget.transform, "RearPlate", new Vector2(0.5f, 1f), new Vector2(-42f, -110f), new Vector2(42f, -88f), out _armorRearImg, out _armorRearTxt);
+
+            // Heat bar
+            var heatBg = CreatePanel(_arenaArmorWidget.transform, "HeatBarBg", new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(12f, 24f), new Vector2(-12f, 40f), new Color(0.10f, 0.14f, 0.20f, 1f));
+            var heatFill = CreatePanel(heatBg.transform, "HeatBarFill", Vector2.zero, new Vector2(0.05f, 1f), Vector2.zero, Vector2.zero, new Color(0.24f, 0.76f, 0.95f, 0.95f));
+            _arenaHeatFill = heatFill.GetComponent<Image>();
+            _arenaHeatLabel = CreateText(heatBg.transform, "HEAT 0/1000", 10, FontStyle.Bold, TextAnchor.MiddleCenter, Color.white);
+            SetRect(_arenaHeatLabel.rectTransform, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero);
+
+            _arenaDriveStrip = CreateText(_arenaArmorWidget.transform, "HDG 090° | 0 kph | TAB: LOCK", 10, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(0.84f, 0.94f, 1f));
+            SetRect(_arenaDriveStrip.rectTransform, new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(6f, 4f), new Vector2(-6f, 21f));
+
+            _arenaArmorWidget.SetActive(false);
+        }
+
+        private void BuildArmorPlate(Transform parent, string name, Vector2 anchor, Vector2 minOff, Vector2 maxOff, out Image bg, out Text txt)
+        {
+            var go = CreatePanel(parent, name, anchor, anchor, minOff, maxOff, new Color(0.16f, 0.68f, 0.44f, 0.90f));
+            bg = go.GetComponent<Image>();
+            bg.raycastTarget = false;
+            txt = CreateText(go.transform, "100%", 10, FontStyle.Bold, TextAnchor.MiddleCenter, Color.white);
+            SetRect(txt.rectTransform, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero);
+        }
+
+        private static void SetArmorPlate(Image bg, Text txt, string code, int pct)
+        {
+            int clamped = Mathf.Clamp(pct, 0, 100);
+            if (bg != null)
+            {
+                if (clamped >= 70) bg.color = new Color(0.14f, 0.64f, 0.42f, 0.92f);
+                else if (clamped >= 35) bg.color = new Color(0.84f, 0.56f, 0.14f, 0.94f);
+                else bg.color = new Color(0.82f, 0.18f, 0.18f, 0.96f);
+            }
+            if (txt != null)
+                txt.text = $"{code} {clamped}%";
+        }
+
+        private Image CreateStroke(Transform parent, Vector2 aMin, Vector2 aMax, Vector2 oMin, Vector2 oMax, Color? col = null)
+        {
+            var go = new GameObject("Stroke", typeof(RectTransform), typeof(Image));
+            go.transform.SetParent(parent, false);
+            var img = go.GetComponent<Image>();
+            img.color = col ?? Color.cyan;
+            img.raycastTarget = false;
+            SetRect(go.GetComponent<RectTransform>(), aMin, aMax, oMin, oMax);
+            return img;
+        }
+
+        private GameObject CreatePanel(Transform parent, string name, Vector2 aMin, Vector2 aMax, Vector2 oMin, Vector2 oMax, Color bg)
+        {
+            var go = new GameObject(name, typeof(RectTransform), typeof(Image));
+            go.transform.SetParent(parent, false);
+            var img = go.GetComponent<Image>();
+            img.color = bg;
+            img.raycastTarget = bg.a > 0.01f;
+            SetRect(go.GetComponent<RectTransform>(), aMin, aMax, oMin, oMax);
+            return go;
+        }
+
+        private Text CreateText(Transform parent, string content, int size, FontStyle style, TextAnchor align, Color color)
+        {
+            var go = new GameObject("Text", typeof(RectTransform), typeof(Text));
+            go.transform.SetParent(parent, false);
+            var t = go.GetComponent<Text>();
+            t.font = _font;
+            t.text = content;
+            t.fontSize = size;
+            t.fontStyle = style;
+            t.alignment = align;
+            t.color = color;
+            t.supportRichText = false;
+            t.raycastTarget = false;
+            return t;
+        }
+
+        private static void SetRect(RectTransform rt, Vector2 anchorMin, Vector2 anchorMax, Vector2 offsetMin, Vector2 offsetMax)
+        {
+            rt.anchorMin = anchorMin;
+            rt.anchorMax = anchorMax;
+            rt.offsetMin = offsetMin;
+            rt.offsetMax = offsetMax;
+        }
+    }
+}

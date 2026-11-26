@@ -695,6 +695,11 @@ are in `mush-storykit`; and `ArenaConfig::seed` is the one product change.
 **FL.4 is cut and built** (2026-11-23): the owner started its session. Its row below is as it
 was sketched; [the cut note](51-cut-notes.md) says where the build differs.
 
+**FL.6 is cut and built** (cut 2026-11-25 with FL.5 to FL.10, "Yes, cut them"). Its row below is as
+it was sketched; [the cut note](51-cut-notes.md) says where the build differs. In short: the kit's
+`idle` is the paused clock's barrier, row 10 and the in-`src` tests it fits run on the paused
+clock, and `wait_budget` counts mush-server's test code under `src/`.
+
 One pull request each. S is under a day's session, M one to two, L more. "Runs" is §2.4's count
 for the suite. FL.0 is this document and its script, merged as #771.
 

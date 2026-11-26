@@ -344,7 +344,11 @@ async fn ambiguous_in_flight_attempt_is_redelivered_with_the_same_stable_identit
     );
 }
 
-#[tokio::test]
+/// On tokio's paused clock (doc 51 unit FL.6): the store is the in-process
+/// memory store and the worker's retry is its poll interval, so every wait
+/// here is virtual time. The bounds were 4 s and 1 s of real time, which a
+/// loaded runner could outlast between two of the worker's passes.
+#[tokio::test(start_paused = true)]
 async fn production_worker_recovers_and_stops_with_world_lifetime() {
     let store = Arc::new(InMemoryStore::new());
     let world = World::new_minimal();
