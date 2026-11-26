@@ -42,7 +42,7 @@ use mush_store::ObjectStore;
 use tokio::sync::{mpsc, oneshot};
 
 pub use mush_storykit::{
-    AcceptAll, BUSY, STEP_TIMEOUT, Term, ask_whole, settled, strip_ansi, wait_until,
+    AcceptAll, BUSY_NEEDLES, STEP_TIMEOUT, Term, ask_whole, settled, strip_ansi, wait_until,
 };
 
 /// **The gateway's own heal figure** (`mush_gateway::HEAL_WITHIN`, doc 51

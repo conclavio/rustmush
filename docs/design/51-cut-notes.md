@@ -1323,7 +1323,7 @@ The middle row is how the keeper fault was found (Rows). **The rates do not prov
 
 - **`mush_storykit::Term`** (`term.rs`): `Term::play(addr)` (the passwordless `play` user, a 120-by-40 pty, the
   owner's floor) and `play_sized`; `mark`, `raw`, `since`; `send_line`; `expect`, `expect_after`,
-  `expect_one_of_after` and `expect_one_of_within`; `say`, which types a line again on the kit's one `BUSY` list;
+  `expect_one_of_after` and `expect_one_of_within`; `say`, which types a line again on any sentence of FL.5's one table (`BUSY_NEEDLES`);
   `ask`; `expect_close`. It is the barriers' `Session`, so `ask_whole` and `settled` take it. `strip_ansi` and
   `AcceptAll` are its one copy each.
 - **`Term::across_restart(heal, restart)`** and **`Term::healed_after(mark, heal)`**. The rig's restart runs under
@@ -1432,8 +1432,8 @@ The middle row is how the keeper fault was found (Rows). **The rates do not prov
    helper keeps that.
 5. **Every story's pty is 120 by 40**, where eight files asked for 80 by 24: the owner's floor. No assertion here
    reads a wrapped line.
-6. **The kit's `say` types a line again on either busy answer**, where four files knew only the commit one. A busy
-   answer is never the needle a story waits for.
+6. **The kit's `say` types a line again on every busy sentence of FL.5's table**, where four files knew only the
+   commit one and the rest two. A busy answer is never the needle a story waits for.
 
 **Not built.**
 

@@ -59,7 +59,8 @@ use mush_config::config::Config;
 use mush_gateway::GatewayOptions;
 
 use super::harness::{
-    AcceptAll, BUSY, STEP_TIMEOUT, ServerUnit, Term, ask_whole, settled, wait_until, when_admitted,
+    AcceptAll, BUSY_NEEDLES, STEP_TIMEOUT, ServerUnit, Term, ask_whole, settled, wait_until,
+    when_admitted,
 };
 
 const GM_PASSWORD: &str = "gm-secret-1";
@@ -305,7 +306,7 @@ async fn sim_report(term: &mut Term, line: &str) -> String {
     ];
     let mut needles: Vec<&str> = ENDS.to_vec();
     needles.extend(["still being written", "already being read"]);
-    needles.extend(BUSY);
+    needles.extend(BUSY_NEEDLES);
     let mut report = String::new();
     wait_until(
         STEP_TIMEOUT,

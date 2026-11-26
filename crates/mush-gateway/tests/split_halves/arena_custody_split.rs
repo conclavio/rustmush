@@ -57,7 +57,9 @@ use mush_config::accounts::hash_password;
 use mush_config::config::Config;
 use mush_gateway::GatewayOptions;
 
-use super::harness::{BUSY, HEAL, STEP_TIMEOUT, ServerUnit, Term, wait_until, when_admitted};
+use super::harness::{
+    BUSY_NEEDLES, HEAL, STEP_TIMEOUT, ServerUnit, Term, wait_until, when_admitted,
+};
 
 const GM_PASSWORD: &str = "gm-secret-1";
 /// **16b cut U.4**: the pilots' password, for the sibling that seats two of them.
@@ -452,7 +454,7 @@ async fn claim_and_board(ada: &mut Term, bo: &mut Term, board: &[usize]) {
             let mark = term.mark();
             term.send_line("BOARD").await;
             let mut answers = vec!["climb into"];
-            answers.extend(BUSY);
+            answers.extend(BUSY_NEEDLES);
             term.expect_one_of_after(mark, &answers).await == 0
         })
         .await;
@@ -551,7 +553,7 @@ async fn a_pilot_in_a_pod_across_a_server_restart_boards_the_resumed_match() {
             let at = term.mark();
             term.send_line("BOARD").await;
             let mut answers = vec!["yours again where it stands", "still being handed over"];
-            answers.extend(BUSY);
+            answers.extend(BUSY_NEEDLES);
             term.expect_one_of_after(at, &answers).await == 0
         })
         .await;

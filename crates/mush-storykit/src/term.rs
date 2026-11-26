@@ -26,7 +26,8 @@ use std::time::Duration;
 
 use russh::ChannelMsg;
 
-use crate::barrier::{BUSY, Session, settled};
+use crate::barrier::{Session, settled};
+use crate::busy::BUSY_NEEDLES;
 use crate::wait::{STEP_TIMEOUT, loaded};
 
 /// How many times [`Term::say`] types a line again on a busy answer before
@@ -248,9 +249,10 @@ impl Term {
         self.expect_after(0, needle).await;
     }
 
-    /// **Type `line` and wait for `needle`**, typing it again while the world
-    /// gives a busy answer ([`BUSY`]): a commit in flight, or the control
-    /// lease's 1 Hz mirror. Those are real answers a real client retries, not
+    /// **Type `line` and wait for `needle`**, typing it again while the
+    /// server gives a busy answer (a sentence of [`BUSY_NEEDLES`], the kit's
+    /// one table): a commit in flight, the engine's queue, the control lease's
+    /// 1 Hz mirror. Those are real answers a real client retries, not
     /// failures. A needle read: it waits, it returns nothing to parse.
     ///
     /// The needle must not be in the line itself, or the line's own echo
@@ -261,7 +263,7 @@ impl Term {
             "`{needle}` appears in `{line}`'s own echo; pick a needle from the answer"
         );
         let mut needles = vec![needle];
-        needles.extend(BUSY);
+        needles.extend(BUSY_NEEDLES);
         for _ in 0..BUSY_RETRIES {
             let mark = self.mark();
             self.send_line(line).await;
