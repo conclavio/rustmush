@@ -1,6 +1,13 @@
 //! The end-to-end rig: a doorway on loopback TCP, an instance-side trusted
 //! ingress reached in process, test hooks behind the ingress, and client
 //! helpers.
+//!
+//! The rig waits through the story kit (doc 51 unit FL.9): every condition
+//! through its one wait loop, every event under its one step limit
+//! ([`STEP_TIMEOUT`]), and its data directory from [`scratch_dir`], which no
+//! clock names. The stories wait for what the doorway does, not for a span:
+//! [`Rig::stopped_serving`] for a drain's closed listener, and
+//! [`Rig::deadline_mark`] for "the deadline has run out".
 
 #![allow(
     clippy::unwrap_used,
@@ -21,6 +28,7 @@ use mush_proto::{ClientCaps, OutputEvent, RichText};
 use mush_sshdoorway::Doorway;
 use mush_sshdoorway::config::{Config, ServiceCfg};
 use mush_sshdoorway::upstream::{BoxStream, Connector};
+pub use mush_storykit::{STEP_TIMEOUT, round_trip, scratch_dir, wait_until, within};
 use russh::keys::{PrivateKey, PrivateKeyWithHashAlg};
 use russh::{Channel, ChannelMsg, client};
 
@@ -281,6 +289,9 @@ pub struct Rig {
     pub addr: SocketAddr,
     banners: Arc<Mutex<Vec<String>>>,
     dir: std::path::PathBuf,
+    /// The accept loop's task: it ends when a drain begins, dropping the
+    /// listener with it.
+    serving: Mutex<Option<tokio::task::JoinHandle<std::io::Result<()>>>>,
 }
 
 impl Drop for Rig {
@@ -295,12 +306,7 @@ impl Rig {
     }
 
     pub async fn start_with(hooks: Hooks, tweak: impl FnOnce(&mut Config)) -> Rig {
-        let dir = std::env::temp_dir().join(format!(
-            "sshdoorway-e2e-{}-{}",
-            std::process::id(),
-            getrandom_u64()
-        ));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = scratch_dir("sshdoorway-e2e", "rig").unwrap();
         let text = format!(
             r#"
 [listen]
@@ -347,7 +353,7 @@ listed = false
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let d = Arc::clone(&door);
-        tokio::spawn(async move { d.serve(listener).await });
+        let serving = tokio::spawn(async move { d.serve(listener).await });
         Rig {
             door,
             hooks,
@@ -355,7 +361,44 @@ listed = false
             addr,
             banners: Arc::default(),
             dir,
+            serving: Mutex::new(Some(serving)),
         }
+    }
+
+    /// **The accept loop has returned** (doc 51 §3.5): a drain has begun and
+    /// the listener is dropped, so a new connection is refused from here on.
+    /// The event, from the rig, in place of a sleep after `drain.begin()`.
+    pub async fn stopped_serving(&self) {
+        let serving = self
+            .serving
+            .lock()
+            .unwrap()
+            .take()
+            .expect("the accept loop is awaited once");
+        within("the accept loop's return", serving)
+            .await
+            .expect("the accept loop did not panic")
+            .expect("the accept loop ends cleanly");
+    }
+
+    /// **The mark that the auth deadline has run out** (doc 51 §3.3) for
+    /// everything the doorway started a deadline for before this call: a
+    /// connection accepted, or a session's last channel retired, which starts
+    /// the same span of idle grace.
+    ///
+    /// A client connects now and never authenticates. The doorway cuts it at
+    /// its auth deadline, which began after theirs, so when it is cut theirs
+    /// has run out too. A story asserts "still open" then, where it slept past
+    /// the deadline. A packet whose handling starts a deadline has to have
+    /// been handled first: [`round_trip`] on its connection says so.
+    pub async fn deadline_mark(&self) {
+        let mark = self.client().await;
+        wait_until(
+            STEP_TIMEOUT,
+            "the mark's cut at its auth deadline",
+            async || mark.is_closed(),
+        )
+        .await;
     }
 
     pub async fn direct_listener(&self) -> SocketAddr {
@@ -399,12 +442,10 @@ listed = false
         let cli = Cli {
             banners: Arc::clone(&self.banners),
         };
-        match tokio::time::timeout(Duration::from_secs(5), client::connect(cfg, self.addr, cli))
-            .await
-        {
-            Ok(Ok(h)) => Ok(h),
-            Ok(Err(e)) => Err(e.to_string()),
-            Err(_) => Err("timed out".into()),
+        match mush_storykit::at_most(STEP_TIMEOUT, client::connect(cfg, self.addr, cli)).await {
+            Some(Ok(h)) => Ok(h),
+            Some(Err(e)) => Err(e.to_string()),
+            None => Err("timed out".into()),
         }
     }
 
@@ -415,15 +456,6 @@ listed = false
     pub fn banners(&self) -> Vec<String> {
         self.banners.lock().unwrap().clone()
     }
-}
-
-fn getrandom_u64() -> u64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0)
-        ^ (std::process::id() as u64) << 32
 }
 
 pub struct Cli {
@@ -454,10 +486,7 @@ impl client::Handler for Cli {
 
 pub async fn next_reply(ch: &mut Channel<client::Msg>) -> bool {
     loop {
-        match tokio::time::timeout(Duration::from_secs(10), ch.wait())
-            .await
-            .expect("a reply within 10 s")
-        {
+        match within("a channel request's reply", ch.wait()).await {
             Some(ChannelMsg::Success) => return true,
             Some(ChannelMsg::Failure) | None => return false,
             Some(_) => {}
@@ -478,7 +507,7 @@ pub async fn shell(h: &client::Handle<Cli>) -> Channel<client::Msg> {
 
 pub async fn read_until(ch: &mut Channel<client::Msg>, needle: &str) -> String {
     let mut out = Vec::new();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
     loop {
         let text = String::from_utf8_lossy(&out).into_owned();
         if text.contains(needle) {
@@ -495,7 +524,7 @@ pub async fn read_until(ch: &mut Channel<client::Msg>, needle: &str) -> String {
 
 pub async fn read_to_close(ch: &mut Channel<client::Msg>) -> String {
     let mut out = Vec::new();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
     loop {
         match tokio::time::timeout_at(deadline, ch.wait()).await {
             Ok(Some(ChannelMsg::Data { data })) => out.extend_from_slice(&data),
@@ -511,17 +540,7 @@ pub async fn read_to_close(ch: &mut Channel<client::Msg>) -> String {
     }
 }
 
+/// Until `cond` holds: the kit's one wait loop under its one step limit.
 pub async fn wait_for(cond: impl Fn() -> bool) {
-    wait_for_secs(10, cond).await;
-}
-
-pub async fn wait_for_secs(secs: u64, cond: impl Fn() -> bool) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
-    while !cond() {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "condition not met within {secs} s"
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    wait_until(STEP_TIMEOUT, "the rig's condition", async || cond()).await;
 }

@@ -41,7 +41,7 @@ async fn side(h: &client::Handle<Cli>, mode: &str, ticket: Option<&str>) -> Chan
     ch
 }
 async fn reply(ch: &mut Channel<client::Msg>) -> Value {
-    tokio::time::timeout(Duration::from_secs(5), async {
+    within("the sideband reply", async {
         let mut reader = ch.make_reader();
         let size = reader.read_u32().await.unwrap() as usize;
         assert!((1..=1024).contains(&size));
@@ -50,7 +50,6 @@ async fn reply(ch: &mut Channel<client::Msg>) -> Value {
         serde_json::from_slice(&body).unwrap()
     })
     .await
-    .expect("sideband reply")
 }
 async fn verify_path(issue_routed: bool) {
     let rig = Rig::start(Hooks::default()).await;
@@ -205,8 +204,12 @@ async fn verify_reissue_after_refusal(routed: bool) {
         assets.request_subsystem(true, "sftp").await.unwrap();
         assert!(next_reply(&mut assets).await);
         assets.close().await.unwrap();
-        // Neither finished subsystem owns the live shell's idle timeout.
-        tokio::time::sleep(Duration::from_millis(2250)).await;
+        // Neither finished subsystem owns the live shell's idle timeout. The
+        // close is handled once the doorway has answered a request sent after
+        // it; then the deadline mark's cut says that the idle grace a close
+        // would have started has run out, with the shell still open.
+        round_trip(&handle).await;
+        rig.deadline_mark().await;
         shell.data(&b"look\r"[..]).await.unwrap();
         wait_for(|| rig.hooks.lines() == ["look"]).await;
         shell.close().await.unwrap();

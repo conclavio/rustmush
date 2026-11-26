@@ -39,6 +39,8 @@ serde.workspace = true
 mush-contract-tests.workspace = true
 proptest = { workspace = true }
 rmp-serde.workspace = true
+# Doc 51 unit FL.9: the loopback stories' step limit, waits and round trip.
+mush-storykit.workspace = true
 
 [lints]
 workspace = true

@@ -22,9 +22,16 @@
 //!   counted.
 //! - `clock`, **a wall-clock read**: `unix_now_s(`, `unix_now_ms(` or
 //!   `SystemTime::now(`.
-//! - `span`, **a literal span passed to a wait**: a stub that counts nothing
-//!   until doc 51's unit FL.9 baselines it, when the kit has a helper to move
-//!   each one to. The budget files already read the word.
+//! - `span`, **a literal span passed to a wait** (doc 51 unit FL.9):
+//!   `Duration::from_secs(<number>)` (or `from_millis`, `from_micros`,
+//!   `from_secs_f32`, `from_secs_f64`) written in the argument list of a raw
+//!   wait or of a kit wait ([`KIT_WAITS`]: `wait_until`, `wait_for`,
+//!   `within`, `within_for`, `at_most`, by any path, a method call
+//!   included). A literal inside a block passed as an argument (an `async`
+//!   block's body) is not the wait's own; the waits inside the block count
+//!   their own. A literal bound to a constant first is not counted: the
+//!   constant is a name a reviewer reads, and a figure the kit derives is the
+//!   prefer-instead.
 //!
 //! What is not counted:
 //!
@@ -49,6 +56,11 @@
 //! A crate enters the scope with a baseline: its first bless writes its
 //! `src/` counts as their own low-water marks and the line `# scope src`.
 //! From then on a `src/` row rises only as a `tests/` row does, with a reason.
+//!
+//! The `span` counter was baselined the same way (doc 51 unit FL.9): the first
+//! bless of a budget file without the line `# spans counted` writes its span
+//! counts as their own low-water marks and adds the line. A crate with no
+//! budget file yet gets no such baseline: its spans are a rise from zero.
 //!
 //! `scripts/wait_audit.py --budget` prints the same counts from the same
 //! rules, one row a file. The two must agree; doc 51's cut note for FL.1
@@ -94,6 +106,13 @@ const WAIT_NEEDLES: [&str; 6] = [
 /// The wall-clock reads that are one identifier and a call.
 const CLOCK_NEEDLES: [&str; 2] = ["unix_now_s", "unix_now_ms"];
 
+/// The story kit's waits: a literal span in their arguments is counted, as in
+/// a raw wait's (doc 51 unit FL.9). They are not raw waits themselves.
+const KIT_WAITS: [&str; 5] = ["wait_until", "wait_for", "within", "within_for", "at_most"];
+
+/// The constructors of a literal span: `Duration::from_<unit>(<number>)`.
+const SPAN_UNITS: [&str; 5] = ["secs_f32", "secs_f64", "secs", "millis", "micros"];
+
 /// The crate that is a rig whole: the kit, where the primitives belong.
 const KIT_CRATE: &str = "mush-storykit";
 
@@ -102,6 +121,9 @@ const SRC_SCOPE: [&str; 1] = ["mush-server"];
 
 /// The line a budget file carries once its crate's `src` scope is baselined.
 const SCOPE_LINE: &str = "scope src";
+
+/// The line a budget file carries once its `span` counts are baselined.
+const SPAN_LINE: &str = "spans counted";
 
 const BUDGET_DIR: &str = "wait_budget";
 const BLESS_VAR: &str = "WAIT_BUDGET_BLESS";
@@ -114,7 +136,7 @@ enum Counter {
     Wait,
     /// A wall-clock read.
     Clock,
-    /// A literal span passed to a wait: stubbed until doc 51's unit FL.9.
+    /// A literal span passed to a wait (doc 51 unit FL.9).
     Span,
 }
 
@@ -172,6 +194,7 @@ impl Counter {
 struct Sites {
     wait: usize,
     clock: usize,
+    span: usize,
 }
 
 impl Sites {
@@ -179,10 +202,58 @@ impl Sites {
         match counter {
             Counter::Wait => self.wait,
             Counter::Clock => self.clock,
-            // The stub: nothing is counted until FL.9 baselines it.
-            Counter::Span => 0,
+            Counter::Span => self.span,
         }
     }
+}
+
+/// The byte positions a call's own arguments cover, `open` being the index
+/// of its `(`: everything up to the matching `)` that is not inside a brace
+/// block nested in the arguments. Marked `true` in `own`.
+fn mark_arguments(bytes: &[u8], open: usize, own: &mut [bool]) {
+    let mut parens = 0usize;
+    let mut braces = 0usize;
+    for (at, &byte) in bytes.iter().enumerate().skip(open) {
+        match byte {
+            b'(' => parens += 1,
+            b')' => {
+                parens = parens.saturating_sub(1);
+                if parens == 0 {
+                    return;
+                }
+            }
+            b'{' => braces += 1,
+            b'}' => braces = braces.saturating_sub(1),
+            _ => {}
+        }
+        if braces == 0
+            && let Some(slot) = own.get_mut(at)
+        {
+            *slot = true;
+        }
+    }
+}
+
+/// The length of a literal span starting at `at` (`Duration::from_secs(5)`),
+/// or `None` when none starts there. The text is the census script's
+/// `LITERAL`: no space around `::` or before `(`, a number that starts with a
+/// digit, spaces allowed inside the parentheses.
+fn literal_span_at(code: &str, at: usize) -> Option<usize> {
+    let rest = code.get(at..)?.strip_prefix("Duration::from_")?;
+    let rest = SPAN_UNITS
+        .iter()
+        .find_map(|unit| rest.strip_prefix(unit)?.strip_prefix('('))?;
+    let inner = rest.trim_start();
+    if !inner.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    let number = inner
+        .find(|c: char| !(c.is_ascii_digit() || c == '_' || c == '.'))
+        .unwrap_or(inner.len());
+    let after = inner.get(number..)?.trim_start();
+    after
+        .starts_with(')')
+        .then(|| code.len() - at - (after.len() - 1))
 }
 
 fn is_ident(byte: u8) -> bool {
@@ -212,12 +283,14 @@ fn function_header(header: &str) -> Option<bool> {
     opens_fn.then(|| header.contains("start_paused"))
 }
 
-/// The raw waits and wall-clock reads in one test source file, outside any
-/// `start_paused` test.
+/// The raw waits, wall-clock reads and literal spans passed to a wait in one
+/// test source file, outside any `start_paused` test.
 fn story_sites(source: &str) -> Sites {
     let code = scan::strip_comments_and_literals(source);
     let bytes = code.as_bytes();
     let mut sites = Sites::default();
+    // The bytes that are a wait's own arguments, for the span counter.
+    let mut own = vec![false; bytes.len()];
     // One entry a `{`: `Some(paused)` for a function's body, `None` for any
     // other block. A site belongs to the innermost function around it.
     let mut blocks: Vec<Option<bool>> = Vec::new();
@@ -254,6 +327,11 @@ fn story_sites(source: &str) -> Sites {
             let configures = word == "timeout" && i > 0 && bytes[i - 1] == b'.';
             if !configures && !paused {
                 sites.wait += 1;
+                mark_arguments(bytes, after, &mut own);
+            }
+        } else if called && KIT_WAITS.contains(&word) {
+            if !paused {
+                mark_arguments(bytes, after, &mut own);
             }
         } else if called && CLOCK_NEEDLES.contains(&word) {
             if !paused {
@@ -270,6 +348,18 @@ fn story_sites(source: &str) -> Sites {
             }
         }
         i = end;
+    }
+    let mut at = 0;
+    while at < code.len() {
+        match literal_span_at(&code, at) {
+            Some(len) => {
+                if own.get(at).copied().unwrap_or(false) {
+                    sites.span += 1;
+                }
+                at += len;
+            }
+            None => at += 1,
+        }
     }
     sites
 }
@@ -394,6 +484,8 @@ struct Budget {
     raises: BTreeMap<(String, Counter), (usize, String)>,
     /// The `src` scope is baselined: the file carries `# scope src`.
     src_scope: bool,
+    /// The `span` counts are baselined: the file carries `# spans counted`.
+    spans_counted: bool,
 }
 
 const RAISE_SHAPE: &str = "a raise reads `# raised <counter> <path> to <n>: <reason>`";
@@ -404,6 +496,8 @@ fn parse(text: &str) -> Result<Budget, String> {
         if let Some(comment) = line.strip_prefix('#') {
             if comment.trim() == SCOPE_LINE {
                 b.src_scope = true;
+            } else if comment.trim() == SPAN_LINE {
+                b.spans_counted = true;
             } else if let Some(rest) = comment.trim().strip_prefix("raised ") {
                 let (head, reason) = rest.split_once(':').ok_or(RAISE_SHAPE)?;
                 let (what, to) = head.rsplit_once(" to ").ok_or(RAISE_SHAPE)?;
@@ -459,14 +553,21 @@ fn render(crate_name: &str, b: &Budget) -> String {
         "# {crate_name} — the wait budget of its story files (doc 51 cut FL.1).\n\
          #\n\
          # `<counter> <budget> <low-water> <path>`: `wait` is a raw sleep or timeout,\n\
-         # `clock` a wall-clock read. A count may only fall. Regenerate with:\n\
+         # `clock` a wall-clock read, `span` a literal span passed to a wait (cut\n\
+         # FL.9). A count may only fall. Regenerate with:\n\
          #   {BLESS_VAR}=1 cargo test -p mush-contract-tests --test ci_policy wait_budget::\n\
          # A raise carries a written reason; the prefer-instead is `mush-storykit`.\n\
          #\n\
-         # total: {}, {}\n",
+         # total: {}, {}, {}\n",
         Counter::Wait.count(sum(Counter::Wait)),
         Counter::Clock.count(sum(Counter::Clock)),
+        Counter::Span.count(sum(Counter::Span)),
     );
+    if b.spans_counted {
+        text.push_str(&format!(
+            "#\n# Literal spans are counted from their baseline (doc 51 cut FL.9).\n# {SPAN_LINE}\n"
+        ));
+    }
     if b.src_scope {
         text.push_str(&format!(
             "#\n# The test code under `src/` is counted too (doc 51 cut FL.6).\n# {SCOPE_LINE}\n"
@@ -601,6 +702,10 @@ fn blessed(
         let in_scope = SRC_SCOPE.contains(&name.as_str());
         let src_baseline = in_scope && !old.is_some_and(|b| b.src_scope);
         next.src_scope = in_scope;
+        // A budget file from before the span counter: its spans are baselined.
+        // A crate with no file at all gets no baseline.
+        let span_baseline = old.is_some_and(|b| !b.spans_counted);
+        next.spans_counted = true;
         for (key, actual) in counts {
             let (path, counter) = &key;
             let was = old.and_then(|b| b.rows.get(&key)).copied();
@@ -608,6 +713,7 @@ fn blessed(
                 Some(row) => row.low_water.min(actual),
                 None if baseline => actual,
                 None if src_baseline && path.starts_with("src/") => actual,
+                None if span_baseline && *counter == Counter::Span => actual,
                 None => 0,
             };
             if actual > was.map_or(low, |row| row.budget) {
@@ -680,9 +786,10 @@ fn no_story_file_holds_more_raw_waits_or_clock_reads_than_its_budget() {
         bless(&root, &measured, &budgets);
         for (name, rows) in &measured {
             println!(
-                "{name}: {}, {}",
+                "{name}: {}, {}, {}",
                 Counter::Wait.count(total(rows, Counter::Wait)),
-                Counter::Clock.count(total(rows, Counter::Clock))
+                Counter::Clock.count(total(rows, Counter::Clock)),
+                Counter::Span.count(total(rows, Counter::Span))
             );
         }
         return;
@@ -690,8 +797,9 @@ fn no_story_file_holds_more_raw_waits_or_clock_reads_than_its_budget() {
     let problems = violations(&measured, &budgets);
     assert!(
         problems.is_empty(),
-        "the wait budget (doc 51 §3.9): a story file's raw waits and wall-clock reads may only \
-         fall.\n  {}\n\nRegenerate: {BLESS_VAR}=1 cargo test -p mush-contract-tests --test \
+        "the wait budget (doc 51 §3.9): a story file's raw waits, wall-clock reads and literal \
+         spans passed to a wait may only fall.\n  {}\n\nRegenerate: {BLESS_VAR}=1 cargo test \
+         -p mush-contract-tests --test \
          ci_policy wait_budget::",
         problems.join("\n  ")
     );
@@ -786,7 +894,101 @@ fn the_count_sees_every_needle_and_nothing_in_prose_or_a_paused_test() {
             }
         }
     "#;
-    assert_eq!(story_sites(source), Sites { wait: 9, clock: 4 });
+    assert_eq!(
+        story_sites(source),
+        Sites {
+            wait: 9,
+            clock: 4,
+            span: 0
+        }
+    );
+}
+
+#[test]
+fn a_span_counts_when_it_is_a_waits_own_argument() {
+    let source = r#"
+        // Duration::from_secs(5) in a comment is not a span.
+        const NOTE: &str = "timeout(Duration::from_secs(5), read())";
+        const LIMIT: Duration = Duration::from_secs(5);
+
+        async fn a_story() {
+            let _ = tokio::time::timeout(Duration::from_secs(3), read()).await;
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            wait_until(Duration::from_secs( 10 ), "a door", async || true).await;
+            budget.wait_until(Duration::from_secs_f64(1.5), "a lamp", async || true).await;
+            within_for(loaded(Duration::from_secs(2)), "a stop", stop()).await;
+            let _ = at_most(Duration::from_millis(1_500), flood()).await;
+            // Not a wait's own: a constant, a client's configuration, a block's body.
+            let _ = tokio::time::timeout(LIMIT, read()).await;
+            let client = builder.timeout(Duration::from_secs(5));
+            let deadline = Instant::now() + Duration::from_secs(9);
+            within("a frame", async {
+                let pace = Duration::from_millis(5);
+                tokio::time::sleep(Duration::from_millis(7)).await;
+            })
+            .await;
+            let made = Duration::from_secs(SECONDS);
+            let named = within(LIMIT, read());
+        }
+
+        #[tokio::test(start_paused = true)]
+        async fn a_paused_test_drives_its_own_clock() {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }
+    "#;
+    // Seven: the timeout's 3, the sleep's 50, the two kit loops' 10 and 1.5,
+    // the loaded 2, the flood's 1 500, and the 7 of the sleep inside the block.
+    assert_eq!(
+        story_sites(source),
+        Sites {
+            wait: 4,
+            clock: 0,
+            span: 7
+        }
+    );
+}
+
+#[test]
+fn a_budget_file_from_before_the_span_counter_is_baselined_once() {
+    let measured = BTreeMap::from([(
+        "c".to_owned(),
+        Counts::from([
+            (("tests/a.rs".to_owned(), Counter::Wait), 1),
+            (("tests/a.rs".to_owned(), Counter::Span), 2),
+        ]),
+    )]);
+    // The first bless takes the spans as their own low-water marks.
+    let first =
+        blessed(&measured, &budgets("wait 1 1 tests/a.rs\n"), None, false).expect("a baseline");
+    let text = render("c", &first["c"]);
+    assert!(text.contains("# spans counted"), "{text}");
+    assert!(text.contains("span 2 2 tests/a.rs"), "{text}");
+    assert!(
+        text.contains("# total: 1 raw wait, 0 wall-clock reads, 2 literal spans passed to a wait"),
+        "{text}"
+    );
+    let reread = budgets(&text);
+    assert_eq!(violations(&measured, &reread), Vec::<String>::new());
+    // After it, a span rises only with a reason, and says what to do instead.
+    let risen = BTreeMap::from([(
+        "c".to_owned(),
+        Counts::from([
+            (("tests/a.rs".to_owned(), Counter::Wait), 1),
+            (("tests/a.rs".to_owned(), Counter::Span), 3),
+        ]),
+    )]);
+    let refused = blessed(&risen, &reread, None, false).unwrap_err();
+    assert!(refused.contains("rule F"), "{refused}");
+    // A crate with no budget file has no baseline: its spans rise from zero.
+    assert!(
+        blessed(
+            &one("tests/a.rs", Counter::Span, 2),
+            &BTreeMap::new(),
+            None,
+            false
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -836,7 +1038,14 @@ fn the_src_scope_counts_test_code_and_never_production_code() {
         }
     "#;
     let code = src_test_code("src/persist.rs", mixed).expect("the file holds test code");
-    assert_eq!(story_sites(&code), Sites { wait: 1, clock: 1 });
+    assert_eq!(
+        story_sites(&code),
+        Sites {
+            wait: 1,
+            clock: 1,
+            span: 0
+        }
+    );
 
     let production = "fn pace() { std::thread::sleep(PACE); }";
     assert_eq!(src_test_code("src/lib.rs", production), None);
@@ -849,7 +1058,15 @@ fn the_src_scope_counts_test_code_and_never_production_code() {
         "src/lib_tests.rs",
     ] {
         let code = src_test_code(rel, whole).expect("test code whole");
-        assert_eq!(story_sites(&code), Sites { wait: 1, clock: 0 }, "{rel}");
+        assert_eq!(
+            story_sites(&code),
+            Sites {
+                wait: 1,
+                clock: 0,
+                span: 0
+            },
+            "{rel}"
+        );
     }
     let fenced = format!("#![cfg(test)]\n{whole}");
     assert!(src_test_code("src/probe.rs", &fenced).is_some());

@@ -24,11 +24,10 @@ use mush_proto::{
     InputMode, NarrativeKind, ObjRef, OutputEvent, PanelFrameKind, PromptSpec, RichText, SmolStr,
     WhoEntry,
 };
+use mush_storykit::{STEP_TIMEOUT, at_most, round_trip, within};
 use russh::ChannelMsg;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
-
-const STEP_TIMEOUT: Duration = Duration::from_secs(15);
 
 // ---- mock game ----------------------------------------------------------
 
@@ -638,6 +637,42 @@ impl Term {
         }
     }
 
+    /// Read until one of `needles` shows after `mark`; which one.
+    async fn expect_one_of_after(&mut self, mark: usize, needles: &[&str]) -> usize {
+        loop {
+            let seen = strip_ansi(&self.seen[mark..]);
+            if let Some(at) = needles.iter().position(|needle| seen.contains(needle)) {
+                return at;
+            }
+            match within("one of the needles", self.channel.wait()).await {
+                Some(ChannelMsg::Data { data }) => {
+                    self.seen.push_str(&String::from_utf8_lossy(&data));
+                }
+                Some(_) => {}
+                None => panic!(
+                    "channel closed while waiting for one of {needles:?}; seen: {:?}",
+                    self.seen
+                ),
+            }
+        }
+    }
+
+    /// Keep reading the terminal until `cond` holds, so a screen that repaints
+    /// while the story waits never backs up the channel's window. The wait is
+    /// the kit's loop under its one step limit.
+    async fn read_until(&mut self, what: &str, cond: impl Fn() -> bool) {
+        mush_storykit::wait_until(STEP_TIMEOUT, what, async || {
+            // What has already arrived; a zero span reads without waiting.
+            while let Some(Some(msg)) = at_most(Duration::ZERO, self.channel.wait()).await {
+                if let ChannelMsg::Data { data } = msg {
+                    self.seen.push_str(&String::from_utf8_lossy(&data));
+                }
+            }
+            cond()
+        })
+        .await;
+    }
+
     async fn send_line(&mut self, line: &str) {
         let bytes = format!("{line}\r").into_bytes();
         self.channel.data(&bytes[..]).await.expect("send line");
@@ -666,20 +701,69 @@ impl Term {
     }
 }
 
+/// A host key directory of this run's own, named by no clock (doc 51 rule T).
 fn unique_key_path(tag: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "mush-net-ssh-loopback-{tag}-{}-{}",
-        std::process::id(),
-        getrandom_u64()
-    ))
+    mush_storykit::scratch_dir("mush-net-ssh-loopback", tag).expect("a scratch directory")
 }
 
-fn getrandom_u64() -> u64 {
-    // Distinct temp paths per run without another dev-dependency.
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos() as u64
+/// **The mark that a deadline has run out** (doc 51 §3.3) for every
+/// connection the story's server accepted before [`DeadlineMark::begin`].
+///
+/// A second server on the same deadline, with hooks of its own, accepts one
+/// client. Its deadline began after theirs, so once the second server has
+/// given that client's slot back, theirs has run out too. A story asserts
+/// "still open" or "still held" then, where it used to sleep past the
+/// deadline and hope.
+struct DeadlineMark {
+    hooks: Arc<MockHooks>,
+    _handle: Option<russh::client::Handle<AcceptAll>>,
+    _stream: Option<tokio::net::TcpStream>,
+}
+
+impl DeadlineMark {
+    /// A client that completes the key exchange and never authenticates: the
+    /// server disconnects it at the deadline and gives its slot back then.
+    async fn begin(tag: &str, deadline: Duration) -> DeadlineMark {
+        let hooks = Arc::new(MockHooks::default());
+        let addr = start_server_with(tag, Arc::clone(&hooks), deadline).await;
+        let config = Arc::new(russh::client::Config::default());
+        let handle = russh::client::connect(config, addr, AcceptAll)
+            .await
+            .expect("connect the mark");
+        DeadlineMark {
+            hooks,
+            _handle: Some(handle),
+            _stream: None,
+        }
+    }
+
+    /// A client that sends its version line and stalls in the key exchange:
+    /// its slot comes back only at the cut, a [`mush_net_ssh::DISCONNECT_GRACE`]
+    /// after the deadline. Its release marks the deadline and the grace.
+    async fn begin_stalled(tag: &str, deadline: Duration) -> DeadlineMark {
+        let hooks = Arc::new(MockHooks::default());
+        let addr = start_server_with(tag, Arc::clone(&hooks), deadline).await;
+        let mut stream = tokio::net::TcpStream::connect(addr)
+            .await
+            .expect("connect the mark");
+        stream
+            .write_all(b"SSH-2.0-stall\r\n")
+            .await
+            .expect("the mark's version line");
+        DeadlineMark {
+            hooks,
+            _handle: None,
+            _stream: Some(stream),
+        }
+    }
+
+    /// Until the mark's slot is back.
+    async fn passed(self) {
+        wait_until("the mark's release", STEP_TIMEOUT, || {
+            self.hooks.releases() == [Admission::Admit]
+        })
+        .await;
+    }
 }
 
 async fn start_server(tag: &str, hooks: Arc<MockHooks>) -> std::net::SocketAddr {
@@ -817,17 +901,10 @@ async fn play_flow_create_connect_say_quit() {
     assert!(texts.contains(&"QUIT"), "lines seen: {texts:?}");
 
     // The disconnect hook fires once the transport is torn down.
-    let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
-    loop {
-        if !hooks.disconnects.lock().unwrap().is_empty() {
-            break;
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "disconnected hook never fired"
-        );
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
+    wait_until("the disconnected hook", STEP_TIMEOUT, || {
+        !hooks.disconnects.lock().unwrap().is_empty()
+    })
+    .await;
 
     let _ = handle
         .disconnect(russh::Disconnect::ByApplication, "", "")
@@ -861,20 +938,30 @@ async fn in_band_lockout_closes_open_welcome_screen() {
         term.send_line("connect victim nope").await;
     }
     // Wait until all five failures registered server-side.
-    let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
-    while hooks.auth_failures.load(Ordering::Relaxed) < 5 {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "5 in-band failures never registered"
-        );
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    // Let the flood bucket refill one token, then guess again: the blocked
-    // address is refused outright and the connection closes.
-    tokio::time::sleep(Duration::from_millis(1100)).await;
-    term.send_line("connect victim nope").await;
-    term.expect("Too many failed logins from your address")
-        .await;
+    wait_until("5 in-band failures", STEP_TIMEOUT, || {
+        hooks.auth_failures.load(Ordering::Relaxed) >= 5
+    })
+    .await;
+    // Guess again once the flood bucket holds a token: the blocked address is
+    // refused outright and the connection closes. The server says when the
+    // bucket is empty (a line it throttles is answered "too fast"), so the
+    // story types the guess again on that answer instead of sleeping out a
+    // refill it would have to restate.
+    mush_storykit::wait_until(STEP_TIMEOUT, "the flood bucket's refill", async || {
+        let mark = term.seen.len();
+        term.send_line("connect victim nope").await;
+        let answer = term
+            .expect_one_of_after(
+                mark,
+                &[
+                    "You're doing that too fast.",
+                    "Too many failed logins from your address",
+                ],
+            )
+            .await;
+        answer == 1
+    })
+    .await;
     term.expect_close().await;
     assert_eq!(
         hooks.auth_failures.load(Ordering::Relaxed),
@@ -1907,27 +1994,11 @@ async fn the_pump_tick_re_asks_a_lost_arena_map() {
     };
     let map_asks = |names: &[String]| names.iter().filter(|n| *n == "arena.map").count();
     // The frame's own ask, answered by nothing.
-    let deadline = tokio::time::Instant::now() + STEP_TIMEOUT;
-    while map_asks(&names()) < 1 {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the frame asked for no map: {:?}",
-            names()
-        );
-        // Keep reading the terminal while waiting, so the repaints never
-        // back up the channel window.
-        let _ = tokio::time::timeout(Duration::from_millis(25), term.channel.wait()).await;
-    }
-    // Then the heal's, on a tick — two ticks and the latch, with room to spare.
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    while map_asks(&names()) < 2 {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the tick never healed the map: {:?}",
-            names()
-        );
-        let _ = tokio::time::timeout(Duration::from_millis(50), term.channel.wait()).await;
-    }
+    term.read_until("the frame's map ask", || map_asks(&names()) >= 1)
+        .await;
+    // Then the heal's, on a tick: two ticks and the latch.
+    term.read_until("the tick's heal of the map", || map_asks(&names()) >= 2)
+        .await;
     let seen = names();
     let heal = seen
         .iter()
@@ -2790,15 +2861,17 @@ async fn a_client_stalled_in_the_key_exchange_is_released_by_the_cut() {
 
     // Past the deadline: the disconnect has been sent, and the slot is
     // still held, because a client stalled here never processes it.
-    tokio::time::sleep(GATE_DEADLINE * 2).await;
+    DeadlineMark::begin("stalled-kex-mark", GATE_DEADLINE)
+        .await
+        .passed()
+        .await;
     assert!(
         hooks.releases().is_empty(),
         "the disconnect alone must not be what frees the slot"
     );
 
     let grace = mush_net_ssh::DISCONNECT_GRACE;
-    let seen =
-        read_to_end_or_reset(&mut stream, GATE_DEADLINE + grace + Duration::from_secs(4)).await;
+    let seen = read_to_end_or_reset(&mut stream, STEP_TIMEOUT).await;
     assert!(
         seen.starts_with(b"SSH-2.0-"),
         "the server's version line was exchanged: {seen:?}"
@@ -2808,7 +2881,7 @@ async fn a_client_stalled_in_the_key_exchange_is_released_by_the_cut() {
         "cut before the grace ran out, after {:?}",
         started.elapsed()
     );
-    wait_until("the release by the cut", Duration::from_secs(2), || {
+    wait_until("the release by the cut", STEP_TIMEOUT, || {
         hooks.releases() == [Admission::Admit]
     })
     .await;
@@ -2827,11 +2900,14 @@ async fn an_authenticated_connection_that_opens_no_channel_is_cut() {
     let mut handle = russh::client::connect(config, addr, AcceptAll)
         .await
         .expect("connect");
+    // The mark is accepted after this connection and before it authenticates,
+    // so its deadline runs out after this one's first and before its second.
+    let mark = DeadlineMark::begin("no-channel-mark", GATE_DEADLINE).await;
     let auth = handle.authenticate_none("play").await.expect("auth-none");
     assert!(auth.success(), "play is accepted with no auth");
 
     // Past the first deadline, and short of the second: still open.
-    tokio::time::sleep(GATE_DEADLINE).await;
+    mark.passed().await;
     assert!(
         !handle.is_closed(),
         "an authenticated connection must outlive the first deadline"
@@ -2881,11 +2957,9 @@ async fn an_over_cap_connection_is_told_refused_and_cut_within_five_seconds() {
         banners.text(),
         "Too many connections from your address; try again later.\r\n"
     );
-    wait_until(
-        "the shed connection's release",
-        Duration::from_secs(5),
-        || hooks.releases() == [Admission::OverCap],
-    )
+    wait_until("the shed connection's release", STEP_TIMEOUT, || {
+        hooks.releases() == [Admission::OverCap]
+    })
     .await;
 
     // One that never tries a method: cut within five seconds of accept (a
@@ -2903,11 +2977,9 @@ async fn an_over_cap_connection_is_told_refused_and_cut_within_five_seconds() {
         "an over-cap connection gets three seconds to try a method, got {:?}",
         started.elapsed()
     );
-    wait_until(
-        "the idle connection's release",
-        Duration::from_secs(5),
-        || hooks.releases() == [Admission::OverCap, Admission::OverCap],
-    )
+    wait_until("the idle connection's release", STEP_TIMEOUT, || {
+        hooks.releases() == [Admission::OverCap, Admission::OverCap]
+    })
     .await;
     assert_eq!(hooks.admitted.load(Ordering::Relaxed), 2);
 }
@@ -2922,12 +2994,12 @@ async fn a_dropped_connection_gets_no_handshake() {
     let addr = start_server("dropped", Arc::clone(&hooks)).await;
 
     let mut stream = tokio::net::TcpStream::connect(addr).await.expect("connect");
-    let seen = read_to_end_or_reset(&mut stream, Duration::from_secs(5)).await;
+    let seen = read_to_end_or_reset(&mut stream, STEP_TIMEOUT).await;
     assert!(
         seen.is_empty(),
         "a dropped connection must get no handshake: {seen:?}"
     );
-    wait_until("the gate's answer", Duration::from_secs(2), || {
+    wait_until("the gate's answer", STEP_TIMEOUT, || {
         hooks.admitted.load(Ordering::Relaxed) == 1
     })
     .await;
@@ -2961,8 +3033,11 @@ async fn an_in_game_connection_outlives_every_deadline() {
     term.send_line("create nick s3cretpw").await;
     term.expect("Welcome, nick!").await;
 
-    // Both deadlines, and the grace that would have followed them, are past.
-    tokio::time::sleep(deadline * 2 + mush_net_ssh::DISCONNECT_GRACE + Duration::from_secs(1))
+    // Both deadlines, and the grace that would have followed them, are past:
+    // the mark began after both started and is released only at its cut.
+    DeadlineMark::begin_stalled("in-game-mark", deadline)
+        .await
+        .passed()
         .await;
     assert!(
         !handle.is_closed(),
@@ -3160,7 +3235,7 @@ async fn pty_and_window_change_clamp_oversized_dims_and_preserve_zero_default() 
         .window_change(99_999, 99_999, 1, 99_999)
         .await
         .expect("window_change oversized");
-    wait_until("oversized resize recorded", Duration::from_secs(5), || {
+    wait_until("oversized resize recorded", STEP_TIMEOUT, || {
         hooks.caps_history.lock().unwrap().len() >= 2
     })
     .await;
@@ -3178,7 +3253,7 @@ async fn pty_and_window_change_clamp_oversized_dims_and_preserve_zero_default() 
         .window_change(0, 0, 0, 0)
         .await
         .expect("window_change zero");
-    wait_until("zero resize recorded", Duration::from_secs(5), || {
+    wait_until("zero resize recorded", STEP_TIMEOUT, || {
         hooks.caps_history.lock().unwrap().len() >= 3
     })
     .await;
@@ -3219,7 +3294,7 @@ async fn sftp_channel_data_before_subsystem_closes_without_deadlocking_session()
     }
 
     // Secondary channel must be closed by the server.
-    tokio::time::timeout(Duration::from_secs(5), async {
+    within("the secondary channel's close", async {
         loop {
             match secondary.wait().await {
                 None | Some(ChannelMsg::Close) => break,
@@ -3227,8 +3302,7 @@ async fn sftp_channel_data_before_subsystem_closes_without_deadlocking_session()
             }
         }
     })
-    .await
-    .expect("secondary channel must close promptly");
+    .await;
 
     // Primary game channel remains responsive and releases slot cleanly.
     term.send_line("say still alive").await;
@@ -3238,7 +3312,7 @@ async fn sftp_channel_data_before_subsystem_closes_without_deadlocking_session()
     let _ = handle
         .disconnect(russh::Disconnect::ByApplication, "", "")
         .await;
-    wait_until("slot released", Duration::from_secs(5), || {
+    wait_until("slot released", STEP_TIMEOUT, || {
         hooks.releases() == [Admission::Admit]
     })
     .await;
@@ -3393,9 +3467,7 @@ async fn sftp_channel_inbound_flood_closes_cleanly_without_deadlocking_session()
         .data(sftp_frame(1, &3u32.to_be_bytes()).as_slice())
         .await
         .expect("init");
-    let _ = tokio::time::timeout(Duration::from_secs(5), sftp_ch.wait())
-        .await
-        .expect("version reply");
+    let _ = within("the SFTP version reply", sftp_ch.wait()).await;
 
     // SSH_FXP_OPEN (type 3, id=1, "/assets/sounds/kill.wav", flags=READ(1), attrs=0)
     let mut open_payload = Vec::new();
@@ -3408,7 +3480,7 @@ async fn sftp_channel_inbound_flood_closes_cleanly_without_deadlocking_session()
         .await
         .expect("open");
     // Read SSH_FXP_HANDLE reply to extract handle bytes ("h1").
-    let handle_bytes = tokio::time::timeout(Duration::from_secs(5), async {
+    let handle_bytes = within("the SFTP handle reply", async {
         loop {
             if let Some(ChannelMsg::Data { data }) = sftp_ch.wait().await
                 && data.len() >= 13
@@ -3419,8 +3491,7 @@ async fn sftp_channel_inbound_flood_closes_cleanly_without_deadlocking_session()
             }
         }
     })
-    .await
-    .expect("handle reply");
+    .await;
 
     // Now freeze client reads so the 2 KiB SSH window fills on the first 64 KiB
     // SFTP read reply, and flood 90 SFTP_READ requests to overflow SftpInbound.
@@ -3440,22 +3511,36 @@ async fn sftp_channel_inbound_flood_closes_cleanly_without_deadlocking_session()
         }
     }
 
-    // Give the server a moment to overflow `SftpInbound` and close `sftp_ch`,
-    // then resume client reads to observe the close and verify the main game
+    // The mark (doc 51 §3.3): a line on the game channel, sent after the
+    // flood. The session loop takes one connection's packets in order, and
+    // the flood's are pushed (and the overflow closes `sftp_ch`) in their own
+    // handlers, so once the line has reached the game the overflow is done.
+    // Then resume client reads to observe the close and verify the main game
     // channel is completely unblocked.
-    tokio::time::sleep(Duration::from_millis(150)).await;
+    term.send_line("say flood-mark").await;
+    wait_until("the line sent after the flood", STEP_TIMEOUT, || {
+        hooks
+            .lines
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, line)| line == "say flood-mark")
+    })
+    .await;
     ctl.resume_reads();
 
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            match sftp_ch.wait().await {
-                None | Some(ChannelMsg::Close) => break,
-                Some(_) => {}
+    within(
+        "the flooded sftp channel's close (a deadlocked session never closes it)",
+        async {
+            loop {
+                match sftp_ch.wait().await {
+                    None | Some(ChannelMsg::Close) => break,
+                    Some(_) => {}
+                }
             }
-        }
-    })
-    .await
-    .expect("flooded sftp channel must close promptly without deadlocking session");
+        },
+    )
+    .await;
 
     // Primary channel still responds and disconnects cleanly.
     term.send_line("say after flood").await;
@@ -3465,7 +3550,7 @@ async fn sftp_channel_inbound_flood_closes_cleanly_without_deadlocking_session()
     let _ = handle
         .disconnect(russh::Disconnect::ByApplication, "", "")
         .await;
-    wait_until("slot released", Duration::from_secs(5), || {
+    wait_until("slot released", STEP_TIMEOUT, || {
         hooks.releases() == [Admission::Admit]
     })
     .await;
@@ -3514,16 +3599,17 @@ async fn in_game_line_mode_enforces_pending_data_disconnect() {
     ctl.pause_reads();
     let payload = vec![b'a'; 128];
     for _ in 0..32 {
+        // No pace between writes: the server counts a strike for each packet
+        // that finds its window still owed, not for time.
         if term.channel.data(payload.as_slice()).await.is_err() {
             break;
         }
-        tokio::time::sleep(Duration::from_millis(5)).await;
     }
 
     // Server must have triggered PENDING_STRIKES disconnect and released slot.
     wait_until(
         "in-game pending_data disconnect releases slot",
-        Duration::from_secs(5),
+        STEP_TIMEOUT,
         || hooks.releases() == [Admission::Admit],
     )
     .await;
@@ -3566,7 +3652,9 @@ async fn pre_shell_data_is_ignored_and_duplicate_shell_or_exec_cannot_double_con
     ch.data(b"connect solo pw123\r\n".as_slice())
         .await
         .expect("pre-shell data");
-    tokio::time::sleep(Duration::from_millis(80)).await;
+    // The server answers a request sent after the data, so it has handled the
+    // data: the absence is asserted between the two.
+    round_trip(&handle).await;
     assert!(
         hooks.connected_chars.lock().unwrap().is_empty(),
         "pre-shell data must not trigger connect_character"
@@ -3585,7 +3673,7 @@ async fn pre_shell_data_is_ignored_and_duplicate_shell_or_exec_cannot_double_con
     // must be rejected without attaching a second time or breaking the shell.
     let _ = term.channel.request_shell(true).await;
     let _ = term.channel.exec(true, b"mind pull".to_vec()).await;
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    round_trip(&handle).await;
     assert_eq!(
         hooks.connected_chars.lock().unwrap().len(),
         1,
@@ -3597,7 +3685,7 @@ async fn pre_shell_data_is_ignored_and_duplicate_shell_or_exec_cannot_double_con
     term.expect("Nick says, \"still connected\"").await;
     term.send_line("QUIT").await;
     term.expect_close().await;
-    wait_until("disconnect hook fires once", Duration::from_secs(5), || {
+    wait_until("disconnect hook fires once", STEP_TIMEOUT, || {
         hooks.disconnects.lock().unwrap().len() == 1
     })
     .await;
@@ -3614,14 +3702,14 @@ async fn tui_data_offloads_queries_without_blocking_and_caps_burst_per_packet() 
     let (handle, mut term) = play_session("sshm3-tui-burst", &hooks).await;
     term.send_line("@tui").await;
     // Wait until TUI has entered and issued its initial WHO query.
-    wait_until("tui entered", Duration::from_secs(5), || {
+    wait_until("tui entered", STEP_TIMEOUT, || {
         !hooks.queries.lock().unwrap().is_empty()
     })
     .await;
 
     // Switch to screen 3 (mail) so `r` triggers a `mail.list` query.
     term.channel.data(b"3".as_slice()).await.expect("screen 3");
-    wait_until("mail screen queried", Duration::from_secs(5), || {
+    wait_until("mail screen queried", STEP_TIMEOUT, || {
         hooks
             .queries
             .lock()
@@ -3647,16 +3735,15 @@ async fn tui_data_offloads_queries_without_blocking_and_caps_burst_per_packet() 
         .data(burst.as_slice())
         .await
         .expect("send burst");
-    tokio::time::timeout(
-        Duration::from_secs(2),
+    within(
+        "window_change while the query hook is held (a stalled session never answers)",
         term.channel.window_change(100, 30, 0, 0),
     )
     .await
-    .expect("window_change must not stall while query hook is held")
     .expect("window_change ok");
     wait_until(
         "window_change processed while query held",
-        Duration::from_secs(2),
+        STEP_TIMEOUT,
         || {
             hooks
                 .caps_history
@@ -3671,7 +3758,22 @@ async fn tui_data_offloads_queries_without_blocking_and_caps_burst_per_packet() 
     // Release held queries and verify per-packet burst cap <= 16.
     hooks.hold_queries.store(false, Ordering::SeqCst);
     hooks.delayed_query_release.notify_waiters();
-    tokio::time::sleep(Duration::from_millis(120)).await;
+    // The mark (doc 51 §3.3): the connection's one command worker takes its
+    // queue in order, so a line typed after the burst reaches the game only
+    // once every query the burst queued has run. Screen 1 is where Enter
+    // opens the input box.
+    term.send_bytes(b"1").await;
+    term.send_bytes(b"\r").await;
+    term.send_line("say drained").await;
+    term.read_until("the line typed after the burst", || {
+        hooks
+            .lines
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, line)| line == "say drained")
+    })
+    .await;
     let after_mail = hooks
         .queries
         .lock()

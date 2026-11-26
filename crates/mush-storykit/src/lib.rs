@@ -76,6 +76,16 @@
 //! - [`Term::across_restart`]: a held session's side of a restart, bounded
 //!   by the restarted half's own heal schedule (rule P).
 //!
+//! Added by unit FL.9, for the small crates' stories (mush-net-web,
+//! mush-net-ssh, mush-sshdoorway):
+//!
+//! - [`within`] and [`within_for`]: one event (a frame, a close, a task's
+//!   end) awaited under the one step limit, in place of a span chosen at the
+//!   call. [`at_most`] is for a future whose end is not the point.
+//! - [`round_trip`]: the barrier for an SSH server's session loop. A reply to
+//!   a request sent after some packets proves the server has handled them,
+//!   so an absence is asserted between the send and the reply.
+//!
 //! **Dev-only.** This crate is a `[dev-dependencies]` entry and nothing else:
 //! its helpers panic by design, as a failed assertion does. The panic budget's
 //! `no_production_crate_links_an_excluded_crate` test refuses a normal or a
@@ -102,6 +112,7 @@ mod paused;
 mod phase;
 mod reply;
 mod scratch;
+mod step;
 mod term;
 mod wait;
 
@@ -121,6 +132,7 @@ pub use phase::{
 };
 pub use reply::{Reply, ask};
 pub use scratch::scratch_dir;
+pub use step::{at_most, round_trip, within, within_for};
 pub use term::{AcceptAll, BUSY_RETRIES, COLS, RECONNECTED, RESTARTING, ROWS, Term, strip_ansi};
 pub use wait::{
     LOAD_FACTOR, POLL_INTERVAL, STEP_TIMEOUT, STEP_UNLOADED, loaded, wait_for, wait_until,

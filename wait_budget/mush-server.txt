@@ -1,52 +1,80 @@
 # mush-server — the wait budget of its story files (doc 51 cut FL.1).
 #
 # `<counter> <budget> <low-water> <path>`: `wait` is a raw sleep or timeout,
-# `clock` a wall-clock read. A count may only fall. Regenerate with:
+# `clock` a wall-clock read, `span` a literal span passed to a wait (cut
+# FL.9). A count may only fall. Regenerate with:
 #   WAIT_BUDGET_BLESS=1 cargo test -p mush-contract-tests --test ci_policy wait_budget::
 # A raise carries a written reason; the prefer-instead is `mush-storykit`.
 #
-# total: 205 raw waits, 37 wall-clock reads
+# total: 205 raw waits, 37 wall-clock reads, 139 literal spans passed to a wait
+#
+# Literal spans are counted from their baseline (doc 51 cut FL.9).
+# spans counted
 #
 # The test code under `src/` is counted too (doc 51 cut FL.6).
 # scope src
 clock 1 1 src/archive.rs
 clock 4 4 src/config_ext.rs
 wait 3 3 src/gateway_sink.rs
+span 3 3 src/gateway_sink.rs
 wait 9 9 src/lib.rs
+span 9 9 src/lib.rs
 clock 1 1 src/modules.rs
 wait 2 2 src/persist.rs
+span 2 2 src/persist.rs
 clock 1 1 src/process_fault.rs
 wait 1 1 src/quarantine.rs
 clock 2 2 src/quarantine.rs
+span 1 1 src/quarantine.rs
 wait 7 7 src/world_task/submission_disposition/tests/paid_purchase.rs
+span 5 5 src/world_task/submission_disposition/tests/paid_purchase.rs
 wait 16 16 src/world_task/submission_disposition/tests/paid_purchase/runtime.rs
 clock 1 1 src/world_task/submission_disposition/tests/paid_purchase/runtime.rs
+span 8 8 src/world_task/submission_disposition/tests/paid_purchase/runtime.rs
 wait 10 10 src/world_task/submission_disposition/tests/player_market.rs
 clock 1 1 src/world_task/submission_disposition/tests/player_market.rs
+span 3 3 src/world_task/submission_disposition/tests/player_market.rs
 wait 21 21 src/world_task/submission_disposition/tests/player_market_commands.rs
+span 6 6 src/world_task/submission_disposition/tests/player_market_commands.rs
 wait 15 15 src/world_task/submission_disposition/tests/player_market_story.rs
 clock 1 1 src/world_task/submission_disposition/tests/player_market_story.rs
+span 13 13 src/world_task/submission_disposition/tests/player_market_story.rs
 wait 9 9 src/world_task/submission_disposition/tests/player_market_typed.rs
+span 3 3 src/world_task/submission_disposition/tests/player_market_typed.rs
 wait 4 4 src/world_task/submission_disposition/tests/registry_load.rs
+span 2 2 src/world_task/submission_disposition/tests/registry_load.rs
 wait 47 47 src/world_task/tests.rs
 clock 19 19 src/world_task/tests.rs
+span 46 46 src/world_task/tests.rs
 wait 9 9 tests/commerce_composition/e0_ledger_durability.rs
+span 9 9 tests/commerce_composition/e0_ledger_durability.rs
 wait 4 4 tests/split_boundary/boot_parity.rs
 clock 1 1 tests/split_boundary/boot_parity.rs
+span 4 4 tests/split_boundary/boot_parity.rs
 wait 1 1 tests/split_boundary/boot_store.rs
 clock 1 1 tests/split_boundary/boot_store.rs
+span 1 1 tests/split_boundary/boot_store.rs
 wait 2 2 tests/split_boundary/content_studio.rs
 clock 1 1 tests/split_boundary/content_studio.rs
+span 2 2 tests/split_boundary/content_studio.rs
 wait 1 1 tests/split_boundary/dt_preparation_plans.rs
+span 1 1 tests/split_boundary/dt_preparation_plans.rs
 wait 2 2 tests/split_boundary/gateway_link_parity.rs
 wait 20 20 tests/split_boundary/ipc_authoritative_action.rs
+span 7 7 tests/split_boundary/ipc_authoritative_action.rs
 wait 5 5 tests/split_boundary/ipc_teardown.rs
+span 3 3 tests/split_boundary/ipc_teardown.rs
 wait 3 3 tests/split_boundary/ipc_window.rs
 clock 1 1 tests/split_boundary/relay_registry.rs
 wait 3 3 tests/split_boundary/unit_signals.rs
+span 1 1 tests/split_boundary/unit_signals.rs
 wait 3 3 tests/world_task/arena_bridge.rs
+span 3 3 tests/world_task/arena_bridge.rs
 wait 3 3 tests/world_task/dead_world_reader.rs
+span 3 3 tests/world_task/dead_world_reader.rs
 clock 1 1 tests/world_task/hostile_lines.rs
 wait 4 4 tests/world_task/preflight_retry_bounds.rs
 clock 1 1 tests/world_task/preflight_retry_bounds.rs
+span 3 3 tests/world_task/preflight_retry_bounds.rs
 wait 1 1 tests/world_task/world_panic_firewall.rs
+span 1 1 tests/world_task/world_panic_firewall.rs

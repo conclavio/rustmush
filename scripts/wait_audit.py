@@ -26,7 +26,10 @@ is a client's configuration, not a wait, and is not counted.
 --budget prints what doc 51's ratchet counts (the `wait_budget` gate in
 crates/mush-contract-tests/tests/ci_policy/wait_budget.rs): in story files only,
 outside any `start_paused` test, the raw waits above (`wait`) and the wall-clock
-reads unix_now_s(, unix_now_ms( and SystemTime::now( (`clock`). One row a file
+reads unix_now_s(, unix_now_ms( and SystemTime::now( (`clock`), and the literal
+spans passed to a wait (`span`, doc 51 cut FL.9): a `Duration::from_*(<number>)`
+in the own arguments of a raw wait or of a story-kit wait (wait_until, wait_for,
+within, within_for, at_most), not inside a block passed among them. One row a file
 and counter, `<counter> <count> <crate>/<path>`, then the totals by crate. The
 gate's budget files must hold the same counts. For the crates of the gate's
 `src` scope (SRC_SCOPE below, doc 51 cut FL.6) it also counts the test code under
@@ -83,6 +86,12 @@ NEEDLE = re.compile(
 # A wall-clock read (doc 51 §3.9). The empty `dot` group keeps scan_file's shape.
 CLOCK = re.compile(r"(?<![A-Za-z0-9_])(?P<dot>)(?P<name>unix_now_s|unix_now_ms|SystemTime\s*::\s*now)\s*\(")
 LITERAL = re.compile(r"Duration::from_(secs|millis|micros|secs_f32|secs_f64)\(\s*([0-9][0-9_\.]*)\s*\)")
+# The calls whose own arguments the gate's `span` counter reads (doc 51 cut FL.9):
+# the raw waits and the story kit's waits (the gate's KIT_WAITS), by any path. A
+# `.timeout(` configures a client and is skipped, as for the wait counter.
+SPAN_CALL = re.compile(
+    r"(?:(?P<dot>\.)|(?<![A-Za-z0-9_]))(?P<name>sleep_until|sleep|timeout_at|timeout|recv_timeout|wait_timeout|wait_until|wait_for|within_for|within|at_most)\s*\("
+)
 FN = re.compile(r"\bfn\s+([A-Za-z0-9_]+)")
 LOOP = re.compile(r"(?<![A-Za-z0-9_])(loop|while|for)(?![A-Za-z0-9_])")
 
@@ -138,7 +147,7 @@ def blank(source):
 
 
 class Site:
-    __slots__ = ("crate", "path", "line", "name", "shape", "paused", "fn", "text", "ctx", "cls", "rule", "scope")
+    __slots__ = ("crate", "path", "line", "name", "shape", "paused", "fn", "text", "ctx", "cls", "rule", "scope", "pos")
 
 
 def scan_file(crate, rel, source, start_line=0, scope="tests", pattern=NEEDLE):
@@ -192,6 +201,7 @@ def scan_file(crate, rel, source, start_line=0, scope="tests", pattern=NEEDLE):
                 if ln > start_line:
                     s = Site()
                     s.crate, s.path, s.line, s.name, s.scope = crate, rel, ln, m.group("name"), scope
+                    s.pos = m.end() - 1
                     in_loop = False
                     s.fn, s.paused = "", False
                     for kind, name, paused in reversed(stack):
@@ -476,6 +486,39 @@ def src_budget_files():
                         yield crate, rel, source, spans
 
 
+def own_arguments(code, open_at):
+    """The positions of a call's own arguments, `open_at` being its `(`: up to
+    the matching `)`, leaving out any brace block nested in them (the gate's
+    mark_arguments)."""
+    own, parens, braces = set(), 0, 0
+    for at in range(open_at, len(code)):
+        c = code[at]
+        if c == "(":
+            parens += 1
+        elif c == ")":
+            parens = max(0, parens - 1)
+            if parens == 0:
+                return own
+        elif c == "{":
+            braces += 1
+        elif c == "}":
+            braces = max(0, braces - 1)
+        if braces == 0:
+            own.add(at)
+    return own
+
+
+def span_count(crate, rel, source, start, scope, keep=lambda line: True):
+    """Literal spans written in the own arguments of a wait that is not in a
+    paused test (the gate's `span` counter)."""
+    code = blank(source)
+    own = set()
+    for s in scan_file(crate, rel, source, start, scope, SPAN_CALL):
+        if not s.paused and keep(s.line):
+            own |= own_arguments(code, s.pos)
+    return sum(1 for m in LITERAL.finditer(code) if m.start() in own)
+
+
 def budget():
     """The wait_budget gate's counts: story files, outside paused tests."""
     rows = Counter()
@@ -487,6 +530,9 @@ def budget():
             n = sum(1 for s in scan_file(crate, rel, source, start, scope, pattern) if not s.paused)
             if n:
                 rows[(crate, path, counter)] = n
+        n = span_count(crate, rel, source, start, scope)
+        if n:
+            rows[(crate, path, "span")] = n
     for crate, rel, source, spans in src_budget_files():
         path = rel.split("/", 2)[2]
         inside = lambda line: spans is None or any(a <= line <= b for a, b in spans)
@@ -494,14 +540,17 @@ def budget():
             n = sum(1 for s in scan_file(crate, rel, source, 0, "src", pattern) if not s.paused and inside(s.line))
             if n:
                 rows[(crate, path, counter)] = n
-    order = {"wait": 0, "clock": 1}
+        n = span_count(crate, rel, source, 0, "src", inside)
+        if n:
+            rows[(crate, path, "span")] = n
+    order = {"wait": 0, "clock": 1, "span": 2}
     for (crate, path, counter), n in sorted(rows.items(), key=lambda kv: (kv[0][0], kv[0][1], order[kv[0][2]])):
         print(f"{counter} {n} {crate}/{path}")
     print()
     by = Counter()
     for (crate, _path, counter), n in rows.items():
         by[(crate, counter)] += n
-    table(sorted({k[0] for k in by}), ["wait", "clock"], lambda r, c: by[(r, c)])
+    table(sorted({k[0] for k in by}), ["wait", "clock", "span"], lambda r, c: by[(r, c)])
 
 
 if __name__ == "__main__":
