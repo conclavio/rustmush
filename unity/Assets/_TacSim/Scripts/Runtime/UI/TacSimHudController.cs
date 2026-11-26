@@ -174,8 +174,11 @@ namespace TacSim.UI
         private PlayerAvatarPreset _selectedAvatar = PlayerAvatarPreset.StellarTrooperFemale;
         private readonly List<Image> _avatarButtons = new List<Image>();
 
-        // Top bar
+        // Top bar & HUD density chrome
         private GameObject _hudRoot;
+        private GameObject _topStripPanel;
+        private GameObject _cinematicRestoreChip;
+        private bool _isCinematicHudActive;
         private Text _locationText;
         private Text _netBadgeText;
         private Text _shipAndClockText;
@@ -593,10 +596,36 @@ namespace TacSim.UI
 
             DisplayOptions = gameObject.GetComponent<TacSimDisplayOptions>() ?? gameObject.AddComponent<TacSimDisplayOptions>();
             DisplayOptions.BuildModal(canvasGo.transform, _uiFont);
+            DisplayOptions.OnHudDensityChanged -= ApplyHudDensityPreset;
+            DisplayOptions.OnHudDensityChanged += ApplyHudDensityPreset;
             DisplayOptions.ApplyStartupPreferences();
+
+            var restoreBtn = CreateButton(canvasGo.transform, "[F9] RESTORE HUD", new Color(0.08f, 0.16f, 0.24f, 0.78f), () => DisplayOptions?.ToggleCinematicHudMode());
+            restoreBtn.name = "CinematicRestoreChip";
+            SetRect(restoreBtn.GetComponent<RectTransform>(), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-156f, -38f), new Vector2(-14f, -10f));
+            _cinematicRestoreChip = restoreBtn.gameObject;
+            _cinematicRestoreChip.SetActive(false);
+
+            ApplyHudDensityPreset(TacSimDisplayOptions.CurrentHudDensity);
 
             IsInitialized = true;
             ShowLoginOverlay(true, "Sign in to mushd (e.g. https://dev1.conclav.io) to enter the 2350 Corridor.");
+        }
+
+        public bool IsCinematicHudActive => _isCinematicHudActive;
+
+        public void ApplyHudDensityPreset(TacSimHudDensityPreset preset)
+        {
+            _isCinematicHudActive = preset == TacSimHudDensityPreset.Cinematic;
+            bool showChrome = !_isCinematicHudActive;
+            if (_topStripPanel != null) _topStripPanel.SetActive(showChrome);
+            if (_commsPanelRect != null) _commsPanelRect.gameObject.SetActive(showChrome);
+            if (_quickActionsStripPanel != null && _isCinematicHudActive)
+                _quickActionsStripPanel.SetActive(false);
+            UnitFrames?.SetHiddenByHudPreset(_isCinematicHudActive);
+            Minimap?.SetHiddenByHudPreset(_isCinematicHudActive);
+            if (_cinematicRestoreChip != null)
+                _cinematicRestoreChip.SetActive(_isCinematicHudActive && !IsLoginOverlayVisible);
         }
 
         private static void EnsureEventSystem()
@@ -626,6 +655,7 @@ namespace TacSim.UI
 
             // 1. Top Telemetry Strip
             var topBar = CreatePanel(_hudRoot.transform, "TopStrip", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(16f, -64f), new Vector2(-16f, -10f), new Color(0.04f, 0.07f, 0.11f, 0.86f));
+            _topStripPanel = topBar;
             _locationText = CreateText(topBar.transform, "CERES FREEPORT — PORT WATCH ARRIVALS [PUBLIC DECK]", 18, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.82f, 0.94f, 1f));
             SetRect(_locationText.rectTransform, new Vector2(0f, 0f), new Vector2(0.42f, 1f), new Vector2(18f, 0f), Vector2.zero);
 
@@ -1357,6 +1387,12 @@ namespace TacSim.UI
                 (!IsTextInputFocused || (KeybindHelp != null && KeybindHelp.IsOpen && !KeybindHelp.IsAnyInputFocused)))
             {
                 KeybindHelp?.ToggleOpen();
+            }
+
+            if (Input.GetKeyDown(KeyCode.F9) && !IsTextInputFocused &&
+                (_loginPanel == null || !_loginPanel.activeSelf))
+            {
+                DisplayOptions?.ToggleCinematicHudMode();
             }
 
             if (Input.GetKeyDown(KeyCode.F11) && !IsTextInputFocused)

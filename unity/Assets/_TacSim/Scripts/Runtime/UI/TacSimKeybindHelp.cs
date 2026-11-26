@@ -87,7 +87,7 @@ namespace TacSim.UI
                 "<b>[N]</b> 3D Wayfinder Directory & Room Roster\n" +
                 "<b>[O]</b> Social, Online WHO, IC Mail & Channels\n" +
                 "<b>[J]</b> Mission/Passage/Survey/Claims Journal\n" +
-                "<b>[F10]</b> Minds  <b>[F11]</b> Fullscreen  <b>[Esc]</b> Close");
+                "<b>[F9]</b> Cinematic HUD  <b>[F10]</b> Minds  <b>[F11]</b> Fullscreen");
 
             BuildKeybindCard(
                 grid.transform,

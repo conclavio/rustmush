@@ -6023,5 +6023,77 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void AudioMixerCameraPrefsAndHudDensityPresets_ApplyAndPersistCleanly()
+        {
+            var rootGo = new UnityEngine.GameObject("AudioMixerCamHudTest");
+            try
+            {
+                // 1. Audio Mixer channels, effective volumes & lazy Red Alert Klaxon clip
+                var audio = rootGo.AddComponent<TacSim.Core.TacSimAudioSynthesizer>();
+                audio.InitializeAudioGraph();
+                Assert.AreEqual(100, audio.MasterVolumePct);
+                Assert.AreEqual(80, audio.AmbientVolumePct);
+                Assert.AreEqual(90, audio.SfxVolumePct);
+
+                audio.SetMasterVolumePct(50);
+                audio.SetAmbientVolumePct(50);
+                audio.SetSfxVolumePct(40);
+                Assert.AreEqual(0.085f * 0.25f, audio.EffectiveAmbientVolume, 0.0005f);
+                Assert.AreEqual(0.22f * 0.20f, audio.EffectiveSfxVolume, 0.0005f);
+
+                float[] klaxon = TacSim.Core.TacSimAudioSynthesizer.GenerateRedAlertKlaxonSamples();
+                Assert.Greater(klaxon.Length, 5000);
+                audio.PlayRedAlertKlaxon();
+                Assert.AreEqual(12, audio.AllocatedClipCount, "Lazy Red Alert klaxon should allocate 12th clip");
+                audio.DisposeClips();
+                Assert.AreEqual(0, audio.AllocatedClipCount);
+
+                // 2. Camera preferences (Sensitivity, Zoom Speed, Invert-Y, FOV)
+                var camGo = new UnityEngine.GameObject("CamPrefsTest", typeof(UnityEngine.Camera));
+                camGo.transform.SetParent(rootGo.transform, false);
+                var rig = camGo.AddComponent<TacSim.Character.TacSimCameraRig>();
+                rig.ControlledCamera = camGo.GetComponent<UnityEngine.Camera>();
+                rig.ApplyCameraPreferences(150, 125, invertY: true, fovDeg: 72, savePrefs: false);
+                Assert.AreEqual(150, rig.OrbitSensitivityPct);
+                Assert.AreEqual(125, rig.ZoomSpeedPct);
+                Assert.IsTrue(rig.InvertY);
+                Assert.AreEqual(72, rig.FieldOfViewDeg);
+                Assert.AreEqual(72f, rig.ControlledCamera.fieldOfView, 0.01f);
+                Assert.AreEqual(4.2f, rig.mouseSensitivity, 0.01f);
+
+                // 3. 3-Tab Options Console & F9 Cinematic HUD Density Toggle
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.DisplayOptions.BindSubsystems(audio, rig);
+                hud.DisplayOptions.SelectTab(TacSim.UI.TacSimOptionsTab.Audio);
+                Assert.AreEqual(TacSim.UI.TacSimOptionsTab.Audio, hud.DisplayOptions.ActiveTab);
+                hud.DisplayOptions.SelectTab(TacSim.UI.TacSimOptionsTab.CameraAndHud);
+                Assert.AreEqual(TacSim.UI.TacSimOptionsTab.CameraAndHud, hud.DisplayOptions.ActiveTab);
+
+                hud.DisplayOptions.SetHudDensityPreset(TacSim.UI.TacSimHudDensityPreset.Compact, save: false);
+                Assert.AreEqual(TacSim.UI.TacSimHudDensityPreset.Compact, TacSim.UI.TacSimDisplayOptions.CurrentHudDensity);
+                Assert.IsFalse(hud.IsCinematicHudActive);
+
+                // Toggle F9 Cinematic mode hides UnitFrames & Minimap, then restores Compact cleanly
+                Assert.AreEqual(TacSim.UI.TacSimHudDensityPreset.Cinematic, hud.DisplayOptions.ToggleCinematicHudMode());
+                Assert.IsTrue(hud.IsCinematicHudActive);
+                Assert.IsFalse(hud.UnitFrames.IsFrameRootVisible);
+                Assert.IsFalse(hud.Minimap.IsVisible);
+
+                Assert.AreEqual(TacSim.UI.TacSimHudDensityPreset.Compact, hud.DisplayOptions.ToggleCinematicHudMode());
+                Assert.IsFalse(hud.IsCinematicHudActive);
+                Assert.IsTrue(hud.UnitFrames.IsFrameRootVisible);
+                Assert.IsTrue(hud.Minimap.IsVisible);
+
+                // Reset back to Standard for other tests
+                hud.DisplayOptions.SetHudDensityPreset(TacSim.UI.TacSimHudDensityPreset.Standard, save: false);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

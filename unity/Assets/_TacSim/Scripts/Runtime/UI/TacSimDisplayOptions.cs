@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using TacSim.Character;
+using TacSim.Core;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -10,6 +12,20 @@ namespace TacSim.UI
         Windowed = 0,
         BorderlessFullscreen = 1,
         ExclusiveFullscreen = 2
+    }
+
+    public enum TacSimOptionsTab
+    {
+        Display = 0,
+        Audio = 1,
+        CameraAndHud = 2
+    }
+
+    public enum TacSimHudDensityPreset
+    {
+        Standard = 0,
+        Compact = 1,
+        Cinematic = 2
     }
 
     public readonly struct TacSimResolutionChoice : IEquatable<TacSimResolutionChoice>
@@ -31,9 +47,10 @@ namespace TacSim.UI
     }
 
     /// <summary>
-    /// DPI-aware display, resolution, UI scale, and graphics quality controller + diegetic Options modal.
-    /// Respects Windows DPI scaling on high-DPI / ultrawide monitors on first launch and persists user
-    /// choices in PlayerPrefs across sessions.
+    /// DPI-aware 3-tab Settings Console (`DISPLAY` | `AUDIO` | `CAMERA &amp; HUD`):
+    /// - Display Mode, Resolution, Live UI Scale, and Graphics Quality
+    /// - Master / Ambient / SFX Volume Mixer, Mute Toggle &amp; Live SFX Preview Buttons
+    /// - Camera Sensitivity, Scroll Zoom Speed, Invert-Y, Field of View &amp; HUD Density (`STANDARD` / `COMPACT` / `CINEMATIC [F9]`)
     /// </summary>
     public sealed class TacSimDisplayOptions : MonoBehaviour
     {
@@ -48,22 +65,56 @@ namespace TacSim.UI
         private const string PrefHeight = "TacSim_ResHeight";
         private const string PrefUiScalePct = "TacSim_UiScalePct";
         private const string PrefQuality = "TacSim_QualityLevel";
+        private const string PrefHudDensity = "TacSim_HudDensityPreset";
 
         private static readonly int[] UiScalePresetsPct = { 85, 100, 125, 150, 175, 200 };
+        private static readonly int[] VolumeStepPresets = { 0, 25, 50, 75, 100 };
+        private static readonly int[] SensPresets = { 50, 75, 100, 125, 150, 200 };
+        private static readonly int[] FovPresets = { 55, 62, 72, 80 };
 
         public static float CurrentUiScale { get; private set; } = 1.0f;
+        public static TacSimHudDensityPreset CurrentHudDensity { get; private set; } = TacSimHudDensityPreset.Standard;
+
+        public event Action<TacSimHudDensityPreset> OnHudDensityChanged;
 
         public bool IsOpen => _modalOverlay != null && _modalOverlay.activeSelf;
+        public TacSimOptionsTab ActiveTab { get; private set; } = TacSimOptionsTab.Display;
 
         private Font _uiFont;
+        private TacSimAudioSynthesizer _audio;
+        private TacSimCameraRig _cameraRig;
+
         private GameObject _modalOverlay;
+        private readonly Image[] _tabButtonImages = new Image[3];
+        private readonly GameObject[] _tabBodies = new GameObject[3];
+
+        // Tab 0: Display
         private Text _resolutionValueText;
         private Text _qualityValueText;
         private Text _liveStatusText;
-
         private readonly List<Image> _modeButtonImages = new List<Image>();
         private readonly List<Image> _scaleButtonImages = new List<Image>();
         private List<TacSimResolutionChoice> _resolutionChoices = new List<TacSimResolutionChoice>();
+
+        // Tab 1: Audio Mixer
+        private Text _muteBtnLabel;
+        private Image _muteBtnImage;
+        private Text _masterVolLabel;
+        private Text _ambientVolLabel;
+        private Text _sfxVolLabel;
+        private readonly List<Image> _masterVolPills = new List<Image>();
+        private readonly List<Image> _ambientVolPills = new List<Image>();
+        private readonly List<Image> _sfxVolPills = new List<Image>();
+
+        // Tab 2: Camera & HUD
+        private Text _sensValueLabel;
+        private Text _zoomValueLabel;
+        private Text _invertYBtnLabel;
+        private Image _invertYBtnImage;
+        private readonly List<Image> _sensPills = new List<Image>();
+        private readonly List<Image> _zoomPills = new List<Image>();
+        private readonly List<Image> _fovPills = new List<Image>();
+        private readonly List<Image> _hudDensityPills = new List<Image>();
 
         private TacSimDisplayModeOption _selectedMode = TacSimDisplayModeOption.Windowed;
         private int _selectedResolutionIndex;
@@ -71,6 +122,7 @@ namespace TacSim.UI
         private int _selectedQualityIndex;
         private int _lastWindowedWidth = 1600;
         private int _lastWindowedHeight = 900;
+        private TacSimHudDensityPreset _lastNonCinematicDensity = TacSimHudDensityPreset.Standard;
 
         public static float ComputeWindowsDpiScale(float screenDpi)
         {
@@ -87,8 +139,6 @@ namespace TacSim.UI
             int monH = monitorHeight > 0 ? monitorHeight : 1080;
             float scale = Mathf.Clamp(dpiScale, 1.0f, 2.5f);
 
-            // Start from a comfortable 1440x810 logical size multiplied by Windows DPI scaling,
-            // and never exceed ~88% of either monitor dimension (preserving a clean 16:9 frame).
             float targetW = Mathf.Max(1600f, 1440f * scale);
             float targetH = targetW * (9f / 16f);
 
@@ -116,8 +166,6 @@ namespace TacSim.UI
         {
             float scale = Mathf.Clamp(dpiScale, 1.0f, 2.5f);
             float effective = scale;
-            // On high-resolution displays where Unity reports 96 DPI (common when DPI-unaware or custom scaling),
-            // bump UI scale gently when height >= 1440 so text and chat remain crisp.
             if (effective <= 1.05f && (screenHeight >= 1800 || screenWidth >= 3200))
                 effective = 1.25f;
             else if (effective > 1.5f)
@@ -168,7 +216,6 @@ namespace TacSim.UI
                     TryAdd(hardwareResolutions[i].width, hardwareResolutions[i].height);
             }
 
-            // Always include helpful windowed/ultrawide presets that fit inside the current monitor.
             TryAdd(maxW, maxH);
             TryAdd(3840, 2160);
             TryAdd(3440, 1440);
@@ -207,6 +254,13 @@ namespace TacSim.UI
             }
         }
 
+        public void BindSubsystems(TacSimAudioSynthesizer audio, TacSimCameraRig cameraRig)
+        {
+            _audio = audio;
+            _cameraRig = cameraRig;
+            RefreshVisualState();
+        }
+
         public void BuildModal(Transform canvasRoot, Font uiFont)
         {
             _uiFont = uiFont;
@@ -218,6 +272,13 @@ namespace TacSim.UI
             }
             _modeButtonImages.Clear();
             _scaleButtonImages.Clear();
+            _masterVolPills.Clear();
+            _ambientVolPills.Clear();
+            _sfxVolPills.Clear();
+            _sensPills.Clear();
+            _zoomPills.Clear();
+            _fovPills.Clear();
+            _hudDensityPills.Clear();
 
             RefreshAvailableResolutions();
             LoadStateWithoutApplying();
@@ -236,49 +297,90 @@ namespace TacSim.UI
                 "DisplayOptionsCard",
                 new Vector2(0.5f, 0.5f),
                 new Vector2(0.5f, 0.5f),
-                new Vector2(-340f, -245f),
-                new Vector2(340f, 245f),
-                new Color(0.06f, 0.10f, 0.16f, 0.98f));
+                new Vector2(-360f, -278f),
+                new Vector2(360f, 278f),
+                new Color(0.06f, 0.10f, 0.16f, 0.985f));
 
-            var title = CreateText(card.transform, "DISPLAY & GRAPHICS OPTIONS", 20, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.45f, 0.90f, 1f));
-            SetRect(title.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(24f, -48f), new Vector2(-130f, -12f));
+            CreatePanel(card.transform, "TopAccent", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -3f), Vector2.zero, new Color(0.32f, 0.88f, 1f, 0.95f));
+
+            var title = CreateText(card.transform, "SETTINGS — DISPLAY, AUDIO & CAMERA", 19, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.45f, 0.90f, 1f));
+            SetRect(title.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(22f, -46f), new Vector2(-132f, -10f));
 
             var closeTop = CreateButton(card.transform, "CLOSE [ESC]", new Color(0.45f, 0.16f, 0.18f), () => SetOpen(false));
-            SetRect(closeTop.GetComponent<RectTransform>(), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-124f, -46f), new Vector2(-18f, -14f));
+            SetRect(closeTop.GetComponent<RectTransform>(), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-124f, -44f), new Vector2(-16f, -12f));
 
+            // 3 Settings Category Tabs
+            var tabStrip = CreatePanel(card.transform, "OptionsTabStrip", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(22f, -84f), new Vector2(-22f, -52f), Color.clear);
+            var tabHlg = tabStrip.AddComponent<HorizontalLayoutGroup>();
+            tabHlg.spacing = 8f;
+            tabHlg.childControlWidth = true;
+            tabHlg.childControlHeight = true;
+            tabHlg.childForceExpandWidth = true;
+
+            string[] tabLabels = { "DISPLAY & SCALE", "AUDIO MIXER", "CAMERA & HUD" };
+            for (int t = 0; t < 3; t++)
+            {
+                var capturedTab = (TacSimOptionsTab)t;
+                var tb = CreateButton(tabStrip.transform, tabLabels[t], new Color(0.14f, 0.24f, 0.34f), () => SelectTab(capturedTab));
+                _tabButtonImages[t] = tb.GetComponent<Image>();
+            }
+
+            // Tab bodies area (`y = 66 .. -92`)
+            _tabBodies[0] = CreatePanel(card.transform, "DisplayTabBody", new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(0f, 64f), new Vector2(0f, -90f), Color.clear);
+            _tabBodies[1] = CreatePanel(card.transform, "AudioTabBody", new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(0f, 64f), new Vector2(0f, -90f), Color.clear);
+            _tabBodies[2] = CreatePanel(card.transform, "CameraHudTabBody", new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(0f, 64f), new Vector2(0f, -90f), Color.clear);
+
+            BuildDisplayTab(_tabBodies[0].transform);
+            BuildAudioTab(_tabBodies[1].transform);
+            BuildCameraAndHudTab(_tabBodies[2].transform);
+
+            // Shared bottom action row
+            var autoBtn = CreateButton(card.transform, "AUTO-DETECT DPI", new Color(0.22f, 0.30f, 0.42f), ResetToAutoDpiDefaults);
+            SetRect(autoBtn.GetComponent<RectTransform>(), new Vector2(0f, 0f), new Vector2(0.48f, 0f), new Vector2(22f, 16f), new Vector2(-6f, 56f));
+
+            var applyBtn = CreateButton(card.transform, "APPLY & SAVE", new Color(0.14f, 0.54f, 0.38f), ApplyAndSaveSelections);
+            SetRect(applyBtn.GetComponent<RectTransform>(), new Vector2(0.52f, 0f), new Vector2(1f, 0f), new Vector2(6f, 16f), new Vector2(-22f, 56f));
+
+            SelectTab(TacSimOptionsTab.Display);
+            RefreshVisualState();
+            _modalOverlay.SetActive(false);
+        }
+
+        private void BuildDisplayTab(Transform body)
+        {
             // 1. Display Mode
-            var modeLbl = CreateText(card.transform, "DISPLAY MODE  (F11 TOGGLES FULLSCREEN)", 13, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.72f, 0.86f, 0.96f));
-            SetRect(modeLbl.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(24f, -84f), new Vector2(-24f, -60f));
+            var modeLbl = CreateText(body, "DISPLAY MODE  (F11 TOGGLES FULLSCREEN)", 12, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.72f, 0.86f, 0.96f));
+            SetRect(modeLbl.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(22f, -24f), new Vector2(-22f, -2f));
 
             string[] modeLabels = { "Windowed", "Borderless Fullscreen", "Fullscreen" };
             for (int i = 0; i < modeLabels.Length; i++)
             {
                 int captured = i;
-                float xMin = 24f + i * 214f;
-                var btn = CreateButton(card.transform, modeLabels[i], new Color(0.14f, 0.24f, 0.34f), () =>
+                float xMin = 22f + i * 228f;
+                var btn = CreateButton(body, modeLabels[i], new Color(0.14f, 0.24f, 0.34f), () =>
                 {
                     _selectedMode = (TacSimDisplayModeOption)captured;
                     if (_selectedMode != TacSimDisplayModeOption.Windowed)
                         SelectNearestResolution(GetMonitorWidth(), GetMonitorHeight());
                     RefreshVisualState();
                 });
-                SetRect(btn.GetComponent<RectTransform>(), new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(xMin, -124f), new Vector2(xMin + 204f, -88f));
+                SetRect(btn.GetComponent<RectTransform>(), new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(xMin, -62f), new Vector2(xMin + 220f, -28f));
                 _modeButtonImages.Add(btn.GetComponent<Image>());
             }
 
             // 2. Resolution selector + quick presets
-            var resLbl = CreateText(card.transform, "WINDOW / SCREEN RESOLUTION", 13, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.72f, 0.86f, 0.96f));
-            SetRect(resLbl.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(24f, -158f), new Vector2(-24f, -134f));
+            var resLbl = CreateText(body, "WINDOW / SCREEN RESOLUTION", 12, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.72f, 0.86f, 0.96f));
+            SetRect(resLbl.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(22f, -92f), new Vector2(-22f, -70f));
 
-            var prevResBtn = CreateButton(card.transform, "<", new Color(0.16f, 0.28f, 0.40f), () => StepResolution(+1));
-            SetRect(prevResBtn.GetComponent<RectTransform>(), new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(24f, -198f), new Vector2(72f, -162f));
+            var prevResBtn = CreateButton(body, "<", new Color(0.16f, 0.28f, 0.40f), () => StepResolution(+1));
+            SetRect(prevResBtn.GetComponent<RectTransform>(), new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(22f, -130f), new Vector2(70f, -96f));
 
-            var resBox = CreatePanel(card.transform, "ResolutionBox", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(80f, -198f), new Vector2(-80f, -162f), new Color(0.09f, 0.14f, 0.22f, 0.96f));
-            _resolutionValueText = CreateText(resBox.transform, "1920 x 1080", 15, FontStyle.Bold, TextAnchor.MiddleCenter, Color.white);
+            var resBox = CreatePanel(body, "ResolutionBox", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(78f, -130f), new Vector2(-78f, -96f), new Color(0.09f, 0.14f, 0.22f, 0.96f));
+            _resolutionValueText = CreateText(resBox.transform, "1920 x 1080", 14, FontStyle.Bold, TextAnchor.MiddleCenter, Color.white);
             SetRect(_resolutionValueText.rectTransform, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero);
 
-            var nextResBtn = CreateButton(card.transform, ">", new Color(0.16f, 0.28f, 0.40f), () => StepResolution(-1));
-            SetRect(nextResBtn.GetComponent<RectTransform>(), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-72f, -198f), new Vector2(-24f, -162f));
+            var nextResBtn = CreateButton(body, ">", new Color(0.16f, 0.28f, 0.40f), () => StepResolution(-1));
+            SetRect(nextResBtn.GetComponent<RectTransform>(), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-70f, -130f), new Vector2(-22f, -96f));
 
             var presetRow = new (string label, int w, int h)[]
             {
@@ -290,59 +392,255 @@ namespace TacSim.UI
             for (int i = 0; i < presetRow.Length; i++)
             {
                 var p = presetRow[i];
-                float xMin = 24f + i * 160f;
-                var pBtn = CreateButton(card.transform, p.label, new Color(0.12f, 0.22f, 0.30f), () =>
+                float xMin = 22f + i * 170f;
+                var pBtn = CreateButton(body, p.label, new Color(0.12f, 0.22f, 0.30f), () =>
                 {
                     SelectNearestResolution(p.w, p.h);
                     RefreshVisualState();
                 });
-                SetRect(pBtn.GetComponent<RectTransform>(), new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(xMin, -234f), new Vector2(xMin + 150f, -204f));
+                SetRect(pBtn.GetComponent<RectTransform>(), new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(xMin, -166f), new Vector2(xMin + 162f, -136f));
             }
 
             // 3. UI Scale (live preview!)
-            var scaleLbl = CreateText(card.transform, "UI / HUD SCALE  (LIVE PREVIEW — HELPS ON HIGH-DPI / ULTRAWIDE)", 13, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.72f, 0.86f, 0.96f));
-            SetRect(scaleLbl.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(24f, -268f), new Vector2(-24f, -244f));
+            var scaleLbl = CreateText(body, "UI / HUD SCALE  (LIVE PREVIEW — HELPS ON HIGH-DPI / ULTRAWIDE)", 12, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.72f, 0.86f, 0.96f));
+            SetRect(scaleLbl.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(22f, -196f), new Vector2(-22f, -174f));
 
             for (int i = 0; i < UiScalePresetsPct.Length; i++)
             {
                 int pct = UiScalePresetsPct[i];
-                float xMin = 24f + i * 106f;
-                var sBtn = CreateButton(card.transform, $"{pct}%", new Color(0.14f, 0.24f, 0.34f), () =>
+                float xMin = 22f + i * 114f;
+                var sBtn = CreateButton(body, $"{pct}%", new Color(0.14f, 0.24f, 0.34f), () =>
                 {
                     _selectedUiScalePct = pct;
                     ApplyUiScaleToAllCanvasScalers(_selectedUiScalePct / 100f);
                     RefreshVisualState();
                 });
-                SetRect(sBtn.GetComponent<RectTransform>(), new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(xMin, -308f), new Vector2(xMin + 98f, -272f));
+                SetRect(sBtn.GetComponent<RectTransform>(), new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(xMin, -234f), new Vector2(xMin + 106f, -200f));
                 _scaleButtonImages.Add(sBtn.GetComponent<Image>());
             }
 
             // 4. Graphics Quality
-            var qualLbl = CreateText(card.transform, "GRAPHICS QUALITY PRESET", 13, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.72f, 0.86f, 0.96f));
-            SetRect(qualLbl.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(24f, -342f), new Vector2(-24f, -318f));
+            var qualLbl = CreateText(body, "GRAPHICS QUALITY PRESET", 12, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.72f, 0.86f, 0.96f));
+            SetRect(qualLbl.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(22f, -264f), new Vector2(-22f, -242f));
 
-            var prevQ = CreateButton(card.transform, "<", new Color(0.16f, 0.28f, 0.40f), () => StepQuality(-1));
-            SetRect(prevQ.GetComponent<RectTransform>(), new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(24f, -382f), new Vector2(72f, -346f));
+            var prevQ = CreateButton(body, "<", new Color(0.16f, 0.28f, 0.40f), () => StepQuality(-1));
+            SetRect(prevQ.GetComponent<RectTransform>(), new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(22f, -302f), new Vector2(70f, -268f));
 
-            var qBox = CreatePanel(card.transform, "QualityBox", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(80f, -382f), new Vector2(-80f, -346f), new Color(0.09f, 0.14f, 0.22f, 0.96f));
-            _qualityValueText = CreateText(qBox.transform, "High", 15, FontStyle.Bold, TextAnchor.MiddleCenter, Color.white);
+            var qBox = CreatePanel(body, "QualityBox", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(78f, -302f), new Vector2(-78f, -268f), new Color(0.09f, 0.14f, 0.22f, 0.96f));
+            _qualityValueText = CreateText(qBox.transform, "High", 14, FontStyle.Bold, TextAnchor.MiddleCenter, Color.white);
             SetRect(_qualityValueText.rectTransform, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero);
 
-            var nextQ = CreateButton(card.transform, ">", new Color(0.16f, 0.28f, 0.40f), () => StepQuality(+1));
-            SetRect(nextQ.GetComponent<RectTransform>(), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-72f, -382f), new Vector2(-24f, -346f));
+            var nextQ = CreateButton(body, ">", new Color(0.16f, 0.28f, 0.40f), () => StepQuality(+1));
+            SetRect(nextQ.GetComponent<RectTransform>(), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-70f, -302f), new Vector2(-22f, -268f));
 
-            // 5. Live diagnostics & action buttons
-            _liveStatusText = CreateText(card.transform, "", 12, FontStyle.Normal, TextAnchor.MiddleCenter, new Color(0.68f, 0.84f, 0.94f));
-            SetRect(_liveStatusText.rectTransform, new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(24f, 68f), new Vector2(-24f, 96f));
+            _liveStatusText = CreateText(body, "", 12, FontStyle.Normal, TextAnchor.MiddleCenter, new Color(0.68f, 0.84f, 0.94f));
+            SetRect(_liveStatusText.rectTransform, new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(22f, 10f), new Vector2(-22f, 38f));
+        }
 
-            var autoBtn = CreateButton(card.transform, "AUTO-DETECT DPI", new Color(0.22f, 0.30f, 0.42f), ResetToAutoDpiDefaults);
-            SetRect(autoBtn.GetComponent<RectTransform>(), new Vector2(0f, 0f), new Vector2(0.48f, 0f), new Vector2(24f, 18f), new Vector2(-6f, 60f));
+        private void BuildAudioTab(Transform body)
+        {
+            var hdr = CreateText(body, "PROCEDURAL AUDIO MIXER  (CTRL+M QUICK MUTE)", 12, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.72f, 0.86f, 0.96f));
+            SetRect(hdr.rectTransform, new Vector2(0f, 1f), new Vector2(0.62f, 1f), new Vector2(22f, -30f), new Vector2(0f, -4f));
 
-            var applyBtn = CreateButton(card.transform, "APPLY & SAVE", new Color(0.14f, 0.54f, 0.38f), ApplyAndSaveSelections);
-            SetRect(applyBtn.GetComponent<RectTransform>(), new Vector2(0.52f, 0f), new Vector2(1f, 0f), new Vector2(6f, 18f), new Vector2(-24f, 60f));
+            var muteBtn = CreateButton(body, "AUDIO: ACTIVE", new Color(0.14f, 0.46f, 0.36f), () =>
+            {
+                _audio?.ToggleMuted();
+                RefreshVisualState();
+            });
+            SetRect(muteBtn.GetComponent<RectTransform>(), new Vector2(0.64f, 1f), new Vector2(1f, 1f), new Vector2(0f, -34f), new Vector2(-22f, -2f));
+            _muteBtnLabel = muteBtn.GetComponentInChildren<Text>();
+            _muteBtnImage = muteBtn.GetComponent<Image>();
 
+            BuildVolumeRow(body, "MASTER VOLUME", -46f, out _masterVolLabel, _masterVolPills,
+                pct => { _audio?.SetMasterVolumePct(pct); RefreshVisualState(); },
+                delta => { if (_audio != null) _audio.SetMasterVolumePct(_audio.MasterVolumePct + delta); RefreshVisualState(); });
+
+            BuildVolumeRow(body, "AMBIENT SOUNDSCAPE (STATION / SHIP / SPACE)", -124f, out _ambientVolLabel, _ambientVolPills,
+                pct => { _audio?.SetAmbientVolumePct(pct); RefreshVisualState(); },
+                delta => { if (_audio != null) _audio.SetAmbientVolumePct(_audio.AmbientVolumePct + delta); RefreshVisualState(); });
+
+            BuildVolumeRow(body, "TACTICAL & UI SFX", -202f, out _sfxVolLabel, _sfxVolPills,
+                pct => { _audio?.SetSfxVolumePct(pct); RefreshVisualState(); },
+                delta => { if (_audio != null) _audio.SetSfxVolumePct(_audio.SfxVolumePct + delta); RefreshVisualState(); });
+
+            var testLbl = CreateText(body, "AUDIO CHANNEL PREVIEW", 12, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.72f, 0.86f, 0.96f));
+            SetRect(testLbl.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(22f, -306f), new Vector2(-22f, -284f));
+
+            var testRow = CreatePanel(body, "AudioTestRow", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(22f, -346f), new Vector2(-22f, -310f), Color.clear);
+            var hlg = testRow.AddComponent<HorizontalLayoutGroup>();
+            hlg.spacing = 8f; hlg.childControlWidth = true; hlg.childControlHeight = true; hlg.childForceExpandWidth = true;
+            CreateButton(testRow.transform, "TEST CHIME", new Color(0.14f, 0.34f, 0.46f), () => _audio?.PlayMarketChime());
+            CreateButton(testRow.transform, "TEST LASER", new Color(0.46f, 0.20f, 0.24f), () => _audio?.PlayLaserPulse());
+            CreateButton(testRow.transform, "TEST RED ALERT", new Color(0.62f, 0.20f, 0.16f), () => _audio?.PlayRedAlertKlaxon());
+            CreateButton(testRow.transform, "RESET MIXER", new Color(0.24f, 0.28f, 0.36f), () =>
+            {
+                _audio?.ResetMixerDefaults();
+                RefreshVisualState();
+            });
+        }
+
+        private void BuildVolumeRow(
+            Transform parent,
+            string title,
+            float yTop,
+            out Text valueLabel,
+            List<Image> pillImages,
+            Action<int> onPreset,
+            Action<int> onStep)
+        {
+            var lbl = CreateText(parent, title, 12, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.72f, 0.86f, 0.96f));
+            SetRect(lbl.rectTransform, new Vector2(0f, 1f), new Vector2(0.76f, 1f), new Vector2(22f, yTop - 22f), new Vector2(0f, yTop));
+
+            valueLabel = CreateText(parent, "100%", 12, FontStyle.Bold, TextAnchor.MiddleRight, new Color(0.50f, 0.96f, 0.82f));
+            SetRect(valueLabel.rectTransform, new Vector2(0.76f, 1f), new Vector2(1f, 1f), Vector2.zero, new Vector2(-22f, yTop));
+
+            var row = CreatePanel(parent, "VolRow_" + title, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(22f, yTop - 62f), new Vector2(-22f, yTop - 26f), Color.clear);
+            var hlg = row.AddComponent<HorizontalLayoutGroup>();
+            hlg.spacing = 6f; hlg.childControlWidth = true; hlg.childControlHeight = true; hlg.childForceExpandWidth = true;
+
+            CreateButton(row.transform, "-10%", new Color(0.18f, 0.26f, 0.36f), () => onStep(-10));
+            for (int i = 0; i < VolumeStepPresets.Length; i++)
+            {
+                int pct = VolumeStepPresets[i];
+                var b = CreateButton(row.transform, $"{pct}%", new Color(0.14f, 0.24f, 0.34f), () => onPreset(pct));
+                pillImages.Add(b.GetComponent<Image>());
+            }
+            CreateButton(row.transform, "+10%", new Color(0.18f, 0.26f, 0.36f), () => onStep(+10));
+        }
+
+        private void BuildCameraAndHudTab(Transform body)
+        {
+            // 1. Orbit Mouse Sensitivity
+            var sLbl = CreateText(body, "CAMERA ORBIT SENSITIVITY", 12, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.72f, 0.86f, 0.96f));
+            SetRect(sLbl.rectTransform, new Vector2(0f, 1f), new Vector2(0.72f, 1f), new Vector2(22f, -24f), new Vector2(0f, -2f));
+            _sensValueLabel = CreateText(body, "100%", 12, FontStyle.Bold, TextAnchor.MiddleRight, new Color(0.50f, 0.96f, 0.82f));
+            SetRect(_sensValueLabel.rectTransform, new Vector2(0.72f, 1f), new Vector2(1f, 1f), Vector2.zero, new Vector2(-22f, -2f));
+
+            var sensRow = CreatePanel(body, "SensRow", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(22f, -62f), new Vector2(-22f, -28f), Color.clear);
+            var sHlg = sensRow.AddComponent<HorizontalLayoutGroup>();
+            sHlg.spacing = 6f; sHlg.childControlWidth = true; sHlg.childControlHeight = true; sHlg.childForceExpandWidth = true;
+            for (int i = 0; i < SensPresets.Length; i++)
+            {
+                int p = SensPresets[i];
+                var b = CreateButton(sensRow.transform, $"{p}%", new Color(0.14f, 0.24f, 0.34f), () =>
+                {
+                    if (_cameraRig != null)
+                        _cameraRig.ApplyCameraPreferences(p, _cameraRig.ZoomSpeedPct, _cameraRig.InvertY, _cameraRig.FieldOfViewDeg);
+                    RefreshVisualState();
+                });
+                _sensPills.Add(b.GetComponent<Image>());
+            }
+
+            // 2. Scroll Zoom Speed
+            var zLbl = CreateText(body, "CAMERA SCROLL ZOOM SPEED", 12, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.72f, 0.86f, 0.96f));
+            SetRect(zLbl.rectTransform, new Vector2(0f, 1f), new Vector2(0.72f, 1f), new Vector2(22f, -94f), new Vector2(0f, -72f));
+            _zoomValueLabel = CreateText(body, "100%", 12, FontStyle.Bold, TextAnchor.MiddleRight, new Color(0.50f, 0.96f, 0.82f));
+            SetRect(_zoomValueLabel.rectTransform, new Vector2(0.72f, 1f), new Vector2(1f, 1f), Vector2.zero, new Vector2(-22f, -72f));
+
+            var zoomRow = CreatePanel(body, "ZoomRow", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(22f, -132f), new Vector2(-22f, -98f), Color.clear);
+            var zHlg = zoomRow.AddComponent<HorizontalLayoutGroup>();
+            zHlg.spacing = 6f; zHlg.childControlWidth = true; zHlg.childControlHeight = true; zHlg.childForceExpandWidth = true;
+            for (int i = 0; i < SensPresets.Length; i++)
+            {
+                int p = SensPresets[i];
+                var b = CreateButton(zoomRow.transform, $"{p}%", new Color(0.14f, 0.24f, 0.34f), () =>
+                {
+                    if (_cameraRig != null)
+                        _cameraRig.ApplyCameraPreferences(_cameraRig.OrbitSensitivityPct, p, _cameraRig.InvertY, _cameraRig.FieldOfViewDeg);
+                    RefreshVisualState();
+                });
+                _zoomPills.Add(b.GetComponent<Image>());
+            }
+
+            // 3. Field of View & Invert-Y
+            var fovLbl = CreateText(body, "FIELD OF VIEW (FOV) & INVERT MOUSE Y", 12, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.72f, 0.86f, 0.96f));
+            SetRect(fovLbl.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(22f, -164f), new Vector2(-22f, -142f));
+
+            var fovRow = CreatePanel(body, "FovAndInvertRow", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(22f, -204f), new Vector2(-22f, -168f), Color.clear);
+            var fHlg = fovRow.AddComponent<HorizontalLayoutGroup>();
+            fHlg.spacing = 6f; fHlg.childControlWidth = true; fHlg.childControlHeight = true; fHlg.childForceExpandWidth = true;
+            for (int i = 0; i < FovPresets.Length; i++)
+            {
+                int fov = FovPresets[i];
+                var b = CreateButton(fovRow.transform, $"FOV {fov}°", new Color(0.14f, 0.24f, 0.34f), () =>
+                {
+                    if (_cameraRig != null)
+                        _cameraRig.ApplyCameraPreferences(_cameraRig.OrbitSensitivityPct, _cameraRig.ZoomSpeedPct, _cameraRig.InvertY, fov);
+                    RefreshVisualState();
+                });
+                _fovPills.Add(b.GetComponent<Image>());
+            }
+            var invBtn = CreateButton(fovRow.transform, "INVERT Y: OFF", new Color(0.16f, 0.26f, 0.38f), () =>
+            {
+                if (_cameraRig != null)
+                    _cameraRig.ApplyCameraPreferences(_cameraRig.OrbitSensitivityPct, _cameraRig.ZoomSpeedPct, !_cameraRig.InvertY, _cameraRig.FieldOfViewDeg);
+                RefreshVisualState();
+            });
+            _invertYBtnLabel = invBtn.GetComponentInChildren<Text>();
+            _invertYBtnImage = invBtn.GetComponent<Image>();
+
+            // 4. HUD Layout Density Preset (`F9` Quick Toggle!)
+            var hudLbl = CreateText(body, "HUD LAYOUT DENSITY PRESET  (PRESS [F9] ANYTIME FOR CINEMATIC VIEW)", 12, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.72f, 0.86f, 0.96f));
+            SetRect(hudLbl.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(22f, -242f), new Vector2(-22f, -220f));
+
+            var hudRow = CreatePanel(body, "HudDensityRow", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(22f, -286f), new Vector2(-22f, -246f), Color.clear);
+            var dHlg = hudRow.AddComponent<HorizontalLayoutGroup>();
+            dHlg.spacing = 8f; dHlg.childControlWidth = true; dHlg.childControlHeight = true; dHlg.childForceExpandWidth = true;
+            string[] densityLabels = { "STANDARD (FULL MMORPG)", "COMPACT (WIDER VIEW)", "CINEMATIC MINIMAL [F9]" };
+            for (int i = 0; i < densityLabels.Length; i++)
+            {
+                var preset = (TacSimHudDensityPreset)i;
+                var b = CreateButton(hudRow.transform, densityLabels[i], new Color(0.14f, 0.24f, 0.34f), () => SetHudDensityPreset(preset));
+                _hudDensityPills.Add(b.GetComponent<Image>());
+            }
+
+            var resetCamBtn = CreateButton(body, "RESET CAMERA & HUD DEFAULTS", new Color(0.24f, 0.28f, 0.38f), () =>
+            {
+                _cameraRig?.ApplyCameraPreferences(100, 100, false, 62);
+                SetHudDensityPreset(TacSimHudDensityPreset.Standard);
+                RefreshVisualState();
+            });
+            SetRect(resetCamBtn.GetComponent<RectTransform>(), new Vector2(0.25f, 1f), new Vector2(0.75f, 1f), new Vector2(0f, -340f), new Vector2(0f, -304f));
+        }
+
+        public void SelectTab(TacSimOptionsTab tab)
+        {
+            ActiveTab = tab;
+            for (int i = 0; i < 3; i++)
+            {
+                bool active = i == (int)tab;
+                if (_tabBodies[i] != null) _tabBodies[i].SetActive(active);
+                if (_tabButtonImages[i] != null)
+                {
+                    _tabButtonImages[i].color = active
+                        ? new Color(0.20f, 0.56f, 0.78f, 1f)
+                        : new Color(0.12f, 0.20f, 0.30f, 0.92f);
+                }
+            }
             RefreshVisualState();
-            _modalOverlay.SetActive(false);
+        }
+
+        public void SetHudDensityPreset(TacSimHudDensityPreset preset, bool save = true)
+        {
+            CurrentHudDensity = preset;
+            if (preset != TacSimHudDensityPreset.Cinematic)
+                _lastNonCinematicDensity = preset;
+            if (save && Application.isPlaying)
+            {
+                PlayerPrefs.SetInt(PrefHudDensity, (int)preset);
+                PlayerPrefs.Save();
+            }
+            OnHudDensityChanged?.Invoke(preset);
+            RefreshVisualState();
+        }
+
+        public TacSimHudDensityPreset ToggleCinematicHudMode()
+        {
+            TacSimHudDensityPreset next = CurrentHudDensity == TacSimHudDensityPreset.Cinematic
+                ? _lastNonCinematicDensity
+                : TacSimHudDensityPreset.Cinematic;
+            SetHudDensityPreset(next, save: false);
+            return next;
         }
 
         public void SetOpen(bool open)
@@ -364,6 +662,10 @@ namespace TacSim.UI
             if (!Application.isPlaying)
                 return;
 
+            int savedDensity = PlayerPrefs.GetInt(PrefHudDensity, (int)TacSimHudDensityPreset.Standard);
+            if (savedDensity >= 0 && savedDensity <= 2)
+                SetHudDensityPreset((TacSimHudDensityPreset)savedDensity, save: false);
+
             bool hasSaved = PlayerPrefs.GetInt(PrefSaved, 0) == 1;
             if (hasSaved)
             {
@@ -372,7 +674,6 @@ namespace TacSim.UI
                 return;
             }
 
-            // First launch: auto-scale window & UI for Windows DPI and monitor dimensions!
             float dpiScale = ComputeWindowsDpiScale(Screen.dpi);
             int monW = GetMonitorWidth();
             int monH = GetMonitorHeight();
@@ -499,6 +800,7 @@ namespace TacSim.UI
             PlayerPrefs.SetInt(PrefHeight, res.Height);
             PlayerPrefs.SetInt(PrefUiScalePct, _selectedUiScalePct);
             PlayerPrefs.SetInt(PrefQuality, _selectedQualityIndex);
+            PlayerPrefs.SetInt(PrefHudDensity, (int)CurrentHudDensity);
             PlayerPrefs.Save();
         }
 
@@ -576,39 +878,79 @@ namespace TacSim.UI
 
         private void RefreshVisualState()
         {
+            Color activeCol = new Color(0.22f, 0.65f, 0.88f, 1f);
+            Color idleCol = new Color(0.14f, 0.22f, 0.30f, 0.92f);
+
             for (int i = 0; i < _modeButtonImages.Count; i++)
             {
-                if (_modeButtonImages[i] == null) continue;
-                _modeButtonImages[i].color = (i == (int)_selectedMode)
-                    ? new Color(0.22f, 0.65f, 0.88f, 1f)
-                    : new Color(0.14f, 0.22f, 0.30f, 0.92f);
+                if (_modeButtonImages[i] != null)
+                    _modeButtonImages[i].color = (i == (int)_selectedMode) ? activeCol : idleCol;
             }
-
             for (int i = 0; i < _scaleButtonImages.Count && i < UiScalePresetsPct.Length; i++)
             {
-                if (_scaleButtonImages[i] == null) continue;
-                _scaleButtonImages[i].color = (UiScalePresetsPct[i] == _selectedUiScalePct)
-                    ? new Color(0.22f, 0.65f, 0.88f, 1f)
-                    : new Color(0.14f, 0.22f, 0.30f, 0.92f);
+                if (_scaleButtonImages[i] != null)
+                    _scaleButtonImages[i].color = (UiScalePresetsPct[i] == _selectedUiScalePct) ? activeCol : idleCol;
             }
-
             if (_resolutionValueText != null)
                 _resolutionValueText.text = GetSelectedResolution().Label;
-
             if (_qualityValueText != null)
             {
                 string[] names = QualitySettings.names;
-                if (names != null && names.Length > 0)
-                    _qualityValueText.text = names[Mathf.Clamp(_selectedQualityIndex, 0, names.Length - 1)];
-                else
-                    _qualityValueText.text = "Default";
+                _qualityValueText.text = (names != null && names.Length > 0)
+                    ? names[Mathf.Clamp(_selectedQualityIndex, 0, names.Length - 1)]
+                    : "Default";
             }
-
             if (_liveStatusText != null)
             {
                 int dpiPct = Mathf.RoundToInt(ComputeWindowsDpiScale(Screen.dpi) * 100f);
                 _liveStatusText.text =
                     $"Active: {Screen.width}x{Screen.height} | Monitor: {GetMonitorWidth()}x{GetMonitorHeight()} | OS DPI: {dpiPct}% | UI Scale: {_selectedUiScalePct}%";
+            }
+
+            // Audio Mixer UI state
+            bool muted = _audio != null && _audio.IsMuted;
+            int masterPct = _audio != null ? _audio.MasterVolumePct : 100;
+            int ambPct = _audio != null ? _audio.AmbientVolumePct : 80;
+            int sfxPct = _audio != null ? _audio.SfxVolumePct : 90;
+
+            if (_muteBtnLabel != null) _muteBtnLabel.text = muted ? "AUDIO: MUTED" : "AUDIO: ACTIVE";
+            if (_muteBtnImage != null) _muteBtnImage.color = muted ? new Color(0.60f, 0.20f, 0.20f, 1f) : new Color(0.14f, 0.48f, 0.36f, 1f);
+            if (_masterVolLabel != null) _masterVolLabel.text = $"{masterPct}%";
+            if (_ambientVolLabel != null) _ambientVolLabel.text = $"{ambPct}%";
+            if (_sfxVolLabel != null) _sfxVolLabel.text = $"{sfxPct}%";
+
+            HighlightIntPills(_masterVolPills, VolumeStepPresets, masterPct, activeCol, idleCol);
+            HighlightIntPills(_ambientVolPills, VolumeStepPresets, ambPct, activeCol, idleCol);
+            HighlightIntPills(_sfxVolPills, VolumeStepPresets, sfxPct, activeCol, idleCol);
+
+            // Camera & HUD UI state
+            int sensPct = _cameraRig != null ? _cameraRig.OrbitSensitivityPct : 100;
+            int zoomPct = _cameraRig != null ? _cameraRig.ZoomSpeedPct : 100;
+            int fovDeg = _cameraRig != null ? _cameraRig.FieldOfViewDeg : 62;
+            bool invY = _cameraRig != null && _cameraRig.InvertY;
+
+            if (_sensValueLabel != null) _sensValueLabel.text = $"{sensPct}%";
+            if (_zoomValueLabel != null) _zoomValueLabel.text = $"{zoomPct}%";
+            if (_invertYBtnLabel != null) _invertYBtnLabel.text = invY ? "INVERT Y: ON" : "INVERT Y: OFF";
+            if (_invertYBtnImage != null) _invertYBtnImage.color = invY ? new Color(0.24f, 0.54f, 0.72f, 1f) : idleCol;
+
+            HighlightIntPills(_sensPills, SensPresets, sensPct, activeCol, idleCol);
+            HighlightIntPills(_zoomPills, SensPresets, zoomPct, activeCol, idleCol);
+            HighlightIntPills(_fovPills, FovPresets, fovDeg, activeCol, idleCol);
+
+            for (int i = 0; i < _hudDensityPills.Count; i++)
+            {
+                if (_hudDensityPills[i] != null)
+                    _hudDensityPills[i].color = (i == (int)CurrentHudDensity) ? activeCol : idleCol;
+            }
+        }
+
+        private static void HighlightIntPills(List<Image> pills, int[] presets, int currentVal, Color activeCol, Color idleCol)
+        {
+            for (int i = 0; i < pills.Count && i < presets.Length; i++)
+            {
+                if (pills[i] != null)
+                    pills[i].color = presets[i] == currentVal ? activeCol : idleCol;
             }
         }
 
@@ -675,8 +1017,8 @@ namespace TacSim.UI
             };
             btn.onClick.AddListener(() => onClick?.Invoke());
 
-            var txt = CreateText(go.transform, label, 13, FontStyle.Bold, TextAnchor.MiddleCenter, Color.white);
-            SetRect(txt.rectTransform, Vector2.zero, Vector2.one, new Vector2(6f, 2f), new Vector2(-6f, -2f));
+            var txt = CreateText(go.transform, label, 12, FontStyle.Bold, TextAnchor.MiddleCenter, Color.white);
+            SetRect(txt.rectTransform, Vector2.zero, Vector2.one, new Vector2(4f, 2f), new Vector2(-4f, -2f));
             return btn;
         }
 
