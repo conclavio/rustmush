@@ -89,7 +89,7 @@ const PINNED: [(&str, &str); 12] = [
     ),
     (
         CERES_PACK,
-        "bc3a5dfd1fb4dc6fc6b069e420e27246c33ef8d71d7f8ccfd30185572211fa29",
+        "4c82f80a84452b7259b5fa0201f91a707ff92c8bf73f6048e036d8dce4b75f62",
     ),
     (
         STICKNEY_REGION_PACK,
@@ -163,6 +163,7 @@ fn restore_oduya_v2(doc: &mut Value) {
 /// lore (the owner's 2026-11-17 ruling re-worded both in place for one stake per pilot and one
 /// hull at a time).
 fn restore_one_enrolment_wording(doc: &mut Value) {
+    support::restore_ceres_before_2026_11_24(doc);
     let text = serde_json::to_string(doc)
         .expect("serializes")
         .replace(
@@ -1555,7 +1556,8 @@ fn ic1_every_public_room_is_walkable_by_its_authored_aliases() {
             let from = obj(&tw, pack, &exit.from);
             let to = obj(&tw, pack, &exit.to);
             let there = first_alias(&exit.names[0]);
-            let back = first_alias(&exit.names[1]);
+            // The Limbo door is one way since the 2026-11-24 playtest: `+ooc` is the way out.
+            let back = exit.names.get(1).map(|name| first_alias(name));
             if exit.lock.is_some() {
                 locked.push(entry.clone());
                 tw.world_mut().move_to(walker, from).expect("placed");
@@ -1574,7 +1576,7 @@ fn ic1_every_public_room_is_walkable_by_its_authored_aliases() {
                     "{entry}: {}",
                     said(&tw, &events, GOD)
                 );
-                let events = tw.run(GOD, back);
+                let events = tw.run(GOD, back.expect("a locked exit is a pair"));
                 assert_eq!(
                     location(&tw, GOD),
                     Some(from),
@@ -1598,6 +1600,13 @@ fn ic1_every_public_room_is_walkable_by_its_authored_aliases() {
                 exit.from,
                 said(&tw, &events, who)
             );
+            let Some(back) = back else {
+                assert_eq!(
+                    entry, "exit.limbo_arrivals",
+                    "only the Limbo door is one way"
+                );
+                continue;
+            };
             let events = tw.run(who, back);
             assert_eq!(
                 location(&tw, who),
@@ -1630,17 +1639,24 @@ fn ic1_every_public_room_is_walkable_by_its_authored_aliases() {
 #[test]
 fn ic1_the_ic_door_refuses_a_pilot_who_left_at_stickney() {
     let mut tw = booted();
-    let ooc = obj(&tw, mush_atlas::starter::OOC_AREA_PACK, "room.welcome_hall");
     let p01 = obj(&tw, STICKNEY_PACK, "room.p01_berth_gallery");
     let p04 = obj(&tw, STICKNEY_PACK, "room.p04_concourse");
     let pilot = tw.spawn_player("Pilot");
     tw.world_mut().move_to(pilot, p04).expect("placed");
-    // Limbo's global `o`, typed at Stickney, is a way out of the port: stamped.
-    let _ = tw.run(pilot, "o");
-    assert_eq!(location(&tw, pilot), Some(ooc));
-    assert_eq!(ic_return::last_port(tw.world(), pilot), Some(&PORTS[1]));
-    let _ = tw.run(pilot, "x");
+    // Limbo's global `o`, typed at Stickney, is no way out of the port any more.
+    let events = tw.run(pilot, "o");
+    assert!(said(&tw, &events, pilot).contains(ic_return::LIMBO_WAY));
+    assert_eq!(location(&tw, pilot), Some(p04));
+    // `+ooc` is: stamped Stickney, the concourse remembered.
+    let events = tw.run(pilot, "+ooc");
+    let out = said(&tw, &events, pilot);
+    assert!(out.contains(&ic_return::ooc_line(&PORTS[1])), "{out}");
     assert_eq!(location(&tw, pilot), Some(LIMBO));
+    assert_eq!(ic_return::last_port(tw.world(), pilot), Some(&PORTS[1]));
+    assert!(
+        tw.world()
+            .has_marker(pilot, "tacsim.ooc_room.room.p04_concourse")
+    );
     // The door refuses with doc 18 §4.5's line.
     let events = tw.run(pilot, "c");
     let out = said(&tw, &events, pilot);
@@ -1649,28 +1665,27 @@ fn ic1_the_ic_door_refuses_a_pilot_who_left_at_stickney() {
         "{out}"
     );
     assert_eq!(location(&tw, pilot), Some(LIMBO));
-    // `+ic` puts the pilot back in the berth gallery.
+    // `+ic` puts the pilot back in the concourse they left, and forgets it.
     let events = tw.run(pilot, "+ic");
     let out = said(&tw, &events, pilot);
     assert!(
         out.contains("You return to the corridor at Stickney Yards."),
         "{out}"
     );
-    assert_eq!(location(&tw, pilot), Some(p01));
-    // Limbo's global `c`, typed in P01 (which has no local `c`), meets the door.
-    let events = tw.run(pilot, "c");
-    let out = said(&tw, &events, pilot);
+    assert_eq!(location(&tw, pilot), Some(p04));
     assert!(
-        out.contains(
-            "There is no door from Stickney Yards to Ceres Freeport; the way there is by ship."
-        ),
-        "{out}"
+        !tw.world()
+            .has_marker(pilot, "tacsim.ooc_room.room.p04_concourse")
     );
-    assert_eq!(location(&tw, pilot), Some(p01));
+    // Limbo's global `c`, typed at Stickney (which has no local `c`), is refused too.
+    let events = tw.run(pilot, "c");
+    assert!(said(&tw, &events, pilot).contains(ic_return::LIMBO_WAY));
+    assert_eq!(location(&tw, pilot), Some(p04));
     let events = tw.run(pilot, "+ic");
     assert!(said(&tw, &events, pilot).contains("You are already in the corridor."));
-    assert_eq!(location(&tw, pilot), Some(p01));
-    // `home` from Stickney stamps too: the skip the rule exists to close.
+    assert_eq!(location(&tw, pilot), Some(p04));
+    // `home` from Stickney stamps too: the skip the rule exists to close. With no
+    // room remembered, `+ic` lands in the berth gallery.
     let second = tw.spawn_player("Second");
     tw.world_mut().move_to(second, p04).expect("placed");
     let _ = tw.run(second, "home");
@@ -1678,6 +1693,8 @@ fn ic1_the_ic_door_refuses_a_pilot_who_left_at_stickney() {
     assert_eq!(ic_return::last_port(tw.world(), second), Some(&PORTS[1]));
     assert!(tw.world().has_marker(second, "tacsim.last_port.stickney"));
     assert!(!tw.world().has_marker(second, "tacsim.last_port.ceres"));
+    let _ = tw.run(second, "+ic");
+    assert_eq!(location(&tw, second), Some(p01));
 }
 
 #[test]
@@ -1688,7 +1705,7 @@ fn ic1_ic_and_the_door_for_a_ceres_pilot_and_a_new_one() {
     assert_eq!(ic_return::last_port(tw.world(), pilot), None);
     let _ = tw.run(pilot, "c");
     assert_eq!(location(&tw, pilot), Some(c03));
-    let _ = tw.run(pilot, "x");
+    let _ = tw.run(pilot, "+ooc");
     assert_eq!(location(&tw, pilot), Some(LIMBO));
     assert_eq!(ic_return::last_port(tw.world(), pilot), Some(&PORTS[0]));
     let _ = tw.run(pilot, "c");
@@ -1697,7 +1714,7 @@ fn ic1_ic_and_the_door_for_a_ceres_pilot_and_a_new_one() {
         Some(c03),
         "a Ceres stamp passes the door"
     );
-    let _ = tw.run(pilot, "x");
+    let _ = tw.run(pilot, "+ooc");
     let events = tw.run(pilot, "+ic");
     assert!(said(&tw, &events, pilot).contains("You return to the corridor at Ceres Freeport."));
     assert_eq!(location(&tw, pilot), Some(c03));
@@ -1705,6 +1722,119 @@ fn ic1_ic_and_the_door_for_a_ceres_pilot_and_a_new_one() {
     let fresh = tw.spawn_player("Fresh");
     let _ = tw.run(fresh, "+ic");
     assert_eq!(location(&tw, fresh), Some(c03));
+}
+
+/// **`+ooc` and `+ic` round-trip to the exact room** (the 2026-11-24 playtest): out of
+/// the Ceres concourse and back into the concourse, not the arrivals hall; and the
+/// room is forgotten by any other way out.
+#[test]
+fn ooc_and_ic_round_trip_to_the_exact_room() {
+    let mut tw = booted();
+    let c03 = obj(&tw, CERES_PACK, "room.c03_arrivals");
+    let c04 = obj(&tw, CERES_PACK, "room.c04_concourse");
+    let pilot = tw.spawn_player("Pilot");
+    let watcher = tw.spawn_player("Watcher");
+    tw.world_mut().move_to(pilot, c04).expect("placed");
+    tw.world_mut().move_to(watcher, c04).expect("placed");
+    let events = tw.run(pilot, "+ooc");
+    assert!(said(&tw, &events, pilot).contains(&ic_return::ooc_line(&PORTS[0])));
+    assert!(said(&tw, &events, watcher).contains("Pilot leaves."));
+    assert_eq!(location(&tw, pilot), Some(LIMBO));
+    assert_eq!(ic_return::last_port(tw.world(), pilot), Some(&PORTS[0]));
+    // `+ooc` again, from Limbo: already out, nothing moves.
+    let events = tw.run(pilot, "+ooc");
+    assert_eq!(
+        told(&tw, &events, pilot),
+        vec![ic_return::ALREADY_OUT.to_owned()]
+    );
+    let events = tw.run(pilot, "+ic");
+    assert!(said(&tw, &events, pilot).contains("You return to the corridor at Ceres Freeport."));
+    assert!(said(&tw, &events, watcher).contains("Pilot has arrived."));
+    assert_eq!(location(&tw, pilot), Some(c04), "the room they left");
+    // With no room remembered (`home` forgot it), `+ic` lands at the arrivals hall.
+    let _ = tw.run(pilot, "home");
+    assert_eq!(location(&tw, pilot), Some(LIMBO));
+    let _ = tw.run(pilot, "+ic");
+    assert_eq!(location(&tw, pilot), Some(c03), "`home` forgot the room");
+    // Out in the OOC area, `+ooc` is already out.
+    let _ = tw.run(pilot, "+ooc");
+    let _ = tw.run(pilot, "o");
+    assert_ne!(location(&tw, pilot), Some(LIMBO));
+    let events = tw.run(pilot, "+ooc");
+    assert_eq!(
+        told(&tw, &events, pilot),
+        vec![ic_return::ALREADY_OUT.to_owned()]
+    );
+}
+
+/// **A room closed to the character falls back to the arrivals** (the 2026-11-24
+/// playtest): a player who stepped out of a staff-locked room comes back at the
+/// arrivals hall with [`ic_return::fell_back_line`]; a wizard, whom the lock admits,
+/// comes back to the room itself.
+#[test]
+fn ooc_a_room_closed_to_the_character_falls_back_to_the_arrivals() {
+    let mut tw = booted();
+    let c03 = obj(&tw, CERES_PACK, "room.c03_arrivals");
+    let locked = obj(&tw, CERES_PACK, "room.c16_authority");
+    let pilot = tw.spawn_player("Pilot");
+    tw.world_mut().move_to(pilot, locked).expect("placed");
+    let _ = tw.run(pilot, "+ooc");
+    assert_eq!(location(&tw, pilot), Some(LIMBO));
+    let events = tw.run(pilot, "+ic");
+    assert!(
+        said(&tw, &events, pilot).contains(&ic_return::fell_back_line(&PORTS[0])),
+        "{}",
+        said(&tw, &events, pilot)
+    );
+    assert_eq!(location(&tw, pilot), Some(c03));
+    let staff = tw.spawn_player("Warden");
+    tw.world_mut()
+        .get_mut(staff)
+        .expect("the staffer")
+        .flags
+        .insert(mush_core::Flags::WIZARD);
+    tw.world_mut().move_to(staff, locked).expect("placed");
+    let _ = tw.run(staff, "+ooc");
+    let _ = tw.run(staff, "+ic");
+    assert_eq!(location(&tw, staff), Some(locked));
+}
+
+/// **No IC exit leads into Limbo** (the 2026-11-24 playtest): Limbo's global exit words,
+/// typed in every port's arrival room, leave nobody in Limbo or the OOC area, and `o` is
+/// answered with [`ic_return::LIMBO_WAY`]; from Limbo itself they still work.
+#[test]
+fn ooc_limbos_global_exits_are_not_offered_from_a_port_room() {
+    let mut tw = booted();
+    let pilot = tw.spawn_player("Pilot");
+    for port in &PORTS {
+        let arrival = obj(&tw, port.area, port.arrival);
+        for word in ["o", "s", "c", "ooc", "staff", "ceres"] {
+            tw.world_mut().move_to(pilot, arrival).expect("placed");
+            let events = tw.run(pilot, word);
+            let here = location(&tw, pilot).expect("somewhere");
+            assert!(
+                ic_return::port_of_room(tw.world(), here).is_some(),
+                "{}: `{word}` left the corridor: {}",
+                port.id,
+                said(&tw, &events, pilot)
+            );
+        }
+        tw.world_mut().move_to(pilot, arrival).expect("placed");
+        let events = tw.run(pilot, "o");
+        assert!(
+            said(&tw, &events, pilot).contains(ic_return::LIMBO_WAY),
+            "{}",
+            port.id
+        );
+        assert_eq!(location(&tw, pilot), Some(arrival));
+    }
+    tw.world_mut().move_to(pilot, LIMBO).expect("placed");
+    let _ = tw.run(pilot, "o");
+    assert_ne!(
+        location(&tw, pilot),
+        Some(LIMBO),
+        "Limbo's own `o` still works"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2288,7 +2418,9 @@ fn ic12_a_world_latched_at_the_old_station_versions_takes_the_new_through_plan_a
         assert!(!apply.contains("STOPPED"), "{apply}");
         assert_eq!(version(&tw, pack), Some(to), "{pack}");
     }
-    assert_eq!(live_objects(&tw), objects, "an update makes no object");
+    // An update makes no object; Ceres v4 drops one: the Limbo door's return exit, one way
+    // since the 2026-11-24 playtest (`+ooc` is the way out).
+    assert_eq!(live_objects(&tw), objects - 1, "an update makes no object");
     let reader = tw.spawn_player("Reader");
     for (pack, room, key, opening) in IC12_DETAILS {
         let here = obj(&tw, pack, room);
@@ -2386,7 +2518,8 @@ fn oduya_desk_upgrade_preserves_identity_location_inventory_and_memory() {
         "{plan}\n{apply}"
     );
     assert_eq!(obj(&tw, CERES_PACK, "npc.oduya"), oduya);
-    assert_eq!(live_objects(&tw), objects);
+    // One object fewer: v4's one-way Limbo door drops its return exit.
+    assert_eq!(live_objects(&tw), objects - 1);
     assert_eq!(location(&tw, oduya), Some(moved_to));
     assert_eq!(location(&tw, ledger), Some(oduya));
     assert_eq!(
@@ -2522,7 +2655,8 @@ fn qureshi_trust_upgrade_keeps_identity_memory_and_staff_affiliation() {
         "{plan}\n{apply}"
     );
     assert_eq!(obj(&tw, CERES_PACK, "npc.qureshi"), qureshi);
-    assert_eq!(live_objects(&tw), objects);
+    // One object fewer: v4's one-way Limbo door drops its return exit.
+    assert_eq!(live_objects(&tw), objects - 1);
     assert_eq!(location(&tw, qureshi), Some(off_duty));
     assert_eq!(location(&tw, stamp), Some(qureshi));
     assert_eq!(
@@ -2675,9 +2809,8 @@ fn ic12_the_ic_door_has_no_staff_exemption() {
         .flags
         .insert(mush_core::Flags::WIZARD);
     tw.world_mut().move_to(staff, p04).expect("placed");
-    let _ = tw.run(staff, "o");
+    let _ = tw.run(staff, "+ooc");
     assert_eq!(ic_return::last_port(tw.world(), staff), Some(&PORTS[1]));
-    let _ = tw.run(staff, "x");
     assert_eq!(location(&tw, staff), Some(LIMBO));
     let events = tw.run(staff, "c");
     let out = said(&tw, &events, staff);
@@ -2700,4 +2833,114 @@ fn ic14_ic_inside_the_corridor_answers_already_in() {
         vec![ic_return::ALREADY_IN.to_owned()]
     );
     assert_eq!(location(&tw, pilot), Some(c04), "not moved");
+}
+
+/// **A locked way says it is locked** (the owner's 2026-11-24 playtest): in the Registry the
+/// staff ladder, typed by its key, by `goto` and by the room it leads to, answers that it is
+/// locked to staff, and so does the Dockmaster's hatch; never the "You can't go that way." of
+/// an exit that is not there. Staff climb it.
+#[test]
+fn a_staff_locked_way_at_ceres_says_it_is_locked() {
+    let mut tw = booted();
+    let registry = obj(&tw, CERES_PACK, "room.c05_registry");
+    let dockmaster = obj(&tw, CERES_PACK, "room.c14_dockmaster");
+    let pilot = tw.spawn_player("Pilot");
+    for (room, typed, refusal) in [
+        (registry, "u", "The ladder is locked: staff only."),
+        (registry, "goto up", "The ladder is locked: staff only."),
+        (registry, "authority", "The ladder is locked: staff only."),
+        (dockmaster, "h", "The hatch is locked: staff only."),
+    ] {
+        tw.world_mut().move_to(pilot, room).expect("placed");
+        let events = tw.run(pilot, typed);
+        let text = said(&tw, &events, pilot);
+        assert!(text.contains(refusal), "`{typed}`: {text}");
+        assert!(!text.contains("can't go that way"), "`{typed}`: {text}");
+        assert_eq!(location(&tw, pilot), Some(room), "`{typed}` moved nobody");
+    }
+    tw.world_mut().move_to(GOD, registry).expect("placed");
+    let _ = tw.run(GOD, "authority");
+    assert_eq!(
+        location(&tw, GOD),
+        Some(obj(&tw, CERES_PACK, "room.c16_authority"))
+    );
+}
+
+/// **Every shipped atlas exit's key is one of its own words, and no exit is named for a bare
+/// direction** (the owner's 2026-11-24 playtest; PR #769's rule for ship interiors): the
+/// bracketed label in an exit's display name walks it, and the name says where it goes
+/// ("Down" did not). Read from every atlas pack the game and the starter ship. The one
+/// exception is `<L>`, which the lobby and lounge exits show while `l` stays `look` (16b cut
+/// D.5); their word is the room's name. An exit with no label shows no key.
+#[test]
+fn every_shipped_atlas_exit_label_is_one_of_its_aliases_and_names_a_place() {
+    const DIRECTIONS: [&str; 12] = [
+        "up",
+        "down",
+        "north",
+        "south",
+        "east",
+        "west",
+        "northeast",
+        "northwest",
+        "southeast",
+        "southwest",
+        "in",
+        "out",
+    ];
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let dirs = [
+        root.join("content/atlas"),
+        root.join("../mush-atlas/content"),
+    ];
+    let mut exits = 0;
+    let mut stray = Vec::new();
+    for dir in &dirs {
+        let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+            .expect("an atlas content folder")
+            .map(|e| e.expect("an entry").path())
+            .filter(|p| p.extension().is_some_and(|x| x == "json"))
+            .collect();
+        files.sort();
+        for file in files {
+            let text = std::fs::read_to_string(&file).expect("reads");
+            let doc: Value = serde_json::from_str(&text).expect("json");
+            let Some(entries) = doc["entries"].as_object() else {
+                continue;
+            };
+            let pack = file.file_name().unwrap_or_default().to_string_lossy();
+            for (id, entry) in entries {
+                if entry["kind"] != "exit" {
+                    continue;
+                }
+                for name in entry["def"]["names"].as_array().into_iter().flatten() {
+                    let name = name.as_str().expect("a name");
+                    exits += 1;
+                    let mut segments = name.split(';').map(str::trim);
+                    let display = segments.next().unwrap_or_default();
+                    let (place, label) = match display.rsplit_once('<') {
+                        Some((place, rest)) => (place.trim(), rest.strip_suffix('>')),
+                        None => (display, None),
+                    };
+                    if DIRECTIONS.iter().any(|d| place.eq_ignore_ascii_case(d)) {
+                        stray.push(format!("{pack} {id}: `{name}` is named for a direction"));
+                    }
+                    if let Some(label) = label
+                        && label != "L"
+                        && !segments.any(|alias| alias.eq_ignore_ascii_case(label))
+                    {
+                        stray.push(format!(
+                            "{pack} {id}: `{name}` shows <{label}> and has no alias `{}`",
+                            label.to_lowercase()
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        exits >= 40,
+        "the shipped atlas exits are read (read {exits})"
+    );
+    assert!(stray.is_empty(), "{}", stray.join("\n"));
 }

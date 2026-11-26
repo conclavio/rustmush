@@ -412,6 +412,15 @@ async fn gc13_review_a_check_in_from_a_sound_carrier_never_heals_an_injury() {
         "nobody flies the hull B left: {:?}",
         live.units
     );
+    // `+ooc` (the 2026-11-24 playtest): a running field holds B aboard, so B stays in character.
+    let here = rig.tw.world().get(b).and_then(|object| object.location);
+    let (out, queued) = command(&mut rig, b, "+ooc");
+    assert!(out.contains(tacsim::ic_return::IN_THE_FIELD), "{out}");
+    assert!(queued.is_empty(), "{out}");
+    assert_eq!(
+        rig.tw.world().get(b).and_then(|object| object.location),
+        here
+    );
     assert!(
         until(&mut rig, &mut rx, &mut lines, 180, |rig, _| demoted(rig)).await,
         "the second field demotes"

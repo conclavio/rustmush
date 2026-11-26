@@ -1739,6 +1739,19 @@ pub(crate) fn on_frames(ctx: &mut Ctx<'_>, frames: &[(ObjId, crate::arena::step:
     }
 }
 
+/// **Whether a running field holds `who`** — flying one of its units, or aboard one of its
+/// carriers (Q-CF-38's rows): `+ooc`'s field refusal (`crate::ic_return::ooc_command`).
+#[must_use]
+pub(crate) fn in_a_running_field(w: &World, who: ObjId) -> bool {
+    w.module_state::<super::FieldBook>().is_some_and(|book| {
+        book.running().any(|(_, hosted)| {
+            hosted.live.units.iter().any(|row| {
+                row.aboard.contains(&who) || row.pilot.as_ref().is_some_and(|(p, _)| *p == who)
+            })
+        })
+    })
+}
+
 /// The safe port `who` knows (this module's head): the IC-return stamp's, else the fallback.
 pub(crate) fn destination(w: &World, who: ObjId) -> Option<&'static crate::ic_return::IcPort> {
     crate::ic_return::last_port(w, who).or_else(|| {

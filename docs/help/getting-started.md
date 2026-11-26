@@ -19,10 +19,11 @@ The basics, in the order you will want them:
   QUIT             Disconnect cleanly.
 
 Into the story: from Limbo, the door "c" takes an approved character into
-the 2350 corridor, at Ceres Freeport's arrivals hall. The game remembers the
-port you last stood in when you step out to Limbo or the OOC area; if that
-port can only be reached by ship, the door will not take you, and `+ic`
-takes you back to it.
+the 2350 corridor, at Ceres Freeport's arrivals hall. To step out of
+character, type `+ooc` in any room of a port: it takes you to Limbo and
+remembers the room you left, and `+ic` puts you back there. If you last stood
+in a port that can only be reached by ship, the door will not take you, and
+`+ic` is the way back.
 
 The trade run: at Ceres Freeport the Belt Carriers' Cooperative stakes new
 captains with a Dray on charter and working cash. `+coop` at the Registry desk

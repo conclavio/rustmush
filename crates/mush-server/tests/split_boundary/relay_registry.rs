@@ -4315,6 +4315,24 @@ fn resigned(mut value: serde_json::Value) -> mush_content::Pack {
     value["manifest"]["digest"] = digest.into();
     mush_content::load_pack(&value.to_string()).unwrap()
 }
+/// Every text edit made to Ceres in place at v4 undone, from the `[now, was]` pairs tacsim's
+/// test support keeps (`ceres_in_place_edits.json`: the 2026-11-24 playtest's exit names and
+/// US spelling), each `now` found exactly once.
+fn undo_ceres_in_place_edits(ceres: &mut serde_json::Value) {
+    let edits: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../tacsim/tests/support/ceres_in_place_edits.json"
+    ))
+    .unwrap();
+    let mut text = ceres.to_string();
+    for group in edits["edits"].as_array().unwrap() {
+        for pair in group["pairs"].as_array().unwrap() {
+            let (now, was) = (pair[0].as_str().unwrap(), pair[1].as_str().unwrap());
+            assert_eq!(text.matches(now).count(), 1, "{now} is in Ceres once");
+            text = text.replace(now, was);
+        }
+    }
+    *ceres = serde_json::from_str(&text).unwrap();
+}
 /// Published Ceres v2, before Oduya's role-aware guidance profile.
 fn ceres_v2() -> mush_content::Pack {
     let mut ceres = tacsim::definitions::content::station_with_cast_value(
@@ -4322,6 +4340,7 @@ fn ceres_v2() -> mush_content::Pack {
         tacsim::definitions::content::CAST_CERES_JSON,
     )
     .unwrap();
+    undo_ceres_in_place_edits(&mut ceres);
     ceres["manifest"]["version"] = 2.into();
     ceres["entries"]["npc.oduya"]["def"]["profile"] = serde_json::from_str(include_str!(
         "../../../tacsim/tests/support/oduya_v2_profile.json"
