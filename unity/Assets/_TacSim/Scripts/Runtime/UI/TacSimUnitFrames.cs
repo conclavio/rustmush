@@ -15,6 +15,16 @@ namespace TacSim.UI
         public bool IsFrameRootVisible => _root != null && _root.activeSelf;
         public string PlayerTitleText => _playerTitle != null ? _playerTitle.text : string.Empty;
         public string TargetTitleText => _targetTitle != null ? _targetTitle.text : string.Empty;
+        public string TargetAction1Label => (_targetAct1Btn != null && _targetAct1Btn.gameObject.activeSelf && _targetAct1Label != null) ? _targetAct1Label.text : string.Empty;
+        public string TargetAction2Label => (_targetAct2Btn != null && _targetAct2Btn.gameObject.activeSelf && _targetAct2Label != null) ? _targetAct2Label.text : string.Empty;
+        public string TargetAction3Label => (_targetAct3Btn != null && _targetAct3Btn.gameObject.activeSelf && _targetAct3Label != null) ? _targetAct3Label.text : string.Empty;
+
+        public void TriggerTargetAction(int index)
+        {
+            if (index == 0) _targetAct1Callback?.Invoke();
+            else if (index == 1) _targetAct2Callback?.Invoke();
+            else if (index == 2) _targetAct3Callback?.Invoke();
+        }
 
         public void SetHiddenByHudPreset(bool hidden)
         {
@@ -50,6 +60,9 @@ namespace TacSim.UI
         private Button _targetAct2Btn;
         private Text _targetAct2Label;
         private Action _targetAct2Callback;
+        private Button _targetAct3Btn;
+        private Text _targetAct3Label;
+        private Action _targetAct3Callback;
 
         public void BuildFrames(Transform hudRoot, Font sharedFont)
         {
@@ -101,6 +114,8 @@ namespace TacSim.UI
 
             _targetAct1Btn = CreateActionPill(_targetRoot.transform, "TgtAct1", new Vector2(0f, 0f), new Vector2(0.5f, 0f), new Vector2(6f, 4f), new Vector2(-3f, 26f), new Color(0.14f, 0.44f, 0.56f), out _targetAct1Label, () => _targetAct1Callback?.Invoke());
             _targetAct2Btn = CreateActionPill(_targetRoot.transform, "TgtAct2", new Vector2(0.5f, 0f), new Vector2(1f, 0f), new Vector2(3f, 4f), new Vector2(-6f, 26f), new Color(0.46f, 0.22f, 0.18f), out _targetAct2Label, () => _targetAct2Callback?.Invoke());
+            _targetAct3Btn = CreateActionPill(_targetRoot.transform, "TgtAct3", new Vector2(0.66f, 0f), new Vector2(1f, 0f), new Vector2(2f, 4f), new Vector2(-6f, 26f), new Color(0.22f, 0.38f, 0.48f), out _targetAct3Label, () => _targetAct3Callback?.Invoke());
+            _targetAct3Btn.gameObject.SetActive(false);
 
             _targetRoot.SetActive(false);
         }
@@ -143,7 +158,9 @@ namespace TacSim.UI
             string action1Label = null,
             Action action1 = null,
             string action2Label = null,
-            Action action2 = null)
+            Action action2 = null,
+            string action3Label = null,
+            Action action3 = null)
         {
             if (_targetRoot == null) return;
             _targetRoot.SetActive(true);
@@ -153,27 +170,39 @@ namespace TacSim.UI
             if (_targetSubtitle != null) _targetSubtitle.text = subtitle ?? string.Empty;
             SetBar(_targetBarFill, _targetBarText, barFrac, barLabel, barColor);
 
-            _targetAct1Callback = action1;
-            if (_targetAct1Btn != null)
-            {
-                bool show1 = !string.IsNullOrEmpty(action1Label) && action1 != null;
-                _targetAct1Btn.gameObject.SetActive(show1);
-                if (show1 && _targetAct1Label != null) _targetAct1Label.text = action1Label;
-            }
+            bool show1 = !string.IsNullOrEmpty(action1Label) && action1 != null;
+            bool show2 = !string.IsNullOrEmpty(action2Label) && action2 != null;
+            bool show3 = !string.IsNullOrEmpty(action3Label) && action3 != null;
+            int visCount = (show1 ? 1 : 0) + (show2 ? 1 : 0) + (show3 ? 1 : 0);
 
+            _targetAct1Callback = action1;
             _targetAct2Callback = action2;
-            if (_targetAct2Btn != null)
-            {
-                bool show2 = !string.IsNullOrEmpty(action2Label) && action2 != null;
-                _targetAct2Btn.gameObject.SetActive(show2);
-                if (show2 && _targetAct2Label != null) _targetAct2Label.text = action2Label;
-            }
+            _targetAct3Callback = action3;
+
+            ConfigureTargetActionPill(_targetAct1Btn, _targetAct1Label, show1, action1Label, 0, visCount);
+            ConfigureTargetActionPill(_targetAct2Btn, _targetAct2Label, show2, action2Label, show1 ? 1 : 0, visCount);
+            ConfigureTargetActionPill(_targetAct3Btn, _targetAct3Label, show3, action3Label, (show1 ? 1 : 0) + (show2 ? 1 : 0), visCount);
+        }
+
+        private static void ConfigureTargetActionPill(Button btn, Text lbl, bool visible, string text, int slotIdx, int totalVisible)
+        {
+            if (btn == null) return;
+            btn.gameObject.SetActive(visible);
+            if (!visible) return;
+            if (lbl != null) lbl.text = text;
+            float span = 1f / Mathf.Max(1, totalVisible);
+            float aMinX = slotIdx * span;
+            float aMaxX = (slotIdx + 1) * span;
+            float padL = slotIdx == 0 ? 6f : 2f;
+            float padR = slotIdx == totalVisible - 1 ? -6f : -2f;
+            SetRect(btn.GetComponent<RectTransform>(), new Vector2(aMinX, 0f), new Vector2(aMaxX, 0f), new Vector2(padL, 4f), new Vector2(padR, 26f));
         }
 
         public void ClearTarget()
         {
             _targetAct1Callback = null;
             _targetAct2Callback = null;
+            _targetAct3Callback = null;
             if (_targetRoot != null && _targetRoot.activeSelf)
                 _targetRoot.SetActive(false);
         }

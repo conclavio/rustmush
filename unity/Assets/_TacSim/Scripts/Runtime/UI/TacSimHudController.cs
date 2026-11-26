@@ -77,6 +77,7 @@ namespace TacSim.UI
         public event Action OnCycleOrbitalCameraRequested;
         public event Action OnSpaceQuickFireRequested;
         public event Action OnCloseReplayRequested;
+        public event Action OnEscapePressedWithNoModal;
         public event Action<ulong?> OnNarrativeBacklogRequested;
 
         public static TacSimHudController ActiveInstance { get; private set; }
@@ -1458,7 +1459,8 @@ namespace TacSim.UI
 
             if (Input.GetKeyDown(KeyCode.Escape))
             {
-                TryCloseTopmostModal();
+                if (!TryCloseTopmostModal())
+                    OnEscapePressedWithNoModal?.Invoke();
             }
 
             if ((Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl)) &&
@@ -1559,6 +1561,7 @@ namespace TacSim.UI
                 (_modalPanel == null || !_modalPanel.activeSelf) &&
                 (_tradePanel == null || !_tradePanel.activeSelf) &&
                 (SolarMap == null || !SolarMap.IsOpen) &&
+                (GroundChart == null || !GroundChart.IsOpen) &&
                 (CharacterSheet == null || !CharacterSheet.IsOpen) &&
                 (OpsDirectory == null || !OpsDirectory.IsOpen) &&
                 (CommandPalette == null || !CommandPalette.IsOpen) &&

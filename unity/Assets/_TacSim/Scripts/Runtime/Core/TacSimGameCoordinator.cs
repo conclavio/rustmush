@@ -31,6 +31,7 @@ namespace TacSim.Core
         public TacSimHudController Hud;
         public TacSimAudioSynthesizer Audio;
         public TacSimWayfinder3D Wayfinder;
+        public TacSimTargetRing3D TargetRing;
 
         public TacSimTradeAndShipState TradeState { get; private set; }
         public TacSimActiveStage ActiveStage => _stageDirector != null ? _stageDirector.CurrentStage : TacSimActiveStage.StationWalk;
@@ -242,6 +243,17 @@ namespace TacSim.Core
             }
             Wayfinder.EnsureVisuals();
 
+            if (TargetRing == null)
+            {
+                TargetRing = FindAnyObjectByType<TacSimTargetRing3D>();
+                if (TargetRing == null)
+                {
+                    var trGo = new GameObject("TacSimTargetRing3D");
+                    TargetRing = trGo.AddComponent<TacSimTargetRing3D>();
+                }
+            }
+            TargetRing.EnsureVisuals();
+
             if (Hud.OpsDirectory != null)
                 Hud.OpsDirectory.BindSources(StationWorld, ShipInterior, Wayfinder, TradeState, SpaceStage, SurfaceStage, ArenaStage);
             if (Hud.CommandPalette != null)
@@ -284,8 +296,14 @@ namespace TacSim.Core
                 if (Hud != null)
                 {
                     Hud.SetFocusedInteractable(wi);
-                    SyncTargetFrameForInteractable(wi);
+                    SyncTargetFrameForInteractable(Player.EffectiveTarget);
                 }
+            };
+            Player.OnSelectedTargetChanged += wi =>
+            {
+                if (wi != null && Audio != null)
+                    Audio.PlayUiClick();
+                SyncTargetFrameForInteractable(Player.EffectiveTarget);
             };
 
             StationWorld.OnInteractableTriggered += HandleWorldInteractable;
@@ -431,6 +449,11 @@ namespace TacSim.Core
             ArenaStage.OnToggleCameraViewRequested += ToggleGroundVehicleCameraMode;
 
             Hud.OnCloseReplayRequested += CloseActiveReplayOrObserver;
+            Hud.OnEscapePressedWithNoModal += () =>
+            {
+                if (ActiveStage == TacSimActiveStage.StationWalk || ActiveStage == TacSimActiveStage.ShipInteriorWalk)
+                    Player?.ClearSelectedTarget();
+            };
             if (Hud.ReplayHud != null)
             {
                 Hud.ReplayHud.OnCloseRequested += CloseActiveReplayOrObserver;
@@ -924,27 +947,82 @@ namespace TacSim.Core
         {
             if (Hud?.UnitFrames == null) return;
             if (ActiveStage != TacSimActiveStage.StationWalk && ActiveStage != TacSimActiveStage.ShipInteriorWalk)
-                return;
-            if (wi == null)
             {
+                TargetRing?.ClearTarget();
+                return;
+            }
+            if (wi == null || !wi.isActiveAndEnabled)
+            {
+                TargetRing?.ClearTarget();
                 Hud.UnitFrames.ClearTarget();
                 return;
             }
-            string crest = wi.kind == InteractableKind.NpcActor ? "NPC"
-                : (wi.kind == InteractableKind.AirlockBoard || wi.kind == InteractableKind.AirlockDisembark ? "AIRLK"
-                : (wi.kind == InteractableKind.BridgeHelmSeat ? "HELM" : "TERM"));
-            Color crestCol = wi.kind == InteractableKind.NpcActor
-                ? new Color(0.18f, 0.52f, 0.36f, 0.96f)
-                : new Color(0.18f, 0.42f, 0.62f, 0.96f);
+
+            TargetRing?.SetTarget(wi);
+
+            float distM = Player != null
+                ? Vector3.Distance(Player.transform.position, wi.transform.position)
+                : 0f;
+            bool inRange = distM <= wi.maxInteractDistance;
+            float rangeFrac = Mathf.Clamp01(1f - (distM / 28f));
+
+            if (wi.kind == InteractableKind.NpcActor)
+            {
+                string rawName = !string.IsNullOrEmpty(wi.commandOrKey)
+                    ? wi.commandOrKey
+                    : (wi.promptTitle ?? "Actor").Replace("Talk to ", string.Empty);
+                string safeName = MushProtocol.TryValidateSafeKeywordOrName(rawName, out string validName) ? validName : string.Empty;
+                string lookCmd = !string.IsNullOrEmpty(safeName) ? $"look {safeName}" : "look";
+
+                if (wi.isRemotePlayer)
+                {
+                    Hud.UnitFrames.SetTarget(
+                        "PILOT",
+                        new Color(0.14f, 0.56f, 0.72f, 0.96f),
+                        rawName,
+                        !string.IsNullOrEmpty(wi.promptSubtitle) ? wi.promptSubtitle : "Online Pilot",
+                        inRange ? 1f : rangeFrac,
+                        inRange ? $"{distM:0.0}m — IN RANGE" : $"{distM:0.0}m — PILOT",
+                        new Color(0.24f, 0.78f, 0.94f, 0.95f),
+                        "PAGE",
+                        () => Hud.PrefillChatInput(!string.IsNullOrEmpty(safeName) ? $"page {safeName}=" : "page "),
+                        "LOOK",
+                        () => ExecutePlayerCommand(lookCmd),
+                        "MAIL",
+                        () => Hud.SocialModal?.OpenComposeMailTo(safeName));
+                    return;
+                }
+
+                Hud.UnitFrames.SetTarget(
+                    "NPC",
+                    new Color(0.18f, 0.54f, 0.36f, 0.96f),
+                    rawName,
+                    !string.IsNullOrEmpty(wi.promptSubtitle) ? wi.promptSubtitle : "Station Cast",
+                    inRange ? 1f : rangeFrac,
+                    inRange ? $"{distM:0.0}m — [E] TALK" : $"{distM:0.0}m — WALK CLOSER",
+                    new Color(0.24f, 0.78f, 0.52f, 0.95f),
+                    "TALK",
+                    () => HandleWorldInteractable(wi),
+                    "LOOK",
+                    () => ExecutePlayerCommand(lookCmd),
+                    "SAY",
+                    () => Hud.PrefillChatInput(!string.IsNullOrEmpty(safeName) ? $"say {safeName}, " : "say "));
+                return;
+            }
+
+            string crest = wi.kind == InteractableKind.AirlockBoard || wi.kind == InteractableKind.AirlockDisembark
+                ? "AIRLK"
+                : (wi.kind == InteractableKind.BridgeHelmSeat ? "HELM" : "TERM");
+            Color crestCol = new Color(0.22f, 0.44f, 0.62f, 0.96f);
             Hud.UnitFrames.SetTarget(
                 crest,
                 crestCol,
                 wi.promptTitle ?? "Target",
                 wi.promptSubtitle ?? string.Empty,
-                1.0f,
-                "IN RANGE — PRESS [E]",
-                new Color(0.24f, 0.72f, 0.54f, 0.95f),
-                "[E] INTERACT",
+                inRange ? 1.0f : rangeFrac,
+                inRange ? $"{distM:0.0}m — PRESS [E]" : $"{distM:0.0}m — WALK CLOSER",
+                new Color(0.86f, 0.68f, 0.24f, 0.95f),
+                "[E] USE",
                 () => HandleWorldInteractable(wi),
                 "LOOK",
                 () => ExecutePlayerCommand("look"));
@@ -987,6 +1065,38 @@ namespace TacSim.Core
                 ExecutePlayerCommand("+tac/beam");
                 Hud?.FloatingCallouts?.ShowCallout("WEAPONS FREE — FIRING", new Color(1f, 0.44f, 0.28f, 1f));
             }
+        }
+
+        public bool CycleWalkTargetForTest()
+        {
+            return TryCycleWalkStageTarget();
+        }
+
+        private bool TryCycleWalkStageTarget()
+        {
+            if (Player == null) return false;
+            List<WorldInteractable> candidates = ActiveStage == TacSimActiveStage.ShipInteriorWalk
+                ? ShipInterior?.GetActiveCompartmentTargetables()
+                : StationWorld?.GetActiveRoomTargetables();
+            if (candidates == null || candidates.Count == 0)
+                return false;
+
+            int curIdx = -1;
+            var current = Player.EffectiveTarget;
+            if (current != null)
+            {
+                for (int i = 0; i < candidates.Count; i++)
+                {
+                    if (ReferenceEquals(candidates[i], current))
+                    {
+                        curIdx = i;
+                        break;
+                    }
+                }
+            }
+            int nextIdx = (curIdx + 1) % candidates.Count;
+            Player.SelectTarget(candidates[nextIdx]);
+            return true;
         }
 
         private void HandleCycleTarget()
@@ -1032,6 +1142,11 @@ namespace TacSim.Core
                         }
                     }
                 }
+            }
+            else if (ActiveStage == TacSimActiveStage.StationWalk || ActiveStage == TacSimActiveStage.ShipInteriorWalk)
+            {
+                if (!TryCycleWalkStageTarget())
+                    ExecutePlayerCommand("look");
             }
             else
             {
@@ -1106,6 +1221,9 @@ namespace TacSim.Core
                     : (StationWorld?.Pack?.Name ?? "Ceres Freeport");
                 Hud.CharacterSheet.SetPilotContext(pilotName, locName, _currentHullBadge, stage, _activeAvatarPreset);
             }
+
+            if (stage != TacSimActiveStage.StationWalk && stage != TacSimActiveStage.ShipInteriorWalk)
+                TargetRing?.ClearTarget();
 
             string creditsStr = TradeState != null ? TradeState.CreditsText : "—";
 
@@ -1475,8 +1593,10 @@ namespace TacSim.Core
             if (ShipInterior != null) ShipInterior.ResetSessionState();
             if (StationWorld != null) StationWorld.ResetSessionState();
             if (Wayfinder != null) Wayfinder.ClearRoute();
+            if (TargetRing != null) TargetRing.ClearTarget();
             if (Player != null)
             {
+                Player.ClearSelectedTarget();
                 Player.IsSeatedAtHelm = false;
                 Player.SetStagePhysicsSuspended(false);
             }

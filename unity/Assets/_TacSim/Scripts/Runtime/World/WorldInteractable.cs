@@ -29,6 +29,8 @@ namespace TacSim.World
         public string commandOrKey = "";
         public string detailBody = "";
         public float maxInteractDistance = 3.4f;
+        public bool isRemotePlayer;
+        public string actorId = "";
 
         public Action<WorldInteractable> OnInteracted;
 

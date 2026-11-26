@@ -486,6 +486,17 @@ namespace TacSim.UI
 
         public void ToggleOpen() => SetOpen(!IsOpen);
 
+        public void OpenComposeMailTo(string recipientName)
+        {
+            SetOpen(true, SocialModalTab.Mail);
+            if (_mailToInput != null)
+            {
+                _mailToInput.text = MushProtocol.StripControlChars(recipientName ?? string.Empty).Trim();
+                _mailToInput.Select();
+                _mailToInput.ActivateInputField();
+            }
+        }
+
         public void ResetSessionState()
         {
             _whoEntries.Clear();
