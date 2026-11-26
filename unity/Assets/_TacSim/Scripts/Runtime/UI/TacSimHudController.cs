@@ -88,6 +88,8 @@ namespace TacSim.UI
         public TacSimSolarSystemMap SolarMap { get; private set; }
         public TacSimUnitFrames UnitFrames { get; private set; }
         public TacSimTacticalMinimap Minimap { get; private set; }
+        public TacSimCharacterSheet CharacterSheet { get; private set; }
+        public TacSimTacticalBrackets TacticalBrackets { get; private set; }
         public ChatLogTab ActiveChatTab { get; private set; } = ChatLogTab.All;
         public int QuickActionSlotCount => _quickSlotActions.Count;
         public bool IsDockingHudVisible => _dockingPanel != null && _dockingPanel.activeSelf;
@@ -114,6 +116,7 @@ namespace TacSim.UI
                 var term = ResolveActiveMindTerminal();
                 return (_modalPanel != null && _modalPanel.activeSelf) ||
                        (_tradePanel != null && _tradePanel.activeSelf) ||
+                       (CharacterSheet != null && CharacterSheet.IsOpen) ||
                        (Overlays != null && Overlays.IsLobbyModalOpen) ||
                        (term != null && term.IsTerminalOpen);
             }
@@ -467,6 +470,8 @@ namespace TacSim.UI
             EconomyPanels?.ResetSessionState();
             Overlays?.ResetSessionState();
             SolarMap?.ResetSessionState();
+            CharacterSheet?.ResetSessionState();
+            TacticalBrackets?.ResetSessionState();
             UnitFrames?.ResetSessionState();
             Minimap?.ResetSessionState();
             ResolveActiveMindTerminal()?.ResetSessionState();
@@ -531,6 +536,9 @@ namespace TacSim.UI
             SolarMap = gameObject.GetComponent<TacSimSolarSystemMap>() ?? gameObject.AddComponent<TacSimSolarSystemMap>();
             SolarMap.BuildModal(_hudRoot.transform, _uiFont);
 
+            CharacterSheet = gameObject.GetComponent<TacSimCharacterSheet>() ?? gameObject.AddComponent<TacSimCharacterSheet>();
+            CharacterSheet.BuildModal(_hudRoot.transform, _uiFont);
+
             DisplayOptions = gameObject.GetComponent<TacSimDisplayOptions>() ?? gameObject.AddComponent<TacSimDisplayOptions>();
             DisplayOptions.BuildModal(canvasGo.transform, _uiFont);
             DisplayOptions.ApplyStartupPreferences();
@@ -557,6 +565,10 @@ namespace TacSim.UI
         {
             _hudRoot = CreatePanel(root, "GameplayHud", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, Color.clear);
 
+            // 0. Pooled 3D Screen-Space Tactical Brackets Layer (first sibling so it renders behind HUD panels & modals)
+            TacticalBrackets = gameObject.GetComponent<TacSimTacticalBrackets>() ?? gameObject.AddComponent<TacSimTacticalBrackets>();
+            TacticalBrackets.BuildLayer(_hudRoot.transform, _uiFont);
+
             // 1. Top Telemetry Strip
             var topBar = CreatePanel(_hudRoot.transform, "TopStrip", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(16f, -64f), new Vector2(-16f, -10f), new Color(0.04f, 0.07f, 0.11f, 0.86f));
             _locationText = CreateText(topBar.transform, "CERES FREEPORT — PORT WATCH ARRIVALS [PUBLIC DECK]", 18, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.82f, 0.94f, 1f));
@@ -566,8 +578,11 @@ namespace TacSim.UI
             SetRect(_netBadgeText.rectTransform, new Vector2(0.50f, 0f), new Vector2(0.61f, 1f), Vector2.zero, Vector2.zero);
 
             _shipAndClockText = CreateText(topBar.transform, "IC 08:00 UTC | HULL: UNCHARTERED | RMB: Orbit Camera", 15, FontStyle.Normal, TextAnchor.MiddleRight, new Color(0.62f, 0.84f, 0.96f));
-            // Reserve 436px at the far right of TopStrip for `[M] CHART` (`-428..-324`), `OPTIONS` (`-316..-212`), and `[F10] MINDS & SEALING` (`-204..-6`).
-            SetRect(_shipAndClockText.rectTransform, new Vector2(0.50f, 0f), new Vector2(1f, 1f), Vector2.zero, new Vector2(-436f, 0f));
+            // Reserve 548px at the far right of TopStrip for `[C] SHEET` (`-540..-436`), `[M] CHART` (`-428..-324`), `OPTIONS` (`-316..-212`), and `[F10] MINDS & SEALING` (`-204..-6`).
+            SetRect(_shipAndClockText.rectTransform, new Vector2(0.48f, 0f), new Vector2(1f, 1f), Vector2.zero, new Vector2(-548f, 0f));
+
+            var sheetTopBtn = CreateButton(topBar.transform, "[C] SHEET", new Color(0.16f, 0.36f, 0.44f), () => CharacterSheet?.ToggleOpen());
+            SetRect(sheetTopBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-540f, 6f), new Vector2(-436f, -6f));
 
             var chartTopBtn = CreateButton(topBar.transform, "[M] CHART", new Color(0.16f, 0.34f, 0.48f), () => SolarMap?.SetOpen(!(SolarMap != null && SolarMap.IsOpen)));
             SetRect(chartTopBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-428f, 6f), new Vector2(-324f, -6f));
@@ -1149,6 +1164,11 @@ namespace TacSim.UI
                 SolarMap.SetOpen(false);
                 return true;
             }
+            if (CharacterSheet != null && CharacterSheet.IsOpen)
+            {
+                CharacterSheet.SetOpen(false);
+                return true;
+            }
             var term = ResolveActiveMindTerminal();
             if (term != null && term.IsTerminalOpen)
             {
@@ -1198,6 +1218,14 @@ namespace TacSim.UI
                 SolarMap?.SetOpen(!(SolarMap != null && SolarMap.IsOpen));
             }
 
+            if (Input.GetKeyDown(KeyCode.C) && !IsTextInputFocused &&
+                !Input.GetKey(KeyCode.LeftControl) && !Input.GetKey(KeyCode.RightControl) &&
+                !Input.GetKey(KeyCode.LeftAlt) && !Input.GetKey(KeyCode.RightAlt) &&
+                (_loginPanel == null || !_loginPanel.activeSelf))
+            {
+                CharacterSheet?.ToggleOpen();
+            }
+
             // Up/Down command history recall inside the chat input bar
             if (_chatInput != null && _chatInput.isFocused && _commandHistory.Count > 0)
             {
@@ -1213,6 +1241,7 @@ namespace TacSim.UI
                 (_modalPanel == null || !_modalPanel.activeSelf) &&
                 (_tradePanel == null || !_tradePanel.activeSelf) &&
                 (SolarMap == null || !SolarMap.IsOpen) &&
+                (CharacterSheet == null || !CharacterSheet.IsOpen) &&
                 (DisplayOptions == null || !DisplayOptions.IsOpen) &&
                 !(ResolveActiveMindTerminal()?.IsTerminalOpen ?? false) &&
                 !(Overlays?.IsLobbyModalOpen ?? false);

@@ -124,6 +124,31 @@ namespace TacSim.Arena
         public event Action OnToggleCameraViewRequested;
         public event Action<bool> OnWeaponShotFired; // (isLaser)
 
+        public bool TryGetContactWorldPosition(string designator, out Vector3 worldPos)
+        {
+            worldPos = Vector3.zero;
+            if (string.IsNullOrWhiteSpace(designator)) return false;
+            string key = designator.Trim();
+            if (_contactRigs.TryGetValue(key, out var rig) && rig?.Root != null)
+            {
+                worldPos = rig.Root.transform.position + Vector3.up * 2.6f;
+                return true;
+            }
+            if (TerrainGrid != null && State?.Contacts != null)
+            {
+                for (int i = 0; i < State.Contacts.Count; i++)
+                {
+                    var ct = State.Contacts[i];
+                    if (string.Equals(ct.Designator, key, StringComparison.OrdinalIgnoreCase))
+                    {
+                        worldPos = ArenaStageOrigin + TerrainGrid.SiteCellToLocalPos(ct.CellX, ct.CellY, 2.6f);
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
         private void OnDestroy()
         {
             if (_terrainRoot != null)

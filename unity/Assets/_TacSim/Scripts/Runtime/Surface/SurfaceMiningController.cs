@@ -118,6 +118,50 @@ namespace TacSim.Surface
         private readonly List<string> _recentSiteLines = new List<string>();
         public IReadOnlyList<string> RecentSiteLines => _recentSiteLines;
 
+        public readonly struct SurfaceOreBeaconPoint
+        {
+            public readonly Vector3 WorldPos;
+            public readonly string Label;
+            public readonly bool IsRich;
+            public SurfaceOreBeaconPoint(Vector3 worldPos, string label, bool isRich)
+            {
+                WorldPos = worldPos;
+                Label = label;
+                IsRich = isRich;
+            }
+        }
+
+        private readonly List<SurfaceOreBeaconPoint> _oreBeacons = new List<SurfaceOreBeaconPoint>();
+        public IReadOnlyList<SurfaceOreBeaconPoint> OreBeacons => _oreBeacons;
+        public float RoverHeadingDeg => _roverHeadingDeg;
+        public float RoverSpeedKph => _roverSpeedKph;
+        public bool IsDrillingActive => Time.time < _drillActiveUntil;
+
+        public bool TryGetActiveWaypointWorldPos(out Vector3 worldPos, out string label)
+        {
+            worldPos = Vector3.zero;
+            label = string.Empty;
+            if (TerrainGrid == null) return false;
+            if (_activeLegWaypoints.Count > 0)
+            {
+                var last = _activeLegWaypoints[_activeLegWaypoints.Count - 1];
+                int cx = (int)Math.Floor(last.XCm / 1000.0);
+                int cy = (int)Math.Floor(last.YCm / 1000.0);
+                worldPos = SurfaceStageOrigin + TerrainGrid.SiteCmToLocalPos(last.XCm, last.YCm, 1.8f);
+                label = $"WP ({cx},{cy})";
+                return true;
+            }
+            if (_hasDriveWaypoint)
+            {
+                int cx = TerrainGrid.LocalPosToSiteCellX(_roverTargetLocalPos.x);
+                int cy = TerrainGrid.LocalPosToSiteCellY(_roverTargetLocalPos.z);
+                worldPos = SurfaceStageOrigin + _roverTargetLocalPos + Vector3.up * 1.8f;
+                label = $"WP ({cx},{cy})";
+                return true;
+            }
+            return false;
+        }
+
         public void BuildSurfaceStage(TacSimAssetCatalog catalog, string siteSlug = "occator_rim")
         {
             Catalog = catalog;
@@ -812,6 +856,7 @@ namespace TacSim.Surface
 
         private void RebuildLiveReadingsMarkers(List<JsonNode> readings)
         {
+            _oreBeacons.Clear();
             if (_markersRoot == null || TerrainGrid == null) return;
             for (int i = _markersRoot.childCount - 1; i >= 0; i--)
             {
@@ -834,6 +879,8 @@ namespace TacSim.Surface
                     continue;
                 string txt = r.Str("text", "Ore Reading");
                 bool isRich = txt.IndexOf("rich", StringComparison.OrdinalIgnoreCase) >= 0;
+                Vector3 wp = SurfaceStageOrigin + TerrainGrid.SiteCellToLocalPos(siteCx, siteCy, 2.2f);
+                _oreBeacons.Add(new SurfaceOreBeaconPoint(wp, txt, isRich));
                 SpawnBeaconPillarAtSiteCell(siteCx, siteCy, txt, isRich ? new Color(0.2f, 1f, 0.58f) : new Color(0.32f, 0.85f, 1f));
                 spawned++;
             }

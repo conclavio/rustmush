@@ -219,6 +219,10 @@ namespace TacSim.Core
                 Hud.Overlays.BindControllers(SurfaceStage, ArenaStage, SpaceStage);
             if (Hud.Minimap != null)
                 Hud.Minimap.BindWorldSources(StationWorld, ShipInterior, SpaceStage, SurfaceStage, ArenaStage);
+            if (Hud.CharacterSheet != null)
+                Hud.CharacterSheet.BindSources(TradeState, SpaceStage, SurfaceStage, ArenaStage);
+            if (Hud.TacticalBrackets != null)
+                Hud.TacticalBrackets.BindControllers(SpaceStage, SurfaceStage, ArenaStage);
 
             if (_ws == null)
                 _ws = new MushWsClient();
@@ -419,6 +423,51 @@ namespace TacSim.Core
                 };
             }
 
+            if (Hud.CharacterSheet != null)
+            {
+                Hud.CharacterSheet.OnAvatarPresetSelected += preset =>
+                {
+                    _activeAvatarPreset = preset;
+                    if (Player != null && Player.VisualSpawner != null)
+                        Player.VisualSpawner.BuildPlayerVisual(AssetCatalog, preset);
+                    if (Application.isPlaying)
+                    {
+                        PlayerPrefs.SetInt("TacSim.LastAvatarPreset", (int)preset);
+                        PlayerPrefs.Save();
+                    }
+                    Hud.AppendLogLine($"<color=#66EEAA>[AVATAR]</color> Switched 3D avatar rig to <b>{preset}</b>.");
+                };
+                Hud.CharacterSheet.OnCommandRequested += ExecutePlayerCommand;
+                Hud.CharacterSheet.OnOpenTradeTerminalRequested += () =>
+                    OpenVisualTradeTerminal("CERES PORT EXCHANGE & SHIP LOGISTICS", openSailingTab: false);
+                Hud.CharacterSheet.OnOpenSailingPlanRequested += () =>
+                    OpenVisualTradeTerminal("SAILING PLAN & CORRIDOR ROUTE BUILDER", openSailingTab: true);
+                Hud.CharacterSheet.OnOpenSolarChartRequested += () => Hud.SolarMap?.SetOpen(true);
+            }
+
+            if (Hud.TacticalBrackets != null)
+            {
+                Hud.TacticalBrackets.OnOrbitalBracketClicked += (id, isRock) =>
+                {
+                    if (!MushProtocol.TryValidateSafeCommandToken(id, out string safeId)) return;
+                    if (Audio != null) Audio.PlayRadarScanPing();
+                    if (isRock)
+                    {
+                        SpaceStage?.NotifyApproachOrdered(safeId);
+                        ExecutePlayerCommand($"+helm/approach {safeId}");
+                    }
+                    else
+                    {
+                        ExecutePlayerCommand($"+tac/lock {safeId}");
+                    }
+                };
+                Hud.TacticalBrackets.OnArenaBracketClicked += desig =>
+                {
+                    if (!MushProtocol.TryValidateSafeCommandToken(desig, out string safeDesig)) return;
+                    HandleArenaCockpitVerb($"lock {safeDesig}");
+                };
+            }
+
             _contentSync.OnSyncLog += msg =>
             {
                 if (Hud != null)
@@ -498,6 +547,7 @@ namespace TacSim.Core
 
         private float _nextUnitFrameSyncAt;
         private int _arenaCycleIdx = -1;
+        private PlayerAvatarPreset _activeAvatarPreset = PlayerAvatarPreset.StellarTrooperFemale;
 
         private void SyncTargetFrameForInteractable(WorldInteractable wi)
         {
@@ -597,9 +647,30 @@ namespace TacSim.Core
                 Hud.Minimap.SyncMinimap(stage, pos, yaw, rightCornerBusy);
             }
 
+            // Update 3D screen-space tactical brackets & directional armor/compass widgets every frame
+            if (Hud.TacticalBrackets != null)
+            {
+                Camera activeCam = CameraRig != null && CameraRig.ControlledCamera != null ? CameraRig.ControlledCamera : Camera.main;
+                bool hideBrackets = Hud.IsLoginOverlayVisible || Hud.IsModalOpen ||
+                    (Hud.SolarMap != null && Hud.SolarMap.IsOpen) ||
+                    (Hud.DisplayOptions != null && Hud.DisplayOptions.IsOpen);
+                Hud.TacticalBrackets.SyncBrackets(stage, activeCam, hideBrackets);
+            }
+
             if (Hud.UnitFrames == null) return;
             if (Application.isPlaying && Time.unscaledTime < _nextUnitFrameSyncAt) return;
             _nextUnitFrameSyncAt = Time.unscaledTime + 0.15f;
+
+            if (Hud.CharacterSheet != null)
+            {
+                string pilotName = _ws != null && _ws.ActiveCharacter != null && !string.IsNullOrEmpty(_ws.ActiveCharacter.Name)
+                    ? _ws.ActiveCharacter.Name
+                    : "Pilot";
+                string locName = _lastRoomView != null && !string.IsNullOrEmpty(_lastRoomView.Name)
+                    ? _lastRoomView.Name
+                    : (StationWorld?.Pack?.Name ?? "Ceres Freeport");
+                Hud.CharacterSheet.SetPilotContext(pilotName, locName, _currentHullBadge, stage, _activeAvatarPreset);
+            }
 
             string creditsStr = TradeState != null ? TradeState.CreditsText : "—";
 
@@ -1043,7 +1114,9 @@ namespace TacSim.Core
                 _contentSync.InitializeDiskCacheForServer(session.BaseHttpUrl);
 
                 Hud.SetLoginStatus($"Attaching WebSocket to <b>{safeChar}</b>...");
+                _activeAvatarPreset = avatar;
                 Player.VisualSpawner.BuildPlayerVisual(AssetCatalog, avatar);
+                Hud.CharacterSheet?.SetPilotContext(chosen.Name, "Ceres Freeport", _currentHullBadge, ActiveStage, avatar);
                 await _ws.ConnectAsync(session, chosen.Key, resetResume: true);
                 Hud.SetConnectionBadge(_ws.State);
                 Hud.ShowLoginOverlay(false);
