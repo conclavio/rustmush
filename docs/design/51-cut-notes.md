@@ -928,3 +928,165 @@ summed minutes more a run, and the `rest-server` cell six minutes more of wall c
 - **A cell of its own for the suite.** The `rest-server` cell is now within a minute of the slowest cell of a
   pull request's run (27 against 28). Giving `commerce_composition` its own cell, as #244 gave `split_boundary`
   one, is a `ci.yml` change and the owner's call. It is asked in the pull request.
+
+## FL.7
+
+The gateway's stories. Built 2026-11-25 on `0e3a26804`. It adds one module to `mush-storykit` (`term.rs`, the one
+`Term`), moves mush-gateway's `split_halves` stories onto it, turns on `one_reader` for mush-gateway, and closes all
+twelve of mush-gateway's rows in `flaky-known.toml`. **It changes product code in two places.** Rows 12 and 15 were
+not the rig's wall-clock limits. They were two product faults, and the restart stories found both once their waits
+were bounded by the gateway's own schedule.
+
+Every measurement is from conclav.dev, by hand as `ghrunner`, in a clone with its own target directory. Another
+session's soak held cores 0 to 23 for part of the time; where this unit's runs used fewer cores, it says so.
+
+**The suite's soak rate.** `scripts/soak.sh` with `SOAK_PACKAGES=mush-gateway`, four cores a cell, no retry.
+`split_halves` is 47 tests here, the Linux-only modules among them.
+
+| | Cells | Passes | Failed passes | Tests that failed | A pass, wall |
+|---|---:|---:|---:|---|---:|
+@@ROWS@@
+
+The middle row is the converted stories on the old product. It is how the keeper fault was found (Rows).
+
+**Survey.**
+
+- **Eleven `Term`s, not ten, one shape.** Doc 51 §2.3 counted ten under `split_halves/`; `authoritative_process_kill`
+  holds an eleventh. Every copy was an SSH channel and a `String`, with the same `expect_after` loop. They
+  differed in their busy lists (one sentence, or two), their retry budgets (8 or 40), whether a retry slept 200 ms,
+  their pty (80 by 24 in eight files, 120 by 40 in three), and in eleven file-local helpers.
+- **Four more copies of the admission loop.** Five files typed their first login again while the gateway answered
+  that its server half was not up yet, in 200-ms steps, each with its own constant for the sentence.
+- **The restart waits were already 60 s.** Every `Reconnected` was read under the file's `STEP_TIMEOUT`, the same
+  60 s as the kit's. A literal limit was not what failed. Row 15's message, `timeout waiting for "Reconnected"`, is a
+  60-s wait running out.
+- **The gateway's schedule had no public figure.** `RECONNECT_TIMEOUT`, `RESYNC_TIMEOUT`, `BACKOFF_CAP` and
+  `KEEPER_STOP_WAIT` are private constants of `mush-gateway/src/lib.rs`.
+
+**Built.**
+
+- **`mush_storykit::Term`** (`term.rs`): `Term::play(addr)` (the passwordless `play` user, a 120-by-40 pty, the
+  owner's floor) and `play_sized`; `mark`, `raw`, `since`; `send_line`; `expect`, `expect_after`,
+  `expect_one_of_after` and `expect_one_of_within`; `say`, which types a line again on the kit's one `BUSY` list;
+  `ask`; `expect_close`. It is the barriers' `Session`, so `ask_whole` and `settled` take it. `strip_ansi` and
+  `AcceptAll` are its one copy each.
+- **`Term::across_restart(heal, restart)`** and **`Term::healed_after(mark, heal)`**. The rig's restart runs under
+  its own bound event and limit. Then the helper reads `restarting` and `Reconnected` from the mark, within `heal`
+  under the load factor, and calls `settled`. `reconnected_after` is the same without the sentinel, for the one
+  story whose session frames every reply.
+- **`mush_gateway::HEAL_WITHIN`**, the product's figure for one heal once a server answers: the old writer awaited,
+  one paced pause, one dial and handshake, one resync. That is 27 s, so a story waits 54 s. A unit test holds the
+  figure to the steps it sums.
+- **The rig** (`split_halves/harness.rs`): the kit's re-exports, `HEAL`, and `when_admitted`, the one admission
+  loop. It types a line again while the answer is one of the two not-up sentences.
+- **The stories.** All eleven files are on the kit's `Term`. Every restart's wait is `healed_after` or
+  `across_restart`, and a line typed after a heal goes through `say`. File-local helpers are free functions over
+  `&mut Term`. `arena_custody_split`'s own `wait_until` is now the kit's.
+- **`one_reader`** (`mush-contract-tests`, `ci_policy/one_reader.rs`). It refuses a `struct Term`, `fn ask_whole`
+  or `fn strip_ansi` under the `tests/` of a crate on its list, which is mush-gateway. It also requires the kit to
+  hold exactly one of each.
+
+**The two product fixes.**
+
+1. **A reconnect attempt waited for ever on a Hello** (`mush-gateway`, `connect_and_wire`).
+   - The keeper bounded an attempt's dial loop by `RECONNECT_TIMEOUT`, but not one dial, and not the read of the
+     server's Hello after a dial that connected.
+   - In the converted soak, three restarts in 24 passes never healed. One run's trace shows the gap open at
+     `boundary writer closing (deliberate restart)`, the fresh server up 0.74 s later, and no keeper line at all
+     for the 54 s after. No dial failed and none was retried, so the attempt was parked.
+   - The first dial after a restart can reach the server half that is stopping, which in this rig is a runtime being
+     dropped. Which of its tasks held the accepted socket open without greeting is not established.
+   - The fix holds the dial, both Hellos and the dial loop to the attempt's one deadline. An expiry is
+     `Unreachable`, so the next attempt follows at once.
+   - `a_peer_that_never_says_hello_ends_the_attempt_inside_its_budget` accepts and never writes. With the fix it
+     ends in 0.3 s. Without it the attempt is still waiting when the test's own 10-s bound ends it.
+   - A production server whose accept loop lives and whose handshake is wedged would strand every held player the
+     same way. There is no sign that one has.
+2. **A drain's close was cut before it reached the wire** (`mush-drain`, `Drain::run` and the lifecycle).
+   - A session leaves the live set when its close is queued. `Drain::run` raced its own `close_all` against the
+     generation emptying. The lifecycle returned on "empty" while the drain's task was inside the close's 500-ms
+     flush, so the gateway's runtime dropped with the close reason unwritten.
+   - CI run 44774353324: `channel closed waiting for "This gateway is restarting; …"`, the transcript ending at the
+     warning.
+   - The close now runs outside the race, and the lifecycle does not end on "empty" while the drain's task runs.
+   - Two tests, a finish and a drain whose session drops its guard in its own close as the gateway's does, fail
+     without the fix and pass with it.
+   - The doorway uses the same crate and gets the same fix.
+
+**The counts.**
+
+| | Before | After |
+|---|---:|---:|
+| Raw waits in mush-gateway story files (`wait_budget/mush-gateway.txt`) | 86 | 55 |
+| `struct Term` definitions under `crates/mush-gateway/tests/` | 11 | 0 |
+| `strip_ansi` definitions there | 11 | 0 |
+| `ask_whole` definitions there | 1 | 0 |
+| mush-gateway's rows in `flaky-known.toml` | 12 | 0 |
+
+`scripts/wait_audit.py` agrees with the budget: 55 waits and 2 wall-clock reads in mush-gateway's story files.
+
+**Rows.**
+
+- **Row 12, five tests, re-described.** The class is still process, but the cause is not the rig's limits:
+  - `restart_survival`'s two and `server_unit`'s heal are the keeper fault.
+  - `gateway_generations::a_finish_warns_once…` is the drain fault. CI's one failure of it carries the drain's
+    message, and its retried pass came from the same run.
+  - Its twin, `a_drains_while_b_serves…`, had a retried pass in the record with no message kept. It drains the same
+    way.
+- **Row 15, two tests, read as row 12's first fault.** `timeout waiting for "Reconnected"` after a restart is what
+  the keeper fault prints, and the converted soak printed it in this binary's restart stories. Its two runs are
+  from 2026-11-06 and their logs are gone, so that is a reading of the symptom, not a reproduction.
+- **One more test of the fault, never listed:** `restart_survival::server_self_exit_auto_restarts_without_dropping_players`
+  failed once and passed on its same head on 2026-11-23 (run 45277135577). It failed in the converted soak the
+  same way.
+- **The five carried module rows** (`two_process_e2e`, `server_panic_relaunch`, `arena_story_split`,
+  `two_gateways`, `gateway_generations_unit`) had no failure on record. They passed in every soak pass above.
+- **Not a flake:** `arena_story_split::the_story_is_the_same_story_through_the_gateway` failed both tries in run
+  44774353324, at a security branch's head (`fix/security-tier1d-tacsim-highs`), and nowhere else.
+- **Every row is deleted.** None is renewed.
+
+**Tests.**
+
+- `mush-drain`: 29 unit tests, the two new ones among them.
+- `mush-gateway` lib: `the_heal_figure_covers_every_step_of_one_heal` and
+  `a_peer_that_never_says_hello_ends_the_attempt_inside_its_budget`.
+- `mush-storykit`: its unit tests, `strip_ansi`'s two new ones among them.
+- `split_halves` whole, sixteen threads, no retry: 47 of 47.
+- `restart_survival` alone, traced, 204 runs on six cells before the keeper fix: one failure, the trace above.
+- `mush-contract-tests`' `ci_policy`: `one_reader`, `wait_budget` (re-blessed down), `flaky_known` (re-blessed),
+  `restriction_lints` (the kit's `panic` count, 16 to 29) and `panic_budget`.
+- `cargo fmt`, clippy with `-D warnings` over mush-gateway, mush-storykit and mush-drain, every target, and rustdoc.
+
+**Divergences.**
+
+1. **Two product changes**, where doc 51 §5 has FL.7 change only tests and the kit. Both were found by the unit's
+   own soak or by CI's record. They are the rows' causes, and a rig cannot fix either.
+2. **The heal limit is one product figure, not `Figures`.** Doc 51 §3.5 sketches the limit "through `Figures`".
+   `Figures` reads the game's content, and the heal is the gateway's, so it is a `pub const` of the gateway. The kit
+   takes it as a `Duration` and does not link the gateway.
+3. **`across_restart` is used once.** Most restart stories stop, do something in the gap, and then start, which one
+   future cannot hold, so they call `healed_after` with the mark taken before the stop.
+4. **The heal also asserts that `restarting` came first.** The stories each read both lines already, and the
+   helper keeps that.
+5. **Every story's pty is 120 by 40**, where eight files asked for 80 by 24: the owner's floor. No assertion here
+   reads a wrapped line.
+6. **The kit's `say` types a line again on either busy answer**, where four files knew only the commit one. A busy
+   answer is never the needle a story waits for.
+
+**Not built.**
+
+- **The rest of each file's rig.** `scratch_dir`, `test_config`, `seeded_gw_store` and `start_split` are still one
+  copy a file. Most of the raw waits left are theirs, such as `timeout(Duration::from_secs(30), ssh_rx)` on a
+  gateway's bind.
+- **`web_restart_survival`.** It reads a web socket, not a `Term`, and its restart wait is still `STEP_TIMEOUT`.
+- **`authoritative_process_kill`'s restart.** Its worker is a re-exec of the test binary that boots from Redis and
+  is started without a bound event, so the heal figure does not bound it. It keeps its step limit and its 5-s
+  sleep.
+- **`after_tick`.** `arena_custody_split` still sleeps 2.5 s for "two more boarding ticks"; that barrier is FL.8's.
+- **The holder of the silent socket.** The fix bounds the attempt. Which task of a dropping runtime kept the
+  accepted socket open is not traced.
+
+**For the owner.**
+
+- **Q-FL7-1.** Two product fixes landed in a test unit (Divergences, 1). Default: keep them here, since the rows
+  cannot close without them.

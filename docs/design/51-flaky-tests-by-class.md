@@ -18,6 +18,12 @@ started its session, which is the further word §5 asks for. §3.6 says what was
 the row, §2.4 has row 17 settled as a phase fault, and the [cut note](51-cut-notes.md) has the
 measurements.
 
+**FL.7 is cut and built** (2026-11-25, recorded here without a new draft number). The owner cut
+FL.5 to FL.10 that day ("Yes, cut them"). §5 marks the row, and §2.4 has rows 12 and 15
+re-described: both were two product faults, not the rig's wall-clock limits. A reconnect
+attempt could wait for ever on a server's Hello, and a drain's close was cut before it reached
+the wire. The [cut note](51-cut-notes.md) has the soaks.
+
 **The questions, each ruled at its default** (each in full in §6, with the alternative it was
 weighed against and the reason):
 
@@ -226,10 +232,10 @@ the hygiene session is fixing now, not yet in the list.
 | 9 | `sim_range::one_pilot_on_the_range…` | mushd `sim_lenses` | 4 | figure | row 3's wait, the other copy |
 | 10 | `boot_parity::stop_ledger_archive…` | mush-server `split_boundary` | 1 | clock | a bare 20-ms sleep, then an assertion that a spawned task had run (`boot_parity.rs:1247`) |
 | 11 | `ipc_teardown::wedged_gateway…` | mush-server `split_boundary` | 1 | stream | it expected one whole frame larger than the 4 KiB receive buffer |
-| 12 | five restart and drain stories | mush-gateway `split_halves` | 6 | process | real restarts on wall-clock limits |
+| 12 | five restart and drain stories | mush-gateway `split_halves` | 6 | process | real restarts on wall-clock limits. Re-described by FL.7: two product faults. A reconnect attempt could wait for ever on a Hello, and a drain's close was cut before its flush |
 | 13 | two `observer_rule` absence stories | mushd `sim_lenses` | 2 | clock | paint and poll timing |
 | 14 | `web_e2e::spa_if_built_and_healthz…` | mushd `world_journeys` | 3 | process, likely | `/healthz` answered before the server said it was ready; cause not known |
-| 15 | two `arena_custody_split` stories | mush-gateway `split_halves` | 2 | process, likely | a restart's `Reconnected` did not come inside the limit; cause not known |
+| 15 | two `arena_custody_split` stories | mush-gateway `split_halves` | 2 | process, likely | a restart's `Reconnected` did not come inside the limit. Settled by FL.7 as row 12's first fault: the keeper's attempt waited for ever on a Hello |
 | 16 | `sim_rematch::two_players_start_a_second_match…` | mushd `sim_lenses` | 1 | not known | |
 | 17 | `ic_buyout_dormancy::ic13_…`, `sm2_…` | mush-server `commerce_composition` | 4 | clock phase | a clerk's once-a-day act counted beside a typed line's, when the IC day turned in a stretch the story does not drain and the clerk was new to the rig's house list. Reproduced at its failing head by FL.4 |
 | 18 | `arena_contract::the_bot_reads_a_live_centre…` | mush-bot | 1 or more | stream | a status readout parsed before its last two sections had arrived |
@@ -700,7 +706,7 @@ for the suite. FL.0 is this document and its script, merged as #771.
 | **FL.4 `commerce_composition`: the boot instant** (cut and built 2026-11-23) | `STORY_EPOCH` and `phases!`; the four rigs that boot at `unix_now_s()` boot at the epoch; ic12's three stories and the two of row 17 run at the three phases; row 17 settled as phase or stream | mush-storykit, mush-server tests, mush-contract-tests (the wall-clock budget falls) | M | 21 |
 | **FL.5 the bot's stories** | `Client::ask_whole` and `Reply`; one busy-sentence table for the rig; `StoryBudget` in every `mining_cohort` story; the seed and `Figures` in `arena_e2e`, with row 2's range derived and its odds stated; row 18's reader if the hygiene fix left a needle read | mush-bot tests, mush-storykit | M | 16 |
 | **FL.6 mush-server's lib and boundary** | row 10 and its neighbors onto the paused clock with `TimeSource::Tokio`; the in-`src` `world_task` tests' drain windows (row 8's kind) onto `settled`-style barriers; the `--src` scope added to `wait_budget` for mush-server | mush-server | M | 15 |
-| **FL.7 the gateway's stories** | the ten `Term` copies replaced by the kit's; `across_restart`; restart limits from the gateway's own schedule; rows 12 and 15 closed or re-described; `one_reader` turned on for mush-gateway | mush-gateway tests, mush-storykit, mush-contract-tests | M | 8 |
+| **FL.7 the gateway's stories** (cut 2026-11-25, built) | the ten `Term` copies replaced by the kit's; `across_restart`; restart limits from the gateway's own schedule; rows 12 and 15 closed or re-described; `one_reader` turned on for mush-gateway | mush-gateway tests, mush-storykit, mush-contract-tests | M | 8 |
 | **FL.8 mushd's readers** | the 15 `say`, 12 `ask` and 10 `ask_whole` definitions in `sim_lenses` replaced by the kit's; every parse after a needle read moved to `ask_whole`; `after_tick`; row 14; `one_reader` turned on for mushd | mushd tests, mush-storykit, mush-contract-tests | L, mechanical | 3 |
 | **FL.9 the small crates** | mush-net-web's and mush-net-ssh's bare sleeps onto barriers and absence-between-marks; mush-sshdoorway's rig onto the kit; the literal-span counter baselined | mush-net-web, mush-net-ssh, mush-sshdoorway, mush-contract-tests | M | |
 | **FL.10 close-out** | budgets re-blessed down and the totals recorded; `docs/flaky-tests.md` rows closed against the soak's record; doc 43 §2.3 gains rules F, D, C, S, P and T as #16 to #21; what the soak found that no rule covers | docs, mush-contract-tests | S | |
