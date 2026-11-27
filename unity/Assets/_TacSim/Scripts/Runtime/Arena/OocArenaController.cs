@@ -9,6 +9,14 @@ using UnityEngine.EventSystems;
 
 namespace TacSim.Arena
 {
+    public enum ArenaImpactKind
+    {
+        Hit = 0,
+        SectionCrit = 1,
+        Kill = 2,
+        Miss = 3
+    }
+
     public sealed class ArenaWeaponSlotState
     {
         public string Id;
@@ -833,6 +841,7 @@ namespace TacSim.Arena
                 _driveWaypointRoot.gameObject.SetActive(false);
             if (_driveCourseLine != null)
                 _driveCourseLine.enabled = false;
+            DeactivatePooledImpactsAndPopups();
             Helm.Reset();
             Throttle.Reset();
             LiveLobbyMatchState = "idle";
@@ -882,6 +891,10 @@ namespace TacSim.Arena
         private readonly Dictionary<int, SpawnedGroundVehicleRig> _replayRigs = new Dictionary<int, SpawnedGroundVehicleRig>();
         private readonly List<ArenaReplayShot> _scratchWindowShots = new List<ArenaReplayShot>(16);
         private readonly List<ActiveShotTracer> _activeTracers = new List<ActiveShotTracer>();
+        private readonly List<PooledImpactBurst> _impactBurstPool = new List<PooledImpactBurst>(8);
+        private readonly List<PooledWorldPopup> _worldPopupPool = new List<PooledWorldPopup>(10);
+        private int _nextImpactPoolCursor;
+        private int _nextPopupPoolCursor;
         private int _pendingOpenKeyframeIndex = -1;
         private string _lastNotifiedDetachmentOrderKey = string.Empty;
         private long _nextHeldThrottleBumpMs;
@@ -903,6 +916,34 @@ namespace TacSim.Arena
 
         public bool IsArenaLockBeamActive => _arenaLockBeam != null && _arenaLockBeam.enabled;
         public bool IsArenaRangeRingVisible => _arenaRangeRing != null && _arenaRangeRing.enabled;
+        public int ActiveImpactBurstCount { get; private set; }
+        public int ActiveWorldPopupCount { get; private set; }
+        public string LastWorldPopupText { get; private set; } = string.Empty;
+        public ArenaImpactKind LastImpactKind { get; private set; }
+
+        private sealed class PooledImpactBurst
+        {
+            public GameObject Root;
+            public Transform CoreSphere;
+            public MeshRenderer CoreRenderer;
+            public Transform ShockRing;
+            public MeshRenderer RingRenderer;
+            public ArenaImpactKind Kind;
+            public float Elapsed;
+            public float Duration;
+            public bool Active;
+        }
+
+        private sealed class PooledWorldPopup
+        {
+            public GameObject Root;
+            public TextMeshPro Label;
+            public Vector3 BasePos;
+            public float BaseScale = 1f;
+            public float Elapsed;
+            public float Duration;
+            public bool Active;
+        }
 
         private sealed class ActiveShotTracer
         {
@@ -959,6 +1000,13 @@ namespace TacSim.Arena
             _contactRigs.Clear();
             _replayRigs.Clear();
             _activeTracers.Clear();
+            _impactBurstPool.Clear();
+            _worldPopupPool.Clear();
+            _nextImpactPoolCursor = 0;
+            _nextPopupPoolCursor = 0;
+            ActiveImpactBurstCount = 0;
+            ActiveWorldPopupCount = 0;
+            LastWorldPopupText = string.Empty;
 
             transform.position = ArenaStageOrigin;
 
@@ -2215,15 +2263,59 @@ namespace TacSim.Arena
                         }
                         if (_contactRigs.TryGetValue(tgtDesig, out var tgtRig) && tgtRig?.Root != null)
                         {
+                            Vector3 tgtPt = tgtRig.Root.transform.position + Vector3.up * 1.6f;
+                            string secUp = (section ?? string.Empty).Replace("_", " ").Trim().ToUpperInvariant();
                             if (kind == "hit" || kind == "target_section_lost" || kind == "kill")
                                 tgtRig.TriggerHitFlash(isCrit: kind == "target_section_lost" || kind == "kill");
+                            if (kind == "kill")
+                            {
+                                SpawnImpactBurst(tgtPt, ArenaImpactKind.Kill);
+                                SpawnWorldCombatPopup(tgtPt + Vector3.up * 4.8f, $"DESTROYED! {tgtDesig}", new Color(1.0f, 0.28f, 0.20f), 1.35f);
+                            }
+                            else if (kind == "target_section_lost")
+                            {
+                                SpawnImpactBurst(tgtPt, ArenaImpactKind.SectionCrit);
+                                string critLbl = !string.IsNullOrEmpty(secUp) ? $"CRIT! {secUp}" : "CRIT!";
+                                SpawnWorldCombatPopup(tgtPt + Vector3.up * 4.2f, critLbl, new Color(1.0f, 0.78f, 0.22f), 1.18f);
+                            }
+                            else if (kind == "hit")
+                            {
+                                SpawnImpactBurst(tgtPt, ArenaImpactKind.Hit);
+                                string hitLbl = !string.IsNullOrEmpty(secUp) ? $"HIT! {secUp}" : "HIT!";
+                                SpawnWorldCombatPopup(tgtPt + Vector3.up * 3.6f, hitLbl, new Color(0.50f, 1.0f, 0.72f), 1.0f);
+                            }
+                            else if (kind == "miss")
+                            {
+                                Vector3 missPt = tgtPt + tgtRig.Root.transform.right * 6.5f;
+                                SpawnImpactBurst(missPt, ArenaImpactKind.Miss);
+                                SpawnWorldCombatPopup(missPt + Vector3.up * 2.2f, "MISS", new Color(0.68f, 0.84f, 0.94f), 0.85f);
+                            }
                             if (kind != "target_section_lost" && PlayerRig?.MuzzlePoint != null)
                             {
-                                Vector3 tgtPt = tgtRig.Root.transform.position + Vector3.up * 1.5f;
-                                if (kind == "miss")
-                                    tgtPt += tgtRig.Root.transform.right * 6.5f;
-                                SpawnShotTracer(PlayerRig.MuzzlePoint.position, tgtPt, isLaser);
+                                Vector3 tracerEnd = kind == "miss" ? (tgtPt + tgtRig.Root.transform.right * 6.5f) : tgtPt;
+                                SpawnShotTracer(PlayerRig.MuzzlePoint.position, tracerEnd, isLaser);
                             }
+                        }
+                    }
+                    else if ((kind == "struck" || kind == "struck_spent" || kind == "section_lost" || kind == "destroyed") &&
+                             PlayerRig?.Root != null)
+                    {
+                        Vector3 ownPt = PlayerRig.Root.transform.position + Vector3.up * 1.8f;
+                        string secUp = (section ?? string.Empty).Replace("_", " ").Trim().ToUpperInvariant();
+                        if (kind == "destroyed")
+                        {
+                            SpawnImpactBurst(ownPt, ArenaImpactKind.Kill);
+                            SpawnWorldCombatPopup(ownPt + Vector3.up * 4.8f, "HULL DESTROYED!", new Color(1.0f, 0.22f, 0.18f), 1.35f);
+                        }
+                        else if (kind == "section_lost")
+                        {
+                            SpawnImpactBurst(ownPt, ArenaImpactKind.SectionCrit);
+                            SpawnWorldCombatPopup(ownPt + Vector3.up * 4.2f, !string.IsNullOrEmpty(secUp) ? $"LOST {secUp}!" : "SECTION LOST!", new Color(1.0f, 0.62f, 0.18f), 1.18f);
+                        }
+                        else
+                        {
+                            SpawnImpactBurst(ownPt, ArenaImpactKind.Hit);
+                            SpawnWorldCombatPopup(ownPt + Vector3.up * 3.5f, !string.IsNullOrEmpty(secUp) ? $"{secUp} HIT" : "HULL HIT", new Color(1.0f, 0.56f, 0.24f), 1.0f);
                         }
                     }
 
@@ -2630,12 +2722,19 @@ namespace TacSim.Arena
             }
         }
 
+        public void StepReplayPlaybackForTests(float dt)
+        {
+            UpdateSpectatorPlayback(Mathf.Max(0.0001f, dt));
+        }
+
         private void UpdateSpectatorPlayback(float dt)
         {
             if (!KeyboardSuspended)
             {
                 if (Input.GetKeyDown(KeyCode.V))
                     OnToggleCameraViewRequested?.Invoke();
+                else if (Input.GetKeyDown(KeyCode.Q))
+                    OnCycleOpticsZoomRequested?.Invoke();
                 else if (IsReplayModeActive && Input.GetKeyDown(KeyCode.Space))
                     ToggleReplayPlaying();
                 else if (IsReplayModeActive && Input.GetKeyDown(KeyCode.LeftArrow))
@@ -2666,11 +2765,40 @@ namespace TacSim.Arena
                         shRig?.Root != null && tgRig?.Root != null)
                     {
                         Vector3 start = shRig.MuzzlePoint != null ? shRig.MuzzlePoint.position : shRig.Root.transform.position + Vector3.up * 1.8f;
-                        Vector3 end = tgRig.Root.transform.position + Vector3.up * 1.5f;
+                        Vector3 end = tgRig.Root.transform.position + Vector3.up * 1.6f;
                         bool isHit = string.Equals(shot.Outcome, "hit", StringComparison.OrdinalIgnoreCase);
-                        SpawnShotTracer(start, end, isLaser: isHit);
+                        Vector3 impactPt = isHit ? end : (end + tgRig.Root.transform.right * 4.5f);
+                        SpawnShotTracer(start, impactPt, isLaser: isHit);
                         shRig.PlayWeaponRecoil();
+                        if (isHit)
+                        {
+                            tgRig.TriggerHitFlash(isCrit: false);
+                            SpawnImpactBurst(impactPt, ArenaImpactKind.Hit);
+                            SpawnWorldCombatPopup(impactPt + Vector3.up * 3.8f, "HIT!", new Color(1.0f, 0.86f, 0.36f), 1.0f);
+                        }
+                        else
+                        {
+                            SpawnImpactBurst(impactPt, ArenaImpactKind.Miss);
+                        }
                         OnWeaponShotFired?.Invoke(isHit);
+                    }
+                }
+
+                var destroyed = ActiveReplayDoc.Destroyed;
+                for (int i = 0; i < destroyed.Count; i++)
+                {
+                    var w = destroyed[i];
+                    if (w.TimeMs > prevMs && w.TimeMs <= ReplayCursorMs &&
+                        _replayRigs.TryGetValue(w.RosterIndex, out var wRig) &&
+                        wRig?.Root != null)
+                    {
+                        Vector3 wPos = wRig.Root.transform.position + Vector3.up * 1.8f;
+                        string cs = (w.RosterIndex >= 0 && w.RosterIndex < ActiveReplayDoc.Roster.Count)
+                            ? ActiveReplayDoc.Roster[w.RosterIndex].Callsign
+                            : $"U{w.RosterIndex + 1}";
+                        wRig.TriggerHitFlash(isCrit: true);
+                        SpawnImpactBurst(wPos, ArenaImpactKind.Kill);
+                        SpawnWorldCombatPopup(wPos + Vector3.up * 5.0f, $"WRECKED! {cs}", new Color(1.0f, 0.28f, 0.20f), 1.35f);
                     }
                 }
             }
@@ -3309,6 +3437,254 @@ namespace TacSim.Arena
                     }
                 }
             }
+
+            StepPooledImpactsAndPopups(dt);
+        }
+
+        private void EnsureImpactBurstPool()
+        {
+            if (_vfxRoot == null || _impactBurstPool.Count >= 8) return;
+            for (int i = _impactBurstPool.Count; i < 8; i++)
+            {
+                var root = new GameObject($"ImpactBurst_{i}");
+                root.transform.SetParent(_vfxRoot, false);
+
+                var core = GameObject.CreatePrimitive(PrimitiveType.Sphere);
+                core.name = "FireballCore";
+                core.transform.SetParent(root.transform, false);
+                var cc = core.GetComponent<Collider>();
+                if (cc != null)
+                {
+                    if (Application.isPlaying) Destroy(cc);
+                    else DestroyImmediate(cc);
+                }
+
+                var ring = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+                ring.name = "BlastShockwave";
+                ring.transform.SetParent(root.transform, false);
+                var rc = ring.GetComponent<Collider>();
+                if (rc != null)
+                {
+                    if (Application.isPlaying) Destroy(rc);
+                    else DestroyImmediate(rc);
+                }
+
+                root.SetActive(false);
+                _impactBurstPool.Add(new PooledImpactBurst
+                {
+                    Root = root,
+                    CoreSphere = core.transform,
+                    CoreRenderer = core.GetComponent<MeshRenderer>(),
+                    ShockRing = ring.transform,
+                    RingRenderer = ring.GetComponent<MeshRenderer>(),
+                    Active = false
+                });
+            }
+        }
+
+        public void SpawnImpactBurst(Vector3 worldPos, ArenaImpactKind kind)
+        {
+            if (_vfxRoot == null) return;
+            EnsureImpactBurstPool();
+            if (_impactBurstPool.Count == 0) return;
+
+            var burst = _impactBurstPool[_nextImpactPoolCursor % _impactBurstPool.Count];
+            _nextImpactPoolCursor = (_nextImpactPoolCursor + 1) % _impactBurstPool.Count;
+
+            burst.Kind = kind;
+            burst.Elapsed = 0f;
+            burst.Duration = kind == ArenaImpactKind.Kill
+                ? 1.15f
+                : (kind == ArenaImpactKind.SectionCrit ? 0.68f : (kind == ArenaImpactKind.Hit ? 0.46f : 0.40f));
+            burst.Active = true;
+            LastImpactKind = kind;
+
+            if (burst.Root != null)
+            {
+                burst.Root.transform.position = worldPos;
+                burst.Root.SetActive(true);
+            }
+
+            Color coreCol;
+            Color ringCol;
+            string key;
+            switch (kind)
+            {
+                case ArenaImpactKind.Kill:
+                    coreCol = new Color(1.0f, 0.28f, 0.14f);
+                    ringCol = new Color(1.0f, 0.56f, 0.18f, 0.65f);
+                    key = "ArenaImpactKill";
+                    break;
+                case ArenaImpactKind.SectionCrit:
+                    coreCol = new Color(1.0f, 0.64f, 0.14f);
+                    ringCol = new Color(1.0f, 0.80f, 0.22f, 0.58f);
+                    key = "ArenaImpactCrit";
+                    break;
+                case ArenaImpactKind.Miss:
+                    coreCol = new Color(0.66f, 0.62f, 0.54f);
+                    ringCol = new Color(0.72f, 0.68f, 0.60f, 0.36f);
+                    key = "ArenaImpactMiss";
+                    break;
+                default:
+                    coreCol = new Color(1.0f, 0.82f, 0.28f);
+                    ringCol = new Color(1.0f, 0.88f, 0.40f, 0.50f);
+                    key = "ArenaImpactHit";
+                    break;
+            }
+
+            if (burst.CoreRenderer != null)
+                burst.CoreRenderer.sharedMaterial = UrpMaterialFactory.GetEmissive(key + "_Core", coreCol, coreCol * (kind == ArenaImpactKind.Miss ? 1.0f : 3.2f));
+            if (burst.RingRenderer != null)
+                burst.RingRenderer.sharedMaterial = UrpMaterialFactory.GetHologramUnlit(key + "_Ring", ringCol);
+
+            if (burst.CoreSphere != null)
+                burst.CoreSphere.localScale = Vector3.one * (kind == ArenaImpactKind.Kill ? 2.4f : 1.1f);
+            if (burst.ShockRing != null)
+                burst.ShockRing.localScale = new Vector3(1.5f, 0.09f, 1.5f);
+
+            RecountActivePooledVfx();
+        }
+
+        private void EnsureWorldPopupPool()
+        {
+            if (_vfxRoot == null || _worldPopupPool.Count >= 10) return;
+            for (int i = _worldPopupPool.Count; i < 10; i++)
+            {
+                var go = new GameObject($"WorldCombatPopup_{i}");
+                go.transform.SetParent(_vfxRoot, false);
+                var tmp = go.AddComponent<TextMeshPro>();
+                tmp.fontSize = 10f;
+                tmp.fontStyle = FontStyles.Bold;
+                tmp.alignment = TextAlignmentOptions.Center;
+                tmp.text = string.Empty;
+                go.AddComponent<WorldBillboard>();
+                go.SetActive(false);
+
+                _worldPopupPool.Add(new PooledWorldPopup
+                {
+                    Root = go,
+                    Label = tmp,
+                    Active = false
+                });
+            }
+        }
+
+        public void SpawnWorldCombatPopup(Vector3 worldPos, string text, Color color, float scale = 1.0f)
+        {
+            if (_vfxRoot == null || string.IsNullOrWhiteSpace(text)) return;
+            EnsureWorldPopupPool();
+            if (_worldPopupPool.Count == 0) return;
+
+            var pop = _worldPopupPool[_nextPopupPoolCursor % _worldPopupPool.Count];
+            _nextPopupPoolCursor = (_nextPopupPoolCursor + 1) % _worldPopupPool.Count;
+
+            pop.BasePos = worldPos;
+            pop.BaseScale = Mathf.Clamp(scale, 0.7f, 1.6f);
+            pop.Elapsed = 0f;
+            pop.Duration = 1.35f;
+            pop.Active = true;
+            LastWorldPopupText = text;
+
+            if (pop.Label != null)
+            {
+                pop.Label.text = text;
+                pop.Label.color = color;
+            }
+            if (pop.Root != null)
+            {
+                pop.Root.transform.position = worldPos;
+                pop.Root.transform.localScale = Vector3.one * pop.BaseScale;
+                pop.Root.SetActive(true);
+            }
+
+            RecountActivePooledVfx();
+        }
+
+        private void DeactivatePooledImpactsAndPopups()
+        {
+            for (int i = 0; i < _impactBurstPool.Count; i++)
+            {
+                _impactBurstPool[i].Active = false;
+                if (_impactBurstPool[i].Root != null)
+                    _impactBurstPool[i].Root.SetActive(false);
+            }
+            for (int i = 0; i < _worldPopupPool.Count; i++)
+            {
+                _worldPopupPool[i].Active = false;
+                if (_worldPopupPool[i].Root != null)
+                    _worldPopupPool[i].Root.SetActive(false);
+            }
+            ActiveImpactBurstCount = 0;
+            ActiveWorldPopupCount = 0;
+        }
+
+        private void StepPooledImpactsAndPopups(float dt)
+        {
+            int activeImpacts = 0;
+            for (int i = 0; i < _impactBurstPool.Count; i++)
+            {
+                var b = _impactBurstPool[i];
+                if (!b.Active) continue;
+                b.Elapsed += dt;
+                if (b.Elapsed >= b.Duration)
+                {
+                    b.Active = false;
+                    if (b.Root != null) b.Root.SetActive(false);
+                    continue;
+                }
+                activeImpacts++;
+                float u = Mathf.Clamp01(b.Elapsed / Mathf.Max(0.01f, b.Duration));
+                float coreMax = b.Kind == ArenaImpactKind.Kill ? 6.8f
+                    : (b.Kind == ArenaImpactKind.SectionCrit ? 4.2f : (b.Kind == ArenaImpactKind.Hit ? 2.8f : 2.2f));
+                float ringMax = b.Kind == ArenaImpactKind.Kill ? 19.0f
+                    : (b.Kind == ArenaImpactKind.SectionCrit ? 11.5f : (b.Kind == ArenaImpactKind.Hit ? 7.5f : 5.0f));
+
+                float coreEnv = u < 0.25f ? Mathf.Lerp(0.45f, 1.0f, u / 0.25f) : Mathf.Lerp(1.0f, 0.12f, (u - 0.25f) / 0.75f);
+                if (b.CoreSphere != null)
+                    b.CoreSphere.localScale = Vector3.one * (coreMax * coreEnv);
+                if (b.ShockRing != null)
+                {
+                    float ringDia = Mathf.Lerp(1.4f, ringMax, u);
+                    b.ShockRing.localScale = new Vector3(ringDia, 0.08f * (1f - u * 0.6f), ringDia);
+                }
+            }
+            ActiveImpactBurstCount = activeImpacts;
+
+            int activePopups = 0;
+            for (int i = 0; i < _worldPopupPool.Count; i++)
+            {
+                var p = _worldPopupPool[i];
+                if (!p.Active) continue;
+                p.Elapsed += dt;
+                if (p.Elapsed >= p.Duration)
+                {
+                    p.Active = false;
+                    if (p.Root != null) p.Root.SetActive(false);
+                    continue;
+                }
+                activePopups++;
+                float u = Mathf.Clamp01(p.Elapsed / Mathf.Max(0.01f, p.Duration));
+                if (p.Root != null)
+                {
+                    p.Root.transform.position = p.BasePos + Vector3.up * (u * 5.2f);
+                    float popScale = p.BaseScale * (u < 0.15f ? Mathf.Lerp(0.75f, 1.15f, u / 0.15f) : Mathf.Lerp(1.15f, 0.90f, (u - 0.15f) / 0.85f));
+                    p.Root.transform.localScale = Vector3.one * popScale;
+                }
+            }
+            ActiveWorldPopupCount = activePopups;
+        }
+
+        private void RecountActivePooledVfx()
+        {
+            int imp = 0;
+            for (int i = 0; i < _impactBurstPool.Count; i++)
+                if (_impactBurstPool[i].Active) imp++;
+            ActiveImpactBurstCount = imp;
+
+            int pop = 0;
+            for (int i = 0; i < _worldPopupPool.Count; i++)
+                if (_worldPopupPool[i].Active) pop++;
+            ActiveWorldPopupCount = pop;
         }
 
         private static void DestroyTracerObject(GameObject go)
