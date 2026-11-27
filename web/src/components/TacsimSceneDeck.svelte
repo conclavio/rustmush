@@ -184,6 +184,15 @@
     resizing = false;
     (ev.currentTarget as HTMLElement | null)?.releasePointerCapture?.(ev.pointerId);
   }
+
+  const trackedQuest = $derived(
+    app.quests?.active.find((q) => q.key === app.quests?.trackedKey) ?? app.quests?.active[0] ?? null,
+  );
+  const roomOfferMarker = $derived(
+    !trackedQuest
+      ? (app.quests?.roomMarkers.find((m) => m.marker === "available" || m.marker === "turn_in") ?? null)
+      : null,
+  );
 </script>
 
 {#if app.tacsim.available}
@@ -295,6 +304,35 @@
         <div class="hud-hint">
           WASD move · Shift sprint · Drag orbit · Scroll zoom · E / Click interact
         </div>
+
+        {#if trackedQuest}
+          <button
+            type="button"
+            class="quest-hud-pill"
+            data-ready={trackedQuest.readyToFinish ? "true" : "false"}
+            onclick={() => app.quests?.openQuestDialog(trackedQuest.key)}
+            title="Open quest dialog"
+          >
+            <span class="qhud-crest">{trackedQuest.readyToFinish ? "?" : "!"}</span>
+            <span class="qhud-body">
+              <strong>{trackedQuest.title}</strong>
+              <span>{trackedQuest.nextStep}</span>
+            </span>
+          </button>
+        {:else if roomOfferMarker}
+          <button
+            type="button"
+            class="quest-hud-pill"
+            onclick={() => app.quests?.openNpcDialog(roomOfferMarker.npcId)}
+            title="Speak with {roomOfferMarker.npcName}"
+          >
+            <span class="qhud-crest">{roomOfferMarker.symbol}</span>
+            <span class="qhud-body">
+              <strong>{roomOfferMarker.npcName}</strong>
+              <span>{roomOfferMarker.questTitle}</span>
+            </span>
+          </button>
+        {/if}
 
         {#if app.tacsim.focusedPrompt}
           <button
@@ -620,5 +658,72 @@
     padding: 0.35rem 0.6rem;
     max-height: 440px;
     overflow: auto;
+  }
+
+  .quest-hud-pill {
+    position: absolute;
+    top: 0.55rem;
+    right: 0.65rem;
+    z-index: 4;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    max-width: min(320px, 46%);
+    padding: 0.32rem 0.6rem;
+    border-radius: 8px;
+    border: 1px solid #d4a64a;
+    background: rgba(12, 18, 28, 0.88);
+    color: #fef3c7;
+    text-align: left;
+    font: inherit;
+    font-size: 0.75rem;
+    cursor: pointer;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  }
+
+  .quest-hud-pill[data-ready="true"] {
+    border-color: #fbbf24;
+    background: rgba(34, 24, 6, 0.92);
+    box-shadow: 0 0 12px rgba(251, 191, 36, 0.35);
+  }
+
+  .quest-hud-pill:hover {
+    filter: brightness(1.12);
+  }
+
+  .qhud-crest {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.25rem;
+    height: 1.25rem;
+    border-radius: 999px;
+    background: #fbbf24;
+    color: #161103;
+    font-weight: 800;
+    font-size: 0.78rem;
+  }
+
+  .qhud-body {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .qhud-body strong {
+    color: #fde68a;
+    font-size: 0.76rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .qhud-body span {
+    color: #cbd5e1;
+    font-size: 0.7rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
 </style>
