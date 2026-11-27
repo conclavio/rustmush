@@ -88,6 +88,7 @@ namespace TacSim.UI
         private StationWorldController _station;
         private ShipInteriorController _ship;
         private OocArenaController _arena;
+        private TacSimQuestJournal _quests;
         private TacSimActiveStage _activeStage = TacSimActiveStage.StationWalk;
 
         public bool IsOpen => _modalRoot != null && _modalRoot.activeSelf;
@@ -259,6 +260,11 @@ namespace TacSim.UI
             _station = station;
             _ship = ship;
             _arena = arena;
+        }
+
+        public void BindQuestJournal(TacSimQuestJournal quests)
+        {
+            _quests = quests;
         }
 
         public void SetActiveStage(TacSimActiveStage stage)
@@ -478,6 +484,55 @@ namespace TacSim.UI
                 }
             }
 
+            // 0b. Live Active & Available Quest Quick Actions
+            if (_quests != null && _quests.LatestPanel != null)
+            {
+                var qp = _quests.LatestPanel;
+                for (int i = 0; i < qp.Active.Count; i++)
+                {
+                    var q = qp.Active[i];
+                    string qKey = q.Key;
+                    bool ready = q.CanFinishNow || q.ReadyToFinish;
+                    string dlgTitle = ready ? $"Complete Quest [?]: {q.Title}" : $"Quest Dialog: {q.Title}";
+                    string dlgSub = !string.IsNullOrEmpty(q.NextStep) ? q.NextStep : $"Turn in to {q.TurnInName}";
+                    _allEntries.Add(new PaletteEntry(
+                        "QUEST",
+                        dlgTitle,
+                        dlgSub,
+                        () => _quests?.OpenQuestDialogByKey(qKey),
+                        $"quest active objective dialog {q.Title} {q.TurnInName} {q.NextRoomName}"));
+
+                    if (!string.IsNullOrEmpty(q.NextRoomEntry))
+                    {
+                        string targetRoom = q.NextRoomEntry;
+                        string destLabel = !string.IsNullOrEmpty(q.NextRoomName) ? q.NextRoomName : targetRoom;
+                        _allEntries.Add(new PaletteEntry(
+                            "QUEST TRAIL",
+                            $"Wayfinder to Quest Objective: {destLabel}",
+                            !string.IsNullOrEmpty(q.NextStep) ? $"{q.Title} — {q.NextStep}" : q.Title,
+                            () => OnPlotStationRoomRequested?.Invoke(targetRoom),
+                            $"quest trail wayfinder route navigate objective {q.Title} {destLabel} {q.NextStep}"));
+                    }
+                }
+
+                for (int i = 0; i < qp.Available.Count; i++)
+                {
+                    var av = qp.Available[i];
+                    string giverId = av.GiverId;
+                    string qKey = av.Key;
+                    _allEntries.Add(new PaletteEntry(
+                        "QUEST [!]",
+                        $"Accept Quest [!]: {av.Title}",
+                        $"Offered by {av.GiverName}",
+                        () =>
+                        {
+                            if (_quests != null && !_quests.OpenNpcQuestDialog(giverId))
+                                _quests.OpenQuestDialogByKey(qKey);
+                        },
+                        $"quest available accept offer npc {av.Title} {av.GiverName}"));
+                }
+            }
+
             // 1. UI Windows & Quick Controls
             _allEntries.Add(new PaletteEntry("UI", "Open Pilot & Vessel Dossier [C]", "Avatar swap, cargo, space fit & ground rigs", () => OnUiActionRequested?.Invoke("ui:sheet")));
             _allEntries.Add(new PaletteEntry("UI", "Open Solar System Holo-Orrery [M]", "2D/3D heliocentric navigation chart", () => OnUiActionRequested?.Invoke("ui:solar_map")));
@@ -672,11 +727,12 @@ namespace TacSim.UI
                     row.Background.color = selected
                         ? new Color(0.16f, 0.44f, 0.62f, 0.98f)
                         : new Color(0.06f, 0.11f, 0.17f, 0.90f);
-                    string catColor = e.Category == "3D TRAIL" || e.Category == "SHIP TRAIL" ? "#66FFAA"
+                    string catColor = e.Category == "QUEST" || e.Category == "QUEST [!]" || e.Category == "QUEST TRAIL" ? "#FFDD55"
+                                    : (e.Category == "3D TRAIL" || e.Category == "SHIP TRAIL" ? "#66FFAA"
                                     : (e.Category == "SOLAR PORT" ? "#FFCC66"
                                     : (e.Category == "SPACE" ? "#FF8866"
                                     : (e.Category == "SRV FILL" ? "#DDBBFF"
-                                    : (e.Category == "SRV CMD" ? "#77EEBB" : "#66CCFF"))));
+                                    : (e.Category == "SRV CMD" ? "#77EEBB" : "#66CCFF")))));
                     row.Label.text = $"<color={catColor}>[{e.Category}]</color> <b>{MushProtocol.EscapeUnityRichText(e.Title)}</b>  <color=#88AAC8>— {MushProtocol.EscapeUnityRichText(e.Subtitle)}</color>";
                     row.Root.SetActive(true);
                 }

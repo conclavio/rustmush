@@ -260,7 +260,10 @@ namespace TacSim.Core
             if (Hud.OpsDirectory != null)
                 Hud.OpsDirectory.BindSources(StationWorld, ShipInterior, Wayfinder, TradeState, SpaceStage, SurfaceStage, ArenaStage);
             if (Hud.CommandPalette != null)
+            {
                 Hud.CommandPalette.BindWorldSources(StationWorld, ShipInterior, ArenaStage);
+                Hud.CommandPalette.BindQuestJournal(Hud.QuestJournal);
+            }
 
             if (_ws == null)
                 _ws = new MushWsClient();
@@ -852,6 +855,7 @@ namespace TacSim.Core
                     if (!string.IsNullOrEmpty(targetRoom))
                         PlotStationWayfinderRoute(targetRoom, autoWalk: false);
                 };
+                Hud.QuestJournal.OnQuestMilestoneReached += HandleQuestMilestoneReached;
             }
 
             if (Hud.SceneIntelModal != null)
@@ -1245,6 +1249,40 @@ namespace TacSim.Core
             }
         }
 
+        private void HandleQuestMilestoneReached(string kind, string title)
+        {
+            string label = string.IsNullOrWhiteSpace(title) ? "QUEST" : title.Trim().ToUpperInvariant();
+            switch (kind)
+            {
+                case "completed":
+                    Audio?.PlayMarketChime();
+                    Hud?.FloatingCallouts?.ShowCallout($"QUEST COMPLETED: {label}", new Color(0.35f, 1f, 0.68f, 1f), 3.0f);
+                    break;
+                case "ready":
+                    Audio?.PlayMarketChime();
+                    Hud?.FloatingCallouts?.ShowCallout($"READY TO TURN IN [?]: {label}", new Color(1f, 0.84f, 0.28f, 1f), 2.8f);
+                    break;
+                case "accepted":
+                    Audio?.PlayUiClick();
+                    Hud?.FloatingCallouts?.ShowCallout($"QUEST ACCEPTED: {label}", new Color(1f, 0.88f, 0.42f, 1f), 2.4f);
+                    break;
+            }
+        }
+
+        private void SyncMinimapQuestObjective()
+        {
+            if (Hud?.Minimap == null) return;
+            if (Hud.QuestJournal != null &&
+                Hud.QuestJournal.TryGetMinimapObjective(out string roomEntry, out bool isTurnIn, out bool hasOffer))
+            {
+                Hud.Minimap.SetQuestObjectiveRoom(roomEntry, isTurnIn, hasOffer);
+            }
+            else
+            {
+                Hud.Minimap.SetQuestObjectiveRoom(string.Empty, isTurnIn: false, currentRoomHasOffer: false);
+            }
+        }
+
         private void SyncMmorpgHudFramesAndMinimap()
         {
             if (Hud == null) return;
@@ -1269,6 +1307,7 @@ namespace TacSim.Core
                     stage == TacSimActiveStage.PlanetarySurface ||
                     stage == TacSimActiveStage.SimulatorArena;
 
+                SyncMinimapQuestObjective();
                 Hud.Minimap.SyncMinimap(stage, pos, yaw, rightCornerBusy);
                 Hud.TacticalOverview?.SetAvoidMidLeftMinimap(rightCornerBusy && !Hud.Minimap.IsCollapsed);
                 Hud.QuestJournal?.SyncTrackerVisibility(stage, rightCornerBusy || compactHud);
@@ -3304,6 +3343,7 @@ namespace TacSim.Core
                     {
                         Hud?.QuestJournal?.ApplyQuestsPanel(qp);
                         StationWorld?.ApplyQuestMarkers(qp.RoomMarkers);
+                        SyncMinimapQuestObjective();
                     }
                     break;
                 }
