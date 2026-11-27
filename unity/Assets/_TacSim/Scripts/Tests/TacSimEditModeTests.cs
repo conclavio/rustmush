@@ -10206,5 +10206,82 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ArenaReplayTeamRosterFilterAndClickableEventFeedSeek_FilterAndJump()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave19PR2_ReplayTeamFilterAndSeekFeedTest");
+            try
+            {
+                var arenaGo = new UnityEngine.GameObject("ArenaReplayFilterCtrl");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(TacSimAssetCatalog.LoadOrDefault(), TacSimTerrainDecoder.LoadStaticArena("proving_ground"));
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.ReplayHud.BindArena(arena);
+
+                arena.HandleReplayPanelFrame(JsonNode.Parse(@"{
+                    ""schema"": { ""id"": ""arena.replay"", ""shape"": ""replay"", ""version"": 1 },
+                    ""match"": 509, ""arena"": ""proving_ground"", ""cell_cm"": 1000, ""width"": 64, ""height"": 64,
+                    ""end_ms"": 12000, ""outcome"": ""red"", ""reason"": ""elimination"", ""mode"": ""skirmish"",
+                    ""roster"": [
+                        { ""callsign"": ""R1"", ""team"": ""red"" },
+                        { ""callsign"": ""R2"", ""team"": ""red"" },
+                        { ""callsign"": ""B1"", ""team"": ""blue"" },
+                        { ""callsign"": ""B2"", ""team"": ""blue"" }
+                    ],
+                    ""keyframes"": [
+                        [0, [[10, 10, 90], [10, 14, 90], [42, 10, 270], [42, 14, 270]]],
+                        [12000, [[18, 10, 90], [18, 14, 90], [36, 10, 270], [36, 14, 270]]]
+                    ],
+                    ""shots"": [
+                        [2500, 0, 2, ""hit""],
+                        [5000, 2, 0, ""miss""],
+                        [8000, 1, 3, ""hit""]
+                    ],
+                    ""destroyed"": [
+                        [9500, 3]
+                    ]
+                }"));
+                arena.SeekReplayMs(11000f);
+                hud.ReplayHud.RefreshView();
+
+                // 1. Roster team filter toggles cleanly between ALL (4), RED (2), and BLUE (2)
+                Assert.AreEqual(TacSim.UI.ReplayRosterTeamFilter.All, hud.ReplayHud.ActiveRosterTeamFilter);
+                Assert.AreEqual(4, hud.ReplayHud.VisibleRosterRowCount);
+
+                hud.ReplayHud.SetRosterTeamFilter(TacSim.UI.ReplayRosterTeamFilter.Red);
+                Assert.AreEqual(2, hud.ReplayHud.VisibleRosterRowCount);
+                StringAssert.Contains("R1", hud.ReplayHud.GetRosterRowSnapshotForTests(0));
+                StringAssert.Contains("R2", hud.ReplayHud.GetRosterRowSnapshotForTests(1));
+
+                hud.ReplayHud.SetRosterTeamFilter(TacSim.UI.ReplayRosterTeamFilter.Blue);
+                Assert.AreEqual(2, hud.ReplayHud.VisibleRosterRowCount);
+                StringAssert.Contains("B1", hud.ReplayHud.GetRosterRowSnapshotForTests(0));
+                StringAssert.Contains("B2", hud.ReplayHud.GetRosterRowSnapshotForTests(1));
+
+                hud.ReplayHud.SetRosterTeamFilter(TacSim.UI.ReplayRosterTeamFilter.All);
+                Assert.AreEqual(4, hud.ReplayHud.VisibleRosterRowCount);
+
+                // 2. Clickable timeline event feed lists recent wreck + shots newest-first and seeks cursor directly on click
+                Assert.AreEqual(4, hud.ReplayHud.VisibleClickableEventRowCount, "Expected 1 wreck + 3 shots as clickable rows");
+                StringAssert.Contains("B2", hud.ReplayHud.GetClickableEventRowLabelForTests(0));
+                StringAssert.Contains("WRECKED", hud.ReplayHud.GetClickableEventRowLabelForTests(0));
+                StringAssert.Contains("R1", hud.ReplayHud.GetClickableEventRowLabelForTests(3));
+
+                // Click oldest shot row (index 3 -> 2500ms) jumps cursor straight to 2500ms and pauses
+                arena.ReplayPlaying = true;
+                Assert.IsTrue(hud.ReplayHud.ClickEventFeedRowForTests(3));
+                Assert.AreEqual(2500f, arena.ReplayCursorMs, 1f, "Clicking event row must jump ReplayCursorMs directly to event timestamp");
+                Assert.IsFalse(arena.ReplayPlaying, "Direct click-to-seek on event feed should pause for inspection");
+                Assert.AreEqual(1, hud.ReplayHud.VisibleClickableEventRowCount, "At 2500ms only the first shot is in the visible feed");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
