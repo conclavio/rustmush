@@ -2,7 +2,11 @@
   // WoW-style NPC Quest Dialog & Full Quest Log Modal (Active / Available Here / Completed).
   // Every button dispatches a server-signed `+quest/...` command via `onCmd`.
   import type { GameApp } from "$lib/game.svelte";
-  import type { ActiveQuestView, AvailableQuestView } from "$lib/stores/quests.svelte";
+  import {
+    extractQuestSuggestedAction,
+    type ActiveQuestView,
+    type AvailableQuestView,
+  } from "$lib/stores/quests.svelte";
 
   let { app, onCmd }: { app: GameApp; onCmd: (cmd: string) => void } = $props();
 
@@ -10,6 +14,14 @@
   let confirmDeclineKey = $state<string | null>(null);
 
   const q = $derived(app.quests);
+  const tour = $derived(q.guidedTourProgress);
+
+  function prefillAndClose(cmd: string): void {
+    confirmAbandonKey = null;
+    confirmDeclineKey = null;
+    q.closeModals();
+    app.focusComposer?.(cmd);
+  }
 
   const npcMarker = $derived(
     q.dialogNpcId ? q.roomMarkers.find((m) => m.npcId === q.dialogNpcId) ?? null : null,
@@ -252,6 +264,18 @@
             >
               Verify Objective
             </button>
+          {:else}
+            {@const suggested = extractQuestSuggestedAction(selectedActive)}
+            {#if suggested}
+              <button
+                type="button"
+                class="btn primary"
+                title={`Prefill ${suggested.command}`}
+                onclick={() => prefillAndClose(suggested.command)}
+              >
+                {suggested.label}
+              </button>
+            {/if}
           {/if}
           <button
             type="button"
@@ -326,6 +350,28 @@
         <button type="button" class="qclose" onclick={() => q.closeModals()} aria-label="Close quest log">✕</button>
       </header>
 
+      {#if tour}
+        <div class="tour-strip" aria-label="Guided tour progress">
+          <div class="tour-meta">
+            <span class="tour-label">Guided Tour</span>
+            <span class="tour-count">
+              {tour.allDone
+                ? `Complete (${tour.completed}/${tour.total})`
+                : `${tour.completed}/${tour.total} complete${tour.currentStep ? ` · Step ${tour.currentStep}` : ""}`}
+            </span>
+          </div>
+          <div class="tour-pips" role="presentation">
+            {#each [1, 2, 3, 4, 5, 6, 7] as stepNum (stepNum)}
+              <span
+                class="tour-pip"
+                class:done={stepNum <= tour.completed}
+                class:current={!tour.allDone && tour.currentStep === stepNum}
+              ></span>
+            {/each}
+          </div>
+        </div>
+      {/if}
+
       <div class="log-tabs" role="tablist">
         <button type="button" class="ltab" class:active={q.logTab === "active"} onclick={() => (q.logTab = "active")}>
           Active ({q.active.length})
@@ -344,6 +390,7 @@
             <p class="empty">No active quests. Look for NPCs with a golden <strong>!</strong> badge (like Maren Halvorsen in Port Watch Arrivals).</p>
           {:else}
             {#each q.active as item (item.key)}
+              {@const itemSuggested = extractQuestSuggestedAction(item)}
               <article class="qcard" class:tracked={q.trackedQuest?.key === item.key}>
                 <div class="qcard-top">
                   <strong>{item.title}</strong>
@@ -364,6 +411,15 @@
                     <button type="button" class="btn sm complete" onclick={() => runAndReset(item.finishCmd, false)}>Complete</button>
                   {:else if item.canCheckNow}
                     <button type="button" class="btn sm primary" onclick={() => runAndReset(item.checkCmd, false)}>Verify Step</button>
+                  {:else if itemSuggested}
+                    <button
+                      type="button"
+                      class="btn sm primary"
+                      title={`Prefill ${itemSuggested.command}`}
+                      onclick={() => prefillAndClose(itemSuggested.command)}
+                    >
+                      {itemSuggested.label}
+                    </button>
                   {/if}
                   <button type="button" class="btn sm" onclick={() => q.openQuestDialog(item.key)}>Details</button>
                   <button type="button" class="btn sm" onclick={() => q.track(item.key)}>
@@ -747,5 +803,45 @@
     margin: 0.5rem 0;
     color: var(--fg-muted, #94a3b8);
     font-size: 0.86rem;
+  }
+  .tour-strip {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    padding: 0.55rem 1rem;
+    border-bottom: 1px solid var(--border, #263447);
+    background: rgba(212, 166, 74, 0.08);
+  }
+  .tour-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-size: 0.76rem;
+  }
+  .tour-label {
+    font-weight: 700;
+    color: #f7d98a;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .tour-count {
+    color: var(--fg-muted, #cbd5e1);
+    font-family: var(--mono, monospace);
+  }
+  .tour-pips {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 0.3rem;
+  }
+  .tour-pip {
+    height: 5px;
+    border-radius: 999px;
+    background: rgba(148, 163, 184, 0.25);
+  }
+  .tour-pip.done {
+    background: #34d399;
+  }
+  .tour-pip.current {
+    background: #fbbf24;
   }
 </style>

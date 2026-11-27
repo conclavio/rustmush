@@ -118,6 +118,91 @@ export interface QuestMilestone {
   title: string;
 }
 
+export interface GuidedTourProgress {
+  completed: number;
+  total: number;
+  currentStep: number | null;
+  currentTitle: string;
+  allDone: boolean;
+}
+
+export interface QuestSuggestedAction {
+  label: string;
+  command: string;
+}
+
+export const GUIDED_TOUR_KEYS: readonly string[] = [
+  "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+  "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel",
+  "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+  "tacsim.quests.guided_onboarding/quest.guide_04_return_haul",
+  "tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector",
+  "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+  "tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore",
+];
+
+function guidedStepNumber(key: string): number | null {
+  const idx = GUIDED_TOUR_KEYS.indexOf(key);
+  return idx >= 0 ? idx + 1 : null;
+}
+
+export function computeGuidedTourProgress(
+  active: readonly ActiveQuestView[],
+  available: readonly AvailableQuestView[],
+  completed: readonly CompletedQuestView[],
+): GuidedTourProgress | null {
+  const doneSet = new Set(completed.map((c) => c.key).filter((k) => GUIDED_TOUR_KEYS.includes(k)));
+  const activeGuided = active.find((q) => guidedStepNumber(q.key) !== null) ?? null;
+  const availGuided = available.find((q) => guidedStepNumber(q.key) !== null) ?? null;
+  if (doneSet.size === 0 && !activeGuided && !availGuided) {
+    return null;
+  }
+  const current = activeGuided ?? availGuided;
+  const currentStep = current ? guidedStepNumber(current.key) : null;
+  return {
+    completed: doneSet.size,
+    total: GUIDED_TOUR_KEYS.length,
+    currentStep,
+    currentTitle: current?.title ?? "",
+    allDone: doneSet.size >= GUIDED_TOUR_KEYS.length,
+  };
+}
+
+export function extractQuestSuggestedAction(
+  quest: ActiveQuestView | null,
+): QuestSuggestedAction | null {
+  if (!quest || quest.canFinishNow || quest.canCheckNow || quest.readyToFinish) {
+    return null;
+  }
+  const pending = quest.checkpoints.find((cp) => !cp.checked && !cp.liveReady) ?? null;
+  const idLow = (pending?.id ?? "").toLowerCase();
+  const textLow = `${idLow} ${pending?.title ?? ""} ${pending?.instructions ?? ""} ${quest.nextStep}`.toLowerCase();
+
+  if (textLow.includes("+coop/refit") || idLow.includes("refit_dray")) {
+    return { label: "Refit Dray-P", command: "+coop/refit prospector" };
+  }
+  if (textLow.includes("+coop/enroll") || idLow.includes("enroll_coop")) {
+    return { label: "Enroll Co-op", command: "+coop/enroll " };
+  }
+  if (idLow.includes("scan") || textLow.includes("scan go")) {
+    return { label: "Scan Site", command: "+tv/1 scan go" };
+  }
+  if (idLow.includes("sound") || textLow.includes("sound go")) {
+    return { label: "Sound Pocket", command: "+tv/1 sound go" };
+  }
+  if (idLow.startsWith("mine_") || textLow.includes("mine go")) {
+    return { label: "Mine Ore", command: "+tv/1 mine go" };
+  }
+  const dest = extractActiveDestinationPort([quest], quest.key);
+  if (dest) {
+    return { label: `Plan ${dest.portLabel}`, command: `+ship/plan ${dest.portId}` };
+  }
+  if (textLow.includes("+market/")) {
+    return { label: "Market Board", command: "+market/list" };
+  }
+  return null;
+}
+
 const KNOWN_TRADE_COMMODITIES: ReadonlyArray<readonly [string, readonly string[]]> = [
   ["industrial_parts", ["industrial_parts", "industrial parts"]],
   ["carbon_ore", ["carbon_ore", "carbon ore"]],
@@ -545,6 +630,14 @@ export class QuestsStore {
 
   get surfaceMiningStatus(): QuestSurfaceMiningStatus | null {
     return extractActiveSurfaceMiningStatus(this.active, this.trackedKey);
+  }
+
+  get guidedTourProgress(): GuidedTourProgress | null {
+    return computeGuidedTourProgress(this.active, this.available, this.completed);
+  }
+
+  get suggestedAction(): QuestSuggestedAction | null {
+    return extractQuestSuggestedAction(this.trackedQuest);
   }
 
   applyFrame(data: unknown): QuestMilestone[] {
