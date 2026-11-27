@@ -8894,5 +8894,109 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ArenaLobbyChassisSpecsQuickReplaysAndReplayTheaterControls_ParseDispatchAndStepEvents()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave11PR2_LobbySpecsAndReplayTheaterTest");
+            try
+            {
+                var catalog = TacSimAssetCatalog.LoadOrDefault();
+                var arenaGo = new UnityEngine.GameObject("ArenaLobbyReplay");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(catalog, TacSimTerrainDecoder.LoadStaticArena("proving_ground"));
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.Overlays.BindControllers(null, arena, null);
+                hud.ReplayHud.BindArena(arena);
+
+                // 1. Chassis tactical spec dossier updates cleanly for all 6 official chassis
+                string[] chassis = { "line_tank", "line_tank_laser", "heavy_mk1", "biped_mk1", "biped_mk2", "scout_mk1" };
+                foreach (string c in chassis)
+                {
+                    arena.SelectedLobbyUnit = c;
+                    hud.Overlays.RefreshLobbySelectionHighlights();
+                    Assert.IsFalse(string.IsNullOrEmpty(hud.Overlays.LobbyChassisSpecSnapshot), $"Spec missing for {c}");
+                }
+                arena.SelectedLobbyUnit = "heavy_mk1";
+                hud.Overlays.RefreshLobbySelectionHighlights();
+                StringAssert.Contains("700", hud.Overlays.LobbyChassisSpecSnapshot);
+                StringAssert.Contains("Missiles", hud.Overlays.LobbyChassisSpecSnapshot);
+
+                arena.SelectedLobbyUnit = "biped_mk2";
+                hud.Overlays.RefreshLobbySelectionHighlights();
+                StringAssert.Contains("Thermal", hud.Overlays.LobbyChassisSpecSnapshot);
+
+                // 2. SIM HISTORY server output parser extracts match IDs and launches sanitized `sim replay <id>`
+                var dispatched = new List<string>();
+                hud.Overlays.OnCommandRequested += dispatched.Add;
+
+                Assert.AreEqual(0, hud.Overlays.RecentReplayPillCount);
+                hud.Overlays.IngestSimHistoryOutput("The center's last 3 matches, newest first:\n" +
+                    "  #42  red wins  3m12s  4 v 4  2026-11-26 17:00Z  (you flew R1)\n" +
+                    "  #41  blue wins [hold]  5m02s  6 v 6  2026-11-26 16:40Z\n" +
+                    "  #999999999999999999999999999  invalid overflow\n" +
+                    "Room object #12 is a bolted terminal.");
+                Assert.AreEqual(2, hud.Overlays.RecentReplayPillCount, "Only valid SIM HISTORY rows should create replay quick-launch pills");
+
+                Assert.IsTrue(hud.Overlays.ClickRecentReplayPillForTests(0));
+                Assert.IsTrue(hud.Overlays.ClickRecentReplayPillForTests(1));
+                CollectionAssert.AreEqual(new[] { "sim replay 42", "sim replay 41" }, dispatched);
+
+                // 3. Replay Theater << EVENT / EVENT >> stepping, [Q] optics button sync, and hotkeys
+                arena.HandleReplayPanelFrame(JsonNode.Parse(@"{
+                    ""schema"": { ""id"": ""arena.replay"", ""shape"": ""replay"", ""version"": 1 },
+                    ""match"": 42, ""arena"": ""proving_ground"", ""cell_cm"": 1000, ""width"": 64, ""height"": 64,
+                    ""end_ms"": 10000, ""outcome"": ""red"", ""reason"": ""elimination"", ""mode"": ""skirmish"",
+                    ""roster"": [
+                        { ""callsign"": ""R1"", ""team"": ""red"" },
+                        { ""callsign"": ""B1"", ""team"": ""blue"" }
+                    ],
+                    ""keyframes"": [
+                        [0, [[16, 16, 90], [48, 16, 270]]],
+                        [5000, [[24, 16, 90], [40, 16, 270]]],
+                        [10000, [[30, 16, 90], [38, 16, 270]]]
+                    ],
+                    ""shots"": [
+                        [1500, 0, 1, ""hit""],
+                        [6500, 1, 0, ""hit""]
+                    ],
+                    ""destroyed"": [
+                        [8500, 1]
+                    ]
+                }"));
+                hud.ReplayHud.RefreshView();
+
+                // Step forward across events 1500 -> 6500 -> 8500, then backward via << EVENT to 6500 -> 1500
+                arena.SeekReplayMs(0f);
+                hud.ReplayHud.ClickNextEventForTests();
+                Assert.AreEqual(1500f, arena.ReplayCursorMs, 1f);
+                hud.ReplayHud.ClickNextEventForTests();
+                Assert.AreEqual(6500f, arena.ReplayCursorMs, 1f);
+                hud.ReplayHud.ClickNextEventForTests();
+                Assert.AreEqual(8500f, arena.ReplayCursorMs, 1f);
+                hud.ReplayHud.ClickPrevEventForTests();
+                Assert.AreEqual(6500f, arena.ReplayCursorMs, 1f);
+
+                // Hotkeys: [[] steps prev event, [Q] requests optics zoom, [Tab] cycles focused unit
+                int opticsRequested = 0;
+                arena.OnCycleOpticsZoomRequested += () => opticsRequested++;
+                Assert.IsTrue(arena.HandleReplayTheaterHotkey(UnityEngine.KeyCode.LeftBracket));
+                Assert.AreEqual(1500f, arena.ReplayCursorMs, 1f);
+                Assert.IsTrue(arena.HandleReplayTheaterHotkey(UnityEngine.KeyCode.Q));
+                Assert.AreEqual(1, opticsRequested);
+                Assert.IsTrue(arena.HandleReplayTheaterHotkey(UnityEngine.KeyCode.Tab));
+                Assert.AreEqual(1, arena.ReplayFocusUnitIndex);
+
+                hud.ReplayHud.UpdateOpticsButton(2);
+                StringAssert.Contains("4x", hud.ReplayHud.ReplayOpticsButtonSnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

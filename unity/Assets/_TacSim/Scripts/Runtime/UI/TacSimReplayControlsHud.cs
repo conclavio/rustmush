@@ -20,6 +20,7 @@ namespace TacSim.UI
         public event Action OnCloseRequested;
         public event Action OnStopLiveWatchRequested;
         public event Action OnToggleCameraModeRequested;
+        public event Action OnCycleOpticsRequested;
         public event Action OnFocusUnitChanged;
 
         private const int MaxRosterRows = 12;
@@ -48,10 +49,13 @@ namespace TacSim.UI
         private Text _speedBtnLabel;
         private Button _prevKfBtn;
         private Button _nextKfBtn;
+        private Button _prevEventBtn;
         private Button _nextEventBtn;
         private Button _back10Btn;
         private Button _fwd10Btn;
         private Button _speedBtn;
+        private Image _opticsBtnBg;
+        private Text _opticsBtnLabel;
         private Button _closeBtn;
         private Text _closeBtnLabel;
         private readonly List<PooledUnitRow> _rosterPool = new List<PooledUnitRow>(MaxRosterRows);
@@ -67,6 +71,7 @@ namespace TacSim.UI
         public string ProvenanceText => _provenanceLabelText != null ? _provenanceLabelText.text : string.Empty;
         public string ClockText => _clockReadoutText != null ? _clockReadoutText.text : string.Empty;
         public string ReplayStatsSnapshot => _feedTitleText != null ? _feedTitleText.text : string.Empty;
+        public string ReplayOpticsButtonSnapshot => _opticsBtnLabel != null ? _opticsBtnLabel.text : string.Empty;
         public int VisibleTimelineMarkerCount
         {
             get
@@ -77,10 +82,27 @@ namespace TacSim.UI
                 return n;
             }
         }
+        public void ClickPrevEventForTests()
+        {
+            _arena?.StepReplayToEvent(-1);
+            RefreshView();
+        }
         public void ClickNextEventForTests()
         {
             _arena?.StepReplayToEvent(+1);
             RefreshView();
+        }
+        public void UpdateOpticsButton(int zoomLevel)
+        {
+            int lvl = Mathf.Clamp(zoomLevel, 0, 2);
+            if (_opticsBtnLabel != null)
+                _opticsBtnLabel.text = lvl == 2 ? "OPTICS 4x [Q]" : (lvl == 1 ? "OPTICS 2.5x [Q]" : "OPTICS 1x [Q]");
+            if (_opticsBtnBg != null)
+            {
+                _opticsBtnBg.color = lvl == 2
+                    ? new Color(0.14f, 0.56f, 0.68f, 0.98f)
+                    : (lvl == 1 ? new Color(0.16f, 0.44f, 0.58f, 0.96f) : new Color(0.20f, 0.30f, 0.44f, 0.95f));
+            }
         }
         public int VisibleRosterRowCount
         {
@@ -223,6 +245,11 @@ namespace TacSim.UI
                 _arena?.StepReplayKeyframe(-1);
                 RefreshView();
             });
+            _prevEventBtn = CreateBtn(ctrlRow.transform, "<< EV", new Color(0.42f, 0.24f, 0.14f), () =>
+            {
+                _arena?.StepReplayToEvent(-1);
+                RefreshView();
+            });
             _back10Btn = CreateBtn(ctrlRow.transform, "-10s", new Color(0.14f, 0.28f, 0.40f), () =>
             {
                 if (_arena != null) _arena.SeekReplayMs(_arena.ReplayCursorMs - 10000f);
@@ -240,26 +267,29 @@ namespace TacSim.UI
                 if (_arena != null) _arena.SeekReplayMs(_arena.ReplayCursorMs + 10000f);
                 RefreshView();
             });
+            _nextEventBtn = CreateBtn(ctrlRow.transform, "EV >>", new Color(0.46f, 0.26f, 0.14f), () =>
+            {
+                _arena?.StepReplayToEvent(+1);
+                RefreshView();
+            });
             _nextKfBtn = CreateBtn(ctrlRow.transform, "KF >>", new Color(0.14f, 0.28f, 0.40f), () =>
             {
                 _arena?.StepReplayKeyframe(+1);
                 RefreshView();
             });
-            _nextEventBtn = CreateBtn(ctrlRow.transform, "EVENT >>", new Color(0.46f, 0.26f, 0.14f), () =>
-            {
-                _arena?.StepReplayToEvent(+1);
-                RefreshView();
-            });
             _speedBtn = CreateBtn(ctrlRow.transform, "1x", new Color(0.32f, 0.28f, 0.16f), CyclePlaybackSpeed);
             _speedBtnLabel = _speedBtn.GetComponentInChildren<Text>();
 
-            CreateBtn(ctrlRow.transform, "NEXT UNIT [TAB]", new Color(0.18f, 0.34f, 0.48f), () =>
+            CreateBtn(ctrlRow.transform, "UNIT [TAB]", new Color(0.18f, 0.34f, 0.48f), () =>
             {
                 _arena?.CycleReplayFocusUnit(+1);
                 OnFocusUnitChanged?.Invoke();
                 RefreshView();
             });
-            CreateBtn(ctrlRow.transform, "CAM VIEW [V]", new Color(0.24f, 0.28f, 0.46f), () => OnToggleCameraModeRequested?.Invoke());
+            CreateBtn(ctrlRow.transform, "CAM [V]", new Color(0.24f, 0.28f, 0.46f), () => OnToggleCameraModeRequested?.Invoke());
+            var optBtn = CreateBtn(ctrlRow.transform, "OPTICS 1x [Q]", new Color(0.20f, 0.30f, 0.44f), () => OnCycleOpticsRequested?.Invoke());
+            _opticsBtnBg = optBtn.GetComponent<Image>();
+            _opticsBtnLabel = optBtn.GetComponentInChildren<Text>();
 
             _closeBtn = CreateBtn(ctrlRow.transform, "CLOSE [ESC]", new Color(0.50f, 0.18f, 0.20f), () =>
             {
@@ -379,6 +409,7 @@ namespace TacSim.UI
 
             if (_prevKfBtn != null) _prevKfBtn.interactable = !isLive && doc != null;
             if (_nextKfBtn != null) _nextKfBtn.interactable = !isLive && doc != null;
+            if (_prevEventBtn != null) _prevEventBtn.interactable = !isLive && doc != null && (doc.Destroyed.Count > 0 || doc.Shots.Count > 0);
             if (_nextEventBtn != null) _nextEventBtn.interactable = !isLive && doc != null && (doc.Destroyed.Count > 0 || doc.Shots.Count > 0);
             if (_back10Btn != null) _back10Btn.interactable = !isLive && doc != null;
             if (_fwd10Btn != null) _fwd10Btn.interactable = !isLive && doc != null;
