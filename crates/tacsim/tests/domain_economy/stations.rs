@@ -544,6 +544,7 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
             "tacsim.quests.port_connections",
             "tacsim.quests.safe_passage",
             "tacsim.quests.survey_work",
+            "tacsim.quests.guided_onboarding",
         ]
         .into_iter()
         .map(str::to_string),
@@ -551,11 +552,11 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
     assert_eq!(ids(&full), want);
     assert_eq!(
         full.len(),
-        53,
+        54,
         "three starter, two proving ground, twelve stations, six station cast packs (doc 34 cut \
          CS.0b; doc 50 cut OP.1's Isidis), the twelve site packs (doc 20 cut SM.2), two wide site packs (doc 32 cut S.1), \
          the lane, seven R10 relay/geography \
-         packs, two passenger packs, the crew pack and the optional quests"
+         packs, two passenger packs, the crew pack and the optional & guided quests"
     );
     let site_regions: Vec<&str> = SITE_SOURCES
         .iter()
@@ -674,6 +675,10 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
                     ("tacsim.quests.first_steps".into(), 2)
                 ]
             ),
+            "tacsim.quests.guided_onboarding" => assert_eq!(
+                requires,
+                vec![(CERES_PACK.into(), 4), (STICKNEY_PACK.into(), 4)]
+            ),
             // Doc 20 cut SM.2: the site regions require nothing; each site
             // neighborhood requires its region at 1.
             site if site_regions.contains(&site) => assert!(requires.is_empty()),
@@ -706,6 +711,7 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
         "tacsim.quests.port_connections",
         "tacsim.quests.safe_passage",
         "tacsim.quests.survey_work",
+        "tacsim.quests.guided_onboarding",
     ] {
         assert!(!starter_only.iter().any(|p| p == name), "{name}");
     }
@@ -730,6 +736,10 @@ fn ic1_the_boot_list_and_the_shelf_carry_the_stations_in_order() {
     assert!(out.contains(" tacsim.quests.port_connections@1 ("), "{out}");
     assert!(out.contains(" tacsim.quests.safe_passage@1 ("), "{out}");
     assert!(out.contains(" tacsim.quests.survey_work@2 ("), "{out}");
+    assert!(
+        out.contains(" tacsim.quests.guided_onboarding@1 ("),
+        "{out}"
+    );
     // Doc 18 cut IC2: and the lane after them (at version 3 since cut IC8).
     assert!(
         out.contains(&format!(" {LANE_PACK}@{LANE_VERSION} (")),
@@ -1357,8 +1367,8 @@ fn ic1_a_fresh_world_boots_the_stations() {
     // CF.6 added the Slack Line's third crew member, the combat-duty escort.
     assert_eq!(
         npcs.len(),
-        59,
-        "the station cast (doc 50 cut OP.1: Isidis's two), two independent travelers and three permanent crew"
+        60,
+        "the station cast (doc 50 cut OP.1: Isidis's two), two independent travelers, three permanent crew, and Maren Halvorsen (guided onboarding)"
     );
     let leila = obj(&tw, "tacsim.passengers.stickney", "npc.leila_mensah_kovacs");
     assert_eq!(
@@ -1487,8 +1497,8 @@ fn ic1_a_kept_world_takes_the_stations_at_its_next_boot() {
     }
     assert_eq!(
         after.len(),
-        53,
-        "five, twelve stations, six station cast packs (doc 50 cut OP.1 added Isidis's three), the twelve site packs (doc 20 cut SM.2), two wide site packs (doc 32 cut S.1), the lane, seven R10 relay/geography packs, two passenger packs, the crew pack and the optional quests"
+        54,
+        "five, twelve stations, six station cast packs (doc 50 cut OP.1 added Isidis's three), the twelve site packs (doc 20 cut SM.2), two wide site packs (doc 32 cut S.1), the lane, seven R10 relay/geography packs, two passenger packs, the crew pack and the optional & guided quests"
     );
     // Doc 20 cut SM.12a: the relay seed ships at 3 (v2 re-signed for lane v14).
     // Doc 20 cut SM.12b: relay v4 requires lane v15.
@@ -2563,6 +2573,7 @@ fn qureshi_trust_upgrade_keeps_identity_memory_and_staff_affiliation() {
                 | "tacsim.quests.port_connections"
                 | "tacsim.quests.safe_passage"
                 | "tacsim.quests.survey_work"
+                | "tacsim.quests.guided_onboarding"
         )
     });
     for pack in &mut packs {
@@ -2635,6 +2646,7 @@ fn qureshi_trust_upgrade_keeps_identity_memory_and_staff_affiliation() {
         "tacsim.quests.port_connections",
         "tacsim.quests.safe_passage",
         "tacsim.quests.survey_work",
+        "tacsim.quests.guided_onboarding",
     ] {
         assert!(
             content(&tw).latches.applied(&id(name)).is_none(),

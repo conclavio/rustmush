@@ -772,7 +772,7 @@ impl EventHook for QuestAmbientHook {
     }
 }
 
-fn push_actor(ctx: &mut Ctx<'_>, actor: ObjId, force: bool) {
+fn push_actor(ctx: &mut Ctx<'_>, actor: ObjId, force: bool, require_active: bool) {
     if !ctx.w.is_connected(actor) {
         return;
     }
@@ -784,11 +784,24 @@ fn push_actor(ctx: &mut Ctx<'_>, actor: ObjId, force: bool) {
         return;
     }
     let snap = read_snapshot_from_ctx(ctx, actor);
+    let has_any = !snap.own_rows.is_empty();
+    let has_active = snap.own_rows.iter().any(QuestRecord::is_active);
+    let had_fp = ctx
+        .w
+        .module_state::<QuestPanelState>()
+        .is_some_and(|s| s.fingerprints.contains_key(&actor));
+    if require_active && !has_active && !had_fp {
+        return;
+    }
+    if !force && !has_any && !had_fp {
+        return;
+    }
     let (data, fp) = build_quests_payload(ctx.w, actor, &snap, |npc| ctx.can_perceive(actor, npc));
     let Some(state) = ctx.w.module_state_mut::<QuestPanelState>() else {
         return;
     };
-    if !force && state.fingerprints.get(&actor) == Some(&fp) {
+    let prev = state.fingerprints.get(&actor).copied();
+    if !force && prev == Some(fp) {
         return;
     }
     if state.fingerprints.len() >= MAX_FINGERPRINT_ACTORS
@@ -797,6 +810,12 @@ fn push_actor(ctx: &mut Ctx<'_>, actor: ObjId, force: bool) {
         state.fingerprints.clear();
     }
     state.fingerprints.insert(actor, fp);
+    // On periodic ticks, never emit an unsolicited initial frame after a restart
+    // (clients hydrate via `QueryHandler`); only push once a previously observed
+    // active quest state actually changes.
+    if require_active && prev.is_none() {
+        return;
+    }
     let feed = state.feed.clone();
     feed.keyframe_to(ctx, Audience::Actor(actor), data);
 }
@@ -810,7 +829,20 @@ pub(crate) fn push_connected_if_changed(ctx: &mut Ctx<'_>) {
             .retain(|id, _| connected_set.contains(id));
     }
     for actor in connected {
-        push_actor(ctx, actor, false);
+        push_actor(ctx, actor, false, true);
+    }
+}
+
+fn push_on_quest_state_changed(ctx: &mut Ctx<'_>) {
+    let connected: Vec<ObjId> = ctx.w.connected().collect();
+    let connected_set: BTreeSet<ObjId> = connected.iter().copied().collect();
+    if let Some(state) = ctx.w.module_state_mut::<QuestPanelState>() {
+        state
+            .fingerprints
+            .retain(|id, _| connected_set.contains(id));
+    }
+    for actor in connected {
+        push_actor(ctx, actor, false, false);
     }
 }
 
@@ -820,20 +852,16 @@ impl WorldObserver for QuestPushObserver {
     fn on_event(&self, ctx: &mut Ctx<'_>, ev: &WorldEvent) {
         match ev {
             WorldEvent::Moved { who, .. } if ctx.w.is_connected(*who) => {
-                push_actor(ctx, *who, true);
+                push_actor(ctx, *who, true, false);
             }
             WorldEvent::ActionStateChanged { owner, family, .. }
                 if owner.as_str() == crate::NS
                     && matches!(
                         family.as_str(),
-                        "tacsim.quest"
-                            | "tacsim.quest_index"
-                            | "tacsim.quest_survey_evidence"
-                            | "tacsim.surveys"
-                            | "tacsim.passengers"
+                        "tacsim.quest" | "tacsim.quest_index" | "tacsim.quest_survey_evidence"
                     ) =>
             {
-                push_connected_if_changed(ctx);
+                push_on_quest_state_changed(ctx);
             }
             _ => {}
         }

@@ -300,6 +300,8 @@ fn expected_panels() -> Vec<&'static str> {
     // and no `.vitals` feed — doc 16 §3.3 leaves M32's `TacticalUnit` cells the
     // one damage authority, so the sheet declares no health track to publish.
     panels.push("tacsim.sheet");
+    // Structured quest markers, dialog offers, tracker, and completed history.
+    panels.push("tacsim.quests");
     // Doc 19 cut A.3b: the sky chart's feed, registered by the tacsim layer with
     // its port verbs — before `arena_bridge::register` and so before the arena's.
     panels.push("sky.chart");
@@ -940,8 +942,8 @@ async fn ic1_a_kept_world_takes_the_stations_when_the_game_is_switched_on() {
     assert!(after.contains_key(tacsim::port::passenger::content::PACK));
     assert_eq!(
         after.len(),
-        53,
-        "five, twelve station packs, six station cast packs (doc 50 cut OP.1: Isidis's three), twelve site packs, two wide site packs, the lane, seven R10 relay/geography packs, two passenger packs, the crew pack and starter quests"
+        54,
+        "five, twelve station packs, six station cast packs (doc 50 cut OP.1: Isidis's three), twelve site packs, two wide site packs, the lane, seven R10 relay/geography packs, two passenger packs, the crew pack and starter & guided quests"
     );
     lane_resolves(&on.engine);
     let atlas = on

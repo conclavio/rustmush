@@ -3255,10 +3255,12 @@ impl ActionProvider for SurfaceDoneProvider {
         // offer's precedent) — an unload's marked transfer stamps its markers with them.
         let (survey_offer, survey_revisions) =
             crate::surface::survey::reading_offer(engine, &self.surveys, actor)?;
+        let record_mine_evidence = crate::quest::store::actor_needs_surface_mine(engine, actor);
         let fixed = json!({
             "now": w.world_ic_now().at,
             "clock": w.world_ic_now(),
             "wall": w.now(),
+            "record_mine_evidence": record_mine_evidence,
             "surveys": survey_offer,
             "rigs": serde_json::to_value(&rigs)
                 .map_err(|_| integrity("the rigs' facts do not encode"))?,
@@ -3344,10 +3346,14 @@ impl ActionProvider for SurfaceDoneProvider {
                 .get("wall")
                 .and_then(Value::as_i64)
                 .unwrap_or(now);
+            let record_mine_evidence = parameters
+                .get("record_mine_evidence")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             return self.finish_cycle(
                 invocation,
                 txn,
-                (actor, tv, ordinal, k, now, wall),
+                (actor, tv, ordinal, k, now, wall, record_mine_evidence),
                 rig,
                 context,
             );
@@ -4227,7 +4233,15 @@ impl SurfaceDoneProvider {
         &self,
         invocation: &ActionInvocation,
         txn: &mut ActionTxn<'_>,
-        (actor, tv, ordinal, k, now, wall): (ObjId, ObjId, u32, u8, i64, i64),
+        (actor, tv, ordinal, k, now, wall, record_mine_evidence): (
+            ObjId,
+            ObjId,
+            u32,
+            u8,
+            i64,
+            i64,
+            bool,
+        ),
         rig: &DoneRig,
         context: &mut mush_core::PrepareCtx<'_>,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
@@ -4433,7 +4447,8 @@ impl SurfaceDoneProvider {
                 tally.tonnes = tally.tonnes.saturating_add(tonnes);
                 tally.cycles = tally.cycles.saturating_add(1);
             });
-            if tonnes > 0
+            if record_mine_evidence
+                && tonnes > 0
                 && let Err(error) = crate::quest::evidence::log_mine(
                     txn,
                     &self.quest_survey_evidence,

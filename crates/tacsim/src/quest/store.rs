@@ -121,6 +121,32 @@ pub fn refresh(ctx: &mut Ctx<'_>) -> Result<Vec<QuestRecord>, String> {
 pub(crate) fn commission_rows_world(w: &World) -> Option<&[SurveyRecord]> {
     w.module_state::<Projection>()?.commissions.as_deref()
 }
+
+/// Whether `actor` currently holds an active quest with a `SurfaceMine` objective.
+/// Checked inside `SurfaceDoneProvider::project_offer` so ordinary non-quest mining
+/// cycles never perform an extra write to `tacsim.quest_survey_evidence`.
+pub(crate) fn actor_needs_surface_mine(engine: &Engine, actor: ObjId) -> bool {
+    let Some(handles) = engine.world.module_state::<PortHandles>() else {
+        return false;
+    };
+    let state = engine.action_state();
+    for scope in [QuestIndexKey::Legacy, QuestIndexKey::Actor(actor)] {
+        if let Ok(Some(index)) = state.get(&handles.families.quest_index, &scope) {
+            for key in &index.keys {
+                if let Ok(Some(row)) = state.get(&handles.families.quests, key)
+                    && row.actor == actor
+                    && row.is_active()
+                    && row.definition.checkpoints.iter().any(|cp| {
+                        matches!(cp.objective, super::model::Objective::SurfaceMine { .. })
+                    })
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
 fn project_scope(
     projection: &mut Projection,
     actor: ObjId,
