@@ -481,6 +481,7 @@ namespace TacSim.Core
                         _ws.SendLine("@arena/watch off");
                 };
                 Hud.ReplayHud.OnToggleCameraModeRequested += ToggleGroundVehicleCameraMode;
+                Hud.ReplayHud.OnCycleOpticsRequested += CycleArenaOpticsZoom;
                 Hud.ReplayHud.OnFocusUnitChanged += BindCameraToArenaRig;
             }
 
@@ -3103,6 +3104,7 @@ namespace TacSim.Core
             Hud.SocialModal?.IngestMailReadOutput(plainLine, richMarkup);
             Hud.QuestJournal?.IngestServerOutput(plainLine, richMarkup);
             Hud.SceneIntelModal?.IngestServerOutput(plainLine, richMarkup);
+            Hud.Overlays?.IngestSimHistoryOutput(plainLine);
 
             // Trigger surface/orbital action VFX only upon authoritative server outcome lines!
             if (!string.IsNullOrEmpty(plainLine))
@@ -3639,6 +3641,7 @@ namespace TacSim.Core
                 Hud?.FloatingCallouts?.ShowCallout("CAMERA: CHASE VIEW", new Color(0.75f, 0.90f, 1f, 1f), 1.3f);
             }
             Hud?.Overlays?.UpdateArenaOpticsButton(CameraRig.ArenaOpticsZoomLevel);
+            Hud?.ReplayHud?.UpdateOpticsButton(CameraRig.ArenaOpticsZoomLevel);
         }
 
         public void CycleArenaOpticsZoom()
@@ -3651,6 +3654,7 @@ namespace TacSim.Core
             int level = CameraRig.CycleArenaOpticsZoom();
             Audio?.PlayUiClick();
             Hud?.Overlays?.UpdateArenaOpticsButton(level);
+            Hud?.ReplayHud?.UpdateOpticsButton(level);
             string label = level == 2
                 ? "OPTICS: 4.0x SNIPER ZOOM"
                 : (level == 1 ? "OPTICS: 2.5x GUNNER ZOOM" : "OPTICS: 1.0x WIDE VIEW");

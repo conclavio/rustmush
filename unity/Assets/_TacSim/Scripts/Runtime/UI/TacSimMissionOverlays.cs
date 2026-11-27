@@ -64,11 +64,25 @@ namespace TacSim.UI
         // Diegetic OOC Simulator Selector Console Modal (`room.simulator_lobby`)
         private GameObject _arenaLobbyModal;
         private Text _arenaLobbySummaryText;
+        private Text _arenaLobbyChassisSpecText;
         private Text _arenaLobbyLiveRosterText;
+        private Text _arenaLobbyReplayHintText;
         private readonly List<Image> _teamBtnImages = new List<Image>();
         private readonly List<Image> _unitBtnImages = new List<Image>();
         private readonly List<Image> _aiFillBtnImages = new List<Image>();
         private readonly List<Image> _modeBtnImages = new List<Image>();
+        private const int MaxRecentReplayPills = 4;
+
+        private sealed class PooledReplayPill
+        {
+            public GameObject Root;
+            public Button Button;
+            public Text Label;
+            public ulong MatchId;
+        }
+
+        private readonly List<PooledReplayPill> _recentReplayPills = new List<PooledReplayPill>(MaxRecentReplayPills);
+        private readonly List<(ulong matchId, string badge)> _parsedHistoryMatches = new List<(ulong, string)>(MaxRecentReplayPills);
 
         // OOC Arena Active 3D Battlefield Cockpit HUD (with Pooled Contact Rows!)
         private GameObject _arenaBattleHudRoot;
@@ -414,6 +428,8 @@ namespace TacSim.UI
             if (_arenaDebriefCard != null) _arenaDebriefCard.SetActive(false);
             if (_rulesDrawer != null) _rulesDrawer.SetActive(false);
             _rulesDrawerOpen = false;
+            _parsedHistoryMatches.Clear();
+            RefreshRecentReplayPills();
             if (_arenaLobbyLiveRosterText != null) _arenaLobbyLiveRosterText.text = DefaultLobbyRosterHint;
         }
 
@@ -862,7 +878,8 @@ namespace TacSim.UI
 
         private void BuildArenaLobbyModal(Transform parent)
         {
-            _arenaLobbyModal = CreatePanel(parent, "OocArenaLobbyModal", new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-450f, -290f), new Vector2(450f, 290f), new Color(0.04f, 0.07f, 0.12f, 0.99f));
+            _recentReplayPills.Clear();
+            _arenaLobbyModal = CreatePanel(parent, "OocArenaLobbyModal", new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-460f, -312f), new Vector2(460f, 312f), new Color(0.04f, 0.07f, 0.12f, 0.99f));
 
             var hdr = CreateTxt(_arenaLobbyModal.transform, "OOC SIMULATOR SELECTOR CONSOLE — RED vs BLUE", 20, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(1f, 0.58f, 0.48f));
             SetRect(hdr.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(20f, -46f), new Vector2(-130f, -8f));
@@ -871,7 +888,7 @@ namespace TacSim.UI
             SetRect(closeBtn.GetComponent<RectTransform>(), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-120f, -44f), new Vector2(-16f, -10f));
 
             // Row 1: Claim Team Slot (`SIM TEAM red|blue`)
-            var teamRow = CreateRow(_arenaLobbyModal.transform, "TeamRow", -102f, -56f);
+            var teamRow = CreateRow(_arenaLobbyModal.transform, "TeamRow", -98f, -54f);
             var redBtn = CreateBtn(teamRow, "CLAIM RED TEAM SLOT (SIM TEAM RED)", new Color(0.68f, 0.18f, 0.18f), () =>
             {
                 if (_arena != null) _arena.SelectedLobbyTeam = "red";
@@ -888,7 +905,7 @@ namespace TacSim.UI
             _teamBtnImages.Add(blueBtn.GetComponent<Image>());
 
             // Row 2: Select Unit Chassis (`SIM UNIT <type>`)
-            var unitRow = CreateRow(_arenaLobbyModal.transform, "UnitRow", -154f, -110f);
+            var unitRow = CreateRow(_arenaLobbyModal.transform, "UnitRow", -148f, -104f);
             (string id, string label)[] units =
             {
                 ("line_tank", "Line Tank"),
@@ -910,8 +927,15 @@ namespace TacSim.UI
                 _unitBtnImages.Add(ub.GetComponent<Image>());
             }
 
+            // Chassis Tactical Dossier Strip (authentic specs from crates/tacsim/content/units/*.json)
+            var specCard = CreatePanel(_arenaLobbyModal.transform, "LobbyChassisSpecCard", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(20f, -196f), new Vector2(-20f, -154f), new Color(0.05f, 0.10f, 0.16f, 0.96f));
+            CreatePanel(specCard.transform, "SpecAccent", new Vector2(0f, 0f), new Vector2(0f, 1f), Vector2.zero, new Vector2(3f, 0f), new Color(0.32f, 0.88f, 1.0f, 0.95f));
+            _arenaLobbyChassisSpecText = CreateTxt(specCard.transform, ResolveChassisTacticalSpecs("line_tank"), 12, FontStyle.Normal, TextAnchor.MiddleLeft, new Color(0.84f, 0.94f, 1f));
+            _arenaLobbyChassisSpecText.supportRichText = true;
+            SetRect(_arenaLobbyChassisSpecText.rectTransform, Vector2.zero, Vector2.one, new Vector2(12f, 2f), new Vector2(-10f, -2f));
+
             // Row 3: AI Wingman Fill (`SIM AI <n>`)
-            var aiRow = CreateRow(_arenaLobbyModal.transform, "AiFillRow", -206f, -162f);
+            var aiRow = CreateRow(_arenaLobbyModal.transform, "AiFillRow", -248f, -204f);
             (int count, string label)[] aiFills =
             {
                 (1, "SIM AI 1 (1v1)"),
@@ -932,7 +956,7 @@ namespace TacSim.UI
             }
 
             // Row 4: Match Rule (`SIM MODE skirmish|hold`)
-            var modeRow = CreateRow(_arenaLobbyModal.transform, "ModeRow", -258f, -214f);
+            var modeRow = CreateRow(_arenaLobbyModal.transform, "ModeRow", -298f, -254f);
             (string mode, string label)[] modes =
             {
                 ("skirmish", "SIM MODE SKIRMISH (ELIMINATION)"),
@@ -953,14 +977,14 @@ namespace TacSim.UI
             // Live Centre Status & Claimed Slots Readout
             _arenaLobbySummaryText = CreateTxt(_arenaLobbyModal.transform, "", 13, FontStyle.Normal, TextAnchor.MiddleCenter, new Color(0.86f, 0.94f, 1f));
             _arenaLobbySummaryText.supportRichText = true;
-            SetRect(_arenaLobbySummaryText.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(20f, -310f), new Vector2(-20f, -264f));
+            SetRect(_arenaLobbySummaryText.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(20f, -342f), new Vector2(-20f, -304f));
 
-            _arenaLobbyLiveRosterText = CreateTxt(_arenaLobbyModal.transform, "Walk north into <b>Red Room</b> or south into <b>Blue Room</b> after <b>SIM START</b>, then press <b>[E]</b> on your pod (or click <b>BOARD POD</b>)!", 13, FontStyle.Normal, TextAnchor.MiddleCenter, new Color(0.68f, 0.90f, 0.84f));
+            _arenaLobbyLiveRosterText = CreateTxt(_arenaLobbyModal.transform, DefaultLobbyRosterHint, 13, FontStyle.Normal, TextAnchor.MiddleCenter, new Color(0.68f, 0.90f, 0.84f));
             _arenaLobbyLiveRosterText.supportRichText = true;
-            SetRect(_arenaLobbyLiveRosterText.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(20f, -366f), new Vector2(-20f, -312f));
+            SetRect(_arenaLobbyLiveRosterText.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(20f, -392f), new Vector2(-20f, -344f));
 
             // Row 5: Start Boarding & Enter Pod Bays
-            var startRow = CreateRow(_arenaLobbyModal.transform, "SimStartAndBayRow", -424f, -374f);
+            var startRow = CreateRow(_arenaLobbyModal.transform, "SimStartAndBayRow", -446f, -398f);
             CreateBtn(startRow, "OPEN PODS (SIM START)", new Color(0.16f, 0.54f, 0.36f), () =>
                 OnCommandRequested?.Invoke("sim start"));
             CreateBtn(startRow, "WALK TO RED BAY", new Color(0.56f, 0.18f, 0.20f), () =>
@@ -980,7 +1004,7 @@ namespace TacSim.UI
             });
 
             // Row 6: Centre Management, Match History & Return IC
-            var mgmtRow = CreateRow(_arenaLobbyModal.transform, "SimMgmtRow", -478f, -432f);
+            var mgmtRow = CreateRow(_arenaLobbyModal.transform, "SimMgmtRow", -498f, -454f);
             CreateBtn(mgmtRow, "SIM STATUS", new Color(0.16f, 0.28f, 0.40f), () => OnCommandRequested?.Invoke("sim status"));
             CreateBtn(mgmtRow, "MATCH HISTORY", new Color(0.24f, 0.36f, 0.48f), () => OnCommandRequested?.Invoke("sim history"));
             CreateBtn(mgmtRow, "SIM LEAVE", new Color(0.38f, 0.24f, 0.20f), () => OnCommandRequested?.Invoke("sim leave"));
@@ -991,7 +1015,152 @@ namespace TacSim.UI
                 OnCommandRequested?.Invoke("+ic");
             });
 
+            // Row 7: Pooled Quick-Launch 3D Match Replay Pills (populated from authoritative `SIM HISTORY` lines)
+            var replayBox = CreatePanel(_arenaLobbyModal.transform, "LobbyRecentReplaysBox", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(20f, -558f), new Vector2(-20f, -506f), new Color(0.05f, 0.08f, 0.13f, 0.94f));
+            var rLbl = CreateTxt(replayBox.transform, "RECENT 3D REPLAYS:", 11, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(1.0f, 0.80f, 0.36f));
+            SetRect(rLbl.rectTransform, new Vector2(0f, 0f), new Vector2(0f, 1f), new Vector2(10f, 4f), new Vector2(148f, -4f));
+
+            _arenaLobbyReplayHintText = CreateTxt(replayBox.transform, "Click MATCH HISTORY above to load clickable 3D Replay Theater buttons.", 11, FontStyle.Italic, TextAnchor.MiddleLeft, new Color(0.64f, 0.78f, 0.88f));
+            SetRect(_arenaLobbyReplayHintText.rectTransform, new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(154f, 4f), new Vector2(-10f, -4f));
+
+            var replayBtnsRow = CreatePanel(replayBox.transform, "RecentReplayPillsRow", new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(154f, 7f), new Vector2(-10f, -7f), Color.clear);
+            var rpHlg = replayBtnsRow.AddComponent<HorizontalLayoutGroup>();
+            rpHlg.spacing = 6f;
+            rpHlg.childControlWidth = true;
+            rpHlg.childControlHeight = true;
+            rpHlg.childForceExpandWidth = true;
+
+            for (int r = 0; r < MaxRecentReplayPills; r++)
+            {
+                int capturedIdx = r;
+                var pill = new PooledReplayPill();
+                var btn = CreateBtn(replayBtnsRow.transform, string.Empty, new Color(0.24f, 0.34f, 0.48f), () => HandleRecentReplayPillClick(capturedIdx));
+                pill.Root = btn.gameObject;
+                pill.Button = btn;
+                pill.Label = btn.GetComponentInChildren<Text>();
+                if (pill.Label != null) pill.Label.fontSize = 11;
+                pill.Root.SetActive(false);
+                _recentReplayPills.Add(pill);
+            }
+
             _arenaLobbyModal.SetActive(false);
+        }
+
+        public string LobbyChassisSpecSnapshot => _arenaLobbyChassisSpecText != null ? _arenaLobbyChassisSpecText.text : string.Empty;
+        public int RecentReplayPillCount => _parsedHistoryMatches.Count;
+
+        public bool ClickRecentReplayPillForTests(int index) => HandleRecentReplayPillClick(index);
+
+        private bool HandleRecentReplayPillClick(int index)
+        {
+            if (index < 0 || index >= _recentReplayPills.Count) return false;
+            var pill = _recentReplayPills[index];
+            if (pill == null || pill.MatchId == 0 || !pill.Root.activeSelf) return false;
+            if (_arenaLobbyModal != null) _arenaLobbyModal.SetActive(false);
+            OnCommandRequested?.Invoke($"sim replay {pill.MatchId}");
+            return true;
+        }
+
+        public static string ResolveChassisTacticalSpecs(string unitId)
+        {
+            string key = (unitId ?? "line_tank").Trim().ToLowerInvariant().Replace("tacsim.unit.", string.Empty);
+            switch (key)
+            {
+                case "line_tank_laser":
+                    return "<color=#66EEFF><b>LASER TANK</b></color> — Front 400 / Turret 350 · Weapons: <b>105mm Cannon + Mk1 Laser + Coax MG</b> · Visual Mk1 · Thermal-managed energy/ballistic hunter.";
+                case "heavy_mk1":
+                    return "<color=#FFAA55><b>HEAVY MK1</b></color> — Front 700 / Turret 550 · Weapons: <b>105mm Cannon + Long-Range Missiles + Coax MG</b> · Visual Mk1 · Heavy breakthrough juggernaut.";
+                case "biped_mk1":
+                    return "<color=#77FFAA><b>BIPED MK1</b></color> — Torso 450 / Legs 260 · Weapons: <b>Arm 105mm Cannon + Coax MG</b> · Visual Mk1 · Agile all-terrain combat walker.";
+                case "biped_mk2":
+                    return "<color=#FF88EE><b>BIPED MK2</b></color> — Torso 520 / Legs 300 · Weapons: <b>105mm Cannon + Mk1 Laser + Coax MG</b> · <b>Thermal Mk1</b> · Heavy thermal-optics assault mech.";
+                case "scout_mk1":
+                    return "<color=#FFEE66><b>SCOUT MK1</b></color> — Front 200 / Turret 150 · Weapons: <b>30mm Autocannon + Coax MG</b> · Visual Mk1 · High-speed flanker & recon car.";
+                default:
+                    return "<color=#66EEFF><b>LINE TANK</b></color> — Front 400 / Turret 350 · Weapons: <b>105mm Cannon + Coax MG</b> · Visual Mk1 · Balanced main battle tank.";
+            }
+        }
+
+        /// <summary>
+        /// Parses authoritative `SIM HISTORY` rows (`  #42  red wins [hold]  3m12s  4 v 4 ...`)
+        /// into clickable `sim replay <id>` quick-launch pills inside the Simulator Selector Console.
+        /// </summary>
+        public void IngestSimHistoryOutput(string plainText)
+        {
+            if (string.IsNullOrWhiteSpace(plainText)) return;
+            string[] lines = plainText.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            bool changed = false;
+
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string trimmed = lines[i].Trim();
+                if (trimmed.Length < 8 || trimmed[0] != '#') continue;
+
+                int idx = 1;
+                while (idx < trimmed.Length && char.IsDigit(trimmed[idx])) idx++;
+                if (idx <= 1 || idx >= trimmed.Length || !char.IsWhiteSpace(trimmed[idx])) continue;
+
+                string numStr = trimmed.Substring(1, idx - 1);
+                if (!ulong.TryParse(numStr, out ulong matchId) || matchId == 0) continue;
+
+                string rest = trimmed.Substring(idx).Trim();
+                bool looksLikeHistory =
+                    rest.IndexOf(" v ", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    rest.IndexOf("wins", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    rest.IndexOf("draw", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    rest.IndexOf("aborted", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    rest.IndexOf("void", StringComparison.OrdinalIgnoreCase) >= 0;
+                if (!looksLikeHistory) continue;
+
+                string badge = rest.IndexOf("[hold]", StringComparison.OrdinalIgnoreCase) >= 0 ? "HOLD"
+                    : (rest.IndexOf("red", StringComparison.OrdinalIgnoreCase) >= 0 ? "RED"
+                        : (rest.IndexOf("blue", StringComparison.OrdinalIgnoreCase) >= 0 ? "BLUE" : "MATCH"));
+
+                bool exists = false;
+                for (int e = 0; e < _parsedHistoryMatches.Count; e++)
+                {
+                    if (_parsedHistoryMatches[e].matchId == matchId)
+                    {
+                        exists = true;
+                        break;
+                    }
+                }
+                if (exists) continue;
+
+                if (_parsedHistoryMatches.Count >= MaxRecentReplayPills)
+                    _parsedHistoryMatches.RemoveAt(_parsedHistoryMatches.Count - 1);
+                _parsedHistoryMatches.Add((matchId, badge));
+                changed = true;
+            }
+
+            if (changed)
+                RefreshRecentReplayPills();
+        }
+
+        private void RefreshRecentReplayPills()
+        {
+            int count = Mathf.Min(_parsedHistoryMatches.Count, _recentReplayPills.Count);
+            if (_arenaLobbyReplayHintText != null)
+                _arenaLobbyReplayHintText.gameObject.SetActive(count == 0);
+
+            for (int i = 0; i < _recentReplayPills.Count; i++)
+            {
+                var pill = _recentReplayPills[i];
+                if (pill == null || pill.Root == null) continue;
+                if (i < count)
+                {
+                    var item = _parsedHistoryMatches[i];
+                    pill.MatchId = item.matchId;
+                    if (pill.Label != null)
+                        pill.Label.text = $"REPLAY #{item.matchId} ({item.badge})";
+                    pill.Root.SetActive(true);
+                }
+                else
+                {
+                    pill.MatchId = 0;
+                    pill.Root.SetActive(false);
+                }
+            }
         }
 
         public void ShowArenaLobbyModal(bool visible)
@@ -1015,6 +1184,9 @@ namespace TacSim.UI
             int uIdx = Mathf.Max(0, Array.IndexOf(uIds, _arena.SelectedLobbyUnit));
             HighlightPillGroup(_unitBtnImages, uIdx, new Color(0.22f, 0.64f, 0.86f));
 
+            if (_arenaLobbyChassisSpecText != null)
+                _arenaLobbyChassisSpecText.text = ResolveChassisTacticalSpecs(_arena.SelectedLobbyUnit);
+
             int[] aiCounts = { 1, 2, 4, 6 };
             int aiIdx = Mathf.Max(0, Array.IndexOf(aiCounts, _arena.SelectedLobbyAiCount));
             HighlightPillGroup(_aiFillBtnImages, aiIdx, new Color(0.22f, 0.64f, 0.86f));
@@ -1036,6 +1208,8 @@ namespace TacSim.UI
                     ? _arena.LiveLobbySlotSummary
                     : DefaultLobbyRosterHint;
             }
+
+            RefreshRecentReplayPills();
         }
 
         // ---- OOC SIMULATOR ARENA: ACTIVE 3D TANK/MECH COCKPIT HUD (POOLED CONTACT ROWS) ----

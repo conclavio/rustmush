@@ -2722,6 +2722,45 @@ namespace TacSim.Arena
             }
         }
 
+        public bool HandleReplayTheaterHotkey(KeyCode key)
+        {
+            if (KeyboardSuspended || !IsSpectatorTheaterActive) return false;
+            switch (key)
+            {
+                case KeyCode.V:
+                    OnToggleCameraViewRequested?.Invoke();
+                    return true;
+                case KeyCode.Q:
+                    OnCycleOpticsZoomRequested?.Invoke();
+                    return true;
+                case KeyCode.Tab:
+                    CycleReplayFocusUnit(+1);
+                    return true;
+                case KeyCode.Space:
+                    if (!IsReplayModeActive) return false;
+                    ToggleReplayPlaying();
+                    return true;
+                case KeyCode.LeftArrow:
+                    if (!IsReplayModeActive) return false;
+                    StepReplayKeyframe(-1);
+                    return true;
+                case KeyCode.RightArrow:
+                    if (!IsReplayModeActive) return false;
+                    StepReplayKeyframe(+1);
+                    return true;
+                case KeyCode.LeftBracket:
+                    if (!IsReplayModeActive) return false;
+                    StepReplayToEvent(-1);
+                    return true;
+                case KeyCode.RightBracket:
+                    if (!IsReplayModeActive) return false;
+                    StepReplayToEvent(+1);
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
         public void StepReplayPlaybackForTests(float dt)
         {
             UpdateSpectatorPlayback(Mathf.Max(0.0001f, dt));
@@ -2731,16 +2770,13 @@ namespace TacSim.Arena
         {
             if (!KeyboardSuspended)
             {
-                if (Input.GetKeyDown(KeyCode.V))
-                    OnToggleCameraViewRequested?.Invoke();
-                else if (Input.GetKeyDown(KeyCode.Q))
-                    OnCycleOpticsZoomRequested?.Invoke();
-                else if (IsReplayModeActive && Input.GetKeyDown(KeyCode.Space))
-                    ToggleReplayPlaying();
-                else if (IsReplayModeActive && Input.GetKeyDown(KeyCode.LeftArrow))
-                    StepReplayKeyframe(-1);
-                else if (IsReplayModeActive && Input.GetKeyDown(KeyCode.RightArrow))
-                    StepReplayKeyframe(+1);
+                if (Input.GetKeyDown(KeyCode.V)) HandleReplayTheaterHotkey(KeyCode.V);
+                else if (Input.GetKeyDown(KeyCode.Q)) HandleReplayTheaterHotkey(KeyCode.Q);
+                else if (Input.GetKeyDown(KeyCode.Space)) HandleReplayTheaterHotkey(KeyCode.Space);
+                else if (Input.GetKeyDown(KeyCode.LeftArrow)) HandleReplayTheaterHotkey(KeyCode.LeftArrow);
+                else if (Input.GetKeyDown(KeyCode.RightArrow)) HandleReplayTheaterHotkey(KeyCode.RightArrow);
+                else if (Input.GetKeyDown(KeyCode.LeftBracket)) HandleReplayTheaterHotkey(KeyCode.LeftBracket);
+                else if (Input.GetKeyDown(KeyCode.RightBracket)) HandleReplayTheaterHotkey(KeyCode.RightBracket);
             }
 
             if (IsReplayModeActive && ReplayPlaying && ActiveReplayDoc != null)
