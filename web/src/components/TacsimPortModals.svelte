@@ -5,6 +5,7 @@
   // modal field distinctly.
 
   import type { GameApp } from "$lib/game.svelte";
+  import { matchesQuestTradeRow } from "$lib/stores/quests.svelte";
   import {
     formatEscortPostCommand,
     formatHaulPostCommand,
@@ -79,6 +80,8 @@
   const modal = $derived(app.tacsim.activeModal);
   const trade = $derived(app.tacsim.trade);
   const st = $derived(trade.stowage);
+  const questTradeNeed = $derived(app.quests.activeTradeNeed);
+  const questDestPort = $derived(app.quests.activeDestinationPort);
   const bayHullTarget = $derived(
     app.tacsim.activeHullRef ||
       app.tacsim.ambient.ownHullName ||
@@ -237,6 +240,30 @@
         </div>
 
         {#if modal === "trade" && tradeSubView === "book"}
+          {#if questTradeNeed}
+            <div class="quest-banner" role="status" aria-label="active quest trade guidance">
+              <div class="qb-text">
+                <span class="qtag">[QUEST]</span>
+                <strong>
+                  {questTradeNeed.wantsBuy && questTradeNeed.wantsSell
+                    ? "BUY / SELL"
+                    : questTradeNeed.wantsSell
+                      ? "SELL"
+                      : "BUY"}
+                  {questTradeNeed.targetQuantity} × {questTradeNeed.commoditySlug.replaceAll("_", " ").toUpperCase()}
+                </strong>
+                <span class="muted">— {questTradeNeed.questTitle}</span>
+              </div>
+              <button
+                type="button"
+                class="qbtn-gold"
+                onclick={() => (app.tacsim.selectedQtyPreset = questTradeNeed.targetQuantity)}
+              >
+                Set Quest Qty ({questTradeNeed.targetQuantity})
+              </button>
+            </div>
+          {/if}
+
           <div class="qty-row">
             <span class="muted">Lot Quantity:</span>
             {#each [1, 5, 10, 25, "max"] as const as q (q)}
@@ -267,9 +294,12 @@
                 <div class="rows">
                   {#each trade.asks as row (row.listingId)}
                     {@const qty = resolveLotQty(row)}
-                    <div class="lrow">
+                    {@const isQuestMatch = matchesQuestTradeRow(questTradeNeed, row, false)}
+                    <div class="lrow" class:quest-match={isQuestMatch}>
                       <div class="lmeta">
-                        <strong>{row.itemName}</strong>
+                        <strong>
+                          {#if isQuestMatch}<span class="qtag">[QUEST]</span> {/if}{row.itemName}
+                        </strong>
                         <span class="muted">#{row.listingId} · {row.vendorName} · {row.quantity} {row.unit} avail</span>
                       </div>
                       <div class="lact">
@@ -296,9 +326,12 @@
                 <div class="rows">
                   {#each trade.bids as row (row.listingId)}
                     {@const qty = resolveLotQty(row)}
-                    <div class="lrow">
+                    {@const isQuestMatch = matchesQuestTradeRow(questTradeNeed, row, true)}
+                    <div class="lrow" class:quest-match={isQuestMatch}>
                       <div class="lmeta">
-                        <strong>{row.itemName}</strong>
+                        <strong>
+                          {#if isQuestMatch}<span class="qtag">[QUEST]</span> {/if}{row.itemName}
+                        </strong>
                         <span class="muted">#{row.listingId} · {row.vendorName} · wants {row.quantity} {row.unit}</span>
                       </div>
                       <div class="lact">
@@ -679,16 +712,34 @@
           </div>
         {:else}
           <div class="sailing-body">
+            {#if questDestPort}
+              <div class="quest-banner" role="status" aria-label="active quest destination">
+                <div class="qb-text">
+                  <span class="qtag">[QUEST]</span>
+                  <strong>DESTINATION: {questDestPort.portLabel.toUpperCase()}</strong>
+                  <span class="muted">— {questDestPort.questTitle}</span>
+                </div>
+                <button
+                  type="button"
+                  class="qbtn-gold"
+                  onclick={() => (app.tacsim.selectedDestination = questDestPort.portId)}
+                >
+                  Select Quest Port ({questDestPort.portId})
+                </button>
+              </div>
+            {/if}
             <h3>Select Corridor Destination Port</h3>
             <div class="dest-grid">
               {#each CORRIDOR_DESTINATIONS as dest (dest.id)}
+                {@const isQuestDest = questDestPort?.portId === dest.id}
                 <button
                   type="button"
                   class="dest-card"
                   class:on={app.tacsim.selectedDestination === dest.id}
+                  class:quest-match={isQuestDest}
                   onclick={() => (app.tacsim.selectedDestination = dest.id)}
                 >
-                  <strong>{dest.label}</strong>
+                  <strong>{#if isQuestDest}<span class="qtag">[QUEST]</span> {/if}{dest.label}</strong>
                   <span>{dest.body}</span>
                 </button>
               {/each}
@@ -1279,5 +1330,54 @@
     color: #b8d8f0;
     max-height: 7.5rem;
     overflow-y: auto;
+  }
+
+  .quest-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    padding: 0.45rem 0.7rem;
+    border-radius: 7px;
+    border: 1px solid #d4a634;
+    background: rgba(62, 46, 12, 0.9);
+    color: #fff2c4;
+    font-size: 0.8rem;
+  }
+
+  .qb-text {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+  }
+
+  .qtag {
+    color: #ffd84d;
+    font-weight: 700;
+    font-family: var(--font-mono);
+  }
+
+  .qbtn-gold {
+    padding: 0.25rem 0.65rem;
+    border-radius: 6px;
+    border: 1px solid #ffd84d;
+    background: #7a5410;
+    color: #ffffff;
+    font: inherit;
+    font-size: 0.76rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .lrow.quest-match {
+    border-color: #d4a634;
+    background: rgba(62, 48, 14, 0.55);
+  }
+
+  .dest-card.quest-match {
+    border-color: #d4a634;
+    box-shadow: inset 0 0 0 1px rgba(255, 216, 77, 0.35);
   }
 </style>

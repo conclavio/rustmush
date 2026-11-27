@@ -84,6 +84,260 @@ export interface CompletedQuestView {
   completedAtUtc: number;
 }
 
+export interface QuestTradeNeed {
+  questTitle: string;
+  checkpointTitle: string;
+  commoditySlug: string;
+  targetQuantity: number;
+  wantsBuy: boolean;
+  wantsSell: boolean;
+}
+
+export interface QuestDestinationHint {
+  questTitle: string;
+  portId: string;
+  portLabel: string;
+}
+
+export interface QuestSurfaceMiningStatus {
+  questTitle: string;
+  targetOreSlug: string;
+  recommendedFamily: string;
+  hasScanStep: boolean;
+  scanDone: boolean;
+  hasSoundStep: boolean;
+  soundDone: boolean;
+  hasMineStep: boolean;
+  mineDone: boolean;
+  nextStepText: string;
+}
+
+const KNOWN_TRADE_COMMODITIES: ReadonlyArray<readonly [string, readonly string[]]> = [
+  ["industrial_parts", ["industrial_parts", "industrial parts"]],
+  ["carbon_ore", ["carbon_ore", "carbon ore"]],
+  ["structural_alloys", ["structural_alloys", "structural alloys"]],
+  ["rare_earths", ["rare_earths", "rare earths"]],
+  ["water_ice", ["water_ice", "water ice"]],
+  ["provisions", ["provisions"]],
+  ["propellant", ["propellant"]],
+  ["volatiles", ["volatiles"]],
+  ["silicates", ["silicates"]],
+  ["metals", ["metals"]],
+];
+
+const KNOWN_DESTINATIONS: ReadonlyArray<readonly [string, string, readonly string[]]> = [
+  ["stickney", "Stickney Yards", ["+ship/plan stickney", "+ship/depart stickney", "stickney yards", "stickney"]],
+  ["ceres", "Ceres Freeport", ["+ship/plan ceres", "+ship/depart ceres", "ceres freeport", "back to ceres", "return to ceres"]],
+  ["luna", "Aitken Highport", ["+ship/plan luna", "+ship/depart luna", "aitken highport"]],
+  ["deimos", "Voltaire Anchorage", ["+ship/plan deimos", "+ship/depart deimos", "voltaire anchorage"]],
+  ["titan", "Ligeia Terminal", ["+ship/plan titan", "+ship/depart titan", "ligeia terminal"]],
+  ["isidis", "Isidis Concession", ["+ship/plan isidis", "+ship/depart isidis", "isidis concession"]],
+  ["commons", "Freeport Commons", ["+ship/plan commons", "freeport commons"]],
+  ["ahuna", "Ahuna Flank", ["+ship/plan ahuna", "ahuna flank"]],
+  ["occator", "Occator Rim", ["+ship/plan occator", "occator rim"]],
+  ["kerwan", "Kerwan Floor", ["+ship/plan kerwan", "kerwan floor"]],
+  ["juling", "Juling Shadow", ["+ship/plan juling", "juling shadow"]],
+  ["urvara", "Urvara Reach", ["+ship/plan urvara", "urvara reach"]],
+  ["rheasilvia", "Rheasilvia Commons", ["+ship/plan rheasilvia", "rheasilvia commons"]],
+];
+
+export function normalizeGoodSlug(raw: string): string {
+  let s = raw.trim().toLowerCase();
+  const colon = s.lastIndexOf(":");
+  if (colon >= 0 && colon < s.length - 1) s = s.slice(colon + 1);
+  return s.replace(/[-\s]+/g, "_").replace(/_+/g, "_");
+}
+
+export function matchesQuestTradeRow(
+  need: QuestTradeNeed | null,
+  row: { goodCode?: string; itemName?: string },
+  isBid: boolean,
+): boolean {
+  if (!need) return false;
+  if (isBid ? !need.wantsSell : !need.wantsBuy) return false;
+  const code = row.goodCode ? normalizeGoodSlug(row.goodCode) : "";
+  if (code && code === need.commoditySlug) return true;
+  const item = row.itemName ? normalizeGoodSlug(row.itemName) : "";
+  return Boolean(item && item === need.commoditySlug);
+}
+
+function extractLeadingPositiveInt(text: string): number {
+  const m = /\b(\d{1,4})\b/.exec(text);
+  if (!m) return 0;
+  const n = Number.parseInt(m[1]!, 10);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function orderedActiveQuests(
+  active: readonly ActiveQuestView[],
+  trackedKey: string | null,
+): ActiveQuestView[] {
+  if (active.length === 0) return [];
+  const tracked = trackedKey ? active.find((q) => q.key === trackedKey) : undefined;
+  return tracked ? [tracked, ...active.filter((q) => q !== tracked)] : [...active];
+}
+
+export function extractActiveTradeNeed(
+  active: readonly ActiveQuestView[],
+  trackedKey: string | null,
+): QuestTradeNeed | null {
+  for (const q of orderedActiveQuests(active, trackedKey)) {
+    for (const cp of q.checkpoints) {
+      if (cp.checked || cp.liveReady) continue;
+      const idLow = cp.id.toLowerCase();
+      const titleLow = cp.title.toLowerCase();
+      const instrLow = cp.instructions.toLowerCase();
+      if (
+        idLow.startsWith("mine_") ||
+        idLow.startsWith("scan_") ||
+        idLow.startsWith("sound_") ||
+        titleLow.startsWith("mine ")
+      ) {
+        continue;
+      }
+      const combined = `${idLow} ${titleLow} ${instrLow}`;
+      let slug: string | null = null;
+      for (const [candidate, pats] of KNOWN_TRADE_COMMODITIES) {
+        if (pats.some((p) => combined.includes(p))) {
+          slug = candidate;
+          break;
+        }
+      }
+      if (!slug) continue;
+
+      const wantsBuy =
+        idLow.startsWith("buy_") ||
+        idLow.startsWith("deliver_") ||
+        idLow.startsWith("return_") ||
+        titleLow.includes("buy ") ||
+        titleLow.includes("haul ") ||
+        instrLow.includes("buy ");
+      const wantsSell =
+        idLow.startsWith("sell_") ||
+        idLow.startsWith("deliver_") ||
+        idLow.startsWith("return_") ||
+        titleLow.includes("sell ") ||
+        titleLow.includes("deliver ") ||
+        titleLow.includes("haul ") ||
+        instrLow.includes("+market/sell");
+      if (!wantsBuy && !wantsSell) continue;
+
+      const qty =
+        extractLeadingPositiveInt(cp.title) || extractLeadingPositiveInt(cp.instructions) || 1;
+      return {
+        questTitle: q.title,
+        checkpointTitle: cp.title,
+        commoditySlug: slug,
+        targetQuantity: qty,
+        wantsBuy,
+        wantsSell,
+      };
+    }
+  }
+  return null;
+}
+
+export function extractActiveDestinationPort(
+  active: readonly ActiveQuestView[],
+  trackedKey: string | null,
+): QuestDestinationHint | null {
+  for (const q of orderedActiveQuests(active, trackedKey)) {
+    for (const cp of q.checkpoints) {
+      if (cp.checked || cp.liveReady) continue;
+      const text = `${cp.instructions} ${cp.title} ${q.nextInstructions} ${q.introduction}`.toLowerCase();
+      // Prioritize explicit `+ship/plan <port>` or `+ship/depart <port>` commands first
+      const cmdMatch = /\+ship\/(?:plan|depart|undock)\s+([a-z0-9_]+)/i.exec(text);
+      if (cmdMatch) {
+        const slug = cmdMatch[1]!.toLowerCase();
+        const found = KNOWN_DESTINATIONS.find(([id]) => id === slug);
+        if (found) {
+          return { questTitle: q.title, portId: found[0], portLabel: found[1] };
+        }
+      }
+      for (const [id, label, pats] of KNOWN_DESTINATIONS) {
+        if (pats.some((p) => text.includes(p))) {
+          return { questTitle: q.title, portId: id, portLabel: label };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+export function extractActiveSurfaceMiningStatus(
+  active: readonly ActiveQuestView[],
+  trackedKey: string | null,
+): QuestSurfaceMiningStatus | null {
+  for (const q of orderedActiveQuests(active, trackedKey)) {
+    let hasScan = false;
+    let scanDone = false;
+    let hasSound = false;
+    let soundDone = false;
+    let hasMine = false;
+    let mineDone = false;
+    let oreSlug = "";
+
+    for (const cp of q.checkpoints) {
+      const idLow = cp.id.toLowerCase();
+      const textLow = `${idLow} ${cp.title.toLowerCase()} ${cp.instructions.toLowerCase()}`;
+      const done = cp.checked || cp.liveReady;
+
+      if (idLow.includes("scan") || textLow.includes("surface scan") || textLow.includes("scan go")) {
+        hasScan = true;
+        scanDone = done;
+      } else if (
+        idLow.includes("sound") ||
+        textLow.includes("sound a detected") ||
+        textLow.includes("sound go")
+      ) {
+        hasSound = true;
+        soundDone = done;
+      } else if (
+        idLow.startsWith("mine_") ||
+        textLow.includes("mine at least") ||
+        textLow.includes("mine go")
+      ) {
+        hasMine = true;
+        mineDone = done;
+        if (textLow.includes("carbon_ore") || textLow.includes("carbon ore")) {
+          oreSlug = "carbon_ore";
+        } else if (textLow.includes("rare_earths") || textLow.includes("rare earths")) {
+          oreSlug = "rare_earths";
+        } else if (textLow.includes("volatiles") || textLow.includes("water_ice")) {
+          oreSlug = "volatiles";
+        } else if (textLow.includes("metals")) {
+          oreSlug = "metals";
+        }
+      }
+    }
+
+    if (hasScan || hasSound || hasMine) {
+      const targetOreSlug = oreSlug || "carbon_ore";
+      const recommendedFamily =
+        targetOreSlug === "carbon_ore"
+          ? "carbon"
+          : targetOreSlug === "rare_earths"
+            ? "strategic"
+            : targetOreSlug === "metals"
+              ? "metals"
+              : "volatiles";
+      return {
+        questTitle: q.title,
+        targetOreSlug,
+        recommendedFamily,
+        hasScanStep: hasScan,
+        scanDone,
+        hasSoundStep: hasSound,
+        soundDone,
+        hasMineStep: hasMine,
+        mineDone,
+        nextStepText: q.nextStep,
+      };
+    }
+  }
+  return null;
+}
+
 function asObj(v: unknown): Record<string, unknown> | null {
   return typeof v === "object" && v !== null && !Array.isArray(v)
     ? (v as Record<string, unknown>)
@@ -268,6 +522,18 @@ export class QuestsStore {
 
   get hasOpenOverlay(): boolean {
     return this.dialogOpen || this.logOpen;
+  }
+
+  get activeTradeNeed(): QuestTradeNeed | null {
+    return extractActiveTradeNeed(this.active, this.trackedKey);
+  }
+
+  get activeDestinationPort(): QuestDestinationHint | null {
+    return extractActiveDestinationPort(this.active, this.trackedKey);
+  }
+
+  get surfaceMiningStatus(): QuestSurfaceMiningStatus | null {
+    return extractActiveSurfaceMiningStatus(this.active, this.trackedKey);
   }
 
   applyFrame(data: unknown): void {
