@@ -12,6 +12,16 @@ export interface PaletteCommand {
   summary: string;
 }
 
+/** One live active or room-available quest shortcut in the palette. */
+export interface PaletteQuestAction {
+  kind: "active" | "available";
+  key: string;
+  npcId?: string;
+  title: string;
+  detail: string;
+  ready?: boolean;
+}
+
 /** What the palette merges. */
 export interface PaletteSources {
   commands: readonly PaletteCommand[];
@@ -19,6 +29,8 @@ export interface PaletteSources {
   aliases: readonly string[];
   /** The current room's exit names. */
   exits: readonly string[];
+  /** Optional live active / room-available quest dialog shortcuts. */
+  quests?: readonly PaletteQuestAction[];
 }
 
 /** One palette row. */
@@ -31,6 +43,8 @@ export interface PaletteEntry {
   detail: string;
   /** A client-local command (keeps its slash). */
   local: boolean;
+  /** Optional client-local quest dialog action opened directly on pick. */
+  questAction?: { kind: "active" | "available"; key: string; npcId?: string };
 }
 
 /** The client's own commands; they keep their slash when picked. */
@@ -40,6 +54,7 @@ export const LOCAL_COMMANDS: ReadonlyArray<readonly [string, string]> = [
   // (`tui/app.rs`), which has had it since I12 while the web could only
   // reach it from the scroll-top button (LB-20).
   ["/history", "load older scene history"],
+  ["/quests", "open the quest log"],
   ["/theme", "switch theme (dark, light, system)"],
   ["/help", "the client commands"],
 ];
@@ -50,7 +65,7 @@ export const MAX_PALETTE_ENTRIES = 40;
 /**
  * The entries matching `query` (the text after the slash, any case):
  * every source's exact-prefix matches first, in source order — local
- * commands, aliases, exits, commands — then substring matches.
+ * commands, quest actions, aliases, exits, commands — then substring matches.
  */
 export function paletteEntries(query: string, sources: PaletteSources): PaletteEntry[] {
   const q = query.trim().toLowerCase();
@@ -66,6 +81,22 @@ export function paletteEntries(query: string, sources: PaletteSources): PaletteE
   };
   for (const [cmd, desc] of LOCAL_COMMANDS) {
     consider({ insert: cmd, label: cmd, detail: desc, local: true }, cmd);
+  }
+  if (sources.quests) {
+    for (const qa of sources.quests) {
+      const tag = qa.kind === "available" ? "[!]" : qa.ready ? "[?]" : "quest";
+      const label = `${tag} ${qa.title}`;
+      consider(
+        {
+          insert: "/quests",
+          label,
+          detail: qa.detail,
+          local: true,
+          questAction: { kind: qa.kind, key: qa.key, npcId: qa.npcId },
+        },
+        `quest ${qa.title} ${qa.detail}`,
+      );
+    }
   }
   for (const alias of sources.aliases) {
     if (alias.length > 0) {

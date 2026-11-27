@@ -104,6 +104,7 @@ import { decodeBenchView } from "./mind-bench";
 import { WsClient, type EnvelopeOf, type WebSocketLike } from "./ws";
 import { parseResolutionOutcome } from "./view";
 import { TacsimPortStore } from "./stores/tacsim.svelte";
+import { tacsimAudio } from "./tacsim/audio";
 import { PORT_TRADE_FEED, TACSIM_CONTENT_FEED } from "./tacsim/trade";
 import { QUESTS_FEED, QuestsStore } from "./stores/quests.svelte";
 
@@ -1239,7 +1240,12 @@ export class GameApp {
       }
     } else if (d.feed === QUESTS_FEED) {
       if (d.kind === "keyframe") {
-        this.quests.applyFrame(d.data);
+        const milestones = this.quests.applyFrame(d.data);
+        const ts = Date.now();
+        for (const m of milestones) {
+          this.notifications.fromQuestMilestone(m.kind, m.title, ts);
+          tacsimAudio.play(m.kind === "accepted" ? "ui_chime" : "market_fill");
+        }
       }
     } else if (isViewFeed(d.feed)) {
       // A `<name>.view` generic view (I9): hold it and make sure a screen
@@ -2063,10 +2069,27 @@ export class GameApp {
   /** Refilter the palette on the box's text (the part after the slash). */
   paletteQuery(text: string): void {
     const q = text.startsWith("/") ? text.slice(1) : text;
+    const questItems = [
+      ...this.quests.active.map((aq) => ({
+        kind: "active" as const,
+        key: aq.key,
+        title: aq.title,
+        detail: aq.nextStep || `Turn in to ${aq.turnInName}`,
+        ready: aq.readyToFinish || aq.canFinishNow,
+      })),
+      ...this.quests.available.map((av) => ({
+        kind: "available" as const,
+        key: av.key,
+        npcId: av.giverId,
+        title: av.title,
+        detail: `Offered by ${av.giverName}`,
+      })),
+    ];
     this.paletteEntries = paletteEntries(q, {
       commands: this.commands.entries,
       aliases: this.channels.list.map((c) => c.alias).filter((a) => a.length > 0),
       exits: this.roomView?.exits.map((e) => e.name) ?? [],
+      quests: questItems,
     });
     this.paletteSelected = 0;
   }
@@ -2085,6 +2108,14 @@ export class GameApp {
     const entry = this.paletteEntries[this.paletteSelected];
     this.screens.paletteOpen = false;
     if (!entry) {
+      return;
+    }
+    if (entry.questAction) {
+      if (entry.questAction.kind === "available" && entry.questAction.npcId) {
+        this.quests.openNpcDialog(entry.questAction.npcId);
+      } else {
+        this.quests.openQuestDialog(entry.questAction.key);
+      }
       return;
     }
     if (entry.detail === "exit") {

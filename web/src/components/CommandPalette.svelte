@@ -28,7 +28,7 @@
           app.palettePick();
         }}
       >
-        <span class="label" class:local={e.local}>{e.label}</span>
+        <span class="label" class:local={e.local} class:quest={e.questAction !== undefined}>{e.label}</span>
         <span class="detail">{e.detail}</span>
       </button>
     {/each}
@@ -78,6 +78,11 @@
 
   .label.local {
     color: var(--accent);
+  }
+
+  .label.quest {
+    color: #ffd84d;
+    font-weight: 700;
   }
 
   .detail {

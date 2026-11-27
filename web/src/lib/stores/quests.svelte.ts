@@ -112,6 +112,12 @@ export interface QuestSurfaceMiningStatus {
   nextStepText: string;
 }
 
+export interface QuestMilestone {
+  kind: "accepted" | "ready" | "completed";
+  key: string;
+  title: string;
+}
+
 const KNOWN_TRADE_COMMODITIES: ReadonlyArray<readonly [string, readonly string[]]> = [
   ["industrial_parts", ["industrial_parts", "industrial parts"]],
   ["carbon_ore", ["carbon_ore", "carbon ore"]],
@@ -507,6 +513,11 @@ export class QuestsStore {
   dialogNpcId = $state<string | null>(null);
   dialogQuestKey = $state<string | null>(null);
 
+  #hydrated = false;
+  #seenActive = new Set<string>();
+  #seenReady = new Set<string>();
+  #seenCompleted = new Set<string>();
+
   get trackedQuest(): ActiveQuestView | null {
     if (this.active.length === 0) return null;
     if (this.trackedKey !== null) {
@@ -536,22 +547,54 @@ export class QuestsStore {
     return extractActiveSurfaceMiningStatus(this.active, this.trackedKey);
   }
 
-  applyFrame(data: unknown): void {
+  applyFrame(data: unknown): QuestMilestone[] {
     const o = asObj(data);
-    if (!o) return;
+    if (!o) return [];
+    const nextActive = parseActive(o["active"]);
+    const nextAvailable = parseAvailable(o["available"]);
+    const nextCompleted = parseCompleted(o["completed"]);
+
+    const milestones: QuestMilestone[] = [];
+    if (this.#hydrated) {
+      for (const c of nextCompleted) {
+        if (c.key && !this.#seenCompleted.has(c.key)) {
+          milestones.push({ kind: "completed", key: c.key, title: c.title });
+        }
+      }
+      for (const a of nextActive) {
+        if (!a.key) continue;
+        const isReady = a.readyToFinish || a.canFinishNow;
+        if (!this.#seenActive.has(a.key)) {
+          milestones.push({ kind: "accepted", key: a.key, title: a.title });
+        } else if (isReady && !this.#seenReady.has(a.key)) {
+          milestones.push({ kind: "ready", key: a.key, title: a.title });
+        }
+      }
+    }
+
+    this.#hydrated = true;
+    this.#seenActive = new Set(nextActive.map((a) => a.key).filter(Boolean));
+    this.#seenReady = new Set(
+      nextActive.filter((a) => a.readyToFinish || a.canFinishNow).map((a) => a.key).filter(Boolean),
+    );
+    for (const c of nextCompleted) {
+      if (c.key) this.#seenCompleted.add(c.key);
+    }
+
     this.loaded = true;
     this.roomId = asStr(o["room_id"]);
     this.roomName = asStr(o["room_name"]);
     this.roomMarkers = parseQuestMarkers(o["room_markers"]);
-    this.active = parseActive(o["active"]);
-    this.available = parseAvailable(o["available"]);
-    this.completed = parseCompleted(o["completed"]);
+    this.active = nextActive;
+    this.available = nextAvailable;
+    this.completed = nextCompleted;
 
     if (this.trackedKey !== null && !this.active.some((q) => q.key === this.trackedKey)) {
       this.trackedKey = this.active[0]?.key ?? null;
     } else if (this.trackedKey === null && this.active.length > 0) {
       this.trackedKey = this.active[0]?.key ?? null;
     }
+    return milestones;
   }
 
   observeRoom(view: RoomView): void {
@@ -613,5 +656,9 @@ export class QuestsStore {
     this.dialogNpcId = null;
     this.dialogQuestKey = null;
     this.logOpen = false;
+    this.#hydrated = false;
+    this.#seenActive.clear();
+    this.#seenReady.clear();
+    this.#seenCompleted.clear();
   }
 }

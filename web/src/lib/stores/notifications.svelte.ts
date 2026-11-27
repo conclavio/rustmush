@@ -68,6 +68,7 @@ export class NotificationStore {
   list = $state<Notification[]>([]);
 
   #nextRowId = 1;
+  #nextQuestNoticeId = -1_000_000;
 
   /** Apply one parsed notice; a duplicate `serverId` in the same category is
    * ignored (a resume replay racing a fresh delivery). Returns the new
@@ -98,6 +99,29 @@ export class NotificationStore {
       category: "mail",
       text: [{ text: `New mail from ${from}: ${subject}`, tag: null }],
       action: { label: "Open", prefill: `@mail ${mailId}` },
+      ts,
+    });
+  }
+
+  /** Surface a post-hydration quest milestone (`accepted` / `ready` / `completed`) in the unified toast tray. */
+  fromQuestMilestone(
+    kind: "accepted" | "ready" | "completed",
+    title: string,
+    ts: number,
+  ): Notification | null {
+    const label = title.trim() || "Quest";
+    const text =
+      kind === "completed"
+        ? `Quest Completed: ${label}`
+        : kind === "ready"
+          ? `Ready to Turn In [?]: ${label}`
+          : `Quest Accepted: ${label}`;
+    return this.add({
+      serverId: this.#nextQuestNoticeId--,
+      severity: "info",
+      category: "quest",
+      text: [{ text, tag: null }],
+      action: { label: "Quests", prefill: "/quests" },
       ts,
     });
   }
