@@ -2021,6 +2021,14 @@ namespace TacSim.UI
             return true;
         }
 
+        public string GetQuickActionLabelForTests(int slotIndex)
+        {
+            if (_quickActionsContainer == null || slotIndex < 0 || slotIndex >= _quickActionsContainer.childCount)
+                return string.Empty;
+            var txt = _quickActionsContainer.GetChild(slotIndex).GetComponentInChildren<Text>();
+            return txt != null ? txt.text : string.Empty;
+        }
+
         public void ShowLoginOverlay(bool visible, string statusMessage = null)
         {
             if (visible)
@@ -2176,6 +2184,8 @@ namespace TacSim.UI
                     AddQuickBtn("Red Bay (North)", () => OnCommandSubmitted?.Invoke("red"));
                     AddQuickBtn("Blue Bay (South)", () => OnCommandSubmitted?.Invoke("blue"));
                     AddQuickBtn("Sim Status", () => OnCommandSubmitted?.Invoke("sim status"));
+                    AddQuickBtn("Match History", () => OnCommandSubmitted?.Invoke("sim history"));
+                    AddQuickBtn("Start Match", () => OnCommandSubmitted?.Invoke("sim start"));
                     AddQuickBtn("Return IC (+ic)", () => OnCommandSubmitted?.Invoke("+ic"));
                     break;
                 case "room.sim_red":
@@ -2183,6 +2193,7 @@ namespace TacSim.UI
                     AddQuickBtn("Board Sim Pod", () => OnCommandSubmitted?.Invoke("board"));
                     AddQuickBtn("Simulator Console", () => Overlays?.ShowArenaLobbyModal(true));
                     AddQuickBtn("Sim Status", () => OnCommandSubmitted?.Invoke("sim status"));
+                    AddQuickBtn("Match History", () => OnCommandSubmitted?.Invoke("sim history"));
                     AddQuickBtn("Back to Lobby", () => OnCommandSubmitted?.Invoke("lobby"));
                     AddQuickBtn("Return IC (+ic)", () => OnCommandSubmitted?.Invoke("+ic"));
                     break;

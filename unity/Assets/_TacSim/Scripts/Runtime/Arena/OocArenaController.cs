@@ -386,6 +386,8 @@ namespace TacSim.Arena
     public sealed class OocArenaController : MonoBehaviour
     {
         public static readonly Vector3 ArenaStageOrigin = new Vector3(-3200f, 0f, 0f);
+        public static bool ShowArenaTacticalRings { get; set; } = true;
+        public static bool ShowArenaCombatPopups { get; set; } = true;
 
         public TacSimAssetCatalog Catalog;
         public DecodedTerrainGrid TerrainGrid { get; private set; }
@@ -3321,30 +3323,37 @@ namespace TacSim.Arena
 
             if (_arenaRangeRing != null)
             {
-                const int Segs = 40;
-                float rangeRadiusM = Mathf.Clamp(State.SightMeters > 10f ? State.SightMeters : 120f, 24f, 450f);
-                Color ringCol = string.Equals(State.Scope, "hostile", StringComparison.OrdinalIgnoreCase)
-                    ? new Color(1.0f, 0.34f, 0.24f, 0.42f)
-                    : (string.Equals(State.Scope, "unidentified", StringComparison.OrdinalIgnoreCase)
-                        ? new Color(1.0f, 0.78f, 0.24f, 0.38f)
-                        : new Color(0.24f, 0.86f, 0.96f, 0.32f));
-                _arenaRangeRing.startColor = ringCol;
-                _arenaRangeRing.endColor = ringCol;
-                _arenaRangeRing.positionCount = Segs;
-                for (int i = 0; i < Segs; i++)
+                if (!ShowArenaTacticalRings)
                 {
-                    float ang = (i / (float)Segs) * Mathf.PI * 2f;
-                    float wx = ownPos.x + Mathf.Cos(ang) * rangeRadiusM;
-                    float wz = ownPos.z + Mathf.Sin(ang) * rangeRadiusM;
-                    float wy = ArenaStageOrigin.y + TerrainGrid.SampleElevationMeters(wx - ArenaStageOrigin.x, wz - ArenaStageOrigin.z) + 0.65f;
-                    _arenaRangeRing.SetPosition(i, new Vector3(wx, wy, wz));
+                    _arenaRangeRing.enabled = false;
                 }
-                _arenaRangeRing.enabled = true;
+                else
+                {
+                    const int Segs = 40;
+                    float rangeRadiusM = Mathf.Clamp(State.SightMeters > 10f ? State.SightMeters : 120f, 24f, 450f);
+                    Color ringCol = string.Equals(State.Scope, "hostile", StringComparison.OrdinalIgnoreCase)
+                        ? new Color(1.0f, 0.34f, 0.24f, 0.42f)
+                        : (string.Equals(State.Scope, "unidentified", StringComparison.OrdinalIgnoreCase)
+                            ? new Color(1.0f, 0.78f, 0.24f, 0.38f)
+                            : new Color(0.24f, 0.86f, 0.96f, 0.32f));
+                    _arenaRangeRing.startColor = ringCol;
+                    _arenaRangeRing.endColor = ringCol;
+                    _arenaRangeRing.positionCount = Segs;
+                    for (int i = 0; i < Segs; i++)
+                    {
+                        float ang = (i / (float)Segs) * Mathf.PI * 2f;
+                        float wx = ownPos.x + Mathf.Cos(ang) * rangeRadiusM;
+                        float wz = ownPos.z + Mathf.Sin(ang) * rangeRadiusM;
+                        float wy = ArenaStageOrigin.y + TerrainGrid.SampleElevationMeters(wx - ArenaStageOrigin.x, wz - ArenaStageOrigin.z) + 0.65f;
+                        _arenaRangeRing.SetPosition(i, new Vector3(wx, wy, wz));
+                    }
+                    _arenaRangeRing.enabled = true;
+                }
             }
 
             if (_weaponEnvelopeRing != null)
             {
-                if (TryGetPrimaryWeaponGunnery(out var primaryWpn) && primaryWpn.MaxRangeM > 15f)
+                if (ShowArenaTacticalRings && TryGetPrimaryWeaponGunnery(out var primaryWpn) && primaryWpn.MaxRangeM > 15f)
                 {
                     const int WpnSegs = 40;
                     float wpnRadiusM = Mathf.Clamp(primaryWpn.MaxRangeM, 18f, 520f);
@@ -3372,7 +3381,7 @@ namespace TacSim.Arena
 
             if (_ecmJammerRing != null)
             {
-                if (State.IsEcmJammingActive)
+                if (ShowArenaTacticalRings && State.IsEcmJammingActive)
                 {
                     const int EcmSegs = 36;
                     float pulse = 1.0f + 0.03f * Mathf.Sin(Time.unscaledTime * 4.5f);
@@ -3979,7 +3988,7 @@ namespace TacSim.Arena
 
         public void SpawnWorldCombatPopup(Vector3 worldPos, string text, Color color, float scale = 1.0f)
         {
-            if (_vfxRoot == null || string.IsNullOrWhiteSpace(text)) return;
+            if (!ShowArenaCombatPopups || _vfxRoot == null || string.IsNullOrWhiteSpace(text)) return;
             EnsureWorldPopupPool();
             if (_worldPopupPool.Count == 0) return;
 

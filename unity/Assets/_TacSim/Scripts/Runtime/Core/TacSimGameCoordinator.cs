@@ -230,7 +230,10 @@ namespace TacSim.Core
             if (Hud.TacticalOverview != null)
                 Hud.TacticalOverview.BindControllers(SpaceStage, SurfaceStage, ArenaStage);
             if (Hud.DisplayOptions != null)
+            {
                 Hud.DisplayOptions.BindSubsystems(Audio, CameraRig);
+                Hud.DisplayOptions.OnArenaVfxPreferencesChanged += () => ArenaStage?.SyncArenaTacticalVisuals();
+            }
 
             if (Wayfinder == null)
             {
