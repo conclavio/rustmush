@@ -33,10 +33,14 @@ namespace TacSim.World
         public Vector3 DestinationWorldPos { get; private set; }
         public IReadOnlyList<(string command, string targetId)> RemainingPath => _remainingPath;
         public int RenderedPointCount => _ribbonPoints.Count;
+        public bool IsQuestTrail { get; private set; }
+        public Color ActiveTrailColor => _ribbon != null ? _ribbon.startColor : new Color(0.22f, 0.95f, 1.0f, 0.92f);
 
         private LineRenderer _ribbon;
         private Transform _beaconRoot;
         private Transform _beaconRing;
+        private MeshRenderer _pillarRenderer;
+        private MeshRenderer _ringRenderer;
         private readonly List<(string command, string targetId)> _remainingPath = new List<(string, string)>();
         private readonly List<Vector3> _waypointNodes = new List<Vector3>();
         private readonly List<Vector3> _ribbonPoints = new List<Vector3>();
@@ -72,7 +76,8 @@ namespace TacSim.World
                 pillar.transform.localScale = new Vector3(0.32f, 1.85f, 0.32f);
                 var pc = pillar.GetComponent<Collider>();
                 if (pc != null) { if (Application.isPlaying) Destroy(pc); else DestroyImmediate(pc); }
-                pillar.GetComponent<MeshRenderer>().sharedMaterial =
+                _pillarRenderer = pillar.GetComponent<MeshRenderer>();
+                _pillarRenderer.sharedMaterial =
                     UrpMaterialFactory.GetHologramUnlit("WayfinderPillarMat", new Color(0.24f, 0.96f, 0.82f, 0.45f));
 
                 var ring = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
@@ -82,11 +87,45 @@ namespace TacSim.World
                 ring.transform.localScale = new Vector3(2.2f, 0.06f, 2.2f);
                 var rc = ring.GetComponent<Collider>();
                 if (rc != null) { if (Application.isPlaying) Destroy(rc); else DestroyImmediate(rc); }
-                ring.GetComponent<MeshRenderer>().sharedMaterial =
+                _ringRenderer = ring.GetComponent<MeshRenderer>();
+                _ringRenderer.sharedMaterial =
                     UrpMaterialFactory.GetHologramUnlit("WayfinderRingMat", new Color(0.28f, 0.95f, 1.0f, 0.65f));
                 _beaconRing = ring.transform;
 
                 _beaconRoot.gameObject.SetActive(false);
+            }
+        }
+
+        private void ApplyTrailPalette(bool isQuestObjective)
+        {
+            if (_ribbon != null)
+            {
+                if (isQuestObjective)
+                {
+                    _ribbon.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("WayfinderQuestRibbonMat", new Color(1.0f, 0.84f, 0.24f, 0.92f));
+                    _ribbon.startColor = new Color(1.0f, 0.84f, 0.24f, 0.96f);
+                    _ribbon.endColor = new Color(1.0f, 0.94f, 0.56f, 0.98f);
+                }
+                else
+                {
+                    _ribbon.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("WayfinderRibbonMat", new Color(0.22f, 0.92f, 1.0f, 0.88f));
+                    _ribbon.startColor = new Color(0.22f, 0.95f, 1.0f, 0.92f);
+                    _ribbon.endColor = new Color(0.32f, 1.0f, 0.72f, 0.95f);
+                }
+            }
+
+            if (_pillarRenderer != null)
+            {
+                _pillarRenderer.sharedMaterial = isQuestObjective
+                    ? UrpMaterialFactory.GetHologramUnlit("WayfinderQuestPillarMat", new Color(1.0f, 0.84f, 0.24f, 0.56f))
+                    : UrpMaterialFactory.GetHologramUnlit("WayfinderPillarMat", new Color(0.24f, 0.96f, 0.82f, 0.45f));
+            }
+
+            if (_ringRenderer != null)
+            {
+                _ringRenderer.sharedMaterial = isQuestObjective
+                    ? UrpMaterialFactory.GetHologramUnlit("WayfinderQuestRingMat", new Color(1.0f, 0.88f, 0.34f, 0.78f))
+                    : UrpMaterialFactory.GetHologramUnlit("WayfinderRingMat", new Color(0.28f, 0.95f, 1.0f, 0.65f));
             }
         }
 
@@ -110,7 +149,7 @@ namespace TacSim.World
             return pts;
         }
 
-        public bool PlotStationRoute(StationWorldController station, string fromRoomEntry, string toRoomEntry, Vector3 playerWorldPos)
+        public bool PlotStationRoute(StationWorldController station, string fromRoomEntry, string toRoomEntry, Vector3 playerWorldPos, bool isQuestObjective = false)
         {
             EnsureVisuals();
             if (station == null || station.Pack == null || string.IsNullOrWhiteSpace(toRoomEntry))
@@ -133,6 +172,8 @@ namespace TacSim.World
             TargetId = toRoomEntry;
             TargetDisplayName = string.IsNullOrWhiteSpace(destRoom.Name) ? toRoomEntry : destRoom.Name;
             TargetDeckLabel = $"FL {destRoom.FloorIndex + 1}";
+            IsQuestTrail = isQuestObjective;
+            ApplyTrailPalette(isQuestObjective);
 
             _remainingPath.Clear();
             _waypointNodes.Clear();
@@ -147,7 +188,7 @@ namespace TacSim.World
             return true;
         }
 
-        public bool PlotShipRoute(ShipInteriorController ship, string fromCompId, string toCompId, Vector3 playerWorldPos)
+        public bool PlotShipRoute(ShipInteriorController ship, string fromCompId, string toCompId, Vector3 playerWorldPos, bool isQuestObjective = false)
         {
             EnsureVisuals();
             if (ship == null || ship.Template == null || string.IsNullOrWhiteSpace(toCompId))
@@ -170,6 +211,8 @@ namespace TacSim.World
                 ? cDef.Name
                 : toCompId.ToUpperInvariant();
             TargetDeckLabel = "SHIP DECK";
+            IsQuestTrail = isQuestObjective;
+            ApplyTrailPalette(isQuestObjective);
 
             _remainingPath.Clear();
             _waypointNodes.Clear();
@@ -267,6 +310,7 @@ namespace TacSim.World
         {
             bool had = HasActiveRoute;
             Scope = WayfinderScope.None;
+            IsQuestTrail = false;
             TargetId = string.Empty;
             TargetDisplayName = string.Empty;
             TargetDeckLabel = string.Empty;

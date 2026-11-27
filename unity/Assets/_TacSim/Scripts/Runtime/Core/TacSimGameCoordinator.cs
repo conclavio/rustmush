@@ -633,6 +633,7 @@ namespace TacSim.Core
                 Hud.CharacterSheet.OnOpenSailingPlanRequested += () =>
                     OpenVisualTradeTerminal("SAILING PLAN & CORRIDOR ROUTE BUILDER", openSailingTab: true);
                 Hud.CharacterSheet.OnOpenSolarChartRequested += () => Hud.SolarMap?.SetOpen(true);
+                Hud.CharacterSheet.OnOpenQuestJournalRequested += () => Hud.QuestJournal?.SetOpen(true);
                 Hud.CharacterSheet.OnRefreshSheetRequested += RequestLiveSheetHydration;
                 Hud.CharacterSheet.OnRefreshUnitAndVitalsRequested += RequestLiveVitalsAndUnitHydration;
             }
@@ -854,7 +855,7 @@ namespace TacSim.Core
                 Hud.QuestJournal.OnWayfinderRoomRequested += targetRoom =>
                 {
                     if (!string.IsNullOrEmpty(targetRoom))
-                        PlotStationWayfinderRoute(targetRoom, autoWalk: false);
+                        PlotStationWayfinderRoute(targetRoom, autoWalk: false, isQuestObjective: true);
                 };
                 Hud.QuestJournal.OnQuestMilestoneReached += HandleQuestMilestoneReached;
             }
@@ -980,18 +981,21 @@ namespace TacSim.Core
         private int _arenaCycleIdx = -1;
         private PlayerAvatarPreset _activeAvatarPreset = PlayerAvatarPreset.StellarTrooperFemale;
 
-        private void PlotStationWayfinderRoute(string targetRoomEntry, bool autoWalk)
+        private void PlotStationWayfinderRoute(string targetRoomEntry, bool autoWalk, bool isQuestObjective = false)
         {
             if (StationWorld == null || string.IsNullOrEmpty(targetRoomEntry)) return;
             if (string.Equals(targetRoomEntry, StationWorld.ActiveRoomEntryId, StringComparison.OrdinalIgnoreCase)) return;
 
             Vector3 pPos = Player != null ? Player.transform.position : StationWorld.GetRoomSpawnPosition(StationWorld.ActiveRoomEntryId);
-            bool plotted = Wayfinder != null && Wayfinder.PlotStationRoute(StationWorld, StationWorld.ActiveRoomEntryId, targetRoomEntry, pPos);
+            bool plotted = Wayfinder != null && Wayfinder.PlotStationRoute(StationWorld, StationWorld.ActiveRoomEntryId, targetRoomEntry, pPos, isQuestObjective);
             if (!plotted) return;
 
             if (Audio != null) Audio.PlayUiClick();
             Hud?.OpsDirectory?.SyncWayfinderBanner(ActiveStage);
-            Hud?.AppendLogLine($"<color=#66EEFF>[WAYFINDER]</color> 3D trail active to <b>{MushProtocol.EscapeUnityRichText(Wayfinder.TargetDisplayName)}</b> ({Wayfinder.RemainingHops} hop{(Wayfinder.RemainingHops == 1 ? "" : "s")}).");
+            string tag = isQuestObjective
+                ? "<color=#FFDD44>[QUEST WAYFINDER]</color>"
+                : "<color=#66EEFF>[WAYFINDER]</color>";
+            Hud?.AppendLogLine($"{tag} 3D trail active to <b>{MushProtocol.EscapeUnityRichText(Wayfinder.TargetDisplayName)}</b> ({Wayfinder.RemainingHops} hop{(Wayfinder.RemainingHops == 1 ? "" : "s")}).");
 
             if (autoWalk)
                 StepActiveWayfinderWalk();

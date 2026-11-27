@@ -73,6 +73,7 @@ namespace TacSim.UI
 
         // Top-Center Compact 3D Wayfinder Compass Banner
         private GameObject _bannerRoot;
+        private Image _bannerAccent;
         private Text _bannerText;
 
         // [N] Modal
@@ -141,7 +142,7 @@ namespace TacSim.UI
                 new Vector2(276f, -70f),
                 new Color(0.03f, 0.09f, 0.14f, 0.92f));
 
-            CreatePanel(_bannerRoot.transform, "Accent", new Vector2(0f, 0f), new Vector2(0f, 1f), Vector2.zero, new Vector2(3f, 0f), new Color(0.24f, 0.94f, 0.96f, 0.95f));
+            _bannerAccent = CreatePanel(_bannerRoot.transform, "Accent", new Vector2(0f, 0f), new Vector2(0f, 1f), Vector2.zero, new Vector2(3f, 0f), new Color(0.24f, 0.94f, 0.96f, 0.95f)).GetComponent<Image>();
 
             _bannerText = CreateText(_bannerRoot.transform, "WAYFINDER ACTIVE", 12, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.76f, 0.96f, 1f));
             SetRect(_bannerText.rectTransform, new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(12f, 0f), new Vector2(-132f, 0f));
@@ -440,9 +441,14 @@ namespace TacSim.UI
             _bannerRoot.SetActive(show);
             if (show && _bannerText != null)
             {
+                bool isQuest = _wayfinder.IsQuestTrail;
                 int hops = Mathf.Max(1, _wayfinder.RemainingHops);
+                string prefix = isQuest ? "[QUEST] → " : "→ ";
                 _bannerText.text =
-                    $"→ {_wayfinder.TargetDisplayName.ToUpperInvariant()} [{_wayfinder.TargetDeckLabel}] · {_wayfinder.DistanceMeters:0} m · {hops} HOP{(hops == 1 ? "" : "S")}";
+                    $"{prefix}{_wayfinder.TargetDisplayName.ToUpperInvariant()} [{_wayfinder.TargetDeckLabel}] · {_wayfinder.DistanceMeters:0} m · {hops} HOP{(hops == 1 ? "" : "S")}";
+                _bannerText.color = isQuest ? new Color(1f, 0.90f, 0.44f) : new Color(0.76f, 0.96f, 1f);
+                if (_bannerAccent != null)
+                    _bannerAccent.color = isQuest ? new Color(1f, 0.84f, 0.24f, 0.98f) : new Color(0.24f, 0.94f, 0.96f, 0.95f);
             }
         }
 
