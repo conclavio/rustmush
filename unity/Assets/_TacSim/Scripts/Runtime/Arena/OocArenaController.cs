@@ -1677,6 +1677,26 @@ namespace TacSim.Arena
             SelectReplayFocusUnit(ReplayFocusUnitIndex + delta);
         }
 
+        public void RestartReplayFromStart()
+        {
+            if (!IsReplayModeActive || ActiveReplayDoc == null) return;
+            ReplayCursorMs = 0f;
+            ReplayPlaying = ActiveReplayDoc.EndMs > 0;
+            SyncReplay3DRigs(immediate: true);
+            OnReplayStateChanged?.Invoke();
+        }
+
+        public bool TryGetReplayRigWorldPosition(int rosterIndex, out Vector3 worldPos)
+        {
+            worldPos = Vector3.zero;
+            if (_replayRigs.TryGetValue(rosterIndex, out var rig) && rig?.Root != null && rig.Root.activeSelf)
+            {
+                worldPos = rig.Root.transform.position + Vector3.up * 2.2f;
+                return true;
+            }
+            return false;
+        }
+
         /// <summary>
         /// Jumps the replay cursor to the next (`delta &gt; 0`) or previous (`delta &lt; 0`) combat highlight
         /// (any wreck or hit shot in `ActiveReplayDoc`) and pauses on that timestamp.
@@ -2963,6 +2983,25 @@ namespace TacSim.Arena
                     if (!IsReplayModeActive) return false;
                     StepReplayToEvent(+1);
                     return true;
+                case KeyCode.R:
+                    if (!IsReplayModeActive) return false;
+                    RestartReplayFromStart();
+                    return true;
+                case KeyCode.Alpha1:
+                case KeyCode.Alpha2:
+                case KeyCode.Alpha3:
+                case KeyCode.Alpha4:
+                case KeyCode.Alpha5:
+                case KeyCode.Alpha6:
+                {
+                    int targetIdx = (int)key - (int)KeyCode.Alpha1;
+                    if (ActiveReplayDoc != null && targetIdx >= 0 && targetIdx < ActiveReplayDoc.Roster.Count)
+                    {
+                        SelectReplayFocusUnit(targetIdx);
+                        return true;
+                    }
+                    return false;
+                }
                 default:
                     return false;
             }
@@ -2979,11 +3018,19 @@ namespace TacSim.Arena
             {
                 if (Input.GetKeyDown(KeyCode.V)) HandleReplayTheaterHotkey(KeyCode.V);
                 else if (Input.GetKeyDown(KeyCode.Q)) HandleReplayTheaterHotkey(KeyCode.Q);
+                else if (Input.GetKeyDown(KeyCode.Tab)) HandleReplayTheaterHotkey(KeyCode.Tab);
                 else if (Input.GetKeyDown(KeyCode.Space)) HandleReplayTheaterHotkey(KeyCode.Space);
                 else if (Input.GetKeyDown(KeyCode.LeftArrow)) HandleReplayTheaterHotkey(KeyCode.LeftArrow);
                 else if (Input.GetKeyDown(KeyCode.RightArrow)) HandleReplayTheaterHotkey(KeyCode.RightArrow);
                 else if (Input.GetKeyDown(KeyCode.LeftBracket)) HandleReplayTheaterHotkey(KeyCode.LeftBracket);
                 else if (Input.GetKeyDown(KeyCode.RightBracket)) HandleReplayTheaterHotkey(KeyCode.RightBracket);
+                else if (Input.GetKeyDown(KeyCode.R)) HandleReplayTheaterHotkey(KeyCode.R);
+                else if (Input.GetKeyDown(KeyCode.Alpha1)) HandleReplayTheaterHotkey(KeyCode.Alpha1);
+                else if (Input.GetKeyDown(KeyCode.Alpha2)) HandleReplayTheaterHotkey(KeyCode.Alpha2);
+                else if (Input.GetKeyDown(KeyCode.Alpha3)) HandleReplayTheaterHotkey(KeyCode.Alpha3);
+                else if (Input.GetKeyDown(KeyCode.Alpha4)) HandleReplayTheaterHotkey(KeyCode.Alpha4);
+                else if (Input.GetKeyDown(KeyCode.Alpha5)) HandleReplayTheaterHotkey(KeyCode.Alpha5);
+                else if (Input.GetKeyDown(KeyCode.Alpha6)) HandleReplayTheaterHotkey(KeyCode.Alpha6);
             }
 
             if (IsReplayModeActive && ReplayPlaying && ActiveReplayDoc != null)

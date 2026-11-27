@@ -9443,5 +9443,90 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ArenaReplayRosterCombatStatsHotkeysAnd3DSpectatorBrackets_TrackAndFocusUnits()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave14PR2_ReplayRosterStatsAnd3DBracketsTest");
+            try
+            {
+                var camGo = new UnityEngine.GameObject("ReplayCam", typeof(UnityEngine.Camera));
+                camGo.transform.SetParent(rootGo.transform, false);
+                var cam = camGo.GetComponent<UnityEngine.Camera>();
+
+                var arenaGo = new UnityEngine.GameObject("ArenaReplayStats");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(TacSimAssetCatalog.LoadOrDefault(), TacSimTerrainDecoder.LoadStaticArena("proving_ground"));
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.ReplayHud.BindArena(arena);
+                hud.TacticalBrackets.BindControllers(null, null, arena);
+
+                arena.HandleReplayPanelFrame(JsonNode.Parse(@"{
+                    ""schema"": { ""id"": ""arena.replay"", ""shape"": ""replay"", ""version"": 1 },
+                    ""match"": 210, ""arena"": ""proving_ground"", ""cell_cm"": 1000, ""width"": 64, ""height"": 64,
+                    ""end_ms"": 10000, ""outcome"": ""red"", ""reason"": ""elimination"", ""mode"": ""skirmish"",
+                    ""roster"": [
+                        { ""callsign"": ""R1"", ""team"": ""red"" },
+                        { ""callsign"": ""B1"", ""team"": ""blue"" },
+                        { ""callsign"": ""R2"", ""team"": ""red"" }
+                    ],
+                    ""keyframes"": [
+                        [0, [[16, 16, 90], [48, 16, 270], [16, 32, 90]]],
+                        [5000, [[24, 16, 90], [40, 16, 270], [24, 32, 90]]],
+                        [10000, [[30, 16, 90], [38, 16, 270], [30, 32, 90]]]
+                    ],
+                    ""shots"": [
+                        [1500, 0, 1, ""hit""],
+                        [3000, 0, 1, ""miss""],
+                        [6000, 0, 1, ""hit""]
+                    ],
+                    ""destroyed"": [
+                        [6000, 1]
+                    ]
+                }"));
+
+                // 1. Scrub to t=0 -> 0 hits/kills; scrub to t=7000 -> R1 shows 2H/3S and 1K + TOP GUN summary
+                arena.SeekReplayMs(0f);
+                hud.ReplayHud.RefreshView();
+                StringAssert.DoesNotContain("1K", hud.ReplayHud.GetRosterRowSnapshotForTests(0));
+
+                arena.SeekReplayMs(7000f);
+                hud.ReplayHud.RefreshView();
+                string r1Row = hud.ReplayHud.GetRosterRowSnapshotForTests(0);
+                StringAssert.Contains("2H/3S", r1Row);
+                StringAssert.Contains("1K", r1Row);
+                StringAssert.Contains("R1", hud.ReplayHud.TopGunSummarySnapshot);
+                StringAssert.Contains("TOP GUN", hud.ReplayHud.ReplayStatsSnapshot);
+
+                // 2. [2] jumps camera directly to roster index 1 (B1); [R] rewinds replay to 0ms and resumes playing
+                Assert.IsTrue(arena.HandleReplayTheaterHotkey(UnityEngine.KeyCode.Alpha2));
+                Assert.AreEqual(1, arena.ReplayFocusUnitIndex);
+                arena.ReplayPlaying = false;
+                Assert.IsTrue(arena.HandleReplayTheaterHotkey(UnityEngine.KeyCode.R));
+                Assert.AreEqual(0f, arena.ReplayCursorMs, 0.5f);
+                Assert.IsTrue(arena.ReplayPlaying, "[R] hotkey must restart replay playback from 0:00");
+
+                // 3. 3D Spectator Brackets hide live cockpit widgets and project clickable [CAM] + unit brackets
+                arena.SelectReplayFocusUnit(0);
+                hud.TacticalBrackets.SyncBrackets(TacSimActiveStage.SimulatorArena, cam, hideForOverlay: false);
+                Assert.IsFalse(hud.TacticalBrackets.IsArenaArmorSchematicVisible, "Live armor schematic must hide during Replay Theater");
+                Assert.IsFalse(hud.TacticalBrackets.IsArenaCompassVisible, "Live compass tape must hide during Replay Theater");
+                Assert.AreEqual(3, hud.TacticalBrackets.ActiveBracketCount, "All 3 active replay rigs must project clickable 3D brackets");
+                StringAssert.Contains("[CAM]", hud.TacticalBrackets.GetActiveBracketTagSnapshot(0));
+                StringAssert.Contains("R1", hud.TacticalBrackets.GetActiveBracketTagSnapshot(0));
+
+                int clickedRosterIdx = -1;
+                hud.TacticalBrackets.OnReplayBracketClicked += idx => clickedRosterIdx = idx;
+                Assert.IsTrue(hud.TacticalBrackets.ClickBracketForTests(2));
+                Assert.AreEqual(2, clickedRosterIdx, "Clicking 3D replay bracket for R2 must emit roster index 2");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

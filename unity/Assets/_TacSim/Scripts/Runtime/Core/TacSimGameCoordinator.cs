@@ -655,6 +655,15 @@ namespace TacSim.Core
                     if (!MushProtocol.TryValidateSafeCommandToken(desig, out string safeDesig)) return;
                     HandleArenaCockpitVerb($"lock {safeDesig}");
                 };
+                Hud.TacticalBrackets.OnReplayBracketClicked += rosterIdx =>
+                {
+                    if (ArenaStage != null && ArenaStage.IsSpectatorTheaterActive)
+                    {
+                        ArenaStage.SelectReplayFocusUnit(rosterIdx);
+                        BindCameraToArenaRig();
+                        Hud?.ReplayHud?.RefreshView();
+                    }
+                };
             }
 
             if (Hud.TacticalOverview != null)

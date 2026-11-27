@@ -32,6 +32,7 @@ namespace TacSim.UI
     {
         public event Action<string, bool> OnOrbitalBracketClicked; // (id, isRock)
         public event Action<string> OnArenaBracketClicked;         // (designator)
+        public event Action<int> OnReplayBracketClicked;           // (rosterIndex)
         public Func<Vector3, Vector3> ScreenProjectionOverrideForTests;
 
         private Vector3 ProjectToScreen(Camera cam, Vector3 worldPos) =>
@@ -51,6 +52,7 @@ namespace TacSim.UI
             public string BoundId;
             public bool BoundIsRock;
             public bool BoundIsArena;
+            public int BoundReplayRosterIndex = -1;
         }
 
         private Font _font;
@@ -172,7 +174,13 @@ namespace TacSim.UI
         {
             if (index < 0 || index >= ActiveBracketCount || index >= _pool.Count) return false;
             var b = _pool[index];
-            if (b.Button == null || !b.Button.interactable || string.IsNullOrEmpty(b.BoundId)) return false;
+            if (b.Button == null || !b.Button.interactable) return false;
+            if (b.BoundReplayRosterIndex >= 0)
+            {
+                OnReplayBracketClicked?.Invoke(b.BoundReplayRosterIndex);
+                return true;
+            }
+            if (string.IsNullOrEmpty(b.BoundId)) return false;
             if (b.BoundIsArena) OnArenaBracketClicked?.Invoke(b.BoundId);
             else OnOrbitalBracketClicked?.Invoke(b.BoundId, b.BoundIsRock);
             return true;
@@ -494,6 +502,9 @@ namespace TacSim.UI
             float sh = Mathf.Max(1f, Screen.height > 0 ? Screen.height : 1080f);
 
             bool dockingActive = stage == TacSimActiveStage.ShipHelmSeated && _space != null && _space.IsDockingActive && _space.ActiveDockingSession != null;
+            bool spectatorArena = stage == TacSimActiveStage.SimulatorArena && _arena != null && _arena.IsSpectatorTheaterActive;
+            bool liveArena = stage == TacSimActiveStage.SimulatorArena && !spectatorArena;
+
             if (_spaceReticleWidget != null)
                 _spaceReticleWidget.SetActive(stage == TacSimActiveStage.ShipHelmSeated && !dockingActive);
             if (_dockingReticleWidget != null)
@@ -501,12 +512,12 @@ namespace TacSim.UI
             if (_surfaceCompassWidget != null)
                 _surfaceCompassWidget.SetActive(stage == TacSimActiveStage.PlanetarySurface);
             if (_arenaArmorWidget != null)
-                _arenaArmorWidget.SetActive(stage == TacSimActiveStage.SimulatorArena);
+                _arenaArmorWidget.SetActive(liveArena);
             if (_arenaCompassWidget != null)
-                _arenaCompassWidget.SetActive(stage == TacSimActiveStage.SimulatorArena);
-            if (_arenaCritBannerRoot != null && stage != TacSimActiveStage.SimulatorArena)
+                _arenaCompassWidget.SetActive(liveArena);
+            if (_arenaCritBannerRoot != null && !liveArena)
                 _arenaCritBannerRoot.SetActive(false);
-            if (_arenaOpticsReticleRoot != null && stage != TacSimActiveStage.SimulatorArena)
+            if (_arenaOpticsReticleRoot != null && !liveArena)
                 _arenaOpticsReticleRoot.SetActive(false);
 
             if (dockingActive)
@@ -525,7 +536,10 @@ namespace TacSim.UI
                     SyncSurfaceBracketsAndCompass(cam, sw, sh, canvasSize);
                     break;
                 case TacSimActiveStage.SimulatorArena:
-                    SyncArenaBracketsAndArmor(cam, sw, sh, canvasSize, arenaOpticsZoomLevel, arenaCupolaView);
+                    if (spectatorArena)
+                        SyncReplaySpectatorBrackets(cam, sw, sh, canvasSize);
+                    else
+                        SyncArenaBracketsAndArmor(cam, sw, sh, canvasSize, arenaOpticsZoomLevel, arenaCupolaView);
                     break;
                 default:
                     HideAllBrackets();
@@ -845,6 +859,64 @@ namespace TacSim.UI
             HideUnusedBracketsFrom(used);
         }
 
+        private void SyncReplaySpectatorBrackets(Camera cam, float sw, float sh, Vector2 canvasSize)
+        {
+            ArenaObjectiveBracketActive = false;
+            ArenaDriveWaypointBracketActive = false;
+            OffscreenThreatBracketCount = 0;
+            if (_arena == null || cam == null || _arena.ActiveReplayDoc == null)
+            {
+                HideAllBrackets();
+                return;
+            }
+
+            var doc = _arena.ActiveReplayDoc;
+            var frame = _arena.LatestReplayFrame;
+            int used = 0;
+
+            for (int i = 0; i < doc.Roster.Count && used < MaxBrackets; i++)
+            {
+                if (!_arena.TryGetReplayRigWorldPosition(i, out Vector3 worldPos)) continue;
+                var entry = doc.Roster[i];
+                bool focused = i == _arena.ReplayFocusUnitIndex;
+                bool wrecked = frame != null && i < frame.IsWrecked.Length && frame.IsWrecked[i];
+
+                Vector3 sp = ProjectToScreen(cam, worldPos);
+                ComputeCanvasPositionFromScreenPoint(sp, sw, sh, canvasSize, 52f, out Vector2 pos, out bool isBehind, out bool clamped);
+                if (!focused && (isBehind || clamped)) continue;
+
+                Color col = focused
+                    ? new Color(1.0f, 0.86f, 0.24f, 0.98f)
+                    : (wrecked
+                        ? new Color(0.56f, 0.52f, 0.54f, 0.72f)
+                        : (entry.IsBlue ? new Color(0.32f, 0.72f, 1.0f, 0.92f) : new Color(1.0f, 0.36f, 0.30f, 0.92f)));
+
+                string prefix = clamped ? "» " : string.Empty;
+                string tag = focused
+                    ? $"{prefix}[CAM] {entry.Callsign}"
+                    : $"{prefix}[{entry.Callsign}]";
+                string sub = wrecked
+                    ? "WRECK"
+                    : (entry.IsBlue ? "BLUE · CLICK CAM" : "RED · CLICK CAM");
+
+                ConfigureBracket(
+                    _pool[used],
+                    pos,
+                    focused ? 68f : 48f,
+                    col,
+                    tag,
+                    sub,
+                    entry.Callsign,
+                    isRock: false,
+                    isArena: true,
+                    interactive: true,
+                    replayRosterIndex: i);
+                used++;
+            }
+
+            HideUnusedBracketsFrom(used);
+        }
+
         private void ConfigureBracket(
             PooledBracket b,
             Vector2 anchoredPos,
@@ -855,14 +927,16 @@ namespace TacSim.UI
             string boundId,
             bool isRock,
             bool isArena,
-            bool interactive)
+            bool interactive,
+            int replayRosterIndex = -1)
         {
             b.BoundId = boundId;
             b.BoundIsRock = isRock;
             b.BoundIsArena = isArena;
+            b.BoundReplayRosterIndex = replayRosterIndex;
             b.Rect.anchoredPosition = anchoredPos;
             b.Rect.sizeDelta = new Vector2(sizePx, sizePx);
-            b.Button.interactable = interactive && !string.IsNullOrEmpty(boundId);
+            b.Button.interactable = interactive && (replayRosterIndex >= 0 || !string.IsNullOrEmpty(boundId));
             b.CenterFill.raycastTarget = b.Button.interactable;
             b.CenterFill.color = new Color(color.r, color.g, color.b, interactive ? 0.05f : 0.01f);
 
@@ -910,6 +984,11 @@ namespace TacSim.UI
             b.Button.targetGraphic = b.CenterFill;
             b.Button.onClick.AddListener(() =>
             {
+                if (b.BoundReplayRosterIndex >= 0)
+                {
+                    OnReplayBracketClicked?.Invoke(b.BoundReplayRosterIndex);
+                    return;
+                }
                 if (string.IsNullOrEmpty(b.BoundId)) return;
                 if (b.BoundIsArena) OnArenaBracketClicked?.Invoke(b.BoundId);
                 else OnOrbitalBracketClicked?.Invoke(b.BoundId, b.BoundIsRock);

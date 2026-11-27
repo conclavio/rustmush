@@ -51,6 +51,7 @@ namespace TacSim.UI
         private Button _nextKfBtn;
         private Button _prevEventBtn;
         private Button _nextEventBtn;
+        private Button _restartBtn;
         private Button _back10Btn;
         private Button _fwd10Btn;
         private Button _speedBtn;
@@ -71,7 +72,14 @@ namespace TacSim.UI
         public string ProvenanceText => _provenanceLabelText != null ? _provenanceLabelText.text : string.Empty;
         public string ClockText => _clockReadoutText != null ? _clockReadoutText.text : string.Empty;
         public string ReplayStatsSnapshot => _feedTitleText != null ? _feedTitleText.text : string.Empty;
+        public string TopGunSummarySnapshot { get; private set; } = string.Empty;
         public string ReplayOpticsButtonSnapshot => _opticsBtnLabel != null ? _opticsBtnLabel.text : string.Empty;
+        public string GetRosterRowSnapshotForTests(int index)
+        {
+            if (index < 0 || index >= _rosterPool.Count || _rosterPool[index].Label == null || !_rosterPool[index].Root.activeSelf)
+                return string.Empty;
+            return _rosterPool[index].Label.text ?? string.Empty;
+        }
         public int VisibleTimelineMarkerCount
         {
             get
@@ -240,6 +248,11 @@ namespace TacSim.UI
             hlg.childControlHeight = true;
             hlg.childForceExpandWidth = true;
 
+            _restartBtn = CreateBtn(ctrlRow.transform, "0:00 [R]", new Color(0.16f, 0.30f, 0.42f), () =>
+            {
+                _arena?.RestartReplayFromStart();
+                RefreshView();
+            });
             _prevKfBtn = CreateBtn(ctrlRow.transform, "<< KF", new Color(0.14f, 0.28f, 0.40f), () =>
             {
                 _arena?.StepReplayKeyframe(-1);
@@ -407,6 +420,7 @@ namespace TacSim.UI
                     _scrubberFill.rectTransform.anchorMax = new Vector2(0f, 1f);
             }
 
+            if (_restartBtn != null) _restartBtn.interactable = !isLive && doc != null;
             if (_prevKfBtn != null) _prevKfBtn.interactable = !isLive && doc != null;
             if (_nextKfBtn != null) _nextKfBtn.interactable = !isLive && doc != null;
             if (_prevEventBtn != null) _prevEventBtn.interactable = !isLive && doc != null && (doc.Destroyed.Count > 0 || doc.Shots.Count > 0);
@@ -424,8 +438,73 @@ namespace TacSim.UI
                 _closeBtnLabel.text = isLive ? "STOP WATCH [ESC]" : "CLOSE [ESC]";
 
             RefreshTimelineMarkers(doc, isLive);
-            RefreshRosterRows(doc, frame, obs, isLive);
-            RefreshEventFeed(doc, obs, isLive);
+            ComputeCumulativeUnitStats(doc, isLive, out int[] unitShots, out int[] unitHits, out int[] unitKills, out int topGunIdx);
+            RefreshRosterRows(doc, frame, obs, isLive, unitShots, unitHits, unitKills);
+            RefreshEventFeed(doc, obs, isLive, unitHits, unitKills, topGunIdx);
+        }
+
+        private void ComputeCumulativeUnitStats(
+            ArenaReplayDocument doc,
+            bool isLive,
+            out int[] unitShots,
+            out int[] unitHits,
+            out int[] unitKills,
+            out int topGunIdx)
+        {
+            topGunIdx = -1;
+            int n = (!isLive && doc != null) ? doc.Roster.Count : 0;
+            unitShots = n > 0 ? new int[n] : Array.Empty<int>();
+            unitHits = n > 0 ? new int[n] : Array.Empty<int>();
+            unitKills = n > 0 ? new int[n] : Array.Empty<int>();
+            if (n <= 0 || _arena == null) return;
+
+            float curMs = _arena.ReplayCursorMs;
+            for (int i = 0; i < doc.Shots.Count; i++)
+            {
+                var s = doc.Shots[i];
+                if (s.TimeMs > curMs) continue;
+                if (s.ShooterIndex >= 0 && s.ShooterIndex < n)
+                {
+                    unitShots[s.ShooterIndex]++;
+                    if (string.Equals(s.Outcome, "hit", StringComparison.OrdinalIgnoreCase))
+                        unitHits[s.ShooterIndex]++;
+                }
+            }
+
+            // Attribute each wreck up to curMs to the last hit scored on that victim at or before the wreck timestamp
+            for (int i = 0; i < doc.Destroyed.Count; i++)
+            {
+                var w = doc.Destroyed[i];
+                if (w.TimeMs > curMs) continue;
+                int killer = -1;
+                long bestHitTime = -1;
+                for (int sIdx = 0; sIdx < doc.Shots.Count; sIdx++)
+                {
+                    var s = doc.Shots[sIdx];
+                    if (s.TimeMs > w.TimeMs) continue;
+                    if (s.TargetIndex == w.RosterIndex &&
+                        string.Equals(s.Outcome, "hit", StringComparison.OrdinalIgnoreCase) &&
+                        s.ShooterIndex >= 0 && s.ShooterIndex < n &&
+                        s.TimeMs >= bestHitTime)
+                    {
+                        bestHitTime = s.TimeMs;
+                        killer = s.ShooterIndex;
+                    }
+                }
+                if (killer >= 0)
+                    unitKills[killer]++;
+            }
+
+            int bestScore = 0;
+            for (int i = 0; i < n; i++)
+            {
+                int score = unitKills[i] * 100 + unitHits[i] * 10;
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    topGunIdx = i;
+                }
+            }
         }
 
         private void RefreshTimelineMarkers(ArenaReplayDocument doc, bool isLive)
@@ -479,7 +558,14 @@ namespace TacSim.UI
             }
         }
 
-        private void RefreshRosterRows(ArenaReplayDocument doc, ArenaReplaySampledFrame frame, ArenaObserverPicture obs, bool isLive)
+        private void RefreshRosterRows(
+            ArenaReplayDocument doc,
+            ArenaReplaySampledFrame frame,
+            ArenaObserverPicture obs,
+            bool isLive,
+            int[] unitShots,
+            int[] unitHits,
+            int[] unitKills)
         {
             int count = doc != null ? Mathf.Min(doc.Roster.Count, _rosterPool.Count) : 0;
             for (int i = 0; i < count; i++)
@@ -494,6 +580,15 @@ namespace TacSim.UI
                 string where = wrecked
                     ? "<color=#AA6666>WRECK</color>"
                     : (pose.HasValue ? $"({Mathf.RoundToInt(pose.Value.CellX)},{Mathf.RoundToInt(pose.Value.CellY)}) {Mathf.RoundToInt(pose.Value.HeadingDeg):000}°" : "off-map");
+
+                string combatSuffix = string.Empty;
+                if (!isLive && unitShots != null && i < unitShots.Length && unitShots[i] > 0)
+                {
+                    combatSuffix = $" · <color=#99DDFF>{unitHits[i]}H/{unitShots[i]}S</color>";
+                    if (unitKills != null && i < unitKills.Length && unitKills[i] > 0)
+                        combatSuffix += $" <color=#FFCC44>{unitKills[i]}K</color>";
+                }
+
                 string staffSuffix = string.Empty;
                 if (isLive && obs != null && i < obs.Units.Count)
                 {
@@ -502,7 +597,7 @@ namespace TacSim.UI
                 }
 
                 slot.RosterIndex = i;
-                slot.Label.text = $"{(focused ? "<color=#FFEE55>>> </color>" : "")}<color={sideCol}><b>{MushProtocol.EscapeUnityRichText(r.Callsign)}</b></color>  {where}{staffSuffix}";
+                slot.Label.text = $"{(focused ? "<color=#FFEE55>>> </color>" : "")}<color={sideCol}><b>{MushProtocol.EscapeUnityRichText(r.Callsign)}</b></color>{combatSuffix}  {where}{staffSuffix}";
                 slot.Background.color = focused
                     ? new Color(0.28f, 0.36f, 0.16f, 0.96f)
                     : (wrecked
@@ -516,8 +611,15 @@ namespace TacSim.UI
             }
         }
 
-        private void RefreshEventFeed(ArenaReplayDocument doc, ArenaObserverPicture obs, bool isLive)
+        private void RefreshEventFeed(
+            ArenaReplayDocument doc,
+            ArenaObserverPicture obs,
+            bool isLive,
+            int[] unitHits,
+            int[] unitKills,
+            int topGunIdx)
         {
+            TopGunSummarySnapshot = string.Empty;
             if (_eventFeedText == null) return;
             if (isLive && obs != null)
             {
@@ -550,10 +652,17 @@ namespace TacSim.UI
             {
                 if (doc.Destroyed[i].TimeMs <= curMs) wrecksUpToNow++;
             }
+            if (topGunIdx >= 0 && topGunIdx < doc.Roster.Count && unitHits != null && unitKills != null &&
+                topGunIdx < unitHits.Length && topGunIdx < unitKills.Length)
+            {
+                string tgCs = MushProtocol.EscapeUnityRichText(doc.Roster[topGunIdx].Callsign);
+                TopGunSummarySnapshot = $"TOP GUN: {tgCs} ({unitHits[topGunIdx]}H/{unitKills[topGunIdx]}K)";
+            }
             if (_feedTitleText != null)
             {
                 int acc = shotsUpToNow > 0 ? Mathf.RoundToInt((hitsUpToNow * 100f) / shotsUpToNow) : 0;
-                _feedTitleText.text = $"{shotsUpToNow} SHOTS ({hitsUpToNow} HITS {acc}%) · {wrecksUpToNow} WRECK{(wrecksUpToNow == 1 ? "" : "S")}";
+                string tgPart = !string.IsNullOrEmpty(TopGunSummarySnapshot) ? $" · {TopGunSummarySnapshot}" : string.Empty;
+                _feedTitleText.text = $"{shotsUpToNow} SHOTS ({hitsUpToNow} HITS {acc}%) · {wrecksUpToNow} WRECK{(wrecksUpToNow == 1 ? "" : "S")}{tgPart}";
             }
 
             var sb = new StringBuilder(256);
