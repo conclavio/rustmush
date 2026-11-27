@@ -9154,5 +9154,105 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void Arena3DContactHealthBarsRichNameplatesAndLiveHoldBeacons_UpdateVisualTelemetry()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave13PR1_3DHealthBarsAndHoldBeaconsTest");
+            try
+            {
+                var catalog = TacSimAssetCatalog.LoadOrDefault();
+                var arenaGo = new UnityEngine.GameObject("Arena3DBars");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                var grid = TacSimTerrainDecoder.LoadStaticArena("proving_ground");
+                arena.BuildArenaTerrain(catalog, grid);
+
+                Assert.GreaterOrEqual(grid.KeySpots.Count, 1, "Proving ground must define at least one KeySpot");
+                var holdSpot = grid.KeySpots[0];
+                for (int i = 0; i < grid.KeySpots.Count; i++)
+                {
+                    if (string.Equals(grid.KeySpots[i].Letter, grid.HoldSpotLetter, System.StringComparison.OrdinalIgnoreCase))
+                    {
+                        holdSpot = grid.KeySpots[i];
+                        break;
+                    }
+                }
+                UnityEngine.Vector3 holdLocal = grid.SiteCellToLocalPos(holdSpot.CellX, holdSpot.CellY, 0f);
+                float siteCellM = grid.CellSizeM / System.Math.Max(1, grid.SpanCells);
+                int holdWorldXcm = UnityEngine.Mathf.RoundToInt((grid.OriginCellX * siteCellM + holdLocal.x) * 100f);
+                int holdWorldYcm = UnityEngine.Mathf.RoundToInt((grid.OriginCellY * siteCellM + holdLocal.z) * 100f);
+
+                // 1. Live frame with 3 contacts at distinct health states (intact, scarred, crippled) & player inside hold zone
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse($@"{{
+                    ""match"": 170, ""seated"": true, ""t_ms"": 90000, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""mode"": ""hold"", ""power"": ""online"",
+                    ""x_cm"": {holdWorldXcm}, ""y_cm"": {holdWorldYcm}, ""heading_deg"": 90, ""speed_kph"": 0,
+                    ""lock_designator"": ""B2"", ""lock_range_m"": 140, ""lock_percent"": 84,
+                    ""contacts"": [
+                        {{ ""designator"": ""B1"", ""class"": ""line_tank"", ""party"": ""B"", ""friendly"": false, ""cell"": [220, 220], ""range_m"": 320, ""aspect"": ""front"", ""health"": ""intact"", ""odds"": [{{ ""percent"": 45 }}] }},
+                        {{ ""designator"": ""B2"", ""class"": ""scout_mk1"", ""party"": ""B"", ""friendly"": false, ""cell"": [210, 210], ""range_m"": 140, ""aspect"": ""rear"", ""moving"": true, ""health"": ""crippled"", ""odds"": [{{ ""percent"": 84 }}] }},
+                        {{ ""designator"": ""R2"", ""class"": ""heavy_mk1"", ""party"": ""R"", ""friendly"": true, ""cell"": [200, 200], ""range_m"": 90, ""aspect"": ""left"", ""health"": ""scarred"" }}
+                    ]
+                }}"));
+                arena.SyncArenaTacticalVisuals();
+
+                // Verify 3D contact health bars track intact / scarred / crippled fills accurately
+                Assert.IsTrue(arena.IsContactHealthBarVisibleForTests("B1"));
+                Assert.AreEqual(1.0f, arena.GetContactHealthBarFillFracForTests("B1"), 0.02f);
+                Assert.IsTrue(arena.IsContactHealthBarVisibleForTests("R2"));
+                Assert.AreEqual(0.62f, arena.GetContactHealthBarFillFracForTests("R2"), 0.02f);
+                Assert.IsTrue(arena.IsContactHealthBarVisibleForTests("B2"));
+                Assert.AreEqual(0.28f, arena.GetContactHealthBarFillFracForTests("B2"), 0.02f);
+
+                // Verify rich 3D locked nameplate contains lock header, odds %, aspect, [CRIT], and moving marker
+                string b2Tag = arena.GetContactNameplateTextForTests("B2");
+                StringAssert.Contains(">> LOCKED <<", b2Tag);
+                StringAssert.Contains("84%", b2Tag);
+                StringAssert.Contains("REAR", b2Tag);
+                StringAssert.Contains("[CRIT]", b2Tag);
+
+                string r2Tag = arena.GetContactNameplateTextForTests("R2");
+                StringAssert.Contains("[SCAR]", r2Tag);
+
+                // Verify KeySpot label shows live distance in meters and RED ownership while sole Red player occupies Hold Zone
+                Assert.AreEqual("RED", arena.ActiveHoldZoneVisualOwner);
+                string holdLbl = arena.GetKeySpotLabelForTests(holdSpot.Letter);
+                StringAssert.Contains("m", holdLbl);
+                StringAssert.Contains("[RED]", holdLbl);
+
+                // 2. Blue contact enters Hold Zone -> CONTESTED; B2 becomes wreck -> health bar hides and [WRECK] tag appears
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse($@"{{
+                    ""match"": 170, ""seated"": true, ""t_ms"": 95000, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""mode"": ""hold"", ""power"": ""online"",
+                    ""x_cm"": {holdWorldXcm}, ""y_cm"": {holdWorldYcm}, ""heading_deg"": 90, ""speed_kph"": 0,
+                    ""contacts"": [
+                        {{ ""designator"": ""B1"", ""class"": ""line_tank"", ""party"": ""B"", ""friendly"": false, ""cell"": [{holdSpot.CellX}, {holdSpot.CellY}], ""range_m"": 12, ""aspect"": ""front"", ""health"": ""intact"" }},
+                        {{ ""designator"": ""B2"", ""class"": ""scout_mk1"", ""party"": ""B"", ""friendly"": false, ""cell"": [210, 210], ""range_m"": 140, ""health"": ""wreck"", ""reads_dead"": true }}
+                    ]
+                }}"));
+                arena.SyncArenaTacticalVisuals();
+
+                Assert.AreEqual("CONTESTED", arena.ActiveHoldZoneVisualOwner);
+                StringAssert.Contains("[CONTESTED]", arena.GetKeySpotLabelForTests(holdSpot.Letter));
+                Assert.IsFalse(arena.IsContactHealthBarVisibleForTests("B2"), "Wrecked contact must hide its 3D world-space health bar");
+                StringAssert.Contains("[WRECK]", arena.GetContactNameplateTextForTests("B2"));
+
+                // 3. Authoritative Blue HoldControlScore (< -5) flips Hold Zone beacon cleanly to BLUE
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse($@"{{
+                    ""match"": 170, ""seated"": true, ""t_ms"": 100000, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""mode"": ""hold"", ""power"": ""online"",
+                    ""x_cm"": {holdWorldXcm}, ""y_cm"": {holdWorldYcm}, ""hold_score"": -25,
+                    ""contacts"": []
+                }}"));
+                arena.SyncArenaTacticalVisuals();
+                Assert.AreEqual("BLUE", arena.ActiveHoldZoneVisualOwner);
+                StringAssert.Contains("[BLUE]", arena.GetKeySpotLabelForTests(holdSpot.Letter));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
