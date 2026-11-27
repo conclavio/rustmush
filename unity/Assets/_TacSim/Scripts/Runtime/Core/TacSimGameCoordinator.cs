@@ -786,6 +786,7 @@ namespace TacSim.Core
                         case "ui:options": Hud.DisplayOptions?.SetOpen(true); break;
                         case "ui:toggle_cinematic_hud": Hud.DisplayOptions?.ToggleCinematicHudMode(); break;
                         case "ui:cycle_cam": HandleCycleOrbitalCamera(); break;
+                        case "ui:cycle_optics": CycleArenaOpticsZoom(); break;
                         case "ui:cycle_holo": CycleBridgeHoloTableMode(); break;
                         case "ui:toggle_overview": Hud.TacticalOverview?.ToggleVisible(); break;
                         case "ui:clear_wayfinder":
@@ -802,7 +803,17 @@ namespace TacSim.Core
                 {
                     if (Audio != null) Audio.PlayUiClick();
                     Hud.FloatingCallouts?.ShowCallout($"MACRO: {lbl.ToUpperInvariant()}", new Color(0.45f, 0.92f, 1f, 1f), 1.5f);
-                    ExecutePlayerCommand(cmd);
+                    if (ActiveStage == TacSimActiveStage.SimulatorArena &&
+                        ArenaStage != null && ArenaStage.IsArenaActive &&
+                        !string.IsNullOrWhiteSpace(cmd) &&
+                        !cmd.TrimStart().StartsWith("+", StringComparison.Ordinal))
+                    {
+                        HandleArenaCockpitVerb(cmd);
+                    }
+                    else
+                    {
+                        ExecutePlayerCommand(cmd);
+                    }
                 };
             }
 
