@@ -842,6 +842,10 @@ namespace TacSim.Arena
         public int BuiltRockPropCount { get; private set; }
         public int BuiltWallPropCount { get; private set; }
         public int BuiltWaterCellCount { get; private set; }
+        public int BuiltRoadMarkerCount { get; private set; }
+        public int BuiltPerimeterPylonCount { get; private set; }
+        public bool IsPerimeterBoundaryBuilt => _arenaPerimeterLine != null && _arenaPerimeterLine.enabled && _arenaPerimeterLine.positionCount >= 4;
+        public LightType ActiveSunLightType => _arenaSunLight != null ? _arenaSunLight.type : LightType.Point;
         public float LastPlayerSlopeTiltDeg { get; private set; }
         public ArenaTerrainTacticalSample CurrentTerrainIntel { get; private set; }
         public ArenaBiomeLightingProfile ActiveBiomeLighting { get; private set; }
@@ -961,6 +965,8 @@ namespace TacSim.Arena
         private Transform _driveWaypointRoot;
         private TextMeshPro _driveWaypointLabel;
         private LineRenderer _driveCourseLine;
+        private LineRenderer _arenaPerimeterLine;
+        private Light _arenaSunLight;
 
         public bool IsArenaLockBeamActive => _arenaLockBeam != null && _arenaLockBeam.enabled;
         public bool IsArenaRangeRingVisible => _arenaRangeRing != null && _arenaRangeRing.enabled;
@@ -1098,6 +1104,10 @@ namespace TacSim.Arena
             _driveWaypointRoot = null;
             _driveWaypointLabel = null;
             _driveCourseLine = null;
+            _arenaPerimeterLine = null;
+            _arenaSunLight = null;
+            BuiltRoadMarkerCount = 0;
+            BuiltPerimeterPylonCount = 0;
             _contactRigs.Clear();
             _replayRigs.Clear();
             _activeTracers.Clear();
@@ -1129,6 +1139,7 @@ namespace TacSim.Arena
             BuiltRockPropCount = propSummary.RockCount;
             BuiltWallPropCount = propSummary.WallCount;
             BuiltWaterCellCount = propSummary.WaterCellCount;
+            BuiltRoadMarkerCount = propSummary.RoadMarkerCount;
 
             _beaconsRoot = new GameObject("KeySpotBeacons").transform;
             _beaconsRoot.SetParent(transform, false);
@@ -1261,12 +1272,15 @@ namespace TacSim.Arena
 
             var sunGo = new GameObject("ArenaDirectionalFill");
             sunGo.transform.SetParent(transform, false);
-            sunGo.transform.localPosition = new Vector3(1280f, 360f, 1280f);
+            sunGo.transform.localPosition = new Vector3(midX, 360f, midZ);
+            sunGo.transform.localRotation = Quaternion.Euler(ActiveBiomeLighting.SunDirectionEuler);
             var lt = sunGo.AddComponent<Light>();
-            lt.type = LightType.Point;
-            lt.range = 3200f;
+            lt.type = LightType.Directional;
             lt.intensity = ActiveBiomeLighting.SunIntensity;
             lt.color = ActiveBiomeLighting.SunColor;
+            _arenaSunLight = lt;
+
+            BuildArenaPerimeterBoundary();
 
             if (IsArenaActive || IsSpectatorTheaterActive)
             {
@@ -1274,6 +1288,71 @@ namespace TacSim.Arena
                 RenderSettings.fog = ActiveBiomeLighting.EnableFog;
                 RenderSettings.fogColor = ActiveBiomeLighting.FogColor;
                 RenderSettings.fogDensity = ActiveBiomeLighting.FogDensity;
+            }
+        }
+
+        private void BuildArenaPerimeterBoundary()
+        {
+            if (TerrainGrid == null || _beaconsRoot == null) return;
+            float maxW = TerrainGrid.Width * TerrainGrid.CellSizeM;
+            float maxH = TerrainGrid.Height * TerrainGrid.CellSizeM;
+            float inset = Mathf.Min(12f, Mathf.Min(maxW, maxH) * 0.04f);
+            float x0 = inset;
+            float x1 = Mathf.Max(x0 + 4f, maxW - inset);
+            float z0 = inset;
+            float z1 = Mathf.Max(z0 + 4f, maxH - inset);
+
+            const int SegsPerSide = 12;
+            var perimGo = new GameObject("ArenaPerimeterBoundaryLine");
+            perimGo.transform.SetParent(_beaconsRoot, false);
+            _arenaPerimeterLine = perimGo.AddComponent<LineRenderer>();
+            _arenaPerimeterLine.useWorldSpace = true;
+            _arenaPerimeterLine.loop = true;
+            _arenaPerimeterLine.startWidth = 0.65f;
+            _arenaPerimeterLine.endWidth = 0.65f;
+            _arenaPerimeterLine.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("ArenaPerimeterFence", new Color(0.26f, 0.80f, 0.94f, 0.42f));
+            _arenaPerimeterLine.positionCount = SegsPerSide * 4;
+
+            int idx = 0;
+            void AddEdge(float ax, float az, float bx, float bz)
+            {
+                for (int s = 0; s < SegsPerSide; s++)
+                {
+                    float u = s / (float)SegsPerSide;
+                    float lx = Mathf.Lerp(ax, bx, u);
+                    float lz = Mathf.Lerp(az, bz, u);
+                    float ly = TerrainGrid.SampleElevationMeters(lx, lz) + 1.15f;
+                    _arenaPerimeterLine.SetPosition(idx++, ArenaStageOrigin + new Vector3(lx, ly, lz));
+                }
+            }
+            AddEdge(x0, z0, x1, z0);
+            AddEdge(x1, z0, x1, z1);
+            AddEdge(x1, z1, x0, z1);
+            AddEdge(x0, z1, x0, z0);
+            _arenaPerimeterLine.enabled = true;
+
+            var corners = new (string label, float lx, float lz)[]
+            {
+                ("SW", x0, z0),
+                ("SE", x1, z0),
+                ("NE", x1, z1),
+                ("NW", x0, z1)
+            };
+            Material pylonMat = UrpMaterialFactory.GetHologramUnlit("ArenaCornerPylon", new Color(0.28f, 0.84f, 0.98f, 0.48f));
+            BuiltPerimeterPylonCount = 0;
+            for (int i = 0; i < corners.Length; i++)
+            {
+                var c = corners[i];
+                float ly = TerrainGrid.SampleElevationMeters(c.lx, c.lz);
+                var pylon = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+                pylon.name = $"ArenaCornerPylon_{c.label}";
+                pylon.transform.SetParent(_beaconsRoot, false);
+                pylon.transform.position = ArenaStageOrigin + new Vector3(c.lx, ly + 10f, c.lz);
+                pylon.transform.localScale = new Vector3(1.2f, 10f, 1.2f);
+                var col = pylon.GetComponent<Collider>();
+                if (col != null) { if (Application.isPlaying) Destroy(col); else DestroyImmediate(col); }
+                pylon.GetComponent<MeshRenderer>().sharedMaterial = pylonMat;
+                BuiltPerimeterPylonCount++;
             }
         }
 

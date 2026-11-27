@@ -12,6 +12,7 @@ namespace TacSim.Arena
         public int RockCount;
         public int WallCount;
         public int WaterCellCount;
+        public int RoadMarkerCount;
     }
 
     public struct ArenaBiomeLightingProfile
@@ -19,6 +20,8 @@ namespace TacSim.Arena
         public string BiomeKey;
         public Color SunColor;
         public float SunIntensity;
+        public Vector3 SunDirectionEuler;
+        public Color SkyColor;
         public Color AmbientColor;
         public Color FogColor;
         public float FogDensity;
@@ -50,6 +53,7 @@ namespace TacSim.Arena
         public const int MaxRockInstances = 650;
         public const int MaxWallInstances = 420;
         public const int MaxWaterQuads = 4096;
+        public const int MaxRoadMarkers = 240;
 
         private sealed class MeshBuilder
         {
@@ -149,6 +153,8 @@ namespace TacSim.Arena
                     BiomeKey = "desert",
                     SunColor = new Color(1.0f, 0.88f, 0.72f),
                     SunIntensity = 2.4f,
+                    SunDirectionEuler = new Vector3(38f, 145f, 0f),
+                    SkyColor = new Color(0.42f, 0.30f, 0.20f),
                     AmbientColor = new Color(0.46f, 0.36f, 0.28f),
                     FogColor = new Color(0.56f, 0.43f, 0.30f),
                     FogDensity = 0.00055f,
@@ -162,6 +168,8 @@ namespace TacSim.Arena
                     BiomeKey = "arctic",
                     SunColor = new Color(0.86f, 0.94f, 1.0f),
                     SunIntensity = 2.3f,
+                    SunDirectionEuler = new Vector3(26f, 120f, 0f),
+                    SkyColor = new Color(0.32f, 0.44f, 0.56f),
                     AmbientColor = new Color(0.36f, 0.44f, 0.54f),
                     FogColor = new Color(0.58f, 0.68f, 0.78f),
                     FogDensity = 0.00065f,
@@ -175,6 +183,8 @@ namespace TacSim.Arena
                     BiomeKey = "regolith",
                     SunColor = new Color(0.98f, 0.98f, 1.0f),
                     SunIntensity = 2.6f,
+                    SunDirectionEuler = new Vector3(32f, 210f, 0f),
+                    SkyColor = new Color(0.02f, 0.03f, 0.05f),
                     AmbientColor = new Color(0.18f, 0.20f, 0.24f),
                     FogColor = new Color(0.05f, 0.06f, 0.09f),
                     FogDensity = 0.00015f,
@@ -186,6 +196,8 @@ namespace TacSim.Arena
                 BiomeKey = "temperate",
                 SunColor = new Color(0.94f, 0.97f, 1.0f),
                 SunIntensity = 2.2f,
+                SunDirectionEuler = new Vector3(44f, 132f, 0f),
+                SkyColor = new Color(0.24f, 0.34f, 0.44f),
                 AmbientColor = new Color(0.32f, 0.38f, 0.42f),
                 FogColor = new Color(0.42f, 0.52f, 0.60f),
                 FogDensity = 0.00042f,
@@ -332,9 +344,10 @@ namespace TacSim.Arena
             var rocks = new MeshBuilder();
             var walls = new MeshBuilder();
             var water = new MeshBuilder();
+            var roadMarkers = new MeshBuilder();
 
             // Stride automatically if a huge 256x256 map has thousands of wooded cells so we get even coverage across the entire battlefield!
-            int totalWoods = 0, totalRocks = 0, totalWalls = 0, totalWater = 0;
+            int totalWoods = 0, totalRocks = 0, totalWalls = 0, totalWater = 0, totalRoads = 0;
             for (int i = 0; i < grid.Classes.Length; i++)
             {
                 var c = grid.Classes[i];
@@ -342,13 +355,17 @@ namespace TacSim.Arena
                 else if (c == TerrainCellClass.Rock || c == TerrainCellClass.Rubble) totalRocks++;
                 else if (c == TerrainCellClass.Wall) totalWalls++;
                 else if (c == TerrainCellClass.Water || c == TerrainCellClass.WaterDeep) totalWater++;
+                else if (c == TerrainCellClass.Road || c == TerrainCellClass.Paved || c == TerrainCellClass.Platform) totalRoads++;
             }
 
             float woodKeepProb = totalWoods > 0 ? Mathf.Clamp01(MaxTreeInstances / (totalWoods * 1.4f)) : 1f;
             float rockKeepProb = totalRocks > 0 ? Mathf.Clamp01(MaxRockInstances / (float)totalRocks) : 1f;
             float wallKeepProb = totalWalls > 0 ? Mathf.Clamp01(MaxWallInstances / (float)totalWalls) : 1f;
             float waterKeepProb = totalWater > 0 ? Mathf.Clamp01(MaxWaterQuads / (float)totalWater) : 1f;
+            float roadKeepProb = totalRoads > 0 ? Mathf.Clamp01(MaxRoadMarkers / (totalRoads * 0.45f + 1f)) : 1f;
             float cell = Mathf.Max(2f, grid.CellSizeM);
+            Color bollardPost = new Color(0.24f, 0.27f, 0.32f);
+            Color bollardCap = new Color(0.95f, 0.72f, 0.22f);
 
             for (int cy = 0; cy < grid.Height; cy++)
             {
@@ -356,12 +373,27 @@ namespace TacSim.Arena
                 {
                     var cls = grid.Classes[cy * grid.Width + cx];
                     if (cls == TerrainCellClass.Ground || cls == TerrainCellClass.Grass ||
-                        cls == TerrainCellClass.Sand || cls == TerrainCellClass.Road ||
-                        cls == TerrainCellClass.Paved || cls == TerrainCellClass.Regolith)
+                        cls == TerrainCellClass.Sand || cls == TerrainCellClass.Regolith)
                         continue;
 
                     float baseX = (cx + 0.5f) * cell;
                     float baseZ = (cy + 0.5f) * cell;
+
+                    if (cls == TerrainCellClass.Road || cls == TerrainCellClass.Paved || cls == TerrainCellClass.Platform)
+                    {
+                        if (summary.RoadMarkerCount >= MaxRoadMarkers) continue;
+                        if (((cx + cy) & 1) != 0) continue;
+                        if (Hash01(cx, cy, 61) > roadKeepProb) continue;
+
+                        float edgeSign = ((cx ^ cy) & 1) == 0 ? 1f : -1f;
+                        float mx = baseX + edgeSign * cell * 0.44f;
+                        float mz = baseZ;
+                        float my = grid.SampleElevationMeters(mx, mz) - 0.10f;
+                        roadMarkers.AddPrism(new Vector3(mx, my + 0.65f, mz), new Vector3(0.22f, 0.65f, 0.22f), 0f, bollardPost);
+                        roadMarkers.AddPrism(new Vector3(mx, my + 1.38f, mz), new Vector3(0.26f, 0.14f, 0.26f), 0f, bollardCap);
+                        summary.RoadMarkerCount++;
+                        continue;
+                    }
 
                     if (cls == TerrainCellClass.WoodsLight || cls == TerrainCellClass.WoodsHeavy)
                     {
@@ -442,6 +474,7 @@ namespace TacSim.Arena
             rocks.FinalizeToChild(propsRoot, "ArenaRockCoverBatch", UrpMaterialFactory.GetOpaque("ArenaRockCover", rockBase, 0.20f, 0.08f));
             walls.FinalizeToChild(propsRoot, "ArenaBunkerWallBatch", UrpMaterialFactory.GetOpaque("ArenaBunkerWall", wallBase, 0.28f, 0.35f));
             water.FinalizeToChild(propsRoot, "ArenaWaterSurfaceBatch", UrpMaterialFactory.GetArmourglass("ArenaWaterSurface", new Color(0.12f, 0.40f, 0.62f, 0.54f)));
+            roadMarkers.FinalizeToChild(propsRoot, "ArenaRoadMarkersBatch", UrpMaterialFactory.GetOpaque("ArenaRoadMarker", bollardCap, 0.45f, 0.30f));
 
             return summary;
         }
