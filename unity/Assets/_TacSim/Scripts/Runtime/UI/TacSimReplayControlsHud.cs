@@ -8,11 +8,18 @@ using UnityEngine.UI;
 
 namespace TacSim.UI
 {
+    public enum ReplayRosterTeamFilter
+    {
+        All = 0,
+        Red = 1,
+        Blue = 2
+    }
+
     /// <summary>
     /// Dedicated 3D Arena Match Replay Theater &amp; Live Staff Observer HUD.
     /// Renders cleanly without overlapping CommsDrawer (`x = 14..436`) or TopStrip (`y = -64..-10`):
     /// - Top-center scoreboard &amp; provenance bar (`Keyframe X of Y` vs `interpolated` vs `LIVE 1 Hz`)
-    /// - Right-edge clickable Red/Blue unit focus roster &amp; live shots/wrecks combat feed
+    /// - Right-edge clickable Red/Blue unit focus roster (with ALL/RED/BLUE filter) &amp; clickable seek-to-event combat feed
     /// - Bottom-right transport bar with scrubber, Play/Pause, `0.5x/1x/2x/4x` speed, keyframe stepping, camera cycle, and Exit
     /// </summary>
     public sealed class TacSimReplayControlsHud : MonoBehaviour
@@ -25,6 +32,7 @@ namespace TacSim.UI
 
         private const int MaxRosterRows = 12;
         private const int MaxTimelineMarkers = 32;
+        private const int MaxClickableEventRows = 6;
 
         private sealed class PooledUnitRow
         {
@@ -33,6 +41,31 @@ namespace TacSim.UI
             public Button Button;
             public Text Label;
             public int RosterIndex;
+        }
+
+        private sealed class PooledEventRow
+        {
+            public GameObject Root;
+            public Image Background;
+            public Button Button;
+            public Text Label;
+            public long EventTimeMs;
+        }
+
+        private readonly struct ReplayFeedEntry
+        {
+            public readonly long TimeMs;
+            public readonly bool IsWreck;
+            public readonly bool IsHit;
+            public readonly string RichLabel;
+
+            public ReplayFeedEntry(long timeMs, bool isWreck, bool isHit, string richLabel)
+            {
+                TimeMs = timeMs;
+                IsWreck = isWreck;
+                IsHit = isHit;
+                RichLabel = richLabel;
+            }
         }
 
         private Font _font;
@@ -59,7 +92,11 @@ namespace TacSim.UI
         private Text _opticsBtnLabel;
         private Button _closeBtn;
         private Text _closeBtnLabel;
+        private readonly Image[] _teamFilterBtnImages = new Image[3];
+        private ReplayRosterTeamFilter _teamFilter = ReplayRosterTeamFilter.All;
         private readonly List<PooledUnitRow> _rosterPool = new List<PooledUnitRow>(MaxRosterRows);
+        private readonly List<PooledEventRow> _eventRowPool = new List<PooledEventRow>(MaxClickableEventRows);
+        private readonly List<ReplayFeedEntry> _feedScratch = new List<ReplayFeedEntry>(24);
         private readonly List<(RectTransform rect, Image img)> _timelineMarkers = new List<(RectTransform, Image)>(MaxTimelineMarkers);
         private ulong _lastMarkerDocMatchId;
         private int _lastMarkerEventCount = -1;
@@ -68,12 +105,36 @@ namespace TacSim.UI
         private static readonly float[] SpeedPresets = { 0.5f, 1f, 2f, 4f };
 
         public bool IsVisible => _root != null && _root.activeSelf;
+        public ReplayRosterTeamFilter ActiveRosterTeamFilter => _teamFilter;
         public string HeaderBannerText => _headerBannerText != null ? _headerBannerText.text : string.Empty;
         public string ProvenanceText => _provenanceLabelText != null ? _provenanceLabelText.text : string.Empty;
         public string ClockText => _clockReadoutText != null ? _clockReadoutText.text : string.Empty;
         public string ReplayStatsSnapshot => _feedTitleText != null ? _feedTitleText.text : string.Empty;
         public string TopGunSummarySnapshot { get; private set; } = string.Empty;
         public string ReplayOpticsButtonSnapshot => _opticsBtnLabel != null ? _opticsBtnLabel.text : string.Empty;
+        public int VisibleClickableEventRowCount
+        {
+            get
+            {
+                int n = 0;
+                for (int i = 0; i < _eventRowPool.Count; i++)
+                    if (_eventRowPool[i].Root != null && _eventRowPool[i].Root.activeSelf) n++;
+                return n;
+            }
+        }
+        public string GetClickableEventRowLabelForTests(int index)
+        {
+            if (index < 0 || index >= _eventRowPool.Count || _eventRowPool[index].Root == null || !_eventRowPool[index].Root.activeSelf)
+                return string.Empty;
+            return _eventRowPool[index].Label != null ? (_eventRowPool[index].Label.text ?? string.Empty) : string.Empty;
+        }
+        public bool ClickEventFeedRowForTests(int index) => HandleEventRowClick(index);
+        public void SetRosterTeamFilter(ReplayRosterTeamFilter filter)
+        {
+            _teamFilter = filter;
+            UpdateTeamFilterPillVisuals();
+            RefreshView();
+        }
         public string GetRosterRowSnapshotForTests(int index)
         {
             if (index < 0 || index >= _rosterPool.Count || _rosterPool[index].Label == null || !_rosterPool[index].Root.activeSelf)
@@ -129,9 +190,11 @@ namespace TacSim.UI
         {
             _font = sharedFont != null ? sharedFont : Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
             _rosterPool.Clear();
+            _eventRowPool.Clear();
             _timelineMarkers.Clear();
             _lastMarkerDocMatchId = 0;
             _lastMarkerEventCount = -1;
+            _teamFilter = ReplayRosterTeamFilter.All;
             if (gameplayHudRoot == null) return;
 
             _root = CreatePanel(gameplayHudRoot, "ArenaReplayTheaterHud", Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero, Color.clear);
@@ -148,10 +211,24 @@ namespace TacSim.UI
             _provenanceLabelText.supportRichText = false;
             SetRect(_provenanceLabelText.rectTransform, new Vector2(0f, 0f), new Vector2(1f, 0.48f), new Vector2(12f, 4f), new Vector2(-12f, 0f));
 
-            // 2. Right-Edge Spectator Roster & Shot/Wreck Feed
+            // 2. Right-Edge Spectator Roster (with ALL/RED/BLUE filter) & Clickable Shot/Wreck Feed
             var sideCard = CreatePanel(_root.transform, "ReplayRosterAndFeed", new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-366f, -540f), new Vector2(-16f, -74f), new Color(0.03f, 0.06f, 0.11f, 0.92f));
-            var rHdr = CreateTxt(sideCard.transform, "UNIT CAMERAS — CLICK TO FOLLOW [TAB]", 12, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.45f, 0.92f, 1f));
-            SetRect(rHdr.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(10f, -26f), new Vector2(-10f, -4f));
+            var rHdr = CreateTxt(sideCard.transform, "UNIT CAMERAS [TAB]", 12, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.45f, 0.92f, 1f));
+            SetRect(rHdr.rectTransform, new Vector2(0f, 1f), new Vector2(0.56f, 1f), new Vector2(10f, -26f), new Vector2(-4f, -4f));
+
+            var filterRow = CreatePanel(sideCard.transform, "ReplayTeamFilterRow", new Vector2(0.57f, 1f), new Vector2(1f, 1f), new Vector2(0f, -26f), new Vector2(-8f, -4f), Color.clear);
+            var fHlg = filterRow.AddComponent<HorizontalLayoutGroup>();
+            fHlg.spacing = 3f; fHlg.childControlWidth = true; fHlg.childControlHeight = true; fHlg.childForceExpandWidth = true;
+            string[] filterLabels = { "ALL", "RED", "BLUE" };
+            for (int f = 0; f < 3; f++)
+            {
+                var captured = (ReplayRosterTeamFilter)f;
+                var fb = CreateBtn(filterRow.transform, filterLabels[f], new Color(0.14f, 0.24f, 0.34f), () => SetRosterTeamFilter(captured));
+                var fl = fb.GetComponentInChildren<Text>();
+                if (fl != null) fl.fontSize = 10;
+                _teamFilterBtnImages[f] = fb.GetComponent<Image>();
+            }
+            UpdateTeamFilterPillVisuals();
 
             var rosterArea = CreatePanel(sideCard.transform, "ReplayRosterRows", new Vector2(0f, 0.36f), new Vector2(1f, 1f), new Vector2(8f, 6f), new Vector2(-8f, -30f), Color.clear);
             var vlg = rosterArea.AddComponent<VerticalLayoutGroup>();
@@ -198,6 +275,36 @@ namespace TacSim.UI
             _eventFeedText.supportRichText = true;
             _eventFeedText.horizontalOverflow = HorizontalWrapMode.Wrap;
             SetRect(_eventFeedText.rectTransform, Vector2.zero, Vector2.one, new Vector2(8f, 6f), new Vector2(-8f, -6f));
+
+            var evList = CreatePanel(feedBg.transform, "ReplayClickableEventsList", Vector2.zero, Vector2.one, new Vector2(4f, 4f), new Vector2(-4f, -4f), Color.clear);
+            var evVlg = evList.AddComponent<VerticalLayoutGroup>();
+            evVlg.spacing = 2f;
+            evVlg.childControlWidth = true;
+            evVlg.childControlHeight = false;
+            evVlg.childForceExpandWidth = true;
+            evVlg.childForceExpandHeight = false;
+
+            for (int e = 0; e < MaxClickableEventRows; e++)
+            {
+                int capturedIdx = e;
+                var evRow = new PooledEventRow();
+                var eBtn = CreateBtn(evList.transform, string.Empty, new Color(0.08f, 0.12f, 0.18f, 0.90f), () => HandleEventRowClick(capturedIdx));
+                eBtn.GetComponent<RectTransform>().sizeDelta = new Vector2(0f, 20f);
+                var eLbl = eBtn.GetComponentInChildren<Text>();
+                if (eLbl != null)
+                {
+                    eLbl.fontSize = 10;
+                    eLbl.alignment = TextAnchor.MiddleLeft;
+                    eLbl.supportRichText = true;
+                    SetRect(eLbl.rectTransform, Vector2.zero, Vector2.one, new Vector2(6f, 0f), new Vector2(-6f, 0f));
+                }
+                evRow.Root = eBtn.gameObject;
+                evRow.Button = eBtn;
+                evRow.Background = eBtn.GetComponent<Image>();
+                evRow.Label = eLbl;
+                evRow.Root.SetActive(false);
+                _eventRowPool.Add(evRow);
+            }
 
             // 3. Bottom-Right Transport Bar (anchored strictly right of CommsDrawer x = 452..-16)
             var bar = CreatePanel(_root.transform, "ReplayTransportBar", new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(452f, 16f), new Vector2(-16f, 114f), new Color(0.03f, 0.07f, 0.12f, 0.94f));
@@ -331,7 +438,38 @@ namespace TacSim.UI
 
         public void ResetSessionState()
         {
+            _teamFilter = ReplayRosterTeamFilter.All;
+            UpdateTeamFilterPillVisuals();
             if (_root != null) _root.SetActive(false);
+        }
+
+        private void UpdateTeamFilterPillVisuals()
+        {
+            Color[] activeCols =
+            {
+                new Color(0.20f, 0.50f, 0.66f, 1f),
+                new Color(0.72f, 0.22f, 0.22f, 1f),
+                new Color(0.20f, 0.48f, 0.84f, 1f)
+            };
+            for (int i = 0; i < _teamFilterBtnImages.Length; i++)
+            {
+                if (_teamFilterBtnImages[i] == null) continue;
+                bool active = i == (int)_teamFilter;
+                _teamFilterBtnImages[i].color = active ? activeCols[i] : new Color(0.12f, 0.18f, 0.26f, 0.90f);
+            }
+        }
+
+        private bool HandleEventRowClick(int index)
+        {
+            if (_arena == null || !_arena.IsReplayModeActive || index < 0 || index >= _eventRowPool.Count)
+                return false;
+            var ev = _eventRowPool[index];
+            if (ev?.Root == null || !ev.Root.activeSelf)
+                return false;
+            _arena.ReplayPlaying = false;
+            _arena.SeekReplayMs(ev.EventTimeMs);
+            RefreshView();
+            return true;
         }
 
         public void CyclePlaybackSpeed()
@@ -567,11 +705,15 @@ namespace TacSim.UI
             int[] unitHits,
             int[] unitKills)
         {
-            int count = doc != null ? Mathf.Min(doc.Roster.Count, _rosterPool.Count) : 0;
-            for (int i = 0; i < count; i++)
+            int shown = 0;
+            int total = doc != null ? doc.Roster.Count : 0;
+            for (int i = 0; i < total && shown < _rosterPool.Count; i++)
             {
                 var r = doc.Roster[i];
-                var slot = _rosterPool[i];
+                if (_teamFilter == ReplayRosterTeamFilter.Red && r.IsBlue) continue;
+                if (_teamFilter == ReplayRosterTeamFilter.Blue && !r.IsBlue) continue;
+
+                var slot = _rosterPool[shown++];
                 bool focused = i == _arena.ReplayFocusUnitIndex;
                 bool wrecked = frame != null && i < frame.IsWrecked.Length && frame.IsWrecked[i];
                 ArenaReplayUnitPose? pose = frame != null && i < frame.Units.Length ? frame.Units[i] : null;
@@ -605,9 +747,18 @@ namespace TacSim.UI
                         : (r.IsBlue ? new Color(0.08f, 0.16f, 0.28f, 0.90f) : new Color(0.26f, 0.10f, 0.12f, 0.90f)));
                 if (!slot.Root.activeSelf) slot.Root.SetActive(true);
             }
-            for (int i = count; i < _rosterPool.Count; i++)
+            for (int i = shown; i < _rosterPool.Count; i++)
             {
                 if (_rosterPool[i].Root.activeSelf) _rosterPool[i].Root.SetActive(false);
+            }
+        }
+
+        private void HideAllClickableEventRows()
+        {
+            for (int i = 0; i < _eventRowPool.Count; i++)
+            {
+                if (_eventRowPool[i].Root != null && _eventRowPool[i].Root.activeSelf)
+                    _eventRowPool[i].Root.SetActive(false);
             }
         }
 
@@ -623,6 +774,8 @@ namespace TacSim.UI
             if (_eventFeedText == null) return;
             if (isLive && obs != null)
             {
+                HideAllClickableEventRows();
+                if (!_eventFeedText.gameObject.activeSelf) _eventFeedText.gameObject.SetActive(true);
                 if (_feedTitleText != null) _feedTitleText.text = "LIVE OBSERVER STATUS";
                 _eventFeedText.text =
                     $"Match #{obs.MatchId}  |  Tempo: <b>{MushProtocol.EscapeUnityRichText(obs.Tempo)}</b>\n" +
@@ -635,6 +788,8 @@ namespace TacSim.UI
 
             if (doc == null)
             {
+                HideAllClickableEventRows();
+                if (!_eventFeedText.gameObject.activeSelf) _eventFeedText.gameObject.SetActive(true);
                 if (_feedTitleText != null) _feedTitleText.text = "SHOTS & WRECKS TIMELINE";
                 _eventFeedText.text = "Waiting for match tape...";
                 return;
@@ -665,30 +820,60 @@ namespace TacSim.UI
                 _feedTitleText.text = $"{shotsUpToNow} SHOTS ({hitsUpToNow} HITS {acc}%) · {wrecksUpToNow} WRECK{(wrecksUpToNow == 1 ? "" : "S")}{tgPart}";
             }
 
-            var sb = new StringBuilder(256);
-            int lines = 0;
-
-            for (int i = doc.Destroyed.Count - 1; i >= 0 && lines < 3; i--)
+            _feedScratch.Clear();
+            for (int i = 0; i < doc.Destroyed.Count; i++)
             {
                 var w = doc.Destroyed[i];
                 if (w.TimeMs > curMs) continue;
                 string cs = w.RosterIndex >= 0 && w.RosterIndex < doc.Roster.Count ? doc.Roster[w.RosterIndex].Callsign : "?";
-                sb.Append($"<color=#FF7766>{TacSimArenaReplayModel.FormatClockText(w.TimeMs)}  <b>{MushProtocol.EscapeUnityRichText(cs)}</b> WRECKED</color>\n");
-                lines++;
+                string lbl = $"<color=#FF7766>{TacSimArenaReplayModel.FormatClockText(w.TimeMs)}  <b>{MushProtocol.EscapeUnityRichText(cs)}</b> WRECKED</color>";
+                _feedScratch.Add(new ReplayFeedEntry(w.TimeMs, isWreck: true, isHit: false, lbl));
             }
-
-            for (int i = doc.Shots.Count - 1; i >= 0 && lines < 7; i--)
+            for (int i = 0; i < doc.Shots.Count; i++)
             {
                 var s = doc.Shots[i];
                 if (s.TimeMs > curMs) continue;
                 string sh = s.ShooterIndex >= 0 && s.ShooterIndex < doc.Roster.Count ? doc.Roster[s.ShooterIndex].Callsign : "?";
                 string tg = s.TargetIndex >= 0 && s.TargetIndex < doc.Roster.Count ? doc.Roster[s.TargetIndex].Callsign : "?";
-                string col = s.Outcome == "hit" ? "#FFCC55" : (s.Outcome == "flying" ? "#88DDFF" : "#99AABB");
-                sb.Append($"<color={col}>{TacSimArenaReplayModel.FormatClockText(s.TimeMs)}  {MushProtocol.EscapeUnityRichText(sh)} -> {MushProtocol.EscapeUnityRichText(tg)}: {s.Outcome}</color>\n");
-                lines++;
+                bool isHit = string.Equals(s.Outcome, "hit", StringComparison.OrdinalIgnoreCase);
+                string col = isHit ? "#FFCC55" : (s.Outcome == "flying" ? "#88DDFF" : "#99AABB");
+                string lbl = $"<color={col}>{TacSimArenaReplayModel.FormatClockText(s.TimeMs)}  {MushProtocol.EscapeUnityRichText(sh)} -> {MushProtocol.EscapeUnityRichText(tg)}: {s.Outcome}</color>";
+                _feedScratch.Add(new ReplayFeedEntry(s.TimeMs, isWreck: false, isHit: isHit, lbl));
             }
 
-            _eventFeedText.text = lines > 0 ? sb.ToString().TrimEnd('\n') : "No shots or wrecks up to current timestamp.";
+            _feedScratch.Sort((a, b) =>
+            {
+                int tc = b.TimeMs.CompareTo(a.TimeMs);
+                if (tc != 0) return tc;
+                if (a.IsWreck != b.IsWreck) return a.IsWreck ? -1 : 1;
+                return a.IsHit == b.IsHit ? 0 : (a.IsHit ? -1 : 1);
+            });
+
+            int shown = Mathf.Min(_feedScratch.Count, _eventRowPool.Count);
+            for (int i = 0; i < shown; i++)
+            {
+                var ev = _feedScratch[i];
+                var slot = _eventRowPool[i];
+                slot.EventTimeMs = ev.TimeMs;
+                if (slot.Label != null) slot.Label.text = ev.RichLabel;
+                if (slot.Background != null)
+                {
+                    slot.Background.color = ev.IsWreck
+                        ? new Color(0.28f, 0.10f, 0.12f, 0.92f)
+                        : (ev.IsHit ? new Color(0.22f, 0.18f, 0.08f, 0.88f) : new Color(0.08f, 0.12f, 0.18f, 0.86f));
+                }
+                if (slot.Root != null && !slot.Root.activeSelf) slot.Root.SetActive(true);
+            }
+            for (int i = shown; i < _eventRowPool.Count; i++)
+            {
+                if (_eventRowPool[i].Root != null && _eventRowPool[i].Root.activeSelf)
+                    _eventRowPool[i].Root.SetActive(false);
+            }
+
+            if (_eventFeedText.gameObject.activeSelf != (shown == 0))
+                _eventFeedText.gameObject.SetActive(shown == 0);
+            if (shown == 0)
+                _eventFeedText.text = "No shots or wrecks up to current timestamp. Click events here to seek directly.";
         }
 
         private static GameObject CreatePanel(Transform parent, string name, Vector2 aMin, Vector2 aMax, Vector2 oMin, Vector2 oMax, Color bg)
