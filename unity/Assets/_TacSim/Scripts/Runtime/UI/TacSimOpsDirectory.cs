@@ -34,6 +34,7 @@ namespace TacSim.UI
         public event Action<string> OnPrefillChatRequested;
         public event Action<string> OnCommandRequested;
         public event Action<string> OnArenaActionRequested;
+        public event Action<string> OnOpenNpcQuestDialogRequested;
 
         private const int MaxDirectoryRows = 24;
         private const int MaxPresenceRows = 16;
@@ -60,9 +61,12 @@ namespace TacSim.UI
             public Button TargetButton;
             public Button LookButton;
             public Button TalkButton;
+            public Text TalkButtonLabel;
+            public Image TalkButtonBg;
             public string BoundId;
             public string BoundName;
             public bool BoundIsPlayer;
+            public bool BoundHasQuestDialog;
         }
 
         private Font _font;
@@ -100,6 +104,7 @@ namespace TacSim.UI
         private SpaceFlightController _space;
         private SurfaceMiningController _surface;
         private OocArenaController _arena;
+        private TacSimQuestJournal _questJournal;
         private MushRoomView _lastRoomView;
         private TacSimActiveStage _activeStage = TacSimActiveStage.StationWalk;
 
@@ -109,6 +114,8 @@ namespace TacSim.UI
         public OpsDirectoryTab ActiveTab { get; private set; } = OpsDirectoryTab.DeckDirectory;
         public int VisibleDirectoryRowCount { get; private set; }
         public int VisiblePresenceRowCount { get; private set; }
+        public int HighlightedQuestDirectoryRowIndex { get; private set; } = -1;
+        public int HighlightedQuestPresenceRowCount { get; private set; }
         public string OpsSummarySnapshot => _opsSummaryText != null ? _opsSummaryText.text : string.Empty;
 
         public void BuildUi(Transform hudRoot, Font sharedFont)
@@ -300,13 +307,20 @@ namespace TacSim.UI
 
                 row.TalkButton = CreateButton(go.transform, "COMMS", new Color(0.14f, 0.48f, 0.38f), () =>
                 {
-                    if (!string.IsNullOrEmpty(row.BoundName))
+                    if (row.BoundHasQuestDialog && !string.IsNullOrEmpty(row.BoundId))
+                    {
+                        SetOpen(false);
+                        OnOpenNpcQuestDialogRequested?.Invoke(row.BoundId);
+                    }
+                    else if (!string.IsNullOrEmpty(row.BoundName))
                     {
                         SetOpen(false);
                         string prefix = row.BoundIsPlayer ? $"page {row.BoundName}=" : $"say {row.BoundName}, ";
                         OnPrefillChatRequested?.Invoke(prefix);
                     }
                 });
+                row.TalkButtonLabel = row.TalkButton.GetComponentInChildren<Text>();
+                row.TalkButtonBg = row.TalkButton.GetComponent<Image>();
                 SetRect(row.TalkButton.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-86f, 4f), new Vector2(-8f, -4f));
 
                 go.SetActive(false);
@@ -372,6 +386,38 @@ namespace TacSim.UI
             _arena = arena;
             SyncWayfinderBanner(_activeStage);
             if (IsOpen) RefreshModalContents();
+        }
+
+        public void BindQuestJournal(TacSimQuestJournal journal)
+        {
+            if (_questJournal == journal) return;
+            if (_questJournal != null)
+                _questJournal.OnQuestsPanelUpdated -= HandleQuestsUpdated;
+            _questJournal = journal;
+            if (_questJournal != null)
+                _questJournal.OnQuestsPanelUpdated += HandleQuestsUpdated;
+            if (IsOpen) RefreshModalContents();
+        }
+
+        private void HandleQuestsUpdated()
+        {
+            if (IsOpen) RefreshModalContents();
+        }
+
+        private void OnDestroy()
+        {
+            if (_questJournal != null)
+                _questJournal.OnQuestsPanelUpdated -= HandleQuestsUpdated;
+        }
+
+        public bool TriggerPresenceTalkButton(int rowIndex)
+        {
+            if (rowIndex < 0 || rowIndex >= VisiblePresenceRowCount || rowIndex >= _presPool.Count)
+                return false;
+            var btn = _presPool[rowIndex].TalkButton;
+            if (btn == null) return false;
+            btn.onClick.Invoke();
+            return true;
         }
 
         public void UpdateLiveRoom(MushRoomView roomView, TacSimActiveStage stage)
@@ -550,6 +596,12 @@ namespace TacSim.UI
                     return f != 0 ? f : string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
                 });
 
+                string questRoomEntry = string.Empty;
+                bool questTurnIn = false;
+                if (_questJournal != null)
+                    _questJournal.TryGetMinimapObjective(out questRoomEntry, out questTurnIn, out _);
+
+                HighlightedQuestDirectoryRowIndex = -1;
                 for (int i = 0; i < rooms.Count && used < MaxDirectoryRows; i++)
                 {
                     var r = rooms[i];
@@ -557,14 +609,23 @@ namespace TacSim.UI
                     int hops = isHere ? 0 : _station.FindExitPath(_station.ActiveRoomEntryId, r.EntryId).Count;
                     if (!isHere && hops == 0) continue; // Hide unreachable restricted rooms
 
+                    bool isQuestRoom = !string.IsNullOrEmpty(questRoomEntry) &&
+                                       string.Equals(r.EntryId, questRoomEntry, StringComparison.OrdinalIgnoreCase);
+                    int rowIdx = used;
                     var row = _dirPool[used++];
                     row.BoundId = r.EntryId;
                     row.BoundIsShip = false;
                     row.BoundIsArenaSpot = false;
+                    if (isQuestRoom) HighlightedQuestDirectoryRowIndex = rowIdx;
                     string roleBadge = ClassifyRoomBadge(r.EntryId, r.Kind);
+                    string questBadge = isQuestRoom
+                        ? (questTurnIn ? " <color=#FFDD44>[QUEST ?]</color>" : " <color=#FFDD44>[QUEST !]</color>")
+                        : string.Empty;
                     string hopStr = isHere ? "<color=#66FFAA>[HERE]</color>" : $"<color=#88CCFF>{hops} hop{(hops == 1 ? "" : "s")}</color>";
-                    row.Label.text = $"<color=#FFCC66>[FL {r.FloorIndex + 1}]</color> <b>{MushProtocol.EscapeUnityRichText(r.Name ?? r.EntryId)}</b> {roleBadge}   {hopStr}";
-                    row.Background.color = isHere ? new Color(0.10f, 0.24f, 0.22f, 0.95f) : new Color(0.07f, 0.12f, 0.19f, 0.92f);
+                    row.Label.text = $"<color=#FFCC66>[FL {r.FloorIndex + 1}]</color> <b>{MushProtocol.EscapeUnityRichText(r.Name ?? r.EntryId)}</b> {roleBadge}{questBadge}   {hopStr}";
+                    row.Background.color = isQuestRoom
+                        ? (isHere ? new Color(0.18f, 0.28f, 0.14f, 0.96f) : new Color(0.24f, 0.19f, 0.07f, 0.96f))
+                        : (isHere ? new Color(0.10f, 0.24f, 0.22f, 0.95f) : new Color(0.07f, 0.12f, 0.19f, 0.92f));
                     if (row.TrailButtonLabel != null) row.TrailButtonLabel.text = "3D TRAIL";
                     if (row.WalkButtonLabel != null) row.WalkButtonLabel.text = "WALK";
                     row.TrailButton.interactable = !isHere;
@@ -579,9 +640,25 @@ namespace TacSim.UI
             if (_dirEmptyText != null) _dirEmptyText.gameObject.SetActive(used == 0);
         }
 
+        private MushNpcQuestMarker FindQuestMarkerForNpc(string npcId, string npcName)
+        {
+            var panel = _questJournal?.LatestPanel;
+            if (panel == null || panel.RoomMarkers == null) return null;
+            for (int i = 0; i < panel.RoomMarkers.Count; i++)
+            {
+                var m = panel.RoomMarkers[i];
+                if (!string.IsNullOrEmpty(npcId) && string.Equals(m.NpcId, npcId, StringComparison.Ordinal))
+                    return m;
+                if (!string.IsNullOrEmpty(npcName) && string.Equals(m.NpcName, npcName, StringComparison.OrdinalIgnoreCase))
+                    return m;
+            }
+            return null;
+        }
+
         private void RefreshPresenceTab()
         {
             int used = 0;
+            HighlightedQuestPresenceRowCount = 0;
             if (_lastRoomView != null && _lastRoomView.Contents != null)
             {
                 for (int i = 0; i < _lastRoomView.Contents.Count && used < MaxPresenceRows; i++)
@@ -599,11 +676,37 @@ namespace TacSim.UI
                     row.BoundName = obj.Name.Trim();
                     row.BoundIsPlayer = isPlayer;
 
-                    string badge = isPlayer
-                        ? "<color=#66FFAA>[PILOT]</color>"
-                        : (isDormant ? "<color=#99AABB>[CAST · IDLE]</color>" : "<color=#66CCFF>[NPC CAST]</color>");
-                    row.Label.text = $"{badge} <b>{MushProtocol.EscapeUnityRichText(row.BoundName)}</b>";
-                    row.Background.color = isPlayer ? new Color(0.08f, 0.18f, 0.16f, 0.94f) : new Color(0.07f, 0.12f, 0.19f, 0.92f);
+                    var marker = !isPlayer ? FindQuestMarkerForNpc(row.BoundId, row.BoundName) : null;
+                    if (marker != null)
+                    {
+                        bool isGold = string.Equals(marker.Marker, "available", StringComparison.OrdinalIgnoreCase) ||
+                                      string.Equals(marker.Marker, "turn_in", StringComparison.OrdinalIgnoreCase);
+                        string sym = !string.IsNullOrEmpty(marker.Symbol)
+                            ? marker.Symbol
+                            : (string.Equals(marker.Marker, "available", StringComparison.OrdinalIgnoreCase) ? "!" : "?");
+                        string qBadge = isGold
+                            ? $"<color=#FFDD44>[{MushProtocol.EscapeUnityRichText(sym)} QUEST]</color>"
+                            : $"<color=#C8D6E4>[{MushProtocol.EscapeUnityRichText(sym)} QUEST]</color>";
+                        row.Label.text = $"{qBadge} <b>{MushProtocol.EscapeUnityRichText(row.BoundName)}</b>";
+                        row.Background.color = isGold
+                            ? new Color(0.24f, 0.19f, 0.07f, 0.96f)
+                            : new Color(0.10f, 0.15f, 0.22f, 0.94f);
+                        row.BoundHasQuestDialog = true;
+                        if (row.TalkButtonLabel != null) row.TalkButtonLabel.text = isGold ? "QUEST" : "JOURNAL";
+                        if (row.TalkButtonBg != null) row.TalkButtonBg.color = isGold ? new Color(0.56f, 0.40f, 0.12f) : new Color(0.22f, 0.34f, 0.48f);
+                        HighlightedQuestPresenceRowCount++;
+                    }
+                    else
+                    {
+                        string badge = isPlayer
+                            ? "<color=#66FFAA>[PILOT]</color>"
+                            : (isDormant ? "<color=#99AABB>[CAST · IDLE]</color>" : "<color=#66CCFF>[NPC CAST]</color>");
+                        row.Label.text = $"{badge} <b>{MushProtocol.EscapeUnityRichText(row.BoundName)}</b>";
+                        row.Background.color = isPlayer ? new Color(0.08f, 0.18f, 0.16f, 0.94f) : new Color(0.07f, 0.12f, 0.19f, 0.92f);
+                        row.BoundHasQuestDialog = false;
+                        if (row.TalkButtonLabel != null) row.TalkButtonLabel.text = "COMMS";
+                        if (row.TalkButtonBg != null) row.TalkButtonBg.color = new Color(0.14f, 0.48f, 0.38f);
+                    }
                     row.Root.SetActive(true);
                 }
             }

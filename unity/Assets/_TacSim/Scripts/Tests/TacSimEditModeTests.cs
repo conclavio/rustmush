@@ -10821,5 +10821,156 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestSolarOrrery_SailingPlanAndOpsDirectory_HighlightObjectivesEndToEnd()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestOrreryAndOpsDirectoryTestRoot");
+            try
+            {
+                var tradeState = new TacSimTradeAndShipState();
+                var catalog = TacSimAssetCatalog.LoadOrDefault();
+                var stationGo = new UnityEngine.GameObject("TestStationForOpsQuest");
+                stationGo.transform.SetParent(rootGo.transform, false);
+                var station = stationGo.AddComponent<StationWorldController>();
+                station.BuildStation(catalog, "ceres_freeport");
+
+                // Pick a real reachable destination room from the station pack for directory objective highlighting
+                string targetRoomEntry = string.Empty;
+                foreach (var kv in station.Pack.Rooms)
+                {
+                    if (!string.Equals(kv.Key, station.ActiveRoomEntryId, System.StringComparison.OrdinalIgnoreCase) &&
+                        station.FindExitPath(station.ActiveRoomEntryId, kv.Key).Count > 0)
+                    {
+                        targetRoomEntry = kv.Key;
+                        break;
+                    }
+                }
+                Assert.IsFalse(string.IsNullOrEmpty(targetRoomEntry), "Station pack must expose at least one reachable room");
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.BindTradeState(tradeState);
+                hud.OpsDirectory.BindSources(station, null, null, tradeState, null, null, null);
+
+                // Populate Solar System Orrery with live sky.chart frame (Ceres -> Stickney route on Mars)
+                var chart = TacSimSolarChartFrame.FromJson(JsonNode.Parse(@"{
+                    ""ic_time"": ""2350-05-01"",
+                    ""vantage"": { ""body"": ""ceres"", ""port"": ""ceres"" },
+                    ""scale"": { ""r0_au"": 1.5, ""au_max"": 12.0 },
+                    ""bodies"": [
+                        { ""id"": ""mars"", ""label"": ""Mars"", ""r_au"": 1.52, ""lon_deg"": 110.0, ""lat_deg"": 1.8, ""here"": false },
+                        { ""id"": ""ceres"", ""label"": ""Ceres"", ""r_au"": 2.77, ""lon_deg"": 230.0, ""lat_deg"": 10.6, ""here"": true }
+                    ],
+                    ""routes"": [
+                        { ""to"": ""stickney"", ""body"": ""mars"", ""loaded"": { ""total_seconds"": 180000, ""burn_tonnes"": 12.5 } }
+                    ]
+                }"));
+                hud.SolarMap.ApplyChartFrame(chart);
+
+                // Populate RoomView with Maren Halvorsen in Port Watch Arrivals
+                var rv = new MushRoomView
+                {
+                    Id = "#10",
+                    Name = "Port Watch Arrivals",
+                    Atlas = new AtlasRoomAmbient { Pack = "neighborhood.ceres_freeport", Entry = station.ActiveRoomEntryId }
+                };
+                rv.Contents.Add(new MushObjRef { Id = "#42", Name = "Maren Halvorsen" });
+                rv.NpcIds.Add("#42");
+                hud.OpsDirectory.UpdateLiveRoom(rv, TacSimActiveStage.StationWalk);
+
+                // Feed active Step 3 quest targeting Stickney Yards + room objective + Maren available marker
+                var panelJson = JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#10"",
+                    ""room_name"": ""Port Watch Arrivals"",
+                    ""room_markers"": [
+                        {
+                            ""npc_id"": ""#42"",
+                            ""npc_name"": ""Maren Halvorsen"",
+                            ""marker"": ""available"",
+                            ""symbol"": ""!"",
+                            ""quest_key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                            ""quest_title"": ""First Papers at the Registry"",
+                            ""category"": ""guided""
+                        }
+                    ],
+                    ""available"": [
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                            ""title"": ""First Papers at the Registry"",
+                            ""category"": ""guided"",
+                            ""giver_id"": ""#42"", ""giver_name"": ""Maren Halvorsen"",
+                            ""turn_in_id"": ""#55"", ""turn_in_name"": ""Ilse"",
+                            ""accept_cmd"": ""+quest/accept #42=tok1""
+                        }
+                    ],
+                    ""active"": [
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_deliver_metals"",
+                            ""title"": ""Deliver Metals to Stickney"",
+                            ""category"": ""guided"",
+                            ""giver_id"": ""#55"", ""giver_name"": ""Ilse"", ""turn_in_id"": ""#70"", ""turn_in_name"": ""Wren"",
+                            ""next_step"": ""Plot passage to Stickney Yards (+ship/plan stickney)"",
+                            ""next_room_entry"": """ + targetRoomEntry + @""",
+                            ""checkpoints"": [
+                                {
+                                    ""id"": ""sail_stickney"",
+                                    ""title"": ""Deliver 5 metals to Stickney Yards"",
+                                    ""instructions"": ""Run +ship/plan stickney and +ship/order depart stickney."",
+                                    ""room_entry"": """ + targetRoomEntry + @""",
+                                    ""checked"": false,
+                                    ""live_ready"": false
+                                }
+                            ]
+                        }
+                    ],
+                    ""completed"": []
+                }");
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(panelJson));
+
+                // 1. QuestDestinationHint resolves stickney
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveDestinationPort(out var destHint));
+                Assert.AreEqual("stickney", destHint.PortId);
+                Assert.AreEqual("Stickney Yards", destHint.PortLabel);
+
+                // 2. Solar System Orrery highlights Mars/Stickney with golden objective ring & 1-click focus
+                Assert.AreEqual("stickney", hud.SolarMap.QuestDestinationPortId);
+                Assert.IsTrue(hud.SolarMap.LastOrreryHasQuestDestinationRing, "Solar Orrery must draw golden quest objective ring around destination body");
+                string solarCmd = null;
+                hud.SolarMap.OnCommandRequested += c => solarCmd = c;
+                Assert.IsTrue(hud.SolarMap.FocusQuestDestinationPort());
+                Assert.AreEqual("stickney", hud.SolarMap.SelectedPortId);
+                hud.SolarMap.DispatchPlotCourse();
+                Assert.AreEqual("+ship/plan stickney", solarCmd);
+
+                // 3. Sailing Plan tab shows golden destination banner, highlights Stickney button, and 1-click selects port
+                tradeState.SelectedDestinationPort = "ceres";
+                hud.OpenTradeAndSailingModal("SAILING PLAN", openSailingTab: true);
+                Assert.IsTrue(hud.IsSailingQuestBannerVisible, "Sailing Plan must show golden Quest Destination banner");
+                StringAssert.Contains("STICKNEY YARDS", hud.SailingQuestBannerText);
+                Assert.AreEqual(TacSim.UI.TacSimHudController.CorridorDestinationIndex("stickney"), hud.HighlightedQuestPortIndex);
+                Assert.IsTrue(hud.ApplyQuestDestinationPort());
+                Assert.AreEqual("stickney", tradeState.SelectedDestinationPort);
+
+                // 4. [N] Ops Directory highlights active quest station room & quest-marked NPC -> opens Quest Dialog directly
+                string openedNpcDialogId = null;
+                hud.OpsDirectory.OnOpenNpcQuestDialogRequested += id =>
+                {
+                    openedNpcDialogId = id;
+                    hud.QuestJournal.OpenNpcQuestDialog(id);
+                };
+                hud.OpsDirectory.SetOpen(true);
+                Assert.GreaterOrEqual(hud.OpsDirectory.HighlightedQuestDirectoryRowIndex, 0, "Deck Directory must highlight the active quest objective room");
+                Assert.AreEqual(1, hud.OpsDirectory.HighlightedQuestPresenceRowCount, "Room Presence must badge Maren as a quest-marked NPC");
+                Assert.IsTrue(hud.OpsDirectory.TriggerPresenceTalkButton(0));
+                Assert.AreEqual("#42", openedNpcDialogId);
+                Assert.IsTrue(hud.QuestJournal.IsQuestDialogOpen, "Clicking QUEST on a quest-marked NPC in Ops Directory must open the Quest Dialog");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

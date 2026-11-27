@@ -28,10 +28,14 @@ namespace TacSim.UI
         public string SelectedPortId { get; private set; }
         public bool IsTilted3D => _tiltDeg > 5f;
         public float Zoom => _zoom;
+        public bool LastOrreryHasQuestDestinationRing { get; private set; }
+        public string QuestDestinationPortId { get; private set; } = string.Empty;
+        public string QuestDestinationPortLabel { get; private set; } = string.Empty;
 
         private const int TexSize = 512;
 
         private Font _font;
+        private TacSimQuestJournal _questJournal;
         private GameObject _overlay;
         private Text _headingText;
         private Text _captionText;
@@ -46,6 +50,8 @@ namespace TacSim.UI
         private Image _tiltBtnImg;
         private Image _lagBtnImg;
         private Image _routesBtnImg;
+        private Button _questFocusBtn;
+        private Text _questFocusBtnLbl;
         private Button _plotBtn;
         private Button _departBtn;
         private Button _windowBtn;
@@ -126,6 +132,9 @@ namespace TacSim.UI
             CreateButton(toolbar.transform, "ZOOM +", new Color(0.14f, 0.26f, 0.38f), () => AdjustZoom(+0.25f));
             CreateButton(toolbar.transform, "RESET", new Color(0.22f, 0.26f, 0.34f), ResetView);
             CreateButton(toolbar.transform, "GROUND [G]", new Color(0.14f, 0.44f, 0.38f), () => OnOpenGroundChartRequested?.Invoke());
+            _questFocusBtn = CreateButton(toolbar.transform, "QUEST", new Color(0.56f, 0.40f, 0.10f), () => FocusQuestDestinationPort());
+            _questFocusBtnLbl = _questFocusBtn.GetComponentInChildren<Text>();
+            _questFocusBtn.gameObject.SetActive(false);
 
             var viewportGo = new GameObject("OrreryViewport", typeof(RectTransform), typeof(RawImage));
             viewportGo.transform.SetParent(leftPane.transform, false);
@@ -222,11 +231,54 @@ namespace TacSim.UI
             _overlay.SetActive(false);
         }
 
+        public void BindQuestJournal(TacSimQuestJournal journal)
+        {
+            if (_questJournal == journal) return;
+            if (_questJournal != null)
+                _questJournal.OnQuestsPanelUpdated -= RefreshQuestGuidance;
+            _questJournal = journal;
+            if (_questJournal != null)
+                _questJournal.OnQuestsPanelUpdated += RefreshQuestGuidance;
+            RefreshQuestGuidance();
+        }
+
+        public void RefreshQuestGuidance()
+        {
+            if (_questJournal != null && _questJournal.TryGetActiveDestinationPort(out var hint))
+            {
+                QuestDestinationPortId = hint.PortId;
+                QuestDestinationPortLabel = hint.PortLabel;
+                if (_questFocusBtn != null) _questFocusBtn.gameObject.SetActive(true);
+                if (_questFocusBtnLbl != null) _questFocusBtnLbl.text = $"QUEST: {hint.PortId.ToUpperInvariant()}";
+            }
+            else
+            {
+                QuestDestinationPortId = string.Empty;
+                QuestDestinationPortLabel = string.Empty;
+                if (_questFocusBtn != null) _questFocusBtn.gameObject.SetActive(false);
+            }
+            RebuildSidebarList();
+            _dirty = true;
+            RedrawOrreryTexture();
+        }
+
+        public bool FocusQuestDestinationPort()
+        {
+            if (_questJournal == null || !_questJournal.TryGetActiveDestinationPort(out var hint))
+                return false;
+            FocusPort(hint.PortId);
+            return true;
+        }
+
         public void ResetSessionState()
         {
             CurrentFrame = null;
             SelectedBodyId = null;
             SelectedPortId = null;
+            LastOrreryHasQuestDestinationRing = false;
+            QuestDestinationPortId = string.Empty;
+            QuestDestinationPortLabel = string.Empty;
+            if (_questFocusBtn != null) _questFocusBtn.gameObject.SetActive(false);
             if (_overlay != null) _overlay.SetActive(false);
             if (_headingText != null) _headingText.text = "SOLAR SYSTEM HOLO-ORRERY  //  WAITING FOR LIVE SKY CHART...";
             if (_dossierText != null) _dossierText.text = "Press <b>REFRESH SKY</b> to query the server's live <i>sky.chart</i> ephemeris.";
@@ -395,6 +447,8 @@ namespace TacSim.UI
 
         private void OnDestroy()
         {
+            if (_questJournal != null)
+                _questJournal.OnQuestsPanelUpdated -= RefreshQuestGuidance;
             if (_orreryTex != null)
             {
                 if (Application.isPlaying) Destroy(_orreryTex);
@@ -472,6 +526,33 @@ namespace TacSim.UI
             OnOpenSailingPlanRequested?.Invoke(port);
         }
 
+        private bool IsQuestDestinationRoute(SolarChartRoute route)
+        {
+            return route != null &&
+                   !string.IsNullOrEmpty(QuestDestinationPortId) &&
+                   string.Equals(route.To, QuestDestinationPortId, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private bool IsQuestDestinationBody(SolarChartBody body)
+        {
+            if (body == null || string.IsNullOrEmpty(QuestDestinationPortId)) return false;
+            if (string.Equals(body.Id, QuestDestinationPortId, StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (CurrentFrame != null)
+            {
+                for (int i = 0; i < CurrentFrame.Routes.Count; i++)
+                {
+                    var r = CurrentFrame.Routes[i];
+                    if (string.Equals(r.To, QuestDestinationPortId, StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(r.Body, body.Id, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
         private void RebuildSidebarList()
         {
             if (_routeListRoot == null) return;
@@ -490,12 +571,16 @@ namespace TacSim.UI
                 var r = CurrentFrame.Routes[i];
                 string bodyId = !string.IsNullOrEmpty(r.Body) ? r.Body : r.To;
                 string portId = r.To;
+                bool isQuest = IsQuestDestinationRoute(r);
                 string summary = r.Loaded != null
                     ? $"{r.To.ToUpperInvariant()}  ({TacSimSolarChartFrame.FormatHours(r.Loaded.TotalSeconds)}, {r.Loaded.BurnTonnes:0.#}t)"
                     : $"{r.To.ToUpperInvariant()}  (overweight)";
                 bool isSel = string.Equals(SelectedPortId, portId, StringComparison.OrdinalIgnoreCase);
-                Color col = isSel ? new Color(0.22f, 0.56f, 0.72f) : new Color(0.14f, 0.28f, 0.40f);
-                var btn = CreateButton(_routeListRoot, "ROUTE: " + summary, col, () => SelectBody(bodyId, portId));
+                Color col = isQuest
+                    ? (isSel ? new Color(0.68f, 0.48f, 0.14f) : new Color(0.54f, 0.38f, 0.12f))
+                    : (isSel ? new Color(0.22f, 0.56f, 0.72f) : new Color(0.14f, 0.28f, 0.40f));
+                string prefix = isQuest ? "[QUEST] ROUTE: " : "ROUTE: ";
+                var btn = CreateButton(_routeListRoot, prefix + summary, col, () => SelectBody(bodyId, portId));
                 var le = btn.gameObject.AddComponent<LayoutElement>();
                 le.minHeight = 30f;
                 le.preferredHeight = 30f;
@@ -514,14 +599,18 @@ namespace TacSim.UI
             {
                 var b = sorted[i];
                 string bId = b.Id;
+                bool isQuest = IsQuestDestinationBody(b);
                 string tag = b.Here
                     ? "HERE"
                     : (b.LagSeconds.HasValue ? TacSimSolarChartFrame.FormatLightLag(b.LagSeconds.Value) : $"{b.RadiusAu:0.00} AU");
                 bool isSel = string.Equals(SelectedBodyId, bId, StringComparison.OrdinalIgnoreCase);
-                Color col = b.Here
-                    ? new Color(0.42f, 0.34f, 0.12f)
-                    : (isSel ? new Color(0.18f, 0.44f, 0.58f) : new Color(0.10f, 0.17f, 0.25f));
-                var btn = CreateButton(_routeListRoot, $"{b.Label}  —  {b.RadiusAu:0.00} AU  [{tag}]", col, () => SelectBody(bId));
+                Color col = isQuest && !b.Here
+                    ? new Color(0.48f, 0.36f, 0.12f)
+                    : (b.Here
+                        ? new Color(0.42f, 0.34f, 0.12f)
+                        : (isSel ? new Color(0.18f, 0.44f, 0.58f) : new Color(0.10f, 0.17f, 0.25f)));
+                string prefix = isQuest ? "[QUEST] " : string.Empty;
+                var btn = CreateButton(_routeListRoot, $"{prefix}{b.Label}  —  {b.RadiusAu:0.00} AU  [{tag}]", col, () => SelectBody(bId));
                 var le = btn.gameObject.AddComponent<LayoutElement>();
                 le.minHeight = 26f;
                 le.preferredHeight = 26f;
@@ -561,6 +650,7 @@ namespace TacSim.UI
         private void RedrawOrreryTexture()
         {
             _dirty = false;
+            LastOrreryHasQuestDestinationRing = false;
             if (_orreryTex == null || _pixels == null) return;
 
             // 1. Deep space radial gradient background
@@ -636,19 +726,21 @@ namespace TacSim.UI
                     for (int i = 0; i < CurrentFrame.Routes.Count; i++)
                     {
                         var route = CurrentFrame.Routes[i];
+                        bool isQuestRoute = IsQuestDestinationRoute(route);
                         bool isSel = string.Equals(route.To, SelectedPortId, StringComparison.OrdinalIgnoreCase) ||
                                      string.Equals(route.Body, SelectedBodyId, StringComparison.OrdinalIgnoreCase);
-                        Color32 routeCol = isSel
-                            ? new Color32(255, 212, 92, 255)
-                            : new Color32(165, 136, 76, 255);
+                        bool highlight = isSel || isQuestRoute;
+                        Color32 routeCol = isQuestRoute
+                            ? new Color32(255, 224, 96, 255)
+                            : (isSel ? new Color32(255, 212, 92, 255) : new Color32(165, 136, 76, 255));
 
                         var poly = CurrentFrame.ComputeRoutePolylineUv(route, _zoom, _panUv, _tiltDeg, _yawDeg);
                         for (int k = 1; k < poly.Count; k++)
                         {
                             Vector2 p0 = UvToPx(poly[k - 1]);
                             Vector2 p1 = UvToPx(poly[k]);
-                            DrawLine(p0, p1, routeCol, dashed: !isSel);
-                            if (isSel)
+                            DrawLine(p0, p1, routeCol, dashed: !highlight);
+                            if (highlight)
                             {
                                 DrawLine(p0 + Vector2.up, p1 + Vector2.up, routeCol, dashed: false);
                                 Vector2 pulse = Vector2.Lerp(p0, p1, _pulsePhase);
@@ -690,7 +782,15 @@ namespace TacSim.UI
                     if (string.Equals(b.Id, SelectedBodyId, StringComparison.OrdinalIgnoreCase))
                         DrawCircleOutline(p, 14.5f, new Color32(92, 224, 255, 255));
 
-                    PositionBodyLabel(labelIdx++, b, uv);
+                    bool isQuestBody = IsQuestDestinationBody(b);
+                    if (isQuestBody)
+                    {
+                        DrawCircleOutline(p, 16.5f, new Color32(255, 220, 72, 255));
+                        DrawCircleOutline(p, 18.0f, new Color32(255, 236, 130, 255));
+                        LastOrreryHasQuestDestinationRing = true;
+                    }
+
+                    PositionBodyLabel(labelIdx++, b, uv, isQuestBody);
                 }
                 HideUnusedLabels(labelIdx);
             }
@@ -709,23 +809,26 @@ namespace TacSim.UI
             _orreryTex.Apply(false, false);
         }
 
-        private void PositionBodyLabel(int poolIndex, SolarChartBody body, Vector2 uv)
+        private void PositionBodyLabel(int poolIndex, SolarChartBody body, Vector2 uv, bool isQuestTarget)
         {
             if (_labelsLayer == null) return;
             while (_bodyLabelPool.Count <= poolIndex)
             {
                 var lbl = CreateText(_labelsLayer, "", 11, FontStyle.Bold, TextAnchor.MiddleLeft, Color.white);
-                lbl.rectTransform.sizeDelta = new Vector2(110f, 20f);
+                lbl.rectTransform.sizeDelta = new Vector2(130f, 20f);
                 _bodyLabelPool.Add(lbl);
             }
             var t = _bodyLabelPool[poolIndex];
             t.gameObject.SetActive(true);
-            t.text = body.Here ? $"★ {body.Label}" : body.Label;
-            t.color = body.Here
-                ? new Color(0.96f, 0.82f, 0.34f)
-                : (string.Equals(body.Id, SelectedBodyId, StringComparison.OrdinalIgnoreCase)
-                    ? new Color(0.45f, 0.94f, 1f)
-                    : new Color(0.76f, 0.88f, 0.96f));
+            string baseLabel = body.Here ? $"★ {body.Label}" : body.Label;
+            t.text = isQuestTarget ? $"[!] {baseLabel}" : baseLabel;
+            t.color = isQuestTarget
+                ? new Color(1f, 0.88f, 0.34f)
+                : (body.Here
+                    ? new Color(0.96f, 0.82f, 0.34f)
+                    : (string.Equals(body.Id, SelectedBodyId, StringComparison.OrdinalIgnoreCase)
+                        ? new Color(0.45f, 0.94f, 1f)
+                        : new Color(0.76f, 0.88f, 0.96f)));
             var rt = t.rectTransform;
             rt.anchorMin = uv;
             rt.anchorMax = uv;

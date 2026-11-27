@@ -314,12 +314,20 @@ namespace TacSim.UI
         private Button _exchangeQuestQtyBtn;
         private Text _exchangeQuestQtyBtnLbl;
         private RectTransform _listingsViewportRect;
+        private GameObject _sailingQuestBanner;
+        private Text _sailingQuestBannerText;
+        private RectTransform _sailingOrderRow1Rect;
+        private RectTransform _sailingOrderRow2Rect;
+        private RectTransform _sailingOutputViewportRect;
         private Action _loadMoreAction;
         private string _lastListingsSignature;
 
         public int HighlightedQuestListingCount { get; private set; }
         public bool IsExchangeQuestBannerVisible => _exchangeQuestBanner != null && _exchangeQuestBanner.activeSelf;
         public string ExchangeQuestBannerText => _exchangeQuestBannerText != null ? _exchangeQuestBannerText.text : string.Empty;
+        public bool IsSailingQuestBannerVisible => _sailingQuestBanner != null && _sailingQuestBanner.activeSelf;
+        public string SailingQuestBannerText => _sailingQuestBannerText != null ? _sailingQuestBannerText.text : string.Empty;
+        public int HighlightedQuestPortIndex { get; private set; } = -1;
 
         // Modal dialog
         private GameObject _modalPanel;
@@ -638,9 +646,12 @@ namespace TacSim.UI
             QuestJournal.BuildUi(_hudRoot.transform, _uiFont);
             Overlays?.BindQuestJournal(QuestJournal);
             GroundChart?.BindQuestJournal(QuestJournal);
+            SolarMap?.BindQuestJournal(QuestJournal);
+            OpsDirectory?.BindQuestJournal(QuestJournal);
             QuestJournal.OnQuestsPanelUpdated += () =>
             {
                 _lastListingsSignature = null;
+                RefreshSailingQuestGuidance();
                 if (_tradePanel != null && _tradePanel.activeSelf)
                     RefreshTradeTerminal();
             };
@@ -1076,8 +1087,18 @@ namespace TacSim.UI
                 _destPortImages.Add(pb.GetComponent<Image>());
             }
 
+            // Golden active quest corridor destination banner (shown only when a quest targets a corridor port)
+            _sailingQuestBanner = CreatePanel(_sailingTabBody.transform, "SailingQuestBanner", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -72f), new Vector2(0f, -44f), new Color(0.24f, 0.18f, 0.05f, 0.96f));
+            CreatePanel(_sailingQuestBanner.transform, "QuestAccent", new Vector2(0f, 0f), new Vector2(0f, 1f), Vector2.zero, new Vector2(3f, 0f), new Color(1f, 0.84f, 0.24f, 1f));
+            _sailingQuestBannerText = CreateText(_sailingQuestBanner.transform, "[QUEST] Destination", 12, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(1f, 0.90f, 0.45f));
+            SetRect(_sailingQuestBannerText.rectTransform, new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(10f, 0f), new Vector2(-180f, 0f));
+            var selQuestPortBtn = CreateButton(_sailingQuestBanner.transform, "SELECT QUEST PORT", new Color(0.56f, 0.40f, 0.10f), () => ApplyQuestDestinationPort());
+            SetRect(selQuestPortBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-172f, 3f), new Vector2(-6f, -3f));
+            _sailingQuestBanner.SetActive(false);
+
             // 2 rows of 1-click Captain's Standing Order & Passage Actions (exact crates/tacsim/src/port/orders.rs syntax)
             var row1 = CreatePanel(_sailingTabBody.transform, "OrderRow1", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -88f), new Vector2(0f, -46f), Color.clear);
+            _sailingOrderRow1Rect = row1.GetComponent<RectTransform>();
             var r1Hlg = row1.AddComponent<HorizontalLayoutGroup>();
             r1Hlg.spacing = 8f; r1Hlg.childControlWidth = true; r1Hlg.childControlHeight = true; r1Hlg.childForceExpandWidth = true;
 
@@ -1093,6 +1114,7 @@ namespace TacSim.UI
                 OnCommandSubmitted?.Invoke($"+ship/order buy metals {GetOrderTradeQty()}"));
 
             var row2 = CreatePanel(_sailingTabBody.transform, "OrderRow2", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -136f), new Vector2(0f, -94f), Color.clear);
+            _sailingOrderRow2Rect = row2.GetComponent<RectTransform>();
             var r2Hlg = row2.AddComponent<HorizontalLayoutGroup>();
             r2Hlg.spacing = 8f; r2Hlg.childControlWidth = true; r2Hlg.childControlHeight = true; r2Hlg.childForceExpandWidth = true;
 
@@ -1108,6 +1130,7 @@ namespace TacSim.UI
                 OnCommandSubmitted?.Invoke("+ship/order clear"));
 
             var sailViewport = CreatePanel(_sailingTabBody.transform, "SailingOutputViewport", new Vector2(0f, 0f), new Vector2(1f, 1f), Vector2.zero, new Vector2(0f, -144f), new Color(0.02f, 0.05f, 0.09f, 0.90f));
+            _sailingOutputViewportRect = sailViewport.GetComponent<RectTransform>();
             sailViewport.AddComponent<RectMask2D>();
             var sailScroll = sailViewport.AddComponent<ScrollRect>();
             _sailingPlanOutputText = CreateText(sailViewport.transform, "Select a corridor destination above to dry-run burn/stores (+ship/plan) or queue automated captain's orders (+ship/order).", 14, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.86f, 0.94f, 1f));
@@ -2425,12 +2448,62 @@ namespace TacSim.UI
         {
             if (_boundTradeState != null)
                 _boundTradeState.SelectedDestinationPort = portCode;
+            RefreshDestinationPortButtons(index);
+        }
+
+        private void RefreshDestinationPortButtons(int selectedIdx)
+        {
             for (int i = 0; i < _destPortImages.Count; i++)
             {
-                _destPortImages[i].color = (i == index)
-                    ? new Color(0.22f, 0.66f, 0.88f, 1f)
-                    : new Color(0.13f, 0.24f, 0.35f, 0.92f);
+                if (i == selectedIdx)
+                    _destPortImages[i].color = new Color(0.22f, 0.66f, 0.88f, 1f);
+                else if (i == HighlightedQuestPortIndex)
+                    _destPortImages[i].color = new Color(0.58f, 0.42f, 0.12f, 1f);
+                else
+                    _destPortImages[i].color = new Color(0.13f, 0.24f, 0.35f, 0.92f);
             }
+        }
+
+        public bool ApplyQuestDestinationPort()
+        {
+            if (QuestJournal == null || !QuestJournal.TryGetActiveDestinationPort(out var hint))
+                return false;
+            int idx = CorridorDestinationIndex(hint.PortId);
+            if (idx < 0) return false;
+            SelectDestinationPort(idx, CorridorDestinations[idx].code);
+            RefreshSailingQuestGuidance();
+            return true;
+        }
+
+        private void RefreshSailingQuestGuidance()
+        {
+            QuestDestinationHint hint = default;
+            bool hasDest = QuestJournal != null && QuestJournal.TryGetActiveDestinationPort(out hint);
+            HighlightedQuestPortIndex = hasDest ? CorridorDestinationIndex(hint.PortId) : -1;
+
+            if (_sailingQuestBanner != null)
+                _sailingQuestBanner.SetActive(hasDest);
+            if (hasDest && _sailingQuestBannerText != null)
+                _sailingQuestBannerText.text = $"[QUEST] Destination: {hint.PortLabel.ToUpperInvariant()} — {hint.QuestTitle}";
+
+            float shift = hasDest ? -32f : 0f;
+            if (_sailingOrderRow1Rect != null)
+            {
+                _sailingOrderRow1Rect.offsetMin = new Vector2(0f, -88f + shift);
+                _sailingOrderRow1Rect.offsetMax = new Vector2(0f, -46f + shift);
+            }
+            if (_sailingOrderRow2Rect != null)
+            {
+                _sailingOrderRow2Rect.offsetMin = new Vector2(0f, -136f + shift);
+                _sailingOrderRow2Rect.offsetMax = new Vector2(0f, -94f + shift);
+            }
+            if (_sailingOutputViewportRect != null)
+            {
+                _sailingOutputViewportRect.offsetMax = new Vector2(0f, -144f + shift);
+            }
+
+            int selIdx = _boundTradeState != null ? CorridorDestinationIndex(_boundTradeState.SelectedDestinationPort) : -1;
+            RefreshDestinationPortButtons(selIdx);
         }
 
         private int GetOrderTradeQty()
@@ -2470,7 +2543,10 @@ namespace TacSim.UI
             if (!_tradeSailingTabActive)
                 RebuildListingCards();
             else
+            {
+                RefreshSailingQuestGuidance();
                 RefreshSailingOutputBox();
+            }
         }
 
         private static void UpdateGaugeBar(Image fill, Text label, float ratio, string text, Color normalColor)
