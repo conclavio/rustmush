@@ -26,6 +26,7 @@ namespace TacSim.UI
         public event Action<string> OnArenaCockpitVerbRequested;
         public event Action<string> OnPrefillChatRequested;
         public event Action OnToggleVehicleCameraViewRequested;
+        public event Action OnCycleArenaOpticsRequested;
 
         private Font _font;
         private SurfaceMiningController _surface;
@@ -82,6 +83,8 @@ namespace TacSim.UI
         private Text _fireBtnLabel;
         private Button _emconBtn;
         private Text _emconBtnLabel;
+        private Image _opticsBtnBg;
+        private Text _opticsBtnLabel;
         private Button _advanceBtn;
         private Text _advanceBtnLabel;
         private string _selectedAdvanceSpot;
@@ -1205,6 +1208,9 @@ namespace TacSim.UI
             _advanceBtnLabel = _advanceBtn.GetComponentInChildren<Text>();
             CreateBtn(squadRow.transform, "SQUAD: HOLD", new Color(0.20f, 0.36f, 0.46f), () => OnArenaCockpitVerbRequested?.Invoke($"{ResolveSquadAllOrderPrefix()}hold"));
             CreateBtn(squadRow.transform, "CAM VIEW [V]", new Color(0.28f, 0.28f, 0.46f), () => OnToggleVehicleCameraViewRequested?.Invoke());
+            var opticsBtn = CreateBtn(squadRow.transform, "OPTICS 1x [Q]", new Color(0.20f, 0.30f, 0.44f), () => OnCycleArenaOpticsRequested?.Invoke());
+            _opticsBtnBg = opticsBtn.GetComponent<Image>();
+            _opticsBtnLabel = opticsBtn.GetComponentInChildren<Text>();
             CreateBtn(squadRow.transform, "EXIT POD", new Color(0.48f, 0.16f, 0.18f), () => OnArenaCockpitVerbRequested?.Invoke("exit"));
 
             // Detachment Command Deck (stacked cleanly above ArenaSquadOrderBar, visible only when server projects `detachment`)
@@ -1350,6 +1356,21 @@ namespace TacSim.UI
             _arenaDebriefCard.SetActive(false);
 
             _arenaBattleHudRoot.SetActive(false);
+        }
+
+        public string ArenaOpticsButtonSnapshot => _opticsBtnLabel != null ? _opticsBtnLabel.text : string.Empty;
+
+        public void UpdateArenaOpticsButton(int zoomLevel)
+        {
+            int lvl = Mathf.Clamp(zoomLevel, 0, 2);
+            if (_opticsBtnLabel != null)
+                _opticsBtnLabel.text = lvl == 2 ? "OPTICS 4x [Q]" : (lvl == 1 ? "OPTICS 2.5x [Q]" : "OPTICS 1x [Q]");
+            if (_opticsBtnBg != null)
+            {
+                _opticsBtnBg.color = lvl == 2
+                    ? new Color(0.14f, 0.56f, 0.68f, 0.98f)
+                    : (lvl == 1 ? new Color(0.16f, 0.44f, 0.58f, 0.96f) : new Color(0.20f, 0.30f, 0.44f, 0.95f));
+            }
         }
 
         public void RefreshArenaHud()

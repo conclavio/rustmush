@@ -8559,5 +8559,119 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ArenaGunnerOpticsZoomAndRangefinderReticle_CyclesFovAndDisplaysLiveBallistics()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave10PR1_ArenaGunnerOpticsTest");
+            try
+            {
+                var catalog = TacSimAssetCatalog.LoadOrDefault();
+                var camGo = new UnityEngine.GameObject("OpticsCam");
+                camGo.transform.SetParent(rootGo.transform, false);
+                var cam = camGo.AddComponent<UnityEngine.Camera>();
+                var rig = rootGo.AddComponent<TacSim.Character.TacSimCameraRig>();
+                rig.ControlledCamera = cam;
+                rig.ApplyCameraPreferences(100, 100, false, 62, savePrefs: false);
+
+                var arenaGo = new UnityEngine.GameObject("Arena");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(catalog, TacSimTerrainDecoder.LoadStaticArena("proving_ground"));
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.TacticalBrackets.BindControllers(null, null, arena);
+                hud.Overlays.BindControllers(null, arena, null);
+
+                // 1. Camera rig [Q] optics zoom cycles 1x -> 2.5x -> 4x -> 1x in GroundVehicleChase and smoothly narrows FOV
+                rig.SetMode(TacSim.Character.CameraRigMode.GroundVehicleChase);
+                Assert.AreEqual(0, rig.ArenaOpticsZoomLevel);
+                Assert.IsFalse(rig.IsArenaOpticsZoomed);
+                Assert.AreEqual(62f, rig.TargetOpticsFov, 0.1f);
+
+                int cycleCalls = 0;
+                arena.OnCycleOpticsZoomRequested += () =>
+                {
+                    cycleCalls++;
+                    int lvl = rig.CycleArenaOpticsZoom();
+                    hud.Overlays.UpdateArenaOpticsButton(lvl);
+                };
+
+                Assert.IsTrue(arena.HandleArenaCombatHotkey(UnityEngine.KeyCode.Q), "[Q] hotkey must trigger optics zoom cycle");
+                Assert.AreEqual(1, cycleCalls);
+                Assert.AreEqual(1, rig.ArenaOpticsZoomLevel);
+                Assert.IsTrue(rig.IsArenaOpticsZoomed);
+                Assert.AreEqual(2.5f, rig.ArenaOpticsMagnification, 0.01f);
+                Assert.Less(rig.TargetOpticsFov, 35f, "2.5x gunner zoom must narrow camera FOV significantly");
+                StringAssert.Contains("2.5x", hud.Overlays.ArenaOpticsButtonSnapshot);
+
+                rig.StepOpticsFov(1.0f);
+                Assert.AreEqual(rig.TargetOpticsFov, cam.fieldOfView, 0.25f, "StepOpticsFov must converge camera FOV smoothly toward TargetOpticsFov");
+
+                Assert.IsTrue(arena.HandleArenaCombatHotkey(UnityEngine.KeyCode.Q));
+                Assert.AreEqual(2, rig.ArenaOpticsZoomLevel);
+                Assert.AreEqual(4.0f, rig.ArenaOpticsMagnification, 0.01f);
+                Assert.Less(rig.TargetOpticsFov, 22f, "4x sniper zoom must narrow camera FOV further");
+                StringAssert.Contains("4x", hud.Overlays.ArenaOpticsButtonSnapshot);
+
+                // Switching to Overhead auto-resets optics zoom to 1x; pressing [Q] from Overhead snaps into 2.5x Cupola optics!
+                rig.SetMode(TacSim.Character.CameraRigMode.GroundVehicleOverhead);
+                Assert.AreEqual(0, rig.ArenaOpticsZoomLevel);
+                Assert.IsFalse(rig.IsArenaOpticsZoomed);
+                Assert.AreEqual(62f, cam.fieldOfView, 0.1f);
+
+                Assert.AreEqual(1, rig.CycleArenaOpticsZoom(), "Pressing [Q] in Overhead mode must snap directly into 2.5x Cupola optics");
+                Assert.AreEqual(TacSim.Character.CameraRigMode.GroundVehicleCupola, rig.Mode);
+                Assert.AreEqual(1, rig.ArenaOpticsZoomLevel);
+
+                // Leaving Arena into ThirdPersonWalk resets optics zoom cleanly
+                rig.SetMode(TacSim.Character.CameraRigMode.ThirdPersonWalk);
+                Assert.AreEqual(0, rig.ArenaOpticsZoomLevel);
+                Assert.AreEqual(62f, cam.fieldOfView, 0.1f);
+
+                // 2. Diegetic Gunner Optics Reticle HUD renders live rangefinder, aspect, LOS, and weapon readiness
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 140, ""seated"": true, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""mode"": ""skirmish"", ""power"": ""online"",
+                    ""x_cm"": 10000, ""y_cm"": 10000, ""heading_deg"": 90, ""speed_kph"": 0,
+                    ""sight_m"": 240, ""weapons_free"": true, ""heat"": 200, ""heat_max"": 1000,
+                    ""lock_designator"": ""B1"", ""lock_range_m"": 180, ""lock_percent"": 84,
+                    ""weapons"": [
+                        { ""id"": ""main_gun"", ""ready"": true, ""ready_in_ms"": 0, ""rounds"": 18, ""rounds_max"": 20, ""hit_percent"": 84, ""range_band"": 1, ""bands_cm"": [12000, 24000, 36000] }
+                    ],
+                    ""contacts"": [
+                        { ""designator"": ""B1"", ""class"": ""line_tank"", ""party"": ""B"", ""friendly"": false, ""cell"": [118, 100], ""range_m"": 180, ""bearing_deg"": 90, ""facing"": ""rear"", ""aspect"": ""rear"", ""band"": ""close"", ""health"": ""intact"", ""odds"": [{ ""weapon"": ""main_gun"", ""percent"": 84 }] }
+                    ]
+                }"));
+
+                // Wide 1x Chase view hides gunner optics reticle
+                hud.TacticalBrackets.SyncBrackets(TacSimActiveStage.SimulatorArena, cam, hideForOverlay: false, arenaOpticsZoomLevel: 0, arenaCupolaView: false);
+                Assert.IsFalse(hud.TacticalBrackets.IsGunnerOpticsReticleVisible, "Optics reticle should stay hidden in wide 1x chase view");
+
+                // 2.5x Gunner Zoom shows optics reticle with locked target rangefinder & ready weapon status
+                hud.TacticalBrackets.SyncBrackets(TacSimActiveStage.SimulatorArena, cam, hideForOverlay: false, arenaOpticsZoomLevel: 1, arenaCupolaView: false);
+                Assert.IsTrue(hud.TacticalBrackets.IsGunnerOpticsReticleVisible);
+                StringAssert.Contains("2.5x", hud.TacticalBrackets.GunnerOpticsModeSnapshot);
+                StringAssert.Contains("LOCK B1", hud.TacticalBrackets.GunnerOpticsRangefinderSnapshot);
+                StringAssert.Contains("180m", hud.TacticalBrackets.GunnerOpticsRangefinderSnapshot);
+                StringAssert.Contains("84%", hud.TacticalBrackets.GunnerOpticsRangefinderSnapshot);
+                StringAssert.Contains("REAR", hud.TacticalBrackets.GunnerOpticsRangefinderSnapshot);
+                StringAssert.Contains("RDY", hud.TacticalBrackets.GunnerOpticsWeaponStatusSnapshot);
+
+                // Cupola 1x also displays cupola visor reticle
+                hud.TacticalBrackets.SyncBrackets(TacSimActiveStage.SimulatorArena, cam, hideForOverlay: false, arenaOpticsZoomLevel: 0, arenaCupolaView: true);
+                Assert.IsTrue(hud.TacticalBrackets.IsGunnerOpticsReticleVisible);
+                StringAssert.Contains("CUPOLA", hud.TacticalBrackets.GunnerOpticsModeSnapshot);
+
+                // Overlay / non-arena stage hides reticle cleanly
+                hud.TacticalBrackets.SyncBrackets(TacSimActiveStage.SimulatorArena, cam, hideForOverlay: true, arenaOpticsZoomLevel: 2, arenaCupolaView: true);
+                Assert.IsFalse(hud.TacticalBrackets.IsGunnerOpticsReticleVisible);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

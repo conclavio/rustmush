@@ -446,6 +446,7 @@ namespace TacSim.Arena
         public event Action<string> OnArenaCombatLog;
         public event Action<ArenaDetachmentOrder> OnNewDetachmentOrderReceived;
         public event Action OnToggleCameraViewRequested;
+        public event Action OnCycleOpticsZoomRequested;
         public event Action<bool> OnWeaponShotFired; // (isLaser)
         public event Action<string, int, bool> OnPlayerArmorDamaged; // (facetLabel, deltaPct, internalHit)
         public event Action<ArenaCombatNotice> OnArenaNoticeReceived;
@@ -729,6 +730,9 @@ namespace TacSim.Arena
                     return true;
                 case KeyCode.V:
                     OnToggleCameraViewRequested?.Invoke();
+                    return true;
+                case KeyCode.Q:
+                    OnCycleOpticsZoomRequested?.Invoke();
                     return true;
                 case KeyCode.Alpha1:
                     ExecuteCockpitAction("throttle slow");
@@ -2683,6 +2687,7 @@ namespace TacSim.Arena
             {
                 if (Input.GetKeyDown(KeyCode.Space)) HandleArenaCombatHotkey(KeyCode.Space);
                 else if (Input.GetKeyDown(KeyCode.V)) HandleArenaCombatHotkey(KeyCode.V);
+                else if (Input.GetKeyDown(KeyCode.Q)) HandleArenaCombatHotkey(KeyCode.Q);
                 else if (Input.GetKeyDown(KeyCode.Alpha1)) HandleArenaCombatHotkey(KeyCode.Alpha1);
                 else if (Input.GetKeyDown(KeyCode.Alpha2)) HandleArenaCombatHotkey(KeyCode.Alpha2);
                 else if (Input.GetKeyDown(KeyCode.Alpha3)) HandleArenaCombatHotkey(KeyCode.Alpha3);
