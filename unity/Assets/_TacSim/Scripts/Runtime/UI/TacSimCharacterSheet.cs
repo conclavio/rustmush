@@ -34,6 +34,7 @@ namespace TacSim.UI
         public event Action OnOpenTradeTerminalRequested;
         public event Action OnOpenSailingPlanRequested;
         public event Action OnOpenSolarChartRequested;
+        public event Action OnOpenQuestJournalRequested;
         public event Action OnRefreshSheetRequested;
         public event Action OnRefreshUnitAndVitalsRequested;
 
@@ -83,6 +84,7 @@ namespace TacSim.UI
         private SpaceFlightController _space;
         private SurfaceMiningController _surface;
         private OocArenaController _arena;
+        private TacSimQuestJournal _questJournal;
 
         private string _pilotName = "Unattached Pilot";
         private string _locationName = "Ceres Freeport";
@@ -204,6 +206,11 @@ namespace TacSim.UI
             {
                 SetOpen(false);
                 OnOpenSolarChartRequested?.Invoke();
+            });
+            CreateButton(actRow.transform, "QUESTS [J]", new Color(0.56f, 0.40f, 0.12f), () =>
+            {
+                SetOpen(false);
+                OnOpenQuestJournalRequested?.Invoke();
             });
             CreateButton(actRow.transform, "STEP OOC (+ooc)", new Color(0.32f, 0.24f, 0.46f), () =>
             {
@@ -439,6 +446,28 @@ namespace TacSim.UI
             RefreshContents();
         }
 
+        public void BindQuestJournal(TacSimQuestJournal journal)
+        {
+            if (_questJournal == journal) return;
+            if (_questJournal != null)
+                _questJournal.OnQuestsPanelUpdated -= HandleQuestsUpdated;
+            _questJournal = journal;
+            if (_questJournal != null)
+                _questJournal.OnQuestsPanelUpdated += HandleQuestsUpdated;
+            if (IsOpen) RefreshPilotTab();
+        }
+
+        private void HandleQuestsUpdated()
+        {
+            if (IsOpen) RefreshPilotTab();
+        }
+
+        private void OnDestroy()
+        {
+            if (_questJournal != null)
+                _questJournal.OnQuestsPanelUpdated -= HandleQuestsUpdated;
+        }
+
         public void SetPilotContext(
             string pilotName,
             string locationName,
@@ -555,7 +584,40 @@ namespace TacSim.UI
             string vitalsCompact = LiveVitals.FormatRichSummary(compact: true);
             if (!string.IsNullOrEmpty(vitalsCompact))
                 sb.Append(vitalsCompact).Append('\n');
-            sb.Append("<color=#88AAC8>Shortcuts: [Ctrl+K] Palette  [F1] Keys/Macros  [C] Sheet  [M] Chart  [G] Ground  [N] Nav  [Tab] Target</color>");
+
+            var qPanel = _questJournal?.LatestPanel;
+            if (qPanel != null)
+            {
+                var activeQuest = _questJournal.GetTrackedActiveQuest();
+                if (activeQuest != null)
+                {
+                    int done = 0;
+                    for (int i = 0; i < activeQuest.Checkpoints.Count; i++)
+                    {
+                        if (activeQuest.Checkpoints[i].Checked || activeQuest.Checkpoints[i].LiveReady)
+                            done++;
+                    }
+                    string prog = activeQuest.Checkpoints.Count > 0 ? $" ({done}/{activeQuest.Checkpoints.Count})" : string.Empty;
+                    string next = !string.IsNullOrEmpty(activeQuest.NextStep) ? $" — {MushProtocol.EscapeUnityRichText(activeQuest.NextStep)}" : string.Empty;
+                    sb.AppendFormat("<color=#FFDD44><b>ACTIVE QUEST:</b></color> <b>{0}</b>{1}{2}  |  Completed: {3}\n",
+                        MushProtocol.EscapeUnityRichText(activeQuest.Title),
+                        prog,
+                        next,
+                        qPanel.Completed.Count);
+                }
+                else if (qPanel.Available.Count > 0)
+                {
+                    sb.AppendFormat("<color=#FFDD44><b>QUEST AVAILABLE:</b></color> <b>{0}</b>  |  Completed: {1}\n",
+                        MushProtocol.EscapeUnityRichText(qPanel.Available[0].Title),
+                        qPanel.Completed.Count);
+                }
+                else if (qPanel.Completed.Count > 0)
+                {
+                    sb.AppendFormat("<color=#66FFAA><b>QUESTS COMPLETED:</b></color> {0}\n", qPanel.Completed.Count);
+                }
+            }
+
+            sb.Append("<color=#88AAC8>Shortcuts: [Ctrl+K] Palette  [F1] Keys/Macros  [J] Quests  [C] Sheet  [M] Chart  [G] Ground  [N] Nav</color>");
             _pilotSummaryText.text = sb.ToString();
         }
 

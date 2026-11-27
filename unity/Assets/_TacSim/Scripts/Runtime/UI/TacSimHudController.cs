@@ -648,6 +648,7 @@ namespace TacSim.UI
             GroundChart?.BindQuestJournal(QuestJournal);
             SolarMap?.BindQuestJournal(QuestJournal);
             OpsDirectory?.BindQuestJournal(QuestJournal);
+            CharacterSheet?.BindQuestJournal(QuestJournal);
             QuestJournal.OnQuestsPanelUpdated += () =>
             {
                 _lastListingsSignature = null;

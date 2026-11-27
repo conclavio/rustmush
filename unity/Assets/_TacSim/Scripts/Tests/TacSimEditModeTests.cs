@@ -10972,5 +10972,93 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestWayfinderGoldBeacon_AndCharacterSheetSummary_ReflectActiveQuestProgress()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestWayfinderAndSheetTestRoot");
+            try
+            {
+                var catalog = TacSimAssetCatalog.LoadOrDefault();
+                var stationGo = new UnityEngine.GameObject("StationForGoldWayfinder");
+                stationGo.transform.SetParent(rootGo.transform, false);
+                var station = stationGo.AddComponent<StationWorldController>();
+                station.BuildStation(catalog, "ceres_freeport");
+
+                string targetRoomEntry = string.Empty;
+                foreach (var kv in station.Pack.Rooms)
+                {
+                    if (!string.Equals(kv.Key, station.ActiveRoomEntryId, System.StringComparison.OrdinalIgnoreCase) &&
+                        station.FindExitPath(station.ActiveRoomEntryId, kv.Key).Count > 0)
+                    {
+                        targetRoomEntry = kv.Key;
+                        break;
+                    }
+                }
+                Assert.IsFalse(string.IsNullOrEmpty(targetRoomEntry));
+
+                var wayfinderGo = new UnityEngine.GameObject("TestWayfinder3D");
+                wayfinderGo.transform.SetParent(rootGo.transform, false);
+                var wayfinder = wayfinderGo.AddComponent<TacSim.World.TacSimWayfinder3D>();
+                wayfinder.EnsureVisuals();
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.OpsDirectory.BindSources(station, null, wayfinder, null, null, null, null);
+
+                // 1. Quest wayfinder route switches ribbon & beacon to golden quest palette and prefixes compass banner
+                UnityEngine.Vector3 startPos = station.GetRoomSpawnPosition(station.ActiveRoomEntryId);
+                Assert.IsTrue(wayfinder.PlotStationRoute(station, station.ActiveRoomEntryId, targetRoomEntry, startPos, isQuestObjective: true));
+                Assert.IsTrue(wayfinder.IsQuestTrail, "Quest wayfinder route must flag IsQuestTrail");
+                Assert.Greater(wayfinder.ActiveTrailColor.r, 0.9f, "Quest wayfinder ribbon must use gold palette");
+                Assert.Less(wayfinder.ActiveTrailColor.b, 0.4f, "Quest wayfinder ribbon must not be cyan");
+
+                hud.OpsDirectory.SyncWayfinderBanner(TacSimActiveStage.StationWalk);
+                Assert.IsTrue(hud.OpsDirectory.IsWayfinderBannerVisible);
+                StringAssert.StartsWith("[QUEST]", hud.OpsDirectory.WayfinderBannerText);
+
+                // Standard non-quest route restores cyan trail & standard banner
+                Assert.IsTrue(wayfinder.PlotStationRoute(station, station.ActiveRoomEntryId, targetRoomEntry, startPos, isQuestObjective: false));
+                Assert.IsFalse(wayfinder.IsQuestTrail);
+                Assert.Greater(wayfinder.ActiveTrailColor.b, 0.8f, "Standard wayfinder ribbon must restore cyan palette");
+                hud.OpsDirectory.SyncWayfinderBanner(TacSimActiveStage.StationWalk);
+                StringAssert.DoesNotContain("[QUEST]", hud.OpsDirectory.WayfinderBannerText);
+
+                // 2. [C] Character Sheet Pilot Summary reflects tracked active quest progress & completed count
+                var questJson = JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#10"",
+                    ""room_name"": ""Ceres Concourse"",
+                    ""room_markers"": [],
+                    ""available"": [],
+                    ""active"": [
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"",
+                            ""title"": ""Stock the Locker and Tanks"",
+                            ""category"": ""guided"",
+                            ""next_step"": ""Buy at least 5 propellant at Ceres Exchange Hall"",
+                            ""checkpoints"": [
+                                { ""id"": ""buy_provisions"", ""title"": ""Buy 10 provisions"", ""checked"": true, ""live_ready"": true },
+                                { ""id"": ""buy_propellant"", ""title"": ""Buy 5 propellant"", ""checked"": false, ""live_ready"": false }
+                            ]
+                        }
+                    ],
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""First Papers at the Registry"" }
+                    ]
+                }");
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(questJson));
+                hud.CharacterSheet.RefreshContents();
+
+                StringAssert.Contains("ACTIVE QUEST", hud.CharacterSheet.PilotSummarySnapshot);
+                StringAssert.Contains("Stock the Locker and Tanks", hud.CharacterSheet.PilotSummarySnapshot);
+                StringAssert.Contains("(1/2)", hud.CharacterSheet.PilotSummarySnapshot);
+                StringAssert.Contains("Completed: 1", hud.CharacterSheet.PilotSummarySnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
