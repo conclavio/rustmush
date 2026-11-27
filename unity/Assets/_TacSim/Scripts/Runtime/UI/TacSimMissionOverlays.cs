@@ -32,7 +32,21 @@ namespace TacSim.UI
         private SurfaceMiningController _surface;
         private OocArenaController _arena;
         private SpaceFlightController _space;
+        private TacSimQuestJournal _questJournal;
         private bool _seatedAtHelm;
+
+        public bool HasSurfaceQuestChecklist { get; private set; }
+        public string SurfaceReadingsTextForTests => _surfaceReadingsText != null ? _surfaceReadingsText.text : string.Empty;
+
+        public void BindQuestJournal(TacSimQuestJournal journal)
+        {
+            if (_questJournal != null)
+                _questJournal.OnQuestsPanelUpdated -= RefreshSurfaceHud;
+            _questJournal = journal;
+            if (_questJournal != null)
+                _questJournal.OnQuestsPanelUpdated += RefreshSurfaceHud;
+            RefreshSurfaceHud();
+        }
 
         // Slice 2: Orbital Ops Bar (Mining + Space Tactical) & Doc 49 (`CC.9`) Fire-Control Card
         private GameObject _orbitalOpsBar;
@@ -411,9 +425,11 @@ namespace TacSim.UI
             if (_surface != null) _surface.OnSurfaceTelemetryChanged -= RefreshSurfaceHud;
             if (_arena != null) _arena.OnArenaStateUpdated -= RefreshArenaHud;
             if (_space != null) _space.OnSpaceTelemetryChanged -= RefreshSpaceFireCard;
+            if (_questJournal != null) _questJournal.OnQuestsPanelUpdated -= RefreshSurfaceHud;
             _surface = null;
             _arena = null;
             _space = null;
+            _questJournal = null;
             if (_arenaArmorDollTex != null)
             {
                 if (Application.isPlaying) Destroy(_arenaArmorDollTex);
@@ -878,7 +894,17 @@ namespace TacSim.UI
                 }
             }
 
-            var sb = new StringBuilder(320);
+            var sb = new StringBuilder(384);
+            HasSurfaceQuestChecklist = false;
+            if (_questJournal != null && _questJournal.TryGetActiveSurfaceMiningStatus(out var qMine))
+            {
+                HasSurfaceQuestChecklist = true;
+                string scanMark = qMine.ScanDone ? "<color=#55EE99>[✓]</color>" : "<color=#99BBCC>[ ]</color>";
+                string soundMark = qMine.SoundDone ? "<color=#55EE99>[✓]</color>" : "<color=#99BBCC>[ ]</color>";
+                string mineMark = qMine.MineDone ? "<color=#55EE99>[✓]</color>" : "<color=#99BBCC>[ ]</color>";
+                sb.AppendLine($"<color=#FFDD44><b>[QUEST] {MushProtocol.EscapeUnityRichText(qMine.QuestTitle)}</b></color>");
+                sb.AppendLine($"{scanMark} Scan Site   {soundMark} Sound Pocket   {mineMark} Mine {MushProtocol.EscapeUnityRichText(qMine.TargetOreSlug)}");
+            }
             sb.AppendLine($"<color=#FFEE77>{MushProtocol.EscapeUnityRichText(_surface.StatusSummaryLine)}</color>");
             if (!string.IsNullOrEmpty(_surface.ActiveRunSummary))
                 sb.AppendLine($"<color=#66FFAA>[RUN] {MushProtocol.EscapeUnityRichText(_surface.ActiveRunSummary)}</color>");

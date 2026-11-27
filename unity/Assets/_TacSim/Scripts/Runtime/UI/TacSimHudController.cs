@@ -309,8 +309,17 @@ namespace TacSim.UI
         private GameObject _emptyListingsRow;
         private Text _emptyListingsText;
         private GameObject _loadMoreListingsRow;
+        private GameObject _exchangeQuestBanner;
+        private Text _exchangeQuestBannerText;
+        private Button _exchangeQuestQtyBtn;
+        private Text _exchangeQuestQtyBtnLbl;
+        private RectTransform _listingsViewportRect;
         private Action _loadMoreAction;
         private string _lastListingsSignature;
+
+        public int HighlightedQuestListingCount { get; private set; }
+        public bool IsExchangeQuestBannerVisible => _exchangeQuestBanner != null && _exchangeQuestBanner.activeSelf;
+        public string ExchangeQuestBannerText => _exchangeQuestBannerText != null ? _exchangeQuestBannerText.text : string.Empty;
 
         // Modal dialog
         private GameObject _modalPanel;
@@ -627,6 +636,14 @@ namespace TacSim.UI
 
             QuestJournal = gameObject.GetComponent<TacSimQuestJournal>() ?? gameObject.AddComponent<TacSimQuestJournal>();
             QuestJournal.BuildUi(_hudRoot.transform, _uiFont);
+            Overlays?.BindQuestJournal(QuestJournal);
+            GroundChart?.BindQuestJournal(QuestJournal);
+            QuestJournal.OnQuestsPanelUpdated += () =>
+            {
+                _lastListingsSignature = null;
+                if (_tradePanel != null && _tradePanel.activeSelf)
+                    RefreshTradeTerminal();
+            };
 
             SceneIntelModal = gameObject.GetComponent<TacSimSceneAndIntelModal>() ?? gameObject.AddComponent<TacSimSceneAndIntelModal>();
             SceneIntelModal.BuildUi(_hudRoot.transform, _uiFont);
@@ -986,7 +1003,17 @@ namespace TacSim.UI
             });
             SetRect(refreshBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-156f, 4f), new Vector2(-6f, -4f));
 
+            _exchangeQuestBanner = CreatePanel(_exchangeTabBody.transform, "ExchangeQuestNeedBanner", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -74f), new Vector2(0f, -44f), new Color(0.24f, 0.18f, 0.05f, 0.96f));
+            _exchangeQuestBannerText = CreateText(_exchangeQuestBanner.transform, string.Empty, 12, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(1f, 0.88f, 0.44f));
+            _exchangeQuestBannerText.supportRichText = true;
+            SetRect(_exchangeQuestBannerText.rectTransform, Vector2.zero, Vector2.one, new Vector2(12f, 0f), new Vector2(-176f, 0f));
+            _exchangeQuestQtyBtn = CreateButton(_exchangeQuestBanner.transform, "SET QUEST QTY", new Color(0.64f, 0.46f, 0.12f), () => ApplyQuestTradeQuantity());
+            SetRect(_exchangeQuestQtyBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-168f, 3f), new Vector2(-6f, -3f));
+            _exchangeQuestQtyBtnLbl = _exchangeQuestQtyBtn.GetComponentInChildren<Text>();
+            _exchangeQuestBanner.SetActive(false);
+
             var listViewport = CreatePanel(_exchangeTabBody.transform, "ListingsViewport", new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(0f, 0f), new Vector2(0f, -46f), new Color(0.02f, 0.05f, 0.09f, 0.85f));
+            _listingsViewportRect = listViewport.GetComponent<RectTransform>();
             listViewport.AddComponent<RectMask2D>();
             var listScroll = listViewport.AddComponent<ScrollRect>();
 
@@ -2477,6 +2504,34 @@ namespace TacSim.UI
             return Mathf.Max(0, Mathf.Min(byMass, byVol));
         }
 
+        public bool ApplyQuestTradeQuantity()
+        {
+            if (_boundTradeState == null || QuestJournal == null || !QuestJournal.TryGetActiveTradeNeed(out var need))
+                return false;
+            _boundTradeState.SelectedSellAll = false;
+            _boundTradeState.SelectedTradeQuantity = Mathf.Max(1, need.TargetQuantity);
+            int[] presets = { 5, 10, 25, 50 };
+            int matchIdx = -1;
+            for (int i = 0; i < presets.Length; i++)
+            {
+                if (presets[i] == _boundTradeState.SelectedTradeQuantity)
+                {
+                    matchIdx = i;
+                    break;
+                }
+            }
+            for (int i = 0; i < _qtyPresetImages.Count; i++)
+            {
+                _qtyPresetImages[i].color = (i == matchIdx)
+                    ? new Color(0.22f, 0.66f, 0.88f, 1f)
+                    : new Color(0.13f, 0.24f, 0.35f, 0.92f);
+            }
+            _lastListingsSignature = null;
+            if (_tradePanel != null && _tradePanel.activeSelf)
+                RebuildListingCards();
+            return true;
+        }
+
         private string BuildListingsSignature()
         {
             if (_boundTradeState == null) return string.Empty;
@@ -2494,6 +2549,12 @@ namespace TacSim.UI
               .Append(_boundTradeState.StoresLimitCrewDays).Append('|')
               .Append(_boundTradeState.NextAfterListingId ?? 0UL).Append('|')
               .Append(_boundTradeState.AboardDockedPortHint ?? string.Empty);
+            if (QuestJournal != null && QuestJournal.TryGetActiveTradeNeed(out var qNeed))
+            {
+                sb.Append("|Q:").Append(qNeed.CommoditySlug).Append(':').Append(qNeed.TargetQuantity)
+                  .Append(':').Append(qNeed.WantsBuy ? 'B' : '-').Append(qNeed.WantsSell ? 'S' : '-')
+                  .Append(':').Append(qNeed.QuestTitle);
+            }
             for (int i = 0; i < _boundTradeState.Listings.Count; i++)
             {
                 var r = _boundTradeState.Listings[i];
@@ -2576,6 +2637,30 @@ namespace TacSim.UI
 
             EnsureEmptyAndLoadMoreRows();
 
+            QuestTradeNeed questNeed = default;
+            bool hasQuestNeed = QuestJournal != null && QuestJournal.TryGetActiveTradeNeed(out questNeed);
+            if (_exchangeQuestBanner != null)
+            {
+                _exchangeQuestBanner.SetActive(hasQuestNeed);
+                if (hasQuestNeed)
+                {
+                    string verb = questNeed.WantsBuy && questNeed.WantsSell
+                        ? "BUY / SELL"
+                        : (questNeed.WantsSell ? "SELL" : "BUY");
+                    string itemLabel = questNeed.CommoditySlug.Replace('_', ' ').ToUpperInvariant();
+                    if (_exchangeQuestBannerText != null)
+                    {
+                        _exchangeQuestBannerText.text = $"<color=#FFDD44>[QUEST]</color> {verb} <b>{questNeed.TargetQuantity}</b> × <b>{MushProtocol.EscapeUnityRichText(itemLabel)}</b>  <color=#BBD4E6>— {MushProtocol.EscapeUnityRichText(questNeed.QuestTitle)}</color>";
+                    }
+                    if (_exchangeQuestQtyBtnLbl != null)
+                        _exchangeQuestQtyBtnLbl.text = $"SET QUEST QTY ({questNeed.TargetQuantity})";
+                }
+            }
+            if (_listingsViewportRect != null)
+                _listingsViewportRect.offsetMax = new Vector2(0f, hasQuestNeed ? -80f : -46f);
+
+            HighlightedQuestListingCount = 0;
+
             if (_boundTradeState.Listings.Count == 0)
             {
                 for (int i = 0; i < _listingCardPool.Count; i++)
@@ -2598,12 +2683,17 @@ namespace TacSim.UI
                 var row = _boundTradeState.Listings[i];
                 var good = _boundTradeState.FindGoodByNameOrCode(row.GoodCode);
                 var slot = GetOrCreatePooledListingCard(i);
+                bool isQuestMatch = hasQuestNeed && questNeed.MatchesListing(row);
+                if (isQuestMatch) HighlightedQuestListingCount++;
 
                 slot.Root.name = $"Listing_{row.ListingId}";
-                slot.Background.color = row.IsWantedBid
-                    ? new Color(0.13f, 0.10f, 0.06f, 0.94f)
-                    : new Color(0.06f, 0.12f, 0.18f, 0.94f);
+                slot.Background.color = isQuestMatch
+                    ? new Color(0.24f, 0.19f, 0.06f, 0.96f)
+                    : (row.IsWantedBid
+                        ? new Color(0.13f, 0.10f, 0.06f, 0.94f)
+                        : new Color(0.06f, 0.12f, 0.18f, 0.94f));
 
+                string questPrefix = isQuestMatch ? "<color=#FFDD44><b>[QUEST]</b></color> " : string.Empty;
                 string badge = row.IsWantedBid ? $"<color=#FFBB55>[BID #{row.ListingId}]</color>" : $"<color=#55DDFF>[ASK #{row.ListingId}]</color>";
                 string measureInfo = string.Empty;
                 if (good != null && good.Stowage == "stow.bulk")
@@ -2617,7 +2707,7 @@ namespace TacSim.UI
                 string vendorClause = MushProtocol.EscapeUnityRichText(rawVendor);
                 string safeItem = MushProtocol.EscapeUnityRichText((row.ItemName ?? string.Empty).ToUpperInvariant());
                 string safePrice = MushProtocol.EscapeUnityRichText(row.UnitPriceText);
-                slot.Description.text = $"{badge}  <b>{safeItem}</b>{measureInfo}   —   <b>{row.Quantity}</b> × <color=#77FFBB>{safePrice}</color>   <color=#99B8CC>[{vendorClause}]</color>";
+                slot.Description.text = $"{questPrefix}{badge}  <b>{safeItem}</b>{measureInfo}   —   <b>{row.Quantity}</b> × <color=#77FFBB>{safePrice}</color>   <color=#99B8CC>[{vendorClause}]</color>";
 
                 if (!row.IsWantedBid)
                 {
