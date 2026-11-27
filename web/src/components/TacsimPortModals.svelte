@@ -246,7 +246,7 @@
                 <span class="qtag">[QUEST]</span>
                 <strong>
                   {questTradeNeed.wantsBuy && questTradeNeed.wantsSell
-                    ? "BUY / SELL"
+                    ? "BUY/SELL"
                     : questTradeNeed.wantsSell
                       ? "SELL"
                       : "BUY"}

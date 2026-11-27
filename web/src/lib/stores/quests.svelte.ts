@@ -126,12 +126,12 @@ const KNOWN_TRADE_COMMODITIES: ReadonlyArray<readonly [string, readonly string[]
 ];
 
 const KNOWN_DESTINATIONS: ReadonlyArray<readonly [string, string, readonly string[]]> = [
-  ["stickney", "Stickney Yards", ["+ship/plan stickney", "+ship/depart stickney", "stickney yards", "stickney"]],
-  ["ceres", "Ceres Freeport", ["+ship/plan ceres", "+ship/depart ceres", "ceres freeport", "back to ceres", "return to ceres"]],
-  ["luna", "Aitken Highport", ["+ship/plan luna", "+ship/depart luna", "aitken highport"]],
-  ["deimos", "Voltaire Anchorage", ["+ship/plan deimos", "+ship/depart deimos", "voltaire anchorage"]],
-  ["titan", "Ligeia Terminal", ["+ship/plan titan", "+ship/depart titan", "ligeia terminal"]],
-  ["isidis", "Isidis Concession", ["+ship/plan isidis", "+ship/depart isidis", "isidis concession"]],
+  ["stickney", "Stickney Yards", ["+ship/plan stickney", "+ship/order depart stickney", "stickney yards", "stickney"]],
+  ["ceres", "Ceres Freeport", ["+ship/plan ceres", "+ship/order depart ceres", "ceres freeport", "back to ceres", "return to ceres"]],
+  ["luna", "Aitken Highport", ["+ship/plan luna", "+ship/order depart luna", "aitken highport"]],
+  ["deimos", "Voltaire Anchorage", ["+ship/plan deimos", "+ship/order depart deimos", "voltaire anchorage"]],
+  ["titan", "Ligeia Terminal", ["+ship/plan titan", "+ship/order depart titan", "ligeia terminal"]],
+  ["isidis", "Isidis Concession", ["+ship/plan isidis", "+ship/order depart isidis", "isidis concession"]],
   ["commons", "Freeport Commons", ["+ship/plan commons", "freeport commons"]],
   ["ahuna", "Ahuna Flank", ["+ship/plan ahuna", "ahuna flank"]],
   ["occator", "Occator Rim", ["+ship/plan occator", "occator rim"]],
@@ -245,8 +245,8 @@ export function extractActiveDestinationPort(
     for (const cp of q.checkpoints) {
       if (cp.checked || cp.liveReady) continue;
       const text = `${cp.instructions} ${cp.title} ${q.nextInstructions} ${q.introduction}`.toLowerCase();
-      // Prioritize explicit `+ship/plan <port>` or `+ship/depart <port>` commands first
-      const cmdMatch = /\+ship\/(?:plan|depart|undock)\s+([a-z0-9_]+)/i.exec(text);
+      // Prioritize explicit `+ship/plan <port>` or `+ship/order depart <port>` commands first
+      const cmdMatch = /\+ship\/(?:plan|order\s+depart|undock)\s+([a-z0-9_]+)/i.exec(text);
       if (cmdMatch) {
         const slug = cmdMatch[1]!.toLowerCase();
         const found = KNOWN_DESTINATIONS.find(([id]) => id === slug);
