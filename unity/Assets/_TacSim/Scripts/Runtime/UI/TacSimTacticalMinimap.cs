@@ -46,6 +46,9 @@ namespace TacSim.UI
         public bool LastArenaMinimapHasEcmRing { get; private set; }
         public bool LastArenaMinimapHasObjective { get; private set; }
         public bool LastArenaMinimapHasWaypoint { get; private set; }
+        public bool LastArenaMinimapHasLockLine { get; private set; }
+        public string LastArenaMinimapHoldOwner { get; private set; } = "NEUTRAL";
+        public int LastReplayMinimapShotLineCount { get; private set; }
         public Texture2D MinimapTexture => _mapTex;
         public Color32 SampleMinimapPixelForTests(int x, int y)
         {
@@ -681,9 +684,18 @@ namespace TacSim.UI
             LastArenaMinimapHasEcmRing = false;
             LastArenaMinimapHasObjective = false;
             LastArenaMinimapHasWaypoint = false;
+            LastArenaMinimapHasLockLine = false;
+            LastArenaMinimapHoldOwner = "NEUTRAL";
+            LastReplayMinimapShotLineCount = 0;
 
             bool isSpectator = _arena != null && _arena.IsSpectatorTheaterActive && _arena.ActiveReplayDoc != null;
             var st = _arena?.State;
+            string holdOwner = _arena?.ActiveHoldZoneVisualOwner ?? "NEUTRAL";
+            Color32 holdRingCol = holdOwner == "RED"
+                ? new Color32(248, 74, 66, 255)
+                : (holdOwner == "BLUE"
+                    ? new Color32(66, 168, 255, 255)
+                    : new Color32(255, 214, 66, 255));
             if (_headerText != null)
             {
                 if (isSpectator)
@@ -770,14 +782,15 @@ namespace TacSim.UI
                         Vector2 spUv = CellToUv(sp.CellX + 0.5f, sp.CellY + 0.5f);
                         if (spUv.x < 0f || spUv.x > 1f || spUv.y < 0f || spUv.y > 1f) continue;
                         bool isHold = string.Equals(sp.Letter, grid.HoldSpotLetter, StringComparison.OrdinalIgnoreCase);
-                        Color32 spCol = isHold ? new Color32(255, 212, 72, 255) : new Color32(92, 224, 248, 255);
+                        Color32 spCol = isHold ? holdRingCol : new Color32(92, 224, 248, 255);
                         Vector2 spPx = UvToPx(spUv);
                         DrawFilledCircle(spPx, 2.5f, spCol);
                         if (isHold && (isSpectator || st == null || !st.HasDynamicObjective))
                         {
                             float holdRadPx = Mathf.Clamp((grid.HoldRadiusCells * span / _arenaSpanCellsX) * MapTexSize, 6f, MapTexSize * 0.4f);
-                            DrawCircleOutline(spPx, holdRadPx, new Color32(240, 194, 62, 255));
+                            DrawCircleOutline(spPx, holdRadPx, holdRingCol);
                             LastArenaMinimapHasObjective = true;
+                            LastArenaMinimapHoldOwner = holdOwner;
                         }
                     }
                 }
@@ -790,6 +803,33 @@ namespace TacSim.UI
                 if (doc != null && frame != null)
                 {
                     int n = Mathf.Min(doc.Roster.Count, frame.Units.Length);
+                    // Draw live firefight shot tracers within [curMs - 1500ms .. curMs] underneath unit arrows
+                    if (_arena.IsReplayModeActive && doc.Shots != null && doc.Shots.Count > 0)
+                    {
+                        float curMs = _arena.ReplayCursorMs;
+                        float winStart = curMs - 1500f;
+                        for (int sIdx = 0; sIdx < doc.Shots.Count; sIdx++)
+                        {
+                            var shot = doc.Shots[sIdx];
+                            if (shot.TimeMs > curMs || shot.TimeMs < winStart) continue;
+                            if (shot.ShooterIndex < 0 || shot.ShooterIndex >= n || shot.TargetIndex < 0 || shot.TargetIndex >= n) continue;
+                            var shPose = frame.Units[shot.ShooterIndex];
+                            var tgPose = frame.Units[shot.TargetIndex];
+                            if (!shPose.HasValue || !tgPose.HasValue) continue;
+                            Vector2 shUv = CellToUv(shPose.Value.CellX + 0.5f, shPose.Value.CellY + 0.5f);
+                            Vector2 tgUv = CellToUv(tgPose.Value.CellX + 0.5f, tgPose.Value.CellY + 0.5f);
+                            Color32 shotCol = string.Equals(shot.Outcome, "hit", StringComparison.OrdinalIgnoreCase)
+                                ? new Color32(255, 216, 72, 255)
+                                : (string.Equals(shot.Outcome, "flying", StringComparison.OrdinalIgnoreCase)
+                                    ? new Color32(104, 224, 255, 255)
+                                    : new Color32(152, 172, 190, 255));
+                            DrawLine(UvToPx(new Vector2(Mathf.Clamp01(shUv.x), Mathf.Clamp01(shUv.y))),
+                                     UvToPx(new Vector2(Mathf.Clamp01(tgUv.x), Mathf.Clamp01(tgUv.y))),
+                                     shotCol);
+                            LastReplayMinimapShotLineCount++;
+                        }
+                    }
+
                     for (int i = 0; i < n; i++)
                     {
                         var pose = frame.Units[i];
@@ -820,7 +860,7 @@ namespace TacSim.UI
                 Vector2 ownUv = new Vector2(Mathf.Clamp01(CellToUv(ownCellX, ownCellY).x), Mathf.Clamp01(CellToUv(ownCellX, ownCellY).y));
                 Vector2 ownPx = UvToPx(ownUv);
 
-                // Dynamic Hold Objective perimeter
+                // Dynamic Hold Objective perimeter (faction-tinted)
                 if (st.HasDynamicObjective)
                 {
                     Vector2 objUv = CellToUv(st.ObjectiveCellX + 0.5f, st.ObjectiveCellY + 0.5f);
@@ -828,9 +868,10 @@ namespace TacSim.UI
                     {
                         Vector2 objPx = UvToPx(objUv);
                         float radPx = Mathf.Clamp((st.ObjectiveRadiusCells * span / _arenaSpanCellsX) * MapTexSize, 7f, MapTexSize * 0.42f);
-                        DrawCircleOutline(objPx, radPx, new Color32(255, 214, 66, 255));
-                        DrawFilledCircle(objPx, 2.5f, new Color32(255, 230, 108, 255));
+                        DrawCircleOutline(objPx, radPx, holdRingCol);
+                        DrawFilledCircle(objPx, 2.5f, holdRingCol);
                         LastArenaMinimapHasObjective = true;
+                        LastArenaMinimapHoldOwner = holdOwner;
                     }
                 }
 
@@ -845,10 +886,11 @@ namespace TacSim.UI
                 }
 
                 // Own SightMeters Sensor Ring colored by Scope
+                float sightPx = 22f;
                 if (!st.IsWreck && st.SightMeters > 5f && siteCellM > 0.01f)
                 {
                     float sightCells = st.SightMeters / siteCellM;
-                    float sightPx = Mathf.Clamp((sightCells / _arenaSpanCellsX) * MapTexSize, 8f, MapTexSize * 0.48f);
+                    sightPx = Mathf.Clamp((sightCells / _arenaSpanCellsX) * MapTexSize, 8f, MapTexSize * 0.48f);
                     Color32 ringCol = string.Equals(st.Scope, "hostile", StringComparison.OrdinalIgnoreCase)
                         ? new Color32(220, 86, 72, 255)
                         : (string.Equals(st.Scope, "unidentified", StringComparison.OrdinalIgnoreCase)
@@ -876,7 +918,19 @@ namespace TacSim.UI
                     LastArenaMinimapHasEcmRing = true;
                 }
 
-                // Contacts + click-to-lock hit table
+                // Subtle Forward Sight Cone Wedge (±28° from own hull heading)
+                float shownHeading = _arena != null ? _arena.PredictedHeadingDeg : st.HeadingDeg;
+                if (!st.IsWreck)
+                {
+                    float coneLen = Mathf.Clamp(sightPx * 0.72f, 12f, 34f);
+                    float leftRad = (shownHeading - 28f) * Mathf.Deg2Rad;
+                    float rightRad = (shownHeading + 28f) * Mathf.Deg2Rad;
+                    Color32 coneCol = new Color32(72, 196, 174, 255);
+                    DrawLine(ownPx, ownPx + new Vector2(Mathf.Sin(leftRad) * coneLen, Mathf.Cos(leftRad) * coneLen), coneCol);
+                    DrawLine(ownPx, ownPx + new Vector2(Mathf.Sin(rightRad) * coneLen, Mathf.Cos(rightRad) * coneLen), coneCol);
+                }
+
+                // Contacts + click-to-lock hit table + Locked Target Fire-Control Sightline Vector
                 for (int i = 0; i < st.Contacts.Count; i++)
                 {
                     var ct = st.Contacts[i];
@@ -886,6 +940,13 @@ namespace TacSim.UI
                         ? new Color32(110, 110, 115, 255)
                         : (ct.Friendly ? new Color32(82, 184, 255, 255) : new Color32(255, 84, 78, 255));
                     Vector2 p = UvToPx(uv);
+                    if (!st.IsWreck && !ct.IsWreck &&
+                        !string.IsNullOrEmpty(st.LockedDesignator) &&
+                        string.Equals(ct.Designator, st.LockedDesignator, StringComparison.OrdinalIgnoreCase))
+                    {
+                        DrawLine(ownPx, p, new Color32(255, 110, 68, 255));
+                        LastArenaMinimapHasLockLine = true;
+                    }
                     DrawFilledCircle(p, 3.5f, col);
                     if (string.Equals(ct.Designator, st.LockedDesignator, StringComparison.OrdinalIgnoreCase))
                         DrawCircleOutline(p, 6.5f, new Color32(255, 224, 96, 255));
@@ -893,7 +954,6 @@ namespace TacSim.UI
                         _arenaContactHits.Add((uv, ct.Designator, !ct.Friendly && !ct.IsWreck));
                 }
 
-                float shownHeading = _arena != null ? _arena.PredictedHeadingDeg : st.HeadingDeg;
                 DrawHeadingArrowUv(ownUv, shownHeading, new Color32(110, 255, 180, 255));
             }
         }
