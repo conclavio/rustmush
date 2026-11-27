@@ -400,6 +400,12 @@ namespace TacSim.UI
                                 $"drive {safeLtr}",
                                 () => OnArenaActionRequested?.Invoke($"drive {safeLtr}"),
                                 $"waypoint autopilot move spot {safeLtr} {sName}"));
+                            _allEntries.Add(new PaletteEntry(
+                                "ARENA SQUAD",
+                                $"Squad Advance to [{safeLtr}] {sName}",
+                                $"order all advance {safeLtr}",
+                                () => OnArenaActionRequested?.Invoke($"order all advance {safeLtr}"),
+                                $"squad order advance keyspot {safeLtr} {sName}"));
                         }
                     }
 
@@ -419,6 +425,24 @@ namespace TacSim.UI
                         }
                     }
 
+                    string[] postures = { "return", "guard", "hold" };
+                    for (int p = 0; p < postures.Length; p++)
+                    {
+                        string pw = postures[p];
+                        if (string.Equals(st.Posture, pw, StringComparison.OrdinalIgnoreCase)) continue;
+                        string pwUp = pw.ToUpperInvariant();
+                        _allEntries.Add(new PaletteEntry(
+                            "ARENA POSTURE",
+                            $"Set Hull Posture: {pwUp}",
+                            $"MIND POSTURE {pw}",
+                            () => OnArenaActionRequested?.Invoke($"MIND POSTURE {pw}"),
+                            $"posture mind roe {pw}"));
+                    }
+
+                    _allEntries.Add(new PaletteEntry("ARENA SQUAD", "Squad Engage All", "order all engage", () => OnArenaActionRequested?.Invoke("order all engage"), "squad attack engage all"));
+                    _allEntries.Add(new PaletteEntry("ARENA SQUAD", "Squad Hold Position", "order all hold", () => OnArenaActionRequested?.Invoke("order all hold"), "squad defend hold position"));
+                    _allEntries.Add(new PaletteEntry("ARENA", "Cycle Gunner Optics (1x / 2.5x / 4x) [Q]", "Zoom gunner sights", () => OnUiActionRequested?.Invoke("ui:cycle_optics"), "optics zoom sniper reticle sight"));
+                    _allEntries.Add(new PaletteEntry("ARENA", "Toggle Auto-Lock Nearest [L]", _arena.HasAutoLockRule ? "Disable standing auto-lock rule" : "LOCK nearest WHEN nolock", () => _arena.ToggleAutoLockRule(), "auto lock rule nearest"));
                     _allEntries.Add(new PaletteEntry("ARENA", "Fire Main Weapon [Space]", "fire", () => OnArenaActionRequested?.Invoke("fire"), "shoot gun cannon"));
                     _allEntries.Add(new PaletteEntry("ARENA", "Volley All Weapons [G]", "fire all", () => OnArenaActionRequested?.Invoke("fire all"), "salvo alpha strike volley"));
                     string fireGateVerb = st.WeaponsFree ? "fire hold" : "fire free";
@@ -445,9 +469,12 @@ namespace TacSim.UI
                     }
                     if (_arena.IsReplayModeActive)
                     {
-                        _allEntries.Add(new PaletteEntry("REPLAY", "Jump to Next Combat Highlight", "Next hit or wreck timestamp", () => _arena.StepReplayToEvent(+1), "event kill shot next"));
+                        _allEntries.Add(new PaletteEntry("REPLAY", "Restart Replay from 0:00 [R]", "Rewind tape to start and play", () => _arena.RestartReplayFromStart(), "restart rewind beginning 0:00"));
+                        _allEntries.Add(new PaletteEntry("REPLAY", "Jump to Next Combat Highlight []]", "Next hit or wreck timestamp", () => _arena.StepReplayToEvent(+1), "event kill shot next"));
+                        _allEntries.Add(new PaletteEntry("REPLAY", "Jump to Previous Combat Highlight [[]", "Previous hit or wreck timestamp", () => _arena.StepReplayToEvent(-1), "event kill shot previous back"));
                         _allEntries.Add(new PaletteEntry("REPLAY", "Toggle Replay Play / Pause [Space]", "Pause or resume match tape", () => _arena.ToggleReplayPlaying(), "play pause"));
                     }
+                    _allEntries.Add(new PaletteEntry("REPLAY", "Cycle Spectator Optics Zoom [Q]", "Zoom 1x / 2.5x / 4x camera", () => OnUiActionRequested?.Invoke("ui:cycle_optics"), "optics zoom camera"));
                 }
             }
 

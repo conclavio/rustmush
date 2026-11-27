@@ -9738,5 +9738,93 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ArenaCommandPaletteSquadPostureReplayAndKeybindPresets_ExecuteAndSwapMacros()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave16PR2_PaletteAndKeybindPresetsTest");
+            try
+            {
+                var arenaGo = new UnityEngine.GameObject("ArenaPaletteTest");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(TacSimAssetCatalog.LoadOrDefault(), TacSimTerrainDecoder.LoadStaticArena("proving_ground"));
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.CommandPalette.BindWorldSources(null, null, arena);
+                hud.CommandPalette.SetActiveStage(TacSimActiveStage.SimulatorArena);
+
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 240, ""seated"": true, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""mode"": ""hold"", ""power"": ""online"",
+                    ""posture"": ""return"", ""x_cm"": 10000, ""y_cm"": 10000
+                }"));
+
+                var arenaVerbs = new List<string>();
+                var uiActs = new List<string>();
+                hud.CommandPalette.OnArenaActionRequested += arenaVerbs.Add;
+                hud.CommandPalette.OnUiActionRequested += uiActs.Add;
+
+                // 1. Live Arena Command Palette executes Squad Engage, Hull Posture GUARD, and Gunner Optics cycle
+                hud.CommandPalette.SetOpen(true);
+                hud.CommandPalette.SetQuery("squad engage");
+                Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
+
+                hud.CommandPalette.SetOpen(true);
+                hud.CommandPalette.SetQuery("posture guard");
+                Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
+
+                hud.CommandPalette.SetOpen(true);
+                hud.CommandPalette.SetQuery("gunner optics");
+                Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
+
+                CollectionAssert.AreEqual(new[] { "order all engage", "MIND POSTURE guard" }, arenaVerbs);
+                CollectionAssert.AreEqual(new[] { "ui:cycle_optics" }, uiActs);
+
+                // 2. Replay Theater Command Palette executes Previous Highlight and Restart 0:00
+                arena.ExitArena();
+                arena.HandleReplayPanelFrame(JsonNode.Parse(@"{
+                    ""schema"": { ""id"": ""arena.replay"", ""shape"": ""replay"", ""version"": 1 },
+                    ""match"": 241, ""arena"": ""proving_ground"", ""cell_cm"": 1000, ""width"": 64, ""height"": 64,
+                    ""end_ms"": 10000, ""outcome"": ""red"", ""reason"": ""elimination"", ""mode"": ""skirmish"",
+                    ""roster"": [{ ""callsign"": ""R1"", ""team"": ""red"" }, { ""callsign"": ""B1"", ""team"": ""blue"" }],
+                    ""keyframes"": [[0, [[16, 16, 90], [40, 16, 270]]], [10000, [[24, 16, 90], [34, 16, 270]]]],
+                    ""shots"": [[2000, 0, 1, ""hit""], [6000, 1, 0, ""hit""]],
+                    ""destroyed"": [[8000, 1]]
+                }"));
+                arena.SeekReplayMs(7500f);
+
+                hud.CommandPalette.SetOpen(true);
+                hud.CommandPalette.SetQuery("previous combat highlight");
+                Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
+                Assert.AreEqual(6000f, arena.ReplayCursorMs, 1f, "Previous highlight palette entry must jump back to 6000ms hit");
+
+                arena.ReplayPlaying = false;
+                hud.CommandPalette.SetOpen(true);
+                hud.CommandPalette.SetQuery("restart replay");
+                Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
+                Assert.AreEqual(0f, arena.ReplayCursorMs, 1f);
+                Assert.IsTrue(arena.ReplayPlaying);
+
+                // 3. [F1] Keybind Help includes Replay Theater hotkeys and 1-click Arena / Space F5-F8 macro preset swapping
+                StringAssert.Contains("[R] 0:00", hud.KeybindHelp.ArenaKeybindCardSnapshot);
+                StringAssert.Contains("[1–6/Tab]", hud.KeybindHelp.ArenaKeybindCardSnapshot);
+
+                hud.KeybindHelp.ApplyArenaMacroPreset(persist: false);
+                Assert.AreEqual("scan", hud.KeybindHelp.GetMacroCommand(0));
+                Assert.AreEqual("emcon", hud.KeybindHelp.GetMacroCommand(1));
+                Assert.AreEqual("order all engage", hud.KeybindHelp.GetMacroCommand(2));
+                Assert.AreEqual("speed 0", hud.KeybindHelp.GetMacroCommand(3));
+
+                hud.KeybindHelp.ApplySpaceMacroPreset(persist: false);
+                Assert.AreEqual("+ship", hud.KeybindHelp.GetMacroCommand(0));
+                Assert.AreEqual("+tac/scan", hud.KeybindHelp.GetMacroCommand(3));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

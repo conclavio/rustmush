@@ -18,8 +18,11 @@ namespace TacSim.UI
 
         private static readonly string[] DefaultLabels = { "Ship Status", "Quests", "Credits", "Tac Scan" };
         private static readonly string[] DefaultCommands = { "+ship", "+quest", "+credit", "+tac/scan" };
+        private static readonly string[] ArenaPresetLabels = { "Sensor Scan", "EMCON Toggle", "Squad Engage", "All Stop" };
+        private static readonly string[] ArenaPresetCommands = { "scan", "emcon", "order all engage", "speed 0" };
 
         public event Action<string, string> OnMacroTriggered; // (slotLabel, command)
+        public string ArenaKeybindCardSnapshot { get; private set; } = string.Empty;
 
         private Font _font;
         private GameObject _modalRoot;
@@ -111,24 +114,33 @@ namespace TacSim.UI
                 "<b>Docking:</b> [WASD] Trans  [R/F] Closure  [Arrows] Att\n" +
                 "<b>Docking:</b> [Q/E] Roll  [X] Dampeners  [G] Assist");
 
-            BuildKeybindCard(
-                grid.transform,
-                "PLANETARY ROVER & OOC ARENA COMBAT",
-                new Vector2(0.505f, 0f), new Vector2(1f, 0.49f),
+            string arenaCardBody =
                 "<b>[W A S D]</b> Drive / Helm   <b>[1–4 / 0 / X]</b> Throttle / Stop\n" +
                 "<b>[LMB Unit]</b> Lock   <b>[Shift+LMB / Minimap]</b> Drive Cell\n" +
                 "<b>[Space]</b> Fire   <b>[G]</b> Volley   <b>[F]</b> Hold/Free   <b>[Tab]</b> Cycle\n" +
-                "<b>[N]</b> Scan   <b>[M]</b> EMCON   <b>[L]</b> Auto-Lock   <b>[Z]</b> Startup\n" +
-                "<b>[V]</b> Chase / Cupola / Overhead   <b>[Q]</b> Gunner Optics (1x/2.5x/4x)\n" +
-                "<b>[Y]</b> Detachment Wilco   <b>[F5–F8]</b> Fire Custom User Macros (below)");
+                "<b>[N]</b> Scan   <b>[M]</b> EMCON   <b>[L]</b> Auto-Lock   <b>[V/Q]</b> Cam/Optics\n" +
+                "<b>[Y]</b> Detachment Wilco   <b>[Z]</b> Startup   <b>[F5–F8]</b> Macros\n" +
+                "<b>Replay:</b> [Space] Play  [←/→] KF  [[/]] Event  [R] 0:00  [1–6/Tab] Unit";
+            ArenaKeybindCardSnapshot = arenaCardBody;
+            BuildKeybindCard(
+                grid.transform,
+                "PLANETARY ROVER, OOC ARENA & REPLAY",
+                new Vector2(0.505f, 0f), new Vector2(1f, 0.49f),
+                arenaCardBody);
 
             // Bottom: 4 Persistent Custom Macros (F5-F8)
             var macroBox = CreatePanel(_modalRoot.transform, "CustomMacrosPanel", new Vector2(0f, 0f), new Vector2(1f, 0.43f), new Vector2(16f, 14f), new Vector2(-16f, -4f), new Color(0.05f, 0.09f, 0.15f, 0.94f));
-            var mHdr = CreateText(macroBox.transform, "CUSTOM QUICK-MACRO HOTKEYS (F5 – F8 · SAVED AUTOMATICALLY)", 13, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(1f, 0.84f, 0.42f));
-            SetRect(mHdr.rectTransform, new Vector2(0f, 1f), new Vector2(0.68f, 1f), new Vector2(14f, -30f), new Vector2(0f, -6f));
+            var mHdr = CreateText(macroBox.transform, "CUSTOM QUICK-MACRO HOTKEYS (F5 – F8)", 13, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(1f, 0.84f, 0.42f));
+            SetRect(mHdr.rectTransform, new Vector2(0f, 1f), new Vector2(0.46f, 1f), new Vector2(14f, -30f), new Vector2(0f, -6f));
+
+            var spacePresetBtn = CreateButton(macroBox.transform, "SPACE PRESET", new Color(0.18f, 0.30f, 0.46f), () => ApplySpaceMacroPreset(persist: true));
+            SetRect(spacePresetBtn.GetComponent<RectTransform>(), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-416f, -30f), new Vector2(-288f, -6f));
+
+            var arenaPresetBtn = CreateButton(macroBox.transform, "ARENA PRESET", new Color(0.48f, 0.24f, 0.16f), () => ApplyArenaMacroPreset(persist: true));
+            SetRect(arenaPresetBtn.GetComponent<RectTransform>(), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-280f, -30f), new Vector2(-152f, -6f));
 
             var saveBtn = CreateButton(macroBox.transform, "SAVE MACROS", new Color(0.14f, 0.48f, 0.38f), SaveMacrosFromInputs);
-            SetRect(saveBtn.GetComponent<RectTransform>(), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-146f, -30f), new Vector2(-12f, -6f));
+            SetRect(saveBtn.GetComponent<RectTransform>(), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-144f, -30f), new Vector2(-12f, -6f));
 
             for (int i = 0; i < MacroSlotCount; i++)
             {
@@ -218,6 +230,22 @@ namespace TacSim.UI
             }
             if (_saveStatusText != null)
                 _saveStatusText.text = "Saved F5–F8 macros cleanly.";
+        }
+
+        public void ApplyArenaMacroPreset(bool persist = true)
+        {
+            for (int i = 0; i < MacroSlotCount; i++)
+                SetMacroSlot(i, ArenaPresetLabels[i], ArenaPresetCommands[i], persist);
+            if (_saveStatusText != null)
+                _saveStatusText.text = "Loaded Arena Combat F5–F8 macro preset (scan / emcon / engage / stop).";
+        }
+
+        public void ApplySpaceMacroPreset(bool persist = true)
+        {
+            for (int i = 0; i < MacroSlotCount; i++)
+                SetMacroSlot(i, DefaultLabels[i], DefaultCommands[i], persist);
+            if (_saveStatusText != null)
+                _saveStatusText.text = "Restored Space & Trade F5–F8 macro preset (+ship / +quest / +credit / +tac/scan).";
         }
 
         public bool TriggerMacroSlot(int index)
