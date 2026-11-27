@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import Game from "../../components/Game.svelte";
 import QuarryScreen from "../../components/QuarryScreen.svelte";
+import SheetPanel from "../../components/SheetPanel.svelte";
 import TacsimSceneDeck from "../../components/TacsimSceneDeck.svelte";
 import { GameApp } from "../game.svelte";
 import type { Envelope, OutputEvent, RoomView } from "../proto";
@@ -62,7 +63,11 @@ import {
   formatMountMeta,
   formatMountStateLabel,
 } from "./space-fire";
-import { formatActorInteractPrompt, TacsimStage3D } from "./stage3d";
+import {
+  computeQuestWayfinderPoints,
+  formatActorInteractPrompt,
+  TacsimStage3D,
+} from "./stage3d";
 
 const REPO_ROOT = resolve(__dirname, "../../../..");
 
@@ -2599,5 +2604,107 @@ describe("PR #693 Web review regressions (items 1-7, 9-11)", () => {
     expect(app.screens.paletteOpen).toBe(false);
     expect(app.quests.dialogOpen).toBe(true);
     expect(app.quests.dialogNpcId).toBe("#42");
+  });
+
+  it("renders a 3D golden quest wayfinder trail in TacsimStage3D and guided quest summary in SheetPanel", async () => {
+    const app = new GameApp({
+      url: "ws://test/ws",
+      webSocketFactory: (u) => new FakeSocket(u),
+      random: () => 1,
+    });
+    const pack = app.tacsim.stationPack;
+    const startRoom = "room.c03_arrivals";
+    let destRoom: string | null = null;
+    for (const roomId of pack.rooms.keys()) {
+      if (roomId !== startRoom && findStationExitPath(pack, startRoom, roomId).length > 0) {
+        destRoom = roomId;
+        break;
+      }
+    }
+    expect(destRoom).not.toBeNull();
+
+    const route = computeQuestWayfinderPoints(pack, startRoom, destRoom, 0, 0);
+    expect(route).not.toBeNull();
+    expect(route!.points.length).toBeGreaterThanOrEqual(2);
+    expect(computeQuestWayfinderPoints(pack, startRoom, startRoom, 0, 0)).toBeNull();
+
+    const canvas = document.createElement("canvas");
+    const stage = new TacsimStage3D(canvas, {
+      onSendCommand: vi.fn(),
+      onInteractableTriggered: vi.fn(),
+      onFocusedPromptChanged: vi.fn(),
+      onPhysicalLocationChanged: vi.fn(),
+      isUiBlockingInput: () => false,
+    });
+    try {
+      const baseSync = {
+        stationPack: pack,
+        shipTemplate: app.tacsim.shipTemplate,
+        isAboardShip: false,
+        serverStationRoomEntry: startRoom,
+        serverShipCompartment: null,
+        ambient: app.tacsim.ambient,
+        visibleActors: [],
+        actorSpeech: {},
+        actorComposing: {},
+        roomMarkers: [],
+        stowageCargoKg: 0,
+        holotankData: null,
+      };
+      stage.syncWorldState({ ...baseSync, roomRevision: 1, questRoomEntry: destRoom });
+      const activeTrail = stage.getQuestWayfinderForTest();
+      expect(activeTrail.targetRoom).toBe(destRoom);
+      expect(activeTrail.hopCount).toBeGreaterThanOrEqual(1);
+      expect(activeTrail.childCount).toBe(3);
+
+      // Arriving at the target room clears the 3D wayfinder cleanly
+      stage.syncWorldState({
+        ...baseSync,
+        roomRevision: 2,
+        serverStationRoomEntry: destRoom,
+        questRoomEntry: destRoom,
+      });
+      expect(stage.getQuestWayfinderForTest().childCount).toBe(0);
+    } finally {
+      stage.dispose();
+    }
+
+    // SheetPanel shows live guided quest progress and opens Quest Log on click
+    expect(
+      app.sheet.applyKeyframe({
+        target: "#1",
+        schema: { ruleset: "tacsim", version: 1, sections: [] },
+        approved: { state: "approved", approved: true },
+        data: {},
+      }),
+    ).toBe(true);
+    app.quests.applyFrame({
+      schema: 1,
+      room_id: "#10",
+      room_name: "Ceres Concourse",
+      room_markers: [],
+      available: [],
+      active: [
+        {
+          key: "q.provisions",
+          title: "Stock the Locker and Tanks",
+          next_step: "Buy at least 5 propellant",
+          checkpoints: [
+            { id: "prov", title: "Buy 10 provisions", checked: true, live_ready: true },
+            { id: "prop", title: "Buy 5 propellant", checked: false, live_ready: false },
+          ],
+        },
+      ],
+      completed: [{ key: "q.enroll", title: "First Papers" }],
+    });
+    const rendered = render(SheetPanel, { props: { app } });
+    await tick();
+    const card = screen.getByLabelText("guided quest progress");
+    expect(card.textContent).toContain("Stock the Locker and Tanks");
+    expect(card.textContent).toContain("(1/2)");
+    expect(card.textContent).toContain("Completed: 1");
+    await fireEvent.click(screen.getByRole("button", { name: "Open Quest Log" }));
+    expect(app.quests.logOpen).toBe(true);
+    rendered.unmount();
   });
 });
