@@ -8443,5 +8443,121 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ArenaCommandPaletteLiveTacticalActionsAnd3ButtonTargetFrame_PopulatesLockScanDriveMindAndFiresVerbs()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave9PR2_ArenaPaletteAndUnitFramesTest");
+            try
+            {
+                var catalog = TacSimAssetCatalog.LoadOrDefault();
+                var arenaGo = new UnityEngine.GameObject("Arena");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(catalog, TacSimTerrainDecoder.LoadStaticArena("proving_ground"));
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.CommandPalette.BindWorldSources(null, null, arena);
+
+                var emitted = new List<string>();
+                arena.OnLiveCockpitVerbRequested += emitted.Add;
+                hud.CommandPalette.OnArenaActionRequested += v => arena.ExecuteCockpitAction(v);
+                hud.CommandPalette.OnCommandRequested += v => arena.ExecuteCockpitAction(v);
+
+                // 1. Live Arena frame with hostile B1, Mind profiles (Sniper active, Line inactive), and KeySpots
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 135, ""seated"": true, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""mode"": ""hold"", ""power"": ""online"",
+                    ""x_cm"": 10000, ""y_cm"": 10000, ""heading_deg"": 90, ""speed_kph"": 14,
+                    ""lock_designator"": ""B1"", ""lock_range_m"": 160, ""lock_percent"": 84,
+                    ""mind"": {
+                        ""name"": ""Standard Doctrine"", ""profiles"": [""Sniper"", ""Line""],
+                        ""active"": 0, ""class"": ""I"", ""core"": ""II"", ""channels"": [""helm"", ""sensors"", ""fire""], ""off"": false
+                    },
+                    ""contacts"": [
+                        { ""designator"": ""B1"", ""class"": ""line_tank"", ""party"": ""B"", ""friendly"": false, ""cell"": [116, 100], ""range_m"": 160, ""bearing_deg"": 90, ""facing"": ""rear"", ""aspect"": ""rear"", ""band"": ""close"", ""health"": ""scarred"", ""odds"": [{ ""weapon"": ""main_gun"", ""percent"": 84 }] }
+                    ]
+                }"));
+
+                hud.CommandPalette.SetActiveStage(TacSimActiveStage.SimulatorArena);
+                hud.CommandPalette.SetOpen(true);
+
+                // Fuzzy search "scan b1" -> executes verified `scan B1`!
+                emitted.Clear();
+                hud.CommandPalette.SetQuery("scan b1");
+                Assert.Greater(hud.CommandPalette.FilteredMatchCount, 0);
+                Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
+                CollectionAssert.AreEqual(new[] { "scan B1" }, emitted);
+
+                // Fuzzy search "profile line" -> executes verified `MIND PROFILE Line`!
+                emitted.Clear();
+                hud.CommandPalette.SetOpen(true);
+                hud.CommandPalette.SetQuery("profile line");
+                Assert.Greater(hud.CommandPalette.FilteredMatchCount, 0);
+                Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
+                CollectionAssert.AreEqual(new[] { "MIND PROFILE Line" }, emitted);
+
+                // Fuzzy search "volley" -> executes verified `fire all`!
+                emitted.Clear();
+                hud.CommandPalette.SetOpen(true);
+                hud.CommandPalette.SetQuery("volley");
+                Assert.Greater(hud.CommandPalette.FilteredMatchCount, 0);
+                Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
+                CollectionAssert.AreEqual(new[] { "fire all" }, emitted);
+
+                // 2. Spectator Replay Mode in Command Palette -> lists Follow Unit entries!
+                arena.ExitArena();
+                arena.HandleReplayPanelFrame(JsonNode.Parse(@"{
+                    ""schema"": { ""id"": ""arena.replay"", ""shape"": ""replay"", ""version"": 1 },
+                    ""match"": 88, ""arena"": ""proving_ground"", ""cell_cm"": 1000, ""width"": 64, ""height"": 64,
+                    ""end_ms"": 10000, ""outcome"": ""red"", ""reason"": ""elimination"", ""mode"": ""skirmish"",
+                    ""roster"": [
+                        { ""callsign"": ""R1"", ""team"": ""red"" },
+                        { ""callsign"": ""B1"", ""team"": ""blue"" }
+                    ],
+                    ""keyframes"": [[0, [[16, 16, 90], [48, 48, 270]]]],
+                    ""shots"": [], ""destroyed"": []
+                }"));
+
+                int followedIdx = -1;
+                hud.CommandPalette.OnReplayFollowUnitRequested += idx =>
+                {
+                    followedIdx = idx;
+                    arena.SelectReplayFocusUnit(idx);
+                };
+                hud.CommandPalette.SetOpen(true);
+                hud.CommandPalette.SetQuery("follow b1");
+                Assert.Greater(hud.CommandPalette.FilteredMatchCount, 0);
+                Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
+                Assert.AreEqual(1, followedIdx);
+                Assert.AreEqual(1, arena.ReplayFocusUnitIndex);
+
+                // 3. 3-Button Arena Target Unit Frame (FIRE / SCAN / VOLLEY) dispatches exact verified verbs
+                emitted.Clear();
+                hud.UnitFrames.SetTarget(
+                    "LOCK",
+                    new UnityEngine.Color(0.76f, 0.20f, 0.18f, 0.96f),
+                    "CONTACT B1",
+                    "160m · REAR · 84%",
+                    0.84f,
+                    "SOLUTION 84%",
+                    new UnityEngine.Color(0.92f, 0.42f, 0.24f, 0.95f),
+                    "FIRE", () => arena.ExecuteCockpitAction("fire"),
+                    "SCAN", () => arena.ExecuteCockpitAction("scan B1"),
+                    "VOLLEY", () => arena.ExecuteCockpitAction("fire all"));
+                Assert.AreEqual("FIRE", hud.UnitFrames.TargetAction1Label);
+                Assert.AreEqual("SCAN", hud.UnitFrames.TargetAction2Label);
+                Assert.AreEqual("VOLLEY", hud.UnitFrames.TargetAction3Label);
+                hud.UnitFrames.TriggerTargetAction(0);
+                hud.UnitFrames.TriggerTargetAction(1);
+                hud.UnitFrames.TriggerTargetAction(2);
+                CollectionAssert.AreEqual(new[] { "fire", "scan B1", "fire all" }, emitted);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

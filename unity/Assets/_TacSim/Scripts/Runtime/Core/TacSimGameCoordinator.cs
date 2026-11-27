@@ -257,7 +257,7 @@ namespace TacSim.Core
             if (Hud.OpsDirectory != null)
                 Hud.OpsDirectory.BindSources(StationWorld, ShipInterior, Wayfinder, TradeState, SpaceStage, SurfaceStage, ArenaStage);
             if (Hud.CommandPalette != null)
-                Hud.CommandPalette.BindWorldSources(StationWorld, ShipInterior);
+                Hud.CommandPalette.BindWorldSources(StationWorld, ShipInterior, ArenaStage);
 
             if (_ws == null)
                 _ws = new MushWsClient();
@@ -743,6 +743,16 @@ namespace TacSim.Core
                 Hud.CommandPalette.OnPlotStationRoomRequested += roomId => PlotStationWayfinderRoute(roomId, autoWalk: true);
                 Hud.CommandPalette.OnPlotShipCompartmentRequested += compId => PlotShipWayfinderRoute(compId, autoWalk: true);
                 Hud.CommandPalette.OnInspectSolarPortRequested += portSlug => Hud.SolarMap?.FocusPort(portSlug);
+                Hud.CommandPalette.OnArenaActionRequested += HandleArenaCockpitVerb;
+                Hud.CommandPalette.OnReplayFollowUnitRequested += idx =>
+                {
+                    if (ArenaStage != null && ArenaStage.IsSpectatorTheaterActive)
+                    {
+                        ArenaStage.SelectReplayFocusUnit(idx);
+                        BindCameraToArenaRig();
+                        Hud?.ReplayHud?.RefreshView();
+                    }
+                };
                 Hud.CommandPalette.OnUiActionRequested += act =>
                 {
                     if (Audio != null) Audio.PlayUiClick();
@@ -1413,34 +1423,47 @@ namespace TacSim.Core
                         float avgArmor = (st.ArmorFrontPct + st.ArmorLeftPct + st.ArmorRightPct + st.ArmorRearPct) * 0.25f;
                         float heatFrac = st.HeatMax > 0 ? Mathf.Clamp01(st.Heat / (float)st.HeatMax) : 0f;
                         bool isRed = string.Equals(st.Party, "R", StringComparison.OrdinalIgnoreCase);
+                        string coverTag = !string.IsNullOrEmpty(ArenaStage.CurrentTerrainIntel.CoverLabel)
+                            ? $" | {ArenaStage.CurrentTerrainIntel.CoverLabel}"
+                            : string.Empty;
+                        string killsTag = st.MatchKills > 0 ? $" | {st.MatchKills}K" : " | TAB: Lock";
                         Hud.UnitFrames.UpdatePlayerFrame(
                             isRed ? "RED" : "BLUE",
                             isRed ? new Color(0.68f, 0.20f, 0.20f, 0.96f) : new Color(0.18f, 0.38f, 0.72f, 0.96f),
                             $"{st.Callsign} [{st.Mode.ToUpperInvariant()}]",
-                            $"{st.SpeedKph:0} kph | HDG {st.HeadingDeg:000}°",
+                            $"{st.SpeedKph:0} kph | HDG {st.HeadingDeg:000}°{coverTag}",
                             avgArmor / 100f,
                             $"ARMOR {Mathf.RoundToInt(avgArmor)}% (F{st.ArmorFrontPct})",
                             avgArmor > 45f ? new Color(0.22f, 0.76f, 0.44f, 0.95f) : new Color(0.90f, 0.30f, 0.22f, 0.95f),
                             heatFrac,
                             st.Overheated ? "OVERHEATED!" : $"HEAT {Mathf.RoundToInt(heatFrac * 100f)}%",
                             st.Overheated ? new Color(0.96f, 0.22f, 0.18f, 0.95f) : new Color(0.92f, 0.56f, 0.16f, 0.95f),
-                            $"RED {st.RedAliveCount} vs BLUE {st.BlueAliveCount} | TAB: Lock");
+                            $"RED {st.RedAliveCount} vs BLUE {st.BlueAliveCount}{killsTag}");
 
                         if (!string.IsNullOrEmpty(st.LockedDesignator))
                         {
                             string des = st.LockedDesignator;
+                            bool validScanDes = MushProtocol.TryValidateSafeCommandToken(des, out string safeDes);
+                            string aspectInfo = string.Empty;
+                            if (ArenaStage.TryGetLockedContact(out var lockedCt) && lockedCt != null)
+                            {
+                                string asp = !string.IsNullOrEmpty(lockedCt.Aspect) ? lockedCt.Aspect.ToUpperInvariant() : "FRONT";
+                                aspectInfo = $" · {asp}";
+                            }
                             Hud.UnitFrames.SetTarget(
                                 "LOCK",
                                 new Color(0.76f, 0.20f, 0.18f, 0.96f),
                                 $"CONTACT {des}",
-                                $"{st.LockRangeM:0} m | Hit Odds {st.LockHitPercent}%",
+                                $"{st.LockRangeM:0}m{aspectInfo} | Odds {st.LockHitPercent}%",
                                 st.LockHitPercent / 100f,
                                 $"SOLUTION {st.LockHitPercent}%",
                                 new Color(0.92f, 0.42f, 0.24f, 0.95f),
                                 "FIRE",
                                 () => HandleArenaCockpitVerb("fire"),
                                 "SCAN",
-                                () => HandleArenaCockpitVerb("scan"));
+                                () => HandleArenaCockpitVerb(validScanDes ? $"scan {safeDes}" : "scan"),
+                                "VOLLEY",
+                                () => HandleArenaCockpitVerb("fire all"));
                         }
                         else
                         {

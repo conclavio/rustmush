@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using TacSim.Arena;
 using TacSim.Core;
 using TacSim.Net;
 using TacSim.World;
@@ -41,6 +42,8 @@ namespace TacSim.UI
         public event Action<string> OnPlotShipCompartmentRequested;
         public event Action<string> OnInspectSolarPortRequested;
         public event Action<string> OnUiActionRequested;
+        public event Action<string> OnArenaActionRequested;
+        public event Action<int> OnReplayFollowUnitRequested;
 
         private const int MaxVisibleRows = 10;
 
@@ -84,6 +87,7 @@ namespace TacSim.UI
 
         private StationWorldController _station;
         private ShipInteriorController _ship;
+        private OocArenaController _arena;
         private TacSimActiveStage _activeStage = TacSimActiveStage.StationWalk;
 
         public bool IsOpen => _modalRoot != null && _modalRoot.activeSelf;
@@ -250,10 +254,11 @@ namespace TacSim.UI
             _modalRoot.SetActive(false);
         }
 
-        public void BindWorldSources(StationWorldController station, ShipInteriorController ship)
+        public void BindWorldSources(StationWorldController station, ShipInteriorController ship, OocArenaController arena = null)
         {
             _station = station;
             _ship = ship;
+            _arena = arena;
         }
 
         public void SetActiveStage(TacSimActiveStage stage)
@@ -355,6 +360,96 @@ namespace TacSim.UI
         {
             _allEntries.Clear();
             var curatedVerbs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            // 0. Context-First Live OOC Simulator Arena & 3D Replay Theater Actions
+            if (_activeStage == TacSimActiveStage.SimulatorArena && _arena != null)
+            {
+                if (_arena.IsArenaActive && _arena.State != null)
+                {
+                    var st = _arena.State;
+                    for (int i = 0; i < st.Contacts.Count; i++)
+                    {
+                        var ct = st.Contacts[i];
+                        if (ct.IsWreck || ct.Friendly) continue;
+                        if (!MushProtocol.TryValidateSafeCommandToken(ct.Designator, out string safeDesig)) continue;
+                        string cls = string.IsNullOrEmpty(ct.ClassLabel) ? "unit" : ct.ClassLabel;
+                        _allEntries.Add(new PaletteEntry(
+                            "ARENA LOCK",
+                            $"Lock {safeDesig} [{cls} · {(int)ct.RangeM}m · {ct.HitOddsPct}%]",
+                            $"lock {safeDesig}",
+                            () => OnArenaActionRequested?.Invoke($"lock {safeDesig}"),
+                            $"contact target enemy {safeDesig} {cls}"));
+                        _allEntries.Add(new PaletteEntry(
+                            "ARENA SCAN",
+                            $"Scan {safeDesig} [{cls}]",
+                            $"scan {safeDesig}",
+                            () => OnArenaActionRequested?.Invoke($"scan {safeDesig}"),
+                            $"inspect hull damage {safeDesig} {cls}"));
+                    }
+
+                    if (_arena.TerrainGrid?.KeySpots != null)
+                    {
+                        for (int i = 0; i < _arena.TerrainGrid.KeySpots.Count; i++)
+                        {
+                            var sp = _arena.TerrainGrid.KeySpots[i];
+                            if (!MushProtocol.TryValidateSafeCommandToken(sp.Letter, out string safeLtr, maxLen: 16)) continue;
+                            string sName = string.IsNullOrEmpty(sp.Name) ? safeLtr : sp.Name;
+                            _allEntries.Add(new PaletteEntry(
+                                "ARENA DRIVE",
+                                $"Drive to [{safeLtr}] {sName}",
+                                $"drive {safeLtr}",
+                                () => OnArenaActionRequested?.Invoke($"drive {safeLtr}"),
+                                $"waypoint autopilot move spot {safeLtr} {sName}"));
+                        }
+                    }
+
+                    if (st.Mind != null && st.Mind.Profiles != null)
+                    {
+                        for (int i = 0; i < st.Mind.Profiles.Count; i++)
+                        {
+                            if (i == st.Mind.ActiveIndex) continue;
+                            string rawProf = st.Mind.Profiles[i];
+                            if (!MushProtocol.TryValidateSafeCommandToken(rawProf, out string safeProf, maxLen: 32)) continue;
+                            _allEntries.Add(new PaletteEntry(
+                                "ARENA MIND",
+                                $"Switch Mind Profile: {safeProf}",
+                                $"MIND PROFILE {safeProf}",
+                                () => OnArenaActionRequested?.Invoke($"MIND PROFILE {safeProf}"),
+                                $"mind profile preset doctrine {safeProf}"));
+                        }
+                    }
+
+                    _allEntries.Add(new PaletteEntry("ARENA", "Fire Main Weapon [Space]", "fire", () => OnArenaActionRequested?.Invoke("fire"), "shoot gun cannon"));
+                    _allEntries.Add(new PaletteEntry("ARENA", "Volley All Weapons [G]", "fire all", () => OnArenaActionRequested?.Invoke("fire all"), "salvo alpha strike volley"));
+                    string fireGateVerb = st.WeaponsFree ? "fire hold" : "fire free";
+                    _allEntries.Add(new PaletteEntry("ARENA", st.WeaponsFree ? "Set Weapons Hold [F]" : "Set Weapons Free [F]", fireGateVerb, () => OnArenaActionRequested?.Invoke(fireGateVerb), "hold free weapons gate"));
+                    _allEntries.Add(new PaletteEntry("ARENA", "Toggle EMCON Jammer [M]", "emcon", () => OnArenaActionRequested?.Invoke("emcon"), "ecm radar silent"));
+                    _allEntries.Add(new PaletteEntry("ARENA", "Active Sensor Sweep [N]", "scan", () => OnArenaActionRequested?.Invoke("scan"), "radar ping scan"));
+                    _allEntries.Add(new PaletteEntry("ARENA", "All Stop [X / 0]", "speed 0", () => OnArenaActionRequested?.Invoke("speed 0"), "halt brake stop"));
+                    _allEntries.Add(new PaletteEntry("ARENA", "Exit Simulator Pod", "exit", () => OnArenaActionRequested?.Invoke("exit"), "leave disembark pod"));
+                }
+                else if (_arena.IsSpectatorTheaterActive && _arena.ActiveReplayDoc != null)
+                {
+                    var doc = _arena.ActiveReplayDoc;
+                    for (int i = 0; i < doc.Roster.Count; i++)
+                    {
+                        int capturedIdx = i;
+                        var r = doc.Roster[i];
+                        string teamTag = r.IsBlue ? "BLUE" : "RED";
+                        _allEntries.Add(new PaletteEntry(
+                            "REPLAY CAM",
+                            $"Follow Unit {r.Callsign} [{teamTag}]",
+                            "Bind 3D spectator camera to unit",
+                            () => OnReplayFollowUnitRequested?.Invoke(capturedIdx),
+                            $"camera spectate watch {r.Callsign} {teamTag}"));
+                    }
+                    if (_arena.IsReplayModeActive)
+                    {
+                        _allEntries.Add(new PaletteEntry("REPLAY", "Jump to Next Combat Highlight", "Next hit or wreck timestamp", () => _arena.StepReplayToEvent(+1), "event kill shot next"));
+                        _allEntries.Add(new PaletteEntry("REPLAY", "Toggle Replay Play / Pause [Space]", "Pause or resume match tape", () => _arena.ToggleReplayPlaying(), "play pause"));
+                    }
+                }
+            }
 
             // 1. UI Windows & Quick Controls
             _allEntries.Add(new PaletteEntry("UI", "Open Pilot & Vessel Dossier [C]", "Avatar swap, cargo, space fit & ground rigs", () => OnUiActionRequested?.Invoke("ui:sheet")));
