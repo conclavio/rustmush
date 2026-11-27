@@ -91,6 +91,8 @@ namespace TacSim.World
         public int HoloGridRingCount { get; private set; }
         public int HoloSolarOrbitRingCount => _holoSolarOrbitRingsRoot != null ? _holoSolarOrbitRingsRoot.childCount : 0;
         public bool HasHoloSweepArm => _holoSweepArm != null;
+        public string QuestDestinationPortId { get; private set; } = string.Empty;
+        public bool HasHoloQuestDestinationRing { get; private set; }
 
         // Companionway stairwell openings in ship local X/Z so climbing between Passage (Y=0),
         // Bridge (Y=+3.4m), and Cargo Hold (Y=-3.6m) has full head & capsule clearance.
@@ -1568,6 +1570,7 @@ namespace TacSim.World
             }
             _holoClickNodes.Clear();
             ClearHoloSolarOrbitRings();
+            HasHoloQuestDestinationRing = false;
 
             if (ActiveHoloMode == BridgeHoloMode.SolarSystem && _lastSolarChart != null && _lastSolarChart.Bodies.Count > 0)
             {
@@ -1709,17 +1712,49 @@ namespace TacSim.World
             RebuildHoloTankProjection();
         }
 
+        public void SetQuestDestinationPort(string portId)
+        {
+            string norm = string.IsNullOrWhiteSpace(portId) ? string.Empty : portId.Trim().ToLowerInvariant();
+            if (string.Equals(QuestDestinationPortId, norm, StringComparison.OrdinalIgnoreCase))
+                return;
+            QuestDestinationPortId = norm;
+            if (IsHoloShowingSolarSystem)
+                RebuildHoloTankProjection();
+        }
+
         private void RenderSolarSystemHoloIntoTank(TacSimSolarChartFrame chart)
         {
+            HasHoloQuestDestinationRing = false;
             Material sunMat = UrpMaterialFactory.GetHologramUnlit("HoloSun", new Color(1.0f, 0.86f, 0.32f, 0.95f));
             Material hereMat = UrpMaterialFactory.GetHologramUnlit("HoloHereBody", new Color(0.25f, 1.0f, 0.72f, 0.92f));
             Material bodyMat = UrpMaterialFactory.GetHologramUnlit("HoloPlanet", new Color(0.42f, 0.82f, 1.0f, 0.82f));
             Material routeMat = UrpMaterialFactory.GetHologramUnlit("HoloRouteArc", new Color(1.0f, 0.76f, 0.26f, 0.65f));
             Material stemMat = UrpMaterialFactory.GetHologramUnlit("HoloStem", new Color(0.35f, 0.86f, 1.0f, 0.35f));
+            Material questRingMat = UrpMaterialFactory.GetHologramUnlit("HoloQuestDestRing", new Color(1.0f, 0.86f, 0.24f, 0.96f));
 
             Material orbitTrackMat = UrpMaterialFactory.GetHologramUnlit("HoloSolarOrbitTrack", new Color(0.28f, 0.72f, 0.96f, 0.28f));
             Material hereOrbitMat = UrpMaterialFactory.GetHologramUnlit("HoloSolarHereOrbit", new Color(0.28f, 1.0f, 0.74f, 0.52f));
             ClearHoloSolarOrbitRings();
+
+            // Resolve active quest destination port (including moons -> parent primary body, e.g. stickney -> phobos -> mars)
+            string questPrimaryBodyId = string.Empty;
+            if (!string.IsNullOrEmpty(QuestDestinationPortId))
+            {
+                var qRoute = chart.FindRouteForBodyOrPort(QuestDestinationPortId);
+                string candidateBody = qRoute != null && !string.IsNullOrEmpty(qRoute.Body)
+                    ? qRoute.Body
+                    : QuestDestinationPortId;
+                questPrimaryBodyId = candidateBody;
+                for (int i = 0; i < chart.Bodies.Count; i++)
+                {
+                    if (string.Equals(chart.Bodies[i].Id, candidateBody, StringComparison.OrdinalIgnoreCase) &&
+                        !string.IsNullOrEmpty(chart.Bodies[i].ParentId))
+                    {
+                        questPrimaryBodyId = chart.Bodies[i].ParentId;
+                        break;
+                    }
+                }
+            }
 
             // Glowing central Sun
             CreateHoloSphere(_holotankBlipsRoot, Vector3.zero, 0.13f, sunMat, clickableId: null, isSolar: false, isRock: false, stemMat: null);
@@ -1734,7 +1769,33 @@ namespace TacSim.World
                 bodyPositions[b.Id] = pos;
                 var route = chart.FindRouteForBodyOrPort(b.Id);
                 string clickSlug = route != null && !string.IsNullOrEmpty(route.To) ? route.To : b.Id;
-                CreateHoloSphere(_holotankBlipsRoot, pos, b.Here ? 0.095f : 0.06f, b.Here ? hereMat : bodyMat, clickableId: clickSlug, isSolar: true, isRock: false, stemMat: stemMat);
+                var sphereGo = CreateHoloSphere(_holotankBlipsRoot, pos, b.Here ? 0.095f : 0.06f, b.Here ? hereMat : bodyMat, clickableId: clickSlug, isSolar: true, isRock: false, stemMat: stemMat);
+
+                bool isQuestTarget = !string.IsNullOrEmpty(QuestDestinationPortId) &&
+                                     (string.Equals(b.Id, QuestDestinationPortId, StringComparison.OrdinalIgnoreCase) ||
+                                      string.Equals(clickSlug, QuestDestinationPortId, StringComparison.OrdinalIgnoreCase) ||
+                                      (!string.IsNullOrEmpty(questPrimaryBodyId) &&
+                                       string.Equals(b.Id, questPrimaryBodyId, StringComparison.OrdinalIgnoreCase)));
+                if (isQuestTarget && sphereGo != null)
+                {
+                    // Mount golden halo ring as a child of the planet sphere so HoloTankContacts & HoloSolarOrbitRingCount stay invariant!
+                    var qRingGo = new GameObject("HoloQuestRing");
+                    qRingGo.transform.SetParent(sphereGo.transform, false);
+                    var qlr = qRingGo.AddComponent<LineRenderer>();
+                    qlr.useWorldSpace = false;
+                    qlr.loop = true;
+                    qlr.startWidth = 0.011f;
+                    qlr.endWidth = 0.011f;
+                    qlr.sharedMaterial = questRingMat;
+                    const int QuestSegs = 24;
+                    qlr.positionCount = QuestSegs;
+                    for (int s = 0; s < QuestSegs; s++)
+                    {
+                        float ang = (s / (float)QuestSegs) * Mathf.PI * 2f;
+                        qlr.SetPosition(s, new Vector3(Mathf.Cos(ang) * 1.15f, 0f, Mathf.Sin(ang) * 1.15f));
+                    }
+                    HasHoloQuestDestinationRing = true;
+                }
 
                 float orbitRadius = new Vector2(pos.x, pos.z).magnitude;
                 if (_holoSolarOrbitRingsRoot != null && orbitRadius > 0.05f && orbitRingsAdded < 10)
@@ -1788,7 +1849,7 @@ namespace TacSim.World
             s.GetComponent<MeshRenderer>().sharedMaterial = mat;
         }
 
-        private void CreateHoloSphere(Transform parent, Vector3 localPos, float diameter, Material mat, string clickableId, bool isSolar, bool isRock, Material stemMat)
+        private GameObject CreateHoloSphere(Transform parent, Vector3 localPos, float diameter, Material mat, string clickableId, bool isSolar, bool isRock, Material stemMat)
         {
             var s = GameObject.CreatePrimitive(PrimitiveType.Sphere);
             s.transform.SetParent(parent, false);
@@ -1826,6 +1887,7 @@ namespace TacSim.World
                 if (stCol != null) { if (Application.isPlaying) Destroy(stCol); else DestroyImmediate(stCol); }
                 stem.GetComponent<MeshRenderer>().sharedMaterial = stemMat;
             }
+            return s;
         }
 
         private static GameObject CreateLocalBox(Transform parent, string name, Vector3 localPos, Vector3 scale, Material mat, bool collider)

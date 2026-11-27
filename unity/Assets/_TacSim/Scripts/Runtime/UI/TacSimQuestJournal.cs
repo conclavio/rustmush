@@ -202,6 +202,7 @@ namespace TacSim.UI
         private Text _trackerCollapseLbl;
         private Button _trackerActionBtn;
         private Text _trackerActionLbl;
+        private Button _trackerNavBtn;
         private bool _trackerCollapsed;
 
         private readonly List<string>[] _tabLines =
@@ -245,6 +246,7 @@ namespace TacSim.UI
         public bool HasPinnedObjective => !string.IsNullOrEmpty(PinnedTitle);
         public bool IsTrackerVisible => _trackerRoot != null && _trackerRoot.activeSelf;
         public bool IsTrackerCollapsed => _trackerCollapsed;
+        public bool IsTrackerWayfinderVisible => _trackerNavBtn != null && _trackerNavBtn.gameObject.activeSelf;
         public string PinnedCategory { get; private set; } = string.Empty;
         public string PinnedTitle { get; private set; } = string.Empty;
         public string PinnedDetail { get; private set; } = string.Empty;
@@ -293,8 +295,12 @@ namespace TacSim.UI
             SetRect(_trackerDetailText.rectTransform, Vector2.zero, Vector2.one, new Vector2(8f, 26f), new Vector2(-8f, -6f));
 
             _trackerActionBtn = CreateSmallButton(_trackerBody.transform, "DIALOG", new Color(0.56f, 0.40f, 0.12f), TriggerTrackerQuickAction, out _trackerActionLbl);
-            SetRect(_trackerActionBtn.GetComponent<RectTransform>(), new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(6f, 4f), new Vector2(126f, 22f));
+            SetRect(_trackerActionBtn.GetComponent<RectTransform>(), new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(6f, 4f), new Vector2(102f, 22f));
             _trackerActionBtn.gameObject.SetActive(false);
+
+            _trackerNavBtn = CreateSmallButton(_trackerBody.transform, "NAV", new Color(0.62f, 0.46f, 0.10f), () => TriggerTrackerWayfinder(), out _);
+            SetRect(_trackerNavBtn.GetComponent<RectTransform>(), new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(106f, 4f), new Vector2(148f, 22f));
+            _trackerNavBtn.gameObject.SetActive(false);
 
             var unpinBtn = CreateSmallButton(_trackerBody.transform, "UNPIN", new Color(0.36f, 0.16f, 0.18f), ClearPinnedObjective, out _);
             SetRect(unpinBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-62f, 4f), new Vector2(-6f, 22f));
@@ -1107,6 +1113,7 @@ namespace TacSim.UI
                 _trackerDetailText.text = $"<b><color=#66EEFF>{MushProtocol.EscapeUnityRichText(PinnedTitle)}</color></b>\n{MushProtocol.EscapeUnityRichText(PinnedDetail)}";
             }
             if (_trackerActionBtn != null) _trackerActionBtn.gameObject.SetActive(false);
+            if (_trackerNavBtn != null) _trackerNavBtn.gameObject.SetActive(false);
         }
 
         public void ClearPinnedObjective()
@@ -1116,6 +1123,7 @@ namespace TacSim.UI
             PinnedCategory = string.Empty;
             PinnedTitle = string.Empty;
             PinnedDetail = string.Empty;
+            if (_trackerNavBtn != null) _trackerNavBtn.gameObject.SetActive(false);
             if (_trackerRoot != null)
                 _trackerRoot.SetActive(false);
         }
@@ -1225,6 +1233,10 @@ namespace TacSim.UI
                         else _trackerActionLbl.text = "OPEN DIALOG";
                     }
                 }
+                if (_trackerNavBtn != null)
+                {
+                    _trackerNavBtn.gameObject.SetActive(!string.IsNullOrEmpty(ResolveObjectiveRoomEntry(active)));
+                }
                 return;
             }
 
@@ -1244,6 +1256,7 @@ namespace TacSim.UI
                     _trackerActionBtn.gameObject.SetActive(true);
                     if (_trackerActionLbl != null) _trackerActionLbl.text = "OPEN DIALOG";
                 }
+                if (_trackerNavBtn != null) _trackerNavBtn.gameObject.SetActive(false);
                 return;
             }
 
@@ -1251,6 +1264,29 @@ namespace TacSim.UI
             PinnedTitle = string.Empty;
             PinnedDetail = string.Empty;
             if (_trackerActionBtn != null) _trackerActionBtn.gameObject.SetActive(false);
+            if (_trackerNavBtn != null) _trackerNavBtn.gameObject.SetActive(false);
+        }
+
+        private static string ResolveObjectiveRoomEntry(MushActiveQuest active)
+        {
+            if (active == null) return string.Empty;
+            if (!string.IsNullOrEmpty(active.NextRoomEntry))
+                return active.NextRoomEntry;
+            for (int i = 0; i < active.Checkpoints.Count; i++)
+            {
+                if (!active.Checkpoints[i].Checked && !string.IsNullOrEmpty(active.Checkpoints[i].RoomEntry))
+                    return active.Checkpoints[i].RoomEntry;
+            }
+            return string.Empty;
+        }
+
+        public bool TriggerTrackerWayfinder()
+        {
+            var active = GetTrackedActiveQuest();
+            string roomEntry = ResolveObjectiveRoomEntry(active);
+            if (string.IsNullOrEmpty(roomEntry)) return false;
+            OnWayfinderRoomRequested?.Invoke(roomEntry);
+            return true;
         }
 
         private void TriggerTrackerQuickAction()
