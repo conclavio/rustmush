@@ -10461,5 +10461,218 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestMinimapBeacon_MilestonesAndCommandPalette_WorkEndToEnd()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestPolishWave20TestRoot");
+            try
+            {
+                var stGo = new UnityEngine.GameObject("StationMinimapQuestTest");
+                stGo.transform.SetParent(rootGo.transform, false);
+                var station = stGo.AddComponent<TacSim.World.StationWorldController>();
+                station.BuildStation(null, "neighborhood.ceres_freeport");
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.Minimap.BindWorldSources(station, null, null, null, null);
+                hud.CommandPalette.BindWorldSources(station, null, null);
+                hud.CommandPalette.BindQuestJournal(hud.QuestJournal);
+
+                // Pick a real same-deck room and a cross-deck room from the loaded Ceres Freeport atlas
+                Assert.IsTrue(station.Pack.Rooms.TryGetValue("room.c03_arrivals", out var arrivals));
+                string sameFloorTarget = null;
+                string otherFloorTarget = null;
+                int otherFloorDelta = 0;
+                foreach (var r in station.Pack.Rooms.Values)
+                {
+                    if (r.EntryId == arrivals.EntryId) continue;
+                    if (sameFloorTarget == null && r.FloorIndex == arrivals.FloorIndex)
+                        sameFloorTarget = r.EntryId;
+                    if (otherFloorTarget == null && r.FloorIndex != arrivals.FloorIndex)
+                    {
+                        otherFloorTarget = r.EntryId;
+                        otherFloorDelta = r.FloorIndex - arrivals.FloorIndex;
+                    }
+                }
+                Assert.IsNotNull(sameFloorTarget, "Ceres Freeport atlas must have another room on arrivals deck");
+
+                // 1. Initial hydration must NOT fire milestone celebration events
+                var milestones = new List<(string kind, string title)>();
+                hud.QuestJournal.OnQuestMilestoneReached += (k, t) => milestones.Add((k, t));
+
+                var initialJson = JsonNode.Parse($@"{{
+                    ""schema"": 1,
+                    ""room_id"": ""#10"",
+                    ""room_name"": ""Port Watch Arrivals"",
+                    ""room_markers"": [
+                        {{ ""npc_id"": ""#42"", ""npc_name"": ""Maren Halvorsen"", ""marker"": ""available"", ""symbol"": ""!"", ""quest_key"": ""q.enroll"", ""quest_title"": ""First Berth"", ""category"": ""guided"", ""quest_count"": 1 }}
+                    ],
+                    ""available"": [
+                        {{
+                            ""key"": ""q.enroll"",
+                            ""title"": ""First Berth"",
+                            ""category"": ""guided"",
+                            ""introduction"": ""Enroll at the Co-op Desk."",
+                            ""reward_summary"": ""Charter Dray"",
+                            ""giver_id"": ""#42"",
+                            ""giver_name"": ""Maren Halvorsen"",
+                            ""turn_in_id"": ""#55"",
+                            ""turn_in_name"": ""Ilse Oduya-Brandt"",
+                            ""accept_cmd"": ""+quest/accept #42=tok"",
+                            ""checkpoints"": [
+                                {{ ""id"": ""cp1"", ""title"": ""Enroll"", ""instructions"": ""Use +coop/enroll"", ""room_entry"": ""{sameFloorTarget}"", ""room_name"": ""Target Room"" }}
+                            ]
+                        }}
+                    ],
+                    ""active"": [],
+                    ""completed"": []
+                }}");
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(initialJson));
+                Assert.AreEqual(0, milestones.Count, "Initial panel hydration must not fire milestone callouts");
+
+                // 2. Accepting a quest fires "accepted" and drives same-deck minimap gold beacon
+                var activeJson = JsonNode.Parse($@"{{
+                    ""schema"": 1,
+                    ""room_id"": ""#10"",
+                    ""room_name"": ""Port Watch Arrivals"",
+                    ""room_markers"": [],
+                    ""available"": [],
+                    ""active"": [
+                        {{
+                            ""key"": ""q.enroll"",
+                            ""title"": ""First Berth"",
+                            ""category"": ""guided"",
+                            ""introduction"": ""Enroll at the Co-op Desk."",
+                            ""reward_summary"": ""Charter Dray"",
+                            ""giver_id"": ""#42"",
+                            ""giver_name"": ""Maren Halvorsen"",
+                            ""turn_in_id"": ""#55"",
+                            ""turn_in_name"": ""Ilse Oduya-Brandt"",
+                            ""ready_to_finish"": false,
+                            ""can_finish_now"": false,
+                            ""next_step"": ""Enroll in Belt Co-op"",
+                            ""next_room_entry"": ""{sameFloorTarget}"",
+                            ""next_room_name"": ""Co-op Registry"",
+                            ""checkpoints"": [
+                                {{ ""id"": ""cp1"", ""title"": ""Enroll"", ""instructions"": ""Use +coop/enroll"", ""room_entry"": ""{sameFloorTarget}"", ""room_name"": ""Co-op Registry"", ""checked"": false, ""live_ready"": false }}
+                            ]
+                        }}
+                    ],
+                    ""completed"": []
+                }}");
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(activeJson));
+                Assert.AreEqual(1, milestones.Count);
+                Assert.AreEqual("accepted", milestones[0].kind);
+                Assert.AreEqual("First Berth", milestones[0].title);
+
+                Assert.IsTrue(hud.QuestJournal.TryGetMinimapObjective(out string objRoom, out bool objTurnIn, out bool hasOffer));
+                Assert.AreEqual(sameFloorTarget, objRoom);
+                Assert.IsFalse(objTurnIn);
+                Assert.IsFalse(hasOffer);
+
+                hud.Minimap.SetQuestObjectiveRoom(objRoom, objTurnIn, hasOffer);
+                hud.Minimap.SyncMinimap(TacSimActiveStage.StationWalk, station.GetRoomSpawnPosition("room.c03_arrivals"), 0f, false, forceRedraw: true);
+                Assert.IsTrue(hud.Minimap.LastStationMinimapHasQuestBeacon, "Same-deck quest objective room must paint a gold beacon on the Station Minimap");
+                Assert.AreEqual(0, hud.Minimap.LastStationMinimapQuestFloorDelta);
+
+                // Verify actual golden beacon pixels exist in the minimap buffer
+                bool foundGoldPixel = false;
+                for (int y = 0; y < 196 && !foundGoldPixel; y++)
+                {
+                    for (int x = 0; x < 196; x++)
+                    {
+                        var px = hud.Minimap.SampleMinimapPixelForTests(x, y);
+                        if (px.r >= 245 && px.g >= 200 && px.b <= 90)
+                        {
+                            foundGoldPixel = true;
+                            break;
+                        }
+                    }
+                }
+                Assert.IsTrue(foundGoldPixel, "Station minimap must render visible golden quest beacon pixels");
+
+                // 3. Cross-deck quest objective updates header with elevation arrow and floor delta
+                if (!string.IsNullOrEmpty(otherFloorTarget))
+                {
+                    hud.Minimap.SetQuestObjectiveRoom(otherFloorTarget, isTurnIn: true, currentRoomHasOffer: false);
+                    hud.Minimap.SyncMinimap(TacSimActiveStage.StationWalk, station.GetRoomSpawnPosition("room.c03_arrivals"), 0f, false, forceRedraw: true);
+                    Assert.IsFalse(hud.Minimap.LastStationMinimapHasQuestBeacon);
+                    Assert.AreEqual(otherFloorDelta, hud.Minimap.LastStationMinimapQuestFloorDelta);
+                    StringAssert.Contains(otherFloorDelta > 0 ? "▲" : "▼", hud.Minimap.HeaderText);
+                    StringAssert.Contains("?", hud.Minimap.HeaderText);
+                }
+
+                // 4. Transition to ready-to-turn-in fires "ready", then completion fires "completed"
+                var readyJson = JsonNode.Parse($@"{{
+                    ""schema"": 1,
+                    ""room_id"": ""#10"",
+                    ""room_name"": ""Port Watch Arrivals"",
+                    ""room_markers"": [],
+                    ""available"": [],
+                    ""active"": [
+                        {{
+                            ""key"": ""q.enroll"",
+                            ""title"": ""First Berth"",
+                            ""category"": ""guided"",
+                            ""introduction"": ""Enroll at the Co-op Desk."",
+                            ""reward_summary"": ""Charter Dray"",
+                            ""giver_id"": ""#42"",
+                            ""giver_name"": ""Maren Halvorsen"",
+                            ""turn_in_id"": ""#55"",
+                            ""turn_in_name"": ""Ilse Oduya-Brandt"",
+                            ""ready_to_finish"": true,
+                            ""can_finish_now"": true,
+                            ""next_step"": ""Return to Ilse Oduya-Brandt"",
+                            ""next_room_entry"": ""{sameFloorTarget}"",
+                            ""next_room_name"": ""Co-op Registry"",
+                            ""checkpoints"": [
+                                {{ ""id"": ""cp1"", ""title"": ""Enroll"", ""instructions"": ""Done"", ""room_entry"": ""{sameFloorTarget}"", ""room_name"": ""Co-op Registry"", ""checked"": true, ""live_ready"": true }}
+                            ]
+                        }}
+                    ],
+                    ""completed"": []
+                }}");
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(readyJson));
+                Assert.AreEqual(2, milestones.Count);
+                Assert.AreEqual("ready", milestones[1].kind);
+
+                // 5. Command Palette exposes live Quest Dialog + Quest Wayfinder entries and executes them
+                string plottedRoom = null;
+                hud.CommandPalette.OnPlotStationRoomRequested += r => plottedRoom = r;
+                hud.CommandPalette.SetOpen(true);
+                hud.CommandPalette.SetQuery("wayfinder quest objective");
+                Assert.Greater(hud.CommandPalette.FilteredMatchCount, 0, "Command palette must list live Quest Wayfinder entry");
+                StringAssert.Contains("Co-op Registry", hud.CommandPalette.SelectedEntryTitle);
+                Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
+                Assert.AreEqual(sameFloorTarget, plottedRoom, "Executing Quest Wayfinder palette entry must plot station wayfinder route");
+
+                hud.CommandPalette.SetOpen(true);
+                hud.CommandPalette.SetQuery("complete quest first berth");
+                Assert.Greater(hud.CommandPalette.FilteredMatchCount, 0, "Command palette must list active Quest Dialog entry");
+                Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
+                Assert.IsTrue(hud.QuestJournal.IsQuestDialogOpen, "Executing Quest Dialog palette entry must open NPC Quest Dialog modal");
+
+                var doneJson = JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#10"",
+                    ""room_name"": ""Port Watch Arrivals"",
+                    ""room_markers"": [],
+                    ""available"": [],
+                    ""active"": [],
+                    ""completed"": [
+                        { ""key"": ""q.enroll"", ""title"": ""First Berth"", ""category"": ""guided"", ""giver_name"": ""Maren Halvorsen"", ""turn_in_name"": ""Ilse Oduya-Brandt"", ""completion"": ""Welcome aboard."", ""reward_summary"": ""Charter Dray"", ""completed_at_utc"": 1700000001 }
+                    ]
+                }");
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(doneJson));
+                Assert.AreEqual(3, milestones.Count);
+                Assert.AreEqual("completed", milestones[2].kind);
+                Assert.AreEqual("First Berth", milestones[2].title);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

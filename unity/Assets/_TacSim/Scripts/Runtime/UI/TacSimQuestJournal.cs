@@ -30,6 +30,11 @@ namespace TacSim.UI
     {
         public event Action<string> OnCommandRequested;
         public event Action<string> OnWayfinderRoomRequested;
+        /// <summary>
+        /// Fires on genuine server state transitions after initial hydration:
+        /// kind is "accepted", "ready" (ready to turn in), or "completed", paired with the quest title.
+        /// </summary>
+        public event Action<string, string> OnQuestMilestoneReached;
 
         private const int MaxLinesPerTab = 48;
 
@@ -118,6 +123,10 @@ namespace TacSim.UI
         private bool _manualPinActive;
         private int _selectedQuestIndex;
         private string _confirmAbandonKey = string.Empty;
+        private bool _hasHydratedPanel;
+        private readonly HashSet<string> _seenActiveKeys = new HashSet<string>(StringComparer.Ordinal);
+        private readonly HashSet<string> _seenReadyKeys = new HashSet<string>(StringComparer.Ordinal);
+        private readonly HashSet<string> _seenCompletedKeys = new HashSet<string>(StringComparer.Ordinal);
 
         public bool IsOpen => _modalRoot != null && _modalRoot.activeSelf;
         public bool IsQuestDialogOpen => _questDialogRoot != null && _questDialogRoot.activeSelf;
@@ -343,6 +352,55 @@ namespace TacSim.UI
             LatestPanel = panel;
             _confirmAbandonKey = string.Empty;
 
+            // Detect genuine server-side quest transitions after initial login hydration
+            // so celebration callouts and chimes never spam on reconnect.
+            List<(string kind, string title)> milestones = null;
+            if (_hasHydratedPanel)
+            {
+                for (int i = 0; i < panel.Completed.Count; i++)
+                {
+                    var c = panel.Completed[i];
+                    if (!string.IsNullOrEmpty(c.Key) && !_seenCompletedKeys.Contains(c.Key))
+                    {
+                        milestones ??= new List<(string, string)>(4);
+                        milestones.Add(("completed", c.Title));
+                    }
+                }
+                for (int i = 0; i < panel.Active.Count; i++)
+                {
+                    var a = panel.Active[i];
+                    if (string.IsNullOrEmpty(a.Key)) continue;
+                    bool isReady = a.ReadyToFinish || a.CanFinishNow;
+                    if (!_seenActiveKeys.Contains(a.Key))
+                    {
+                        milestones ??= new List<(string, string)>(4);
+                        milestones.Add(("accepted", a.Title));
+                    }
+                    else if (isReady && !_seenReadyKeys.Contains(a.Key))
+                    {
+                        milestones ??= new List<(string, string)>(4);
+                        milestones.Add(("ready", a.Title));
+                    }
+                }
+            }
+
+            _hasHydratedPanel = true;
+            _seenActiveKeys.Clear();
+            _seenReadyKeys.Clear();
+            for (int i = 0; i < panel.Active.Count; i++)
+            {
+                var a = panel.Active[i];
+                if (string.IsNullOrEmpty(a.Key)) continue;
+                _seenActiveKeys.Add(a.Key);
+                if (a.ReadyToFinish || a.CanFinishNow)
+                    _seenReadyKeys.Add(a.Key);
+            }
+            for (int i = 0; i < panel.Completed.Count; i++)
+            {
+                if (!string.IsNullOrEmpty(panel.Completed[i].Key))
+                    _seenCompletedKeys.Add(panel.Completed[i].Key);
+            }
+
             // Keep TrackedQuestKey valid or auto-track the first active quest
             if (!string.IsNullOrEmpty(TrackedQuestKey))
             {
@@ -366,6 +424,47 @@ namespace TacSim.UI
             RefreshJournalBody();
             if (IsQuestDialogOpen)
                 RefreshQuestDialogUi();
+
+            if (milestones != null)
+            {
+                for (int i = 0; i < milestones.Count; i++)
+                    OnQuestMilestoneReached?.Invoke(milestones[i].kind, milestones[i].title);
+            }
+        }
+
+        public MushActiveQuest GetTrackedActiveQuest()
+        {
+            if (LatestPanel == null) return null;
+            return FindActiveByKey(TrackedQuestKey) ?? (LatestPanel.Active.Count > 0 ? LatestPanel.Active[0] : null);
+        }
+
+        public bool TryGetMinimapObjective(out string roomEntry, out bool isTurnIn, out bool currentRoomHasOffer)
+        {
+            roomEntry = string.Empty;
+            isTurnIn = false;
+            currentRoomHasOffer = false;
+            if (LatestPanel == null) return false;
+
+            currentRoomHasOffer = LatestPanel.Available.Count > 0;
+            var active = GetTrackedActiveQuest();
+            if (active != null)
+            {
+                isTurnIn = active.ReadyToFinish || active.CanFinishNow;
+                roomEntry = active.NextRoomEntry ?? string.Empty;
+                if (string.IsNullOrEmpty(roomEntry))
+                {
+                    for (int i = 0; i < active.Checkpoints.Count; i++)
+                    {
+                        if (!active.Checkpoints[i].Checked && !string.IsNullOrEmpty(active.Checkpoints[i].RoomEntry))
+                        {
+                            roomEntry = active.Checkpoints[i].RoomEntry;
+                            break;
+                        }
+                    }
+                }
+                return !string.IsNullOrEmpty(roomEntry) || currentRoomHasOffer;
+            }
+            return currentRoomHasOffer;
         }
 
         public bool HasQuestForNpc(string npcId)
@@ -494,6 +593,10 @@ namespace TacSim.UI
             DialogNpcId = string.Empty;
             DialogQuestKey = string.Empty;
             _confirmAbandonKey = string.Empty;
+            _hasHydratedPanel = false;
+            _seenActiveKeys.Clear();
+            _seenReadyKeys.Clear();
+            _seenCompletedKeys.Clear();
             _manualPinActive = false;
             _capturingTab = null;
             _captureExpiresAt = 0f;

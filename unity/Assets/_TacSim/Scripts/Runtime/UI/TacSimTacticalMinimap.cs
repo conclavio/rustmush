@@ -49,6 +49,9 @@ namespace TacSim.UI
         public bool LastArenaMinimapHasLockLine { get; private set; }
         public string LastArenaMinimapHoldOwner { get; private set; } = "NEUTRAL";
         public int LastReplayMinimapShotLineCount { get; private set; }
+        public bool LastStationMinimapHasQuestBeacon { get; private set; }
+        public int LastStationMinimapQuestFloorDelta { get; private set; }
+        public string QuestObjectiveRoomEntry { get; private set; } = string.Empty;
         public Texture2D MinimapTexture => _mapTex;
         public Color32 SampleMinimapPixelForTests(int x, int y)
         {
@@ -85,6 +88,8 @@ namespace TacSim.UI
         private float _zoom = 1.0f;
         private int _lastStationFloor = int.MinValue;
         private float _nextRedrawAt;
+        private bool _questObjectiveIsTurnIn;
+        private bool _questCurrentRoomHasOffer;
 
         // Cached clickable bounds in UV space `[0,1]` for Station rooms / Ship compartments / Orbital blips
         private readonly List<(Rect uvRect, string id)> _stationRoomHitRects = new List<(Rect, string)>();
@@ -193,9 +198,33 @@ namespace TacSim.UI
             InspectedStationFloor = 0;
             _zoom = 1.0f;
             IsCollapsed = false;
+            QuestObjectiveRoomEntry = string.Empty;
+            _questObjectiveIsTurnIn = false;
+            _questCurrentRoomHasOffer = false;
+            LastStationMinimapHasQuestBeacon = false;
+            LastStationMinimapQuestFloorDelta = 0;
             if (_bodyContainer != null) _bodyContainer.SetActive(true);
             if (_collapseBtnLabel != null) _collapseBtnLabel.text = "—";
             ApplyDockPlacement();
+        }
+
+        /// <summary>
+        /// Highlights the active quest objective room (or current-room quest offer) on the Station Minimap
+        /// with a golden beacon and cross-deck elevation tag (`▲ D2!` / `▼ D1?`).
+        /// </summary>
+        public void SetQuestObjectiveRoom(string roomEntry, bool isTurnIn = false, bool currentRoomHasOffer = false)
+        {
+            string normalized = roomEntry ?? string.Empty;
+            if (string.Equals(QuestObjectiveRoomEntry, normalized, StringComparison.OrdinalIgnoreCase) &&
+                _questObjectiveIsTurnIn == isTurnIn &&
+                _questCurrentRoomHasOffer == currentRoomHasOffer)
+            {
+                return;
+            }
+            QuestObjectiveRoomEntry = normalized;
+            _questObjectiveIsTurnIn = isTurnIn;
+            _questCurrentRoomHasOffer = currentRoomHasOffer;
+            _nextRedrawAt = 0f;
         }
 
         public void ToggleCollapsed()
@@ -411,6 +440,8 @@ namespace TacSim.UI
         {
             ClearPixels(new Color32(8, 13, 22, 255));
             _stationRoomHitRects.Clear();
+            LastStationMinimapHasQuestBeacon = false;
+            LastStationMinimapQuestFloorDelta = 0;
 
             var pack = _station?.Pack;
             if (pack == null || pack.Rooms.Count == 0)
@@ -434,11 +465,27 @@ namespace TacSim.UI
                 InspectedStationFloor = activeFloor;
             }
 
+            AtlasRoomDef questRoom = null;
+            if (!string.IsNullOrEmpty(QuestObjectiveRoomEntry) &&
+                pack.Rooms.TryGetValue(QuestObjectiveRoomEntry, out var matchedQuestRoom))
+            {
+                questRoom = matchedQuestRoom;
+            }
+            if (questRoom != null)
+                LastStationMinimapQuestFloorDelta = questRoom.FloorIndex - InspectedStationFloor;
+
             if (_headerText != null)
             {
                 string deckTag = InspectedStationFloor == activeFloor ? $"DECK {InspectedStationFloor + 1}" : $"DECK {InspectedStationFloor + 1} (VIEW)";
                 string portName = !string.IsNullOrEmpty(pack.Name) ? pack.Name.ToUpperInvariant() : "STATION";
-                _headerText.text = $"{deckTag} — {portName}";
+                string questTag = string.Empty;
+                if (questRoom != null && LastStationMinimapQuestFloorDelta != 0)
+                {
+                    string arrow = LastStationMinimapQuestFloorDelta > 0 ? "▲" : "▼";
+                    string sym = _questObjectiveIsTurnIn ? "?" : "!";
+                    questTag = $" [{arrow} D{questRoom.FloorIndex + 1}{sym}]";
+                }
+                _headerText.text = $"{deckTag} — {portName}{questTag}";
             }
 
             float minX = float.MaxValue, maxX = float.MinValue, minY = float.MaxValue, maxY = float.MinValue;
@@ -474,14 +521,34 @@ namespace TacSim.UI
                 _stationRoomHitRects.Add((new Rect(u0.x, u0.y, u1.x - u0.x, u1.y - u0.y), r.EntryId));
 
                 bool isCur = string.Equals(r.EntryId, _station.ActiveRoomEntryId, StringComparison.OrdinalIgnoreCase);
+                bool isQuestRoom = questRoom != null && string.Equals(r.EntryId, questRoom.EntryId, StringComparison.OrdinalIgnoreCase);
                 Color32 fill = isCur
                     ? new Color32(28, 84, 112, 255)
-                    : (r.Restricted ? new Color32(48, 28, 34, 255) : new Color32(20, 34, 52, 255));
-                Color32 border = isCur
-                    ? new Color32(92, 226, 255, 255)
-                    : new Color32(68, 102, 134, 255);
+                    : (isQuestRoom
+                        ? new Color32(62, 52, 22, 255)
+                        : (r.Restricted ? new Color32(48, 28, 34, 255) : new Color32(20, 34, 52, 255)));
+                Color32 border = isQuestRoom
+                    ? new Color32(255, 214, 48, 255)
+                    : (isCur ? new Color32(92, 226, 255, 255) : new Color32(68, 102, 134, 255));
                 FillRectUv(u0, u1, fill);
                 DrawRectOutlineUv(u0, u1, border);
+            }
+
+            // Draw glowing gold quest objective beacon on inspected deck
+            AtlasRoomDef beaconRoom = null;
+            if (questRoom != null && questRoom.FloorIndex == InspectedStationFloor)
+                beaconRoom = questRoom;
+            else if (questRoom == null && _questCurrentRoomHasOffer && activeRoom != null && activeRoom.FloorIndex == InspectedStationFloor)
+                beaconRoom = activeRoom;
+
+            if (beaconRoom != null)
+            {
+                Vector2 qUv = AtlasToUv(beaconRoom.Center2D.x, beaconRoom.Center2D.y);
+                if (qUv.x >= 0f && qUv.x <= 1f && qUv.y >= 0f && qUv.y <= 1f)
+                {
+                    DrawQuestBeaconPx(UvToPx(qUv), _questObjectiveIsTurnIn);
+                    LastStationMinimapHasQuestBeacon = true;
+                }
             }
 
             // Draw player arrow on active deck
@@ -494,6 +561,24 @@ namespace TacSim.UI
                 Vector2 pUv = AtlasToUv(pax, pay);
                 DrawHeadingArrowUv(pUv, playerYawDeg, new Color32(110, 255, 180, 255));
             }
+        }
+
+        private void DrawQuestBeaconPx(Vector2 center, bool isTurnIn)
+        {
+            Color32 gold = isTurnIn ? new Color32(255, 226, 72, 255) : new Color32(255, 212, 42, 255);
+            Color32 ring = new Color32(255, 240, 140, 255);
+            int cx = Mathf.RoundToInt(center.x);
+            int cy = Mathf.RoundToInt(center.y);
+            const int r = 5;
+            for (int dy = -r; dy <= r; dy++)
+            {
+                for (int dx = -r; dx <= r; dx++)
+                {
+                    if (Mathf.Abs(dx) + Mathf.Abs(dy) <= r)
+                        Plot(cx + dx, cy + dy, gold);
+                }
+            }
+            DrawCircleOutline(center, 8.5f, ring);
         }
 
         private void DrawShipInteriorMinimap(Vector3 playerWorldPos, float playerYawDeg)
