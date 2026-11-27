@@ -25,7 +25,9 @@ use serde_json::{Value, json};
 
 use super::backend::sanitize_control_sequences as sanitize;
 use super::keys::{Arrow, Key};
-use super::quests::{QuestDestinationHint, QuestMarker, QuestTradeNeed, parse_room_markers};
+use super::quests::{
+    QuestDestinationHint, QuestMarker, QuestSuggestedAction, QuestTradeNeed, parse_room_markers,
+};
 
 /// Panel/query name for port trade & stowage telemetry.
 pub const PORT_TRADE_FEED: &str = "port.trade";
@@ -434,6 +436,7 @@ pub struct PortWalkState {
     quest_dest_port: Option<QuestDestinationHint>,
     quest_room_entry: Option<String>,
     quest_room_turn_in: bool,
+    quest_coop_action: Option<QuestSuggestedAction>,
     speech_bubbles: HashMap<String, (String, Instant)>,
     interactables: Vec<InteractableTarget>,
     focus_idx: usize,
@@ -539,6 +542,7 @@ impl PortWalkState {
             quest_dest_port: None,
             quest_room_entry: None,
             quest_room_turn_in: false,
+            quest_coop_action: None,
             speech_bubbles: HashMap::new(),
             interactables: Vec::new(),
             focus_idx: 0,
@@ -847,6 +851,11 @@ impl PortWalkState {
         self.quest_room_entry = entry;
         self.quest_room_turn_in = turn_in;
         self.bump_scene();
+    }
+
+    /// Sync active Co-op enrollment / Dray-P refit quest action for the Co-op drawer.
+    pub fn observe_quest_coop_action(&mut self, action: Option<QuestSuggestedAction>) {
+        self.quest_coop_action = action;
     }
 
     fn active_trade_qty_setting(&self) -> i64 {
@@ -3041,6 +3050,10 @@ impl PortWalkState {
                     out.commands.push("+coop/statement".to_string());
                     self.push_drawer_log("> +coop/statement".to_string());
                 }
+                Key::Char('p') => {
+                    out.commands.push("+coop/refit prospector".to_string());
+                    self.push_drawer_log("> +coop/refit prospector".to_string());
+                }
                 Key::Enter => {
                     let hull = self.custom_hull_input.trim();
                     if !hull.is_empty() {
@@ -4532,6 +4545,19 @@ impl PortWalkState {
                 }
             }
             PortDrawerKind::Coop => {
+                if let Some(ref act) = self.quest_coop_action {
+                    let banner = if act.command.starts_with("+coop/refit") {
+                        "[QUEST] Refit Dray-P Prospector (press p: +coop/refit prospector)"
+                    } else {
+                        "[QUEST] Enroll Charter Hull (press Enter: +coop/enroll)"
+                    };
+                    lines.push(Line::from(Span::styled(
+                        truncate_str(banner, inner_w),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                }
                 lines.push(Line::from(Span::styled(
                     truncate_str(
                         "First Captains' Lay: zero cash upfront; lay settles from margin.",
@@ -4553,7 +4579,7 @@ impl PortWalkState {
                 )));
                 lines.push(Line::from(Span::styled(
                     truncate_str(
-                        "Keys: Enter:+coop/enroll  t:+coop  s:+coop/statement",
+                        "Keys: Enter:+coop/enroll  p:+coop/refit prospector  t:+coop  s:+coop/statement",
                         inner_w,
                     ),
                     Style::default().fg(Color::Green),
@@ -7993,5 +8019,41 @@ mod tests {
             .expect("arrivals room present");
         assert_eq!(cleared["quest_target"], false);
         assert_eq!(cleared["quest_turn_in"], false);
+    }
+
+    #[test]
+    fn coop_drawer_shows_quest_refit_banner_and_dispatches_refit_on_p() {
+        let mut st = PortWalkState::new();
+        let now = Instant::now();
+        st.observe_quest_coop_action(Some(QuestSuggestedAction {
+            label: "Refit Dray-P".into(),
+            command: "+coop/refit prospector".into(),
+        }));
+        let mut queries = Vec::new();
+        st.open_drawer(PortDrawerKind::Coop, &[], &mut queries, now);
+
+        let backend = ratatui::backend::TestBackend::new(84, 16);
+        let mut term = ratatui::Terminal::new(backend).expect("test terminal");
+        term.draw(|f| st.draw_drawer_box(f, f.area(), true))
+            .expect("draw coop drawer");
+        let rendered = term
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(
+            rendered.contains("[QUEST] Refit Dray-P Prospector"),
+            "expected quest refit banner in Co-op drawer: {rendered}"
+        );
+
+        let out = st.handle_key(Key::Char('p'), false, false, &[], now);
+        assert!(out.consumed);
+        assert!(
+            out.commands.iter().any(|c| c == "+coop/refit prospector"),
+            "pressing p in Co-op drawer must submit '+coop/refit prospector', got {:?}",
+            out.commands
+        );
     }
 }

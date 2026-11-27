@@ -2513,6 +2513,9 @@ impl TuiApp {
                         self.port_walk.observe_quest_objective_room(
                             self.quests_snap.active_objective_room(tracked),
                         );
+                        self.port_walk.observe_quest_coop_action(
+                            self.quests_snap.active_coop_action(tracked),
+                        );
                         let milestones = self.quest_milestones.observe(&self.quests_snap);
                         for m in &milestones {
                             self.push_local_line(&m.notice_text());
