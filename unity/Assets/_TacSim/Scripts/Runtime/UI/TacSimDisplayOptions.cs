@@ -481,15 +481,36 @@ namespace TacSim.UI
 
             var testRow = CreatePanel(body, "AudioTestRow", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(22f, -346f), new Vector2(-22f, -310f), Color.clear);
             var hlg = testRow.AddComponent<HorizontalLayoutGroup>();
-            hlg.spacing = 8f; hlg.childControlWidth = true; hlg.childControlHeight = true; hlg.childForceExpandWidth = true;
-            CreateButton(testRow.transform, "TEST CHIME", new Color(0.14f, 0.34f, 0.46f), () => _audio?.PlayMarketChime());
-            CreateButton(testRow.transform, "TEST LASER", new Color(0.46f, 0.20f, 0.24f), () => _audio?.PlayLaserPulse());
-            CreateButton(testRow.transform, "TEST RED ALERT", new Color(0.62f, 0.20f, 0.16f), () => _audio?.PlayRedAlertKlaxon());
+            hlg.spacing = 6f; hlg.childControlWidth = true; hlg.childControlHeight = true; hlg.childForceExpandWidth = true;
+            CreateButton(testRow.transform, "TEST CHIME", new Color(0.14f, 0.34f, 0.46f), () => { LastAudioPreviewKind = "chime"; _audio?.PlayMarketChime(); });
+            CreateButton(testRow.transform, "TEST LASER", new Color(0.46f, 0.20f, 0.24f), () => { LastAudioPreviewKind = "laser"; _audio?.PlayLaserPulse(); });
+            CreateButton(testRow.transform, "TEST HIT/KILL", new Color(0.54f, 0.34f, 0.14f), () => TriggerCombatSfxPreview());
+            CreateButton(testRow.transform, "TEST ALERT", new Color(0.62f, 0.20f, 0.16f), () => { LastAudioPreviewKind = "red_alert"; _audio?.PlayRedAlertKlaxon(); });
             CreateButton(testRow.transform, "RESET MIXER", new Color(0.24f, 0.28f, 0.36f), () =>
             {
                 _audio?.ResetMixerDefaults();
                 RefreshVisualState();
             });
+        }
+
+        private bool _previewNextKillChord;
+        public string LastAudioPreviewKind { get; private set; } = string.Empty;
+
+        public string TriggerCombatSfxPreview()
+        {
+            bool playKill = _previewNextKillChord;
+            _previewNextKillChord = !_previewNextKillChord;
+            if (playKill)
+            {
+                LastAudioPreviewKind = "kill_chord";
+                _audio?.PlayKillConfirmChord();
+            }
+            else
+            {
+                LastAudioPreviewKind = "hit_tick";
+                _audio?.PlayHitConfirmTick(isCrit: true);
+            }
+            return LastAudioPreviewKind;
         }
 
         private void BuildVolumeRow(

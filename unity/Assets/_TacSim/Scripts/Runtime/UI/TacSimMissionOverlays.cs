@@ -900,7 +900,7 @@ namespace TacSim.UI
         private void BuildArenaLobbyModal(Transform parent)
         {
             _recentReplayPills.Clear();
-            _arenaLobbyModal = CreatePanel(parent, "OocArenaLobbyModal", new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-460f, -312f), new Vector2(460f, 312f), new Color(0.04f, 0.07f, 0.12f, 0.99f));
+            _arenaLobbyModal = CreatePanel(parent, "OocArenaLobbyModal", new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-460f, -336f), new Vector2(460f, 336f), new Color(0.04f, 0.07f, 0.12f, 0.99f));
 
             var hdr = CreateTxt(_arenaLobbyModal.transform, "OOC SIMULATOR SELECTOR CONSOLE — RED vs BLUE", 20, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(1f, 0.58f, 0.48f));
             SetRect(hdr.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(20f, -46f), new Vector2(-130f, -8f));
@@ -995,17 +995,23 @@ namespace TacSim.UI
                 _modeBtnImages.Add(mdb.GetComponent<Image>());
             }
 
-            // Live Centre Status & Claimed Slots Readout
-            _arenaLobbySummaryText = CreateTxt(_arenaLobbyModal.transform, "", 13, FontStyle.Normal, TextAnchor.MiddleCenter, new Color(0.86f, 0.94f, 1f));
-            _arenaLobbySummaryText.supportRichText = true;
-            SetRect(_arenaLobbySummaryText.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(20f, -342f), new Vector2(-20f, -304f));
+            // Row 4b: 1-Click Quick Match Presets (emits exact verified `sim ai <n>` + `sim mode <mode>` sequence)
+            var quickRow = CreateRow(_arenaLobbyModal.transform, "LobbyQuickPresetsRow", -340f, -304f);
+            CreateBtn(quickRow, "QUICK: 1v1 DUEL", new Color(0.22f, 0.34f, 0.46f), () => ApplyLobbyQuickPreset(1, "skirmish"));
+            CreateBtn(quickRow, "QUICK: 4v4 SKIRMISH", new Color(0.24f, 0.40f, 0.38f), () => ApplyLobbyQuickPreset(4, "skirmish"));
+            CreateBtn(quickRow, "QUICK: 6v6 HOLD ZONE", new Color(0.46f, 0.32f, 0.14f), () => ApplyLobbyQuickPreset(6, "hold"));
 
-            _arenaLobbyLiveRosterText = CreateTxt(_arenaLobbyModal.transform, DefaultLobbyRosterHint, 13, FontStyle.Normal, TextAnchor.MiddleCenter, new Color(0.68f, 0.90f, 0.84f));
+            // Live Centre Status, Ready Checklist & Claimed Slots Readout
+            _arenaLobbySummaryText = CreateTxt(_arenaLobbyModal.transform, "", 12, FontStyle.Normal, TextAnchor.MiddleCenter, new Color(0.86f, 0.94f, 1f));
+            _arenaLobbySummaryText.supportRichText = true;
+            SetRect(_arenaLobbySummaryText.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(20f, -384f), new Vector2(-20f, -346f));
+
+            _arenaLobbyLiveRosterText = CreateTxt(_arenaLobbyModal.transform, DefaultLobbyRosterHint, 12, FontStyle.Normal, TextAnchor.MiddleCenter, new Color(0.68f, 0.90f, 0.84f));
             _arenaLobbyLiveRosterText.supportRichText = true;
-            SetRect(_arenaLobbyLiveRosterText.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(20f, -392f), new Vector2(-20f, -344f));
+            SetRect(_arenaLobbyLiveRosterText.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(20f, -434f), new Vector2(-20f, -386f));
 
             // Row 5: Start Boarding & Enter Pod Bays
-            var startRow = CreateRow(_arenaLobbyModal.transform, "SimStartAndBayRow", -446f, -398f);
+            var startRow = CreateRow(_arenaLobbyModal.transform, "SimStartAndBayRow", -488f, -440f);
             CreateBtn(startRow, "OPEN PODS (SIM START)", new Color(0.16f, 0.54f, 0.36f), () =>
                 OnCommandRequested?.Invoke("sim start"));
             CreateBtn(startRow, "WALK TO RED BAY", new Color(0.56f, 0.18f, 0.20f), () =>
@@ -1025,7 +1031,7 @@ namespace TacSim.UI
             });
 
             // Row 6: Centre Management, Match History & Return IC
-            var mgmtRow = CreateRow(_arenaLobbyModal.transform, "SimMgmtRow", -498f, -454f);
+            var mgmtRow = CreateRow(_arenaLobbyModal.transform, "SimMgmtRow", -540f, -496f);
             CreateBtn(mgmtRow, "SIM STATUS", new Color(0.16f, 0.28f, 0.40f), () => OnCommandRequested?.Invoke("sim status"));
             CreateBtn(mgmtRow, "MATCH HISTORY", new Color(0.24f, 0.36f, 0.48f), () => OnCommandRequested?.Invoke("sim history"));
             CreateBtn(mgmtRow, "SIM LEAVE", new Color(0.38f, 0.24f, 0.20f), () => OnCommandRequested?.Invoke("sim leave"));
@@ -1037,7 +1043,7 @@ namespace TacSim.UI
             });
 
             // Row 7: Pooled Quick-Launch 3D Match Replay Pills (populated from authoritative `SIM HISTORY` lines)
-            var replayBox = CreatePanel(_arenaLobbyModal.transform, "LobbyRecentReplaysBox", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(20f, -558f), new Vector2(-20f, -506f), new Color(0.05f, 0.08f, 0.13f, 0.94f));
+            var replayBox = CreatePanel(_arenaLobbyModal.transform, "LobbyRecentReplaysBox", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(20f, -600f), new Vector2(-20f, -548f), new Color(0.05f, 0.08f, 0.13f, 0.94f));
             var rLbl = CreateTxt(replayBox.transform, "RECENT 3D REPLAYS:", 11, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(1.0f, 0.80f, 0.36f));
             SetRect(rLbl.rectTransform, new Vector2(0f, 0f), new Vector2(0f, 1f), new Vector2(10f, 4f), new Vector2(148f, -4f));
 
@@ -1068,7 +1074,22 @@ namespace TacSim.UI
         }
 
         public string LobbyChassisSpecSnapshot => _arenaLobbyChassisSpecText != null ? _arenaLobbyChassisSpecText.text : string.Empty;
+        public string LobbySummarySnapshot => _arenaLobbySummaryText != null ? _arenaLobbySummaryText.text : string.Empty;
         public int RecentReplayPillCount => _parsedHistoryMatches.Count;
+
+        public void ApplyLobbyQuickPreset(int aiCount, string mode)
+        {
+            int safeCount = Mathf.Clamp(aiCount, 1, 6);
+            string safeMode = string.Equals(mode, "hold", StringComparison.OrdinalIgnoreCase) ? "hold" : "skirmish";
+            if (_arena != null)
+            {
+                _arena.SelectedLobbyAiCount = safeCount;
+                _arena.SelectedLobbyMode = safeMode;
+            }
+            RefreshLobbySelectionHighlights();
+            OnCommandRequested?.Invoke($"sim ai {safeCount}");
+            OnCommandRequested?.Invoke($"sim mode {safeMode}");
+        }
 
         public bool ClickRecentReplayPillForTests(int index) => HandleRecentReplayPillClick(index);
 
@@ -1219,8 +1240,17 @@ namespace TacSim.UI
             {
                 string tColor = teamIdx == 0 ? "#FF6655" : "#55AAFF";
                 string mState = string.IsNullOrEmpty(_arena.LiveLobbyMatchState) ? "IDLE" : _arena.LiveLobbyMatchState.ToUpperInvariant();
+                int sideN = Mathf.Clamp(_arena.SelectedLobbyAiCount, 1, 6);
+                string nextStep = string.Equals(mState, "BOARDING", StringComparison.OrdinalIgnoreCase)
+                    ? "<color=#66FFAA>WALK TO BAY & BOARD POD</color>"
+                    : (string.Equals(mState, "RUNNING", StringComparison.OrdinalIgnoreCase)
+                        ? "<color=#FFCC55>MATCH IN PROGRESS</color>"
+                        : "<color=#88EEFF>CLICK OPEN PODS (SIM START)</color>");
                 _arenaLobbySummaryText.text =
-                    $"CENTRE STATE: <b>{MushProtocol.EscapeUnityRichText(mState)}</b>   |   TEAM: <color={tColor}><b>{MushProtocol.EscapeUnityRichText(_arena.SelectedLobbyTeam.ToUpperInvariant())}</b></color>   |   UNIT: <b>{MushProtocol.EscapeUnityRichText(_arena.SelectedLobbyUnit.ToUpperInvariant())}</b>   |   AI SIDE SIZE: <b>{_arena.SelectedLobbyAiCount}</b>   |   RULE: <b>{MushProtocol.EscapeUnityRichText(_arena.SelectedLobbyMode.ToUpperInvariant())}</b>";
+                    $"CENTRE: <b>{MushProtocol.EscapeUnityRichText(mState)}</b>   |   CHECKLIST: " +
+                    $"<color={tColor}><b>{MushProtocol.EscapeUnityRichText(_arena.SelectedLobbyTeam.ToUpperInvariant())}</b></color> · " +
+                    $"<b>{MushProtocol.EscapeUnityRichText(_arena.SelectedLobbyUnit.ToUpperInvariant())}</b> · " +
+                    $"<b>{sideN}v{sideN} {MushProtocol.EscapeUnityRichText(_arena.SelectedLobbyMode.ToUpperInvariant())}</b>  ->  {nextStep}";
             }
 
             if (_arenaLobbyLiveRosterText != null)

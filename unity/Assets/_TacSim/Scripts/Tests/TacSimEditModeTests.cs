@@ -10144,5 +10144,67 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ArenaLobbyQuickMatchPresetsAndCombatAudioPreview_EmitVerbsAndSynthesize()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave19PR1_LobbyPresetsAndCombatAudioPreviewTest");
+            try
+            {
+                var arenaGo = new UnityEngine.GameObject("ArenaLobbyPresetsCtrl");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(TacSimAssetCatalog.LoadOrDefault(), TacSimTerrainDecoder.LoadStaticArena("proving_ground"));
+
+                var audio = rootGo.AddComponent<TacSimAudioSynthesizer>();
+                audio.InitializeAudioGraph();
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.Overlays.BindControllers(null, arena, null);
+                hud.DisplayOptions.BindSubsystems(audio, null);
+
+                // 1. Lobby Quick Match Presets emit exact verified `sim ai` + `sim mode` sequences and update checklist
+                var cmds = new List<string>();
+                hud.Overlays.OnCommandRequested += cmds.Add;
+                hud.Overlays.ShowArenaLobbyModal(true);
+
+                hud.Overlays.ApplyLobbyQuickPreset(1, "skirmish");
+                Assert.AreEqual(1, arena.SelectedLobbyAiCount);
+                Assert.AreEqual("skirmish", arena.SelectedLobbyMode);
+                StringAssert.Contains("1v1", hud.Overlays.LobbySummarySnapshot);
+                StringAssert.Contains("CHECKLIST:", hud.Overlays.LobbySummarySnapshot);
+
+                hud.Overlays.ApplyLobbyQuickPreset(4, "skirmish");
+                Assert.AreEqual(4, arena.SelectedLobbyAiCount);
+
+                hud.Overlays.ApplyLobbyQuickPreset(6, "hold");
+                Assert.AreEqual(6, arena.SelectedLobbyAiCount);
+                Assert.AreEqual("hold", arena.SelectedLobbyMode);
+                StringAssert.Contains("6v6", hud.Overlays.LobbySummarySnapshot);
+                StringAssert.Contains("HOLD", hud.Overlays.LobbySummarySnapshot);
+
+                CollectionAssert.AreEqual(
+                    new[] { "sim ai 1", "sim mode skirmish", "sim ai 4", "sim mode skirmish", "sim ai 6", "sim mode hold" },
+                    cmds);
+
+                // 2. [Esc] Audio Mixer `TEST HIT/KILL` preview alternates hit-confirm tick and kill-confirm chord cleanly
+                Assert.AreEqual(11, audio.AllocatedClipCount, "Audio graph starts with 11 baseline clips before combat preview");
+                Assert.AreEqual("hit_tick", hud.DisplayOptions.TriggerCombatSfxPreview());
+                Assert.AreEqual("hit_tick", hud.DisplayOptions.LastAudioPreviewKind);
+                Assert.AreEqual(12, audio.AllocatedClipCount, "First combat preview must lazy-allocate HitConfirmTick");
+
+                Assert.AreEqual("kill_chord", hud.DisplayOptions.TriggerCombatSfxPreview());
+                Assert.AreEqual("kill_chord", hud.DisplayOptions.LastAudioPreviewKind);
+                Assert.AreEqual(13, audio.AllocatedClipCount, "Second combat preview must lazy-allocate KillConfirmChord");
+
+                audio.DisposeClips();
+                Assert.AreEqual(0, audio.AllocatedClipCount);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
