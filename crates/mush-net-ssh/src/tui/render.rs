@@ -24,6 +24,7 @@ use ratatui::text::{Line, Span};
 use serde_json::Value;
 
 use super::panels::{ARENA_MAP_FEED, ChanMsg, PanelStore, rich_plain};
+use super::port_walk::QuestExitBreadcrumb;
 use super::replay::{self, Picture};
 use super::sheet::{Glyphs, SheetRow, sheet_rows};
 
@@ -338,9 +339,22 @@ pub fn render_event(
     theme: &AnsiTheme,
     now: i64,
 ) -> Vec<Entry> {
+    render_event_with_quest_exit(event, caps, theme, now, None)
+}
+
+/// Render one event to scrollback entries, highlighting any room exit that leads
+/// directly along the tracked quest's shortest station path.
+#[must_use]
+pub fn render_event_with_quest_exit(
+    event: &OutputEvent,
+    caps: &ClientCaps,
+    theme: &AnsiTheme,
+    now: i64,
+    quest_exit: Option<&QuestExitBreadcrumb>,
+) -> Vec<Entry> {
     let mut w = EntryAcc::new(theme, caps.color, now);
     match event {
-        OutputEvent::Room(view) => render_room(&mut w, view),
+        OutputEvent::Room(view) => render_room(&mut w, view, quest_exit),
         OutputEvent::Narrative { kind, actor, text } => {
             render_narrative(&mut w, *kind, actor.as_ref(), text, caps.utf8);
         }
@@ -467,7 +481,7 @@ pub fn render_event(
 /// The room render (mirrors line mode's I3 form): `Name #id`, the
 /// description, then the facts in a label gutter — `Here`, `Exits`,
 /// `Weather` from `ambient.weather.line`.
-fn render_room(w: &mut EntryAcc<'_>, view: &RoomView) {
+fn render_room(w: &mut EntryAcc<'_>, view: &RoomView, quest_exit: Option<&QuestExitBreadcrumb>) {
     w.clock_gutter();
     w.tagged("room", &flat(&view.name));
     w.plain(" ");
@@ -496,7 +510,18 @@ fn render_room(w: &mut EntryAcc<'_>, view: &RoomView) {
             if i > 0 {
                 w.plain("  ");
             }
-            w.tagged("exit", &flat(&exit.name));
+            if quest_exit.is_some_and(|c| c.matches_exit(&exit.name, &exit.aliases)) {
+                let style = if matches!(w.depth, ColorDepth::None) {
+                    Style::default()
+                } else {
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD)
+                };
+                w.write(&format!("[Q] {}", flat(&exit.name)), style);
+            } else {
+                w.tagged("exit", &flat(&exit.name));
+            }
         }
         w.end_line();
     }

@@ -58,8 +58,8 @@ use super::render::{
     BODY_GROUND_FEED, CHART_FEED, Entry, GUTTER_W, PaneRow, PaneRows, RenderCtx, SITE_MAP_FEED,
     TV_STATUS_FEED, dim_span_owned, floor_line, legend_line, render_backlog_rows,
     render_channels_rows, render_chart_table_rows, render_cockpit_notices_rows, render_event,
-    render_rolls_rows, render_sheet_rows, render_vitals_rows, render_who_rail, status_line,
-    tab_strip, vitals_line, wrap_spans, wrap_spans_count,
+    render_event_with_quest_exit, render_rolls_rows, render_sheet_rows, render_vitals_rows,
+    render_who_rail, status_line, tab_strip, vitals_line, wrap_spans, wrap_spans_count,
 };
 use super::replay::{Document, Live, Picture, REPLAY_DOCUMENT_SHAPE, REPLAY_GRID_SHAPE};
 use super::screen::{
@@ -2991,7 +2991,14 @@ impl TuiApp {
             _ => {}
         }
         let following = self.scroll_off == 0;
-        for entry in render_event(event, &self.caps, &self.theme, now) {
+        let quest_exit = if matches!(event, OutputEvent::Room(_)) {
+            self.port_walk.next_quest_hop()
+        } else {
+            None
+        };
+        for entry in
+            render_event_with_quest_exit(event, &self.caps, &self.theme, now, quest_exit.as_ref())
+        {
             self.push_entry(entry);
         }
         if following {
@@ -5586,13 +5593,26 @@ impl TuiApp {
         let chatting = self.mode == Mode::Input;
         let areas = cockpit_text::areas(area);
         frame.render_widget(Clear, area);
-        frame.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                top,
-                Style::default().add_modifier(Modifier::BOLD),
-            ))),
-            areas.status,
-        );
+        let mut status_spans = vec![Span::styled(
+            top,
+            Style::default().add_modifier(Modifier::BOLD),
+        )];
+        if matches!(
+            self.pixel.kind(),
+            PictureKind::SpaceCockpit | PictureKind::Holotank | PictureKind::Docking
+        ) && let Some(dest) = self.port_walk.quest_dest_hint()
+        {
+            status_spans.push(Span::styled(
+                format!(
+                    "  |  [QUEST] Dest: {} (+ship/plan {})",
+                    dest.port_label, dest.port_id
+                ),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        frame.render_widget(Paragraph::new(Line::from(status_spans)), areas.status);
         let ctx = self.render_ctx();
         let held = cockpit.clone().unwrap_or(Value::Null);
         let tail_limit = usize::from(areas.panel.height).max(1);
@@ -13311,5 +13331,107 @@ mod tests {
         assert!(!app.quests_overlay.open);
         assert_eq!(app.mode(), Mode::Input);
         assert_eq!(app.input_text(), "+coop/refit prospector");
+    }
+
+    #[test]
+    fn room_exits_and_space_cockpit_show_quest_breadcrumbs_and_destination_hud() {
+        let mut app = app();
+
+        // 1. Track a quest whose next room is Registry & Co-op Desk (2 hops from Arrivals)
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "active": [{
+                    "key": "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+                    "title": "First Papers",
+                    "next_step": "Enroll at Registry & Co-op Desk",
+                    "next_room_entry": "room.c05_registry",
+                    "next_room_name": "Registry & Co-op Desk",
+                    "checkpoints": [{
+                        "id": "enroll_coop",
+                        "title": "Enroll in Co-op",
+                        "room_entry": "room.c05_registry",
+                        "room_name": "Registry & Co-op Desk",
+                        "checked": false,
+                        "live_ready": false
+                    }]
+                }]
+            }),
+        });
+
+        // 2. Arrive at Visiting Berth Gallery; the Exits scrollback row marks Pressure Lobby [Q]
+        let mut ambient = std::collections::BTreeMap::new();
+        ambient.insert(
+            "atlas".into(),
+            serde_json::json!({
+                "pack": "neighborhood.ceres_freeport",
+                "entry": "room.c01_berth_gallery"
+            }),
+        );
+        app.apply_event(&OutputEvent::Room(RoomView {
+            id: "#10".into(),
+            name: "Visiting Berth Gallery".into(),
+            desc: RichText::plain("Berth gallery."),
+            exits: vec![
+                ExitRef {
+                    name: "Pressure Lobby".into(),
+                    aliases: vec!["n".into(), "north".into()],
+                },
+                ExitRef {
+                    name: "Cargo Airlock".into(),
+                    aliases: vec!["east".into()],
+                },
+            ],
+            contents: Vec::new(),
+            zone: None,
+            ambient,
+        }));
+
+        let exits_line = app
+            .scrollback
+            .iter()
+            .map(|e| {
+                e.body
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .find(|line| line.starts_with("Exits"))
+            .expect("expected rendered Exits line in scrollback");
+        assert!(
+            exits_line.contains("[Q] Pressure Lobby"),
+            "expected [Q] quest route breadcrumb on Pressure Lobby exit: {exits_line}"
+        );
+        assert!(
+            !exits_line.contains("[Q] Cargo Airlock"),
+            "off-path exit must not be tagged [Q]: {exits_line}"
+        );
+
+        // 3. Space Cockpit pixel HUD status bar surfaces active quest destination port
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "active": [{
+                    "key": "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+                    "title": "Run Metals to Stickney Yards",
+                    "next_step": "Sail to Stickney Yards (+ship/plan stickney)",
+                    "checkpoints": [{
+                        "id": "sail_stickney",
+                        "title": "Sail to Stickney Yards",
+                        "instructions": "Run +ship/plan stickney and depart.",
+                        "checked": false,
+                        "live_ready": false
+                    }]
+                }]
+            }),
+        });
+        assert_eq!(
+            app.port_walk.quest_dest_hint().map(|d| d.port_id.as_str()),
+            Some("stickney")
+        );
     }
 }
