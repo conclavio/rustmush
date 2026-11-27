@@ -129,6 +129,7 @@ namespace TacSim.UI
     public sealed class TacSimQuestJournal : MonoBehaviour
     {
         public event Action<string> OnCommandRequested;
+        public event Action<string> OnPrefillCommandRequested;
         public event Action<string> OnWayfinderRoomRequested;
         public event Action OnQuestsPanelUpdated;
         /// <summary>
@@ -172,6 +173,8 @@ namespace TacSim.UI
         private GameObject _questStructActions;
         private Button _qPrimaryBtn;
         private Text _qPrimaryLbl;
+        private Button _qPrefillBtn;
+        private Text _qPrefillLbl;
         private Button _qWayfinderBtn;
         private Button _qAbandonBtn;
         private Text _qAbandonLbl;
@@ -247,6 +250,25 @@ namespace TacSim.UI
         public bool IsTrackerVisible => _trackerRoot != null && _trackerRoot.activeSelf;
         public bool IsTrackerCollapsed => _trackerCollapsed;
         public bool IsTrackerWayfinderVisible => _trackerNavBtn != null && _trackerNavBtn.gameObject.activeSelf;
+        public bool IsJournalPrefillVisible => _qPrefillBtn != null && _qPrefillBtn.gameObject.activeSelf;
+        public string GuidedTourProgressSnapshot
+        {
+            get
+            {
+                if (!TryGetGuidedTourProgress(out int done, out int total, out int curStep, out bool allDone))
+                    return string.Empty;
+                var bar = new StringBuilder(total + 2);
+                bar.Append('[');
+                for (int s = 1; s <= total; s++)
+                {
+                    if (s <= done) bar.Append('#');
+                    else if (!allDone && s == curStep) bar.Append('>');
+                    else bar.Append('-');
+                }
+                bar.Append(']');
+                return $"TOUR {bar} {done}/{total}";
+            }
+        }
         public string PinnedCategory { get; private set; } = string.Empty;
         public string PinnedTitle { get; private set; } = string.Empty;
         public string PinnedDetail { get; private set; } = string.Empty;
@@ -377,6 +399,8 @@ namespace TacSim.UI
 
             _qNextBtn = CreateButton(_questStructActions.transform, "NEXT QUEST ▸", new Color(0.14f, 0.28f, 0.40f), CycleSelectedJournalQuest);
             _qPrimaryBtn = CreateLabeledButton(_questStructActions.transform, "ACCEPT / VERIFY", new Color(0.66f, 0.46f, 0.12f), TriggerJournalPrimaryAction, out _qPrimaryLbl);
+            _qPrefillBtn = CreateLabeledButton(_questStructActions.transform, "PREFILL CMD", new Color(0.22f, 0.46f, 0.24f), () => TriggerJournalSuggestedPrefill(), out _qPrefillLbl);
+            _qPrefillBtn.gameObject.SetActive(false);
             _qWayfinderBtn = CreateButton(_questStructActions.transform, "WAYFINDER ROUTE", new Color(0.12f, 0.44f, 0.56f), TriggerJournalWayfinder);
             _qAbandonBtn = CreateLabeledButton(_questStructActions.transform, "ABANDON QUEST", new Color(0.46f, 0.16f, 0.18f), TriggerJournalAbandon, out _qAbandonLbl);
 
@@ -1363,6 +1387,138 @@ namespace TacSim.UI
             return keys;
         }
 
+        private static readonly string[] GuidedTourKeys =
+        {
+            "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+            "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel",
+            "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+            "tacsim.quests.guided_onboarding/quest.guide_04_return_haul",
+            "tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector",
+            "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+            "tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore"
+        };
+
+        private static int GuidedStepNumber(string key)
+        {
+            if (string.IsNullOrEmpty(key)) return 0;
+            for (int i = 0; i < GuidedTourKeys.Length; i++)
+            {
+                if (string.Equals(GuidedTourKeys[i], key, StringComparison.Ordinal))
+                    return i + 1;
+            }
+            return 0;
+        }
+
+        public bool TryGetGuidedTourProgress(out int completed, out int total, out int currentStep, out bool allDone)
+        {
+            completed = 0;
+            total = GuidedTourKeys.Length;
+            currentStep = 0;
+            allDone = false;
+            if (LatestPanel == null) return false;
+
+            var doneSet = new HashSet<string>(StringComparer.Ordinal);
+            for (int i = 0; i < LatestPanel.Completed.Count; i++)
+            {
+                if (GuidedStepNumber(LatestPanel.Completed[i].Key) > 0)
+                    doneSet.Add(LatestPanel.Completed[i].Key);
+            }
+            int activeStep = 0;
+            for (int i = 0; i < LatestPanel.Active.Count; i++)
+            {
+                int st = GuidedStepNumber(LatestPanel.Active[i].Key);
+                if (st > 0) { activeStep = st; break; }
+            }
+            int availStep = 0;
+            for (int i = 0; i < LatestPanel.Available.Count; i++)
+            {
+                int st = GuidedStepNumber(LatestPanel.Available[i].Key);
+                if (st > 0) { availStep = st; break; }
+            }
+            if (doneSet.Count == 0 && activeStep == 0 && availStep == 0)
+                return false;
+
+            completed = doneSet.Count;
+            currentStep = activeStep > 0 ? activeStep : availStep;
+            allDone = completed >= total;
+            return true;
+        }
+
+        public bool TryGetSuggestedCommand(MushActiveQuest active, out string label, out string command)
+        {
+            label = string.Empty;
+            command = string.Empty;
+            if (active == null || active.CanFinishNow || active.CanCheckNow || active.ReadyToFinish)
+                return false;
+
+            MushQuestCheckpoint pending = null;
+            for (int i = 0; i < active.Checkpoints.Count; i++)
+            {
+                if (!active.Checkpoints[i].Checked && !active.Checkpoints[i].LiveReady)
+                {
+                    pending = active.Checkpoints[i];
+                    break;
+                }
+            }
+            string idLow = (pending?.Id ?? string.Empty).ToLowerInvariant();
+            string textLow = $"{idLow} {pending?.Title ?? string.Empty} {pending?.Instructions ?? string.Empty} {active.NextStep ?? string.Empty}".ToLowerInvariant();
+
+            if (textLow.Contains("+coop/refit", StringComparison.Ordinal) || idLow.Contains("refit_dray", StringComparison.Ordinal))
+            {
+                label = "Refit Dray-P";
+                command = "+coop/refit prospector";
+                return true;
+            }
+            if (textLow.Contains("+coop/enroll", StringComparison.Ordinal) || idLow.Contains("enroll_coop", StringComparison.Ordinal))
+            {
+                label = "Enroll Co-op";
+                command = "+coop/enroll ";
+                return true;
+            }
+            if (idLow.Contains("scan", StringComparison.Ordinal) || textLow.Contains("scan go", StringComparison.Ordinal))
+            {
+                label = "Scan Site";
+                command = "+tv/1 scan go";
+                return true;
+            }
+            if (idLow.Contains("sound", StringComparison.Ordinal) || textLow.Contains("sound go", StringComparison.Ordinal))
+            {
+                label = "Sound Pocket";
+                command = "+tv/1 sound go";
+                return true;
+            }
+            if (idLow.StartsWith("mine_", StringComparison.Ordinal) || textLow.Contains("mine go", StringComparison.Ordinal))
+            {
+                label = "Mine Ore";
+                command = "+tv/1 mine go";
+                return true;
+            }
+            if (TryGetActiveDestinationPort(out var dest))
+            {
+                label = $"Plan {dest.PortLabel}";
+                command = $"+ship/plan {dest.PortId}";
+                return true;
+            }
+            if (textLow.Contains("+market/", StringComparison.Ordinal))
+            {
+                label = "Market Board";
+                command = "+market/list";
+                return true;
+            }
+            return false;
+        }
+
+        public bool TriggerJournalSuggestedPrefill()
+        {
+            if (LatestPanel == null || LatestPanel.Active.Count == 0) return false;
+            var active = LatestPanel.Active[_selectedQuestIndex % LatestPanel.Active.Count];
+            if (!TryGetSuggestedCommand(active, out _, out string cmd))
+                return false;
+            SetOpen(false);
+            OnPrefillCommandRequested?.Invoke(cmd);
+            return true;
+        }
+
         private void RefreshQuestDialogUi()
         {
             if (LatestPanel == null) return;
@@ -1438,6 +1594,10 @@ namespace TacSim.UI
                             sb.Append("<color=#66EEAA>  ").Append(MushProtocol.EscapeUnityRichText(cp.DetailText)).Append("</color>\n");
                         else
                             sb.Append("<color=#99B8CC>  ").Append(MushProtocol.EscapeUnityRichText(cp.Instructions)).Append("</color>\n");
+                    }
+                    if (TryGetSuggestedCommand(active, out string sugLbl, out string sugCmd))
+                    {
+                        sb.Append($"\n<color=#FFDD44><b>SUGGESTED CMD:</b></color> <color=#66EEAA>{MushProtocol.EscapeUnityRichText(sugCmd.Trim())}</color> ({MushProtocol.EscapeUnityRichText(sugLbl)})\n");
                     }
                     _dlgBodyText.text = sb.ToString();
                 }
@@ -1568,7 +1728,11 @@ namespace TacSim.UI
                 if (_subDoneImg != null) _subDoneImg.color = ActiveQuestSubTab == "completed" ? new Color(0.14f, 0.46f, 0.32f, 1f) : new Color(0.10f, 0.20f, 0.30f, 0.94f);
 
                 if (_tabHintText != null)
-                    _tabHintText.text = $"Live Quest Log  ·  Room: {LatestPanel.RoomName}  ·  {LatestPanel.Active.Count} active / {LatestPanel.Completed.Count} completed";
+                {
+                    string tourSnap = GuidedTourProgressSnapshot;
+                    string tourPrefix = !string.IsNullOrEmpty(tourSnap) ? $"GUIDED {tourSnap}  ·  " : string.Empty;
+                    _tabHintText.text = $"{tourPrefix}Room: {LatestPanel.RoomName}  ·  {LatestPanel.Active.Count} active / {LatestPanel.Completed.Count} completed";
+                }
 
                 var sb = new StringBuilder(512);
                 if (ActiveQuestSubTab == "active")
@@ -1577,6 +1741,7 @@ namespace TacSim.UI
                     {
                         sb.Append("<color=#88AAC8>No active quests. Look for NPCs with a floating golden <b>!</b> marker (such as Maren Halvorsen in Port Watch Arrivals).</color>");
                         if (_qPrimaryBtn != null) _qPrimaryBtn.gameObject.SetActive(false);
+                        if (_qPrefillBtn != null) _qPrefillBtn.gameObject.SetActive(false);
                         if (_qWayfinderBtn != null) _qWayfinderBtn.gameObject.SetActive(false);
                         if (_qAbandonBtn != null) _qAbandonBtn.gameObject.SetActive(false);
                         if (_qNextBtn != null) _qNextBtn.gameObject.SetActive(false);
@@ -1610,6 +1775,13 @@ namespace TacSim.UI
                             else if (q.CanCheckNow) _qPrimaryLbl.text = "VERIFY OBJECTIVE";
                             else _qPrimaryLbl.text = "TRACK ON HUD";
                         }
+                        if (_qPrefillBtn != null)
+                        {
+                            bool hasSuggested = TryGetSuggestedCommand(q, out string sugLbl, out _);
+                            _qPrefillBtn.gameObject.SetActive(hasSuggested);
+                            if (hasSuggested && _qPrefillLbl != null)
+                                _qPrefillLbl.text = sugLbl.ToUpperInvariant();
+                        }
                         if (_qWayfinderBtn != null) _qWayfinderBtn.gameObject.SetActive(!string.IsNullOrEmpty(q.NextRoomEntry));
                         if (_qAbandonBtn != null) _qAbandonBtn.gameObject.SetActive(true);
                         if (_qAbandonLbl != null) _qAbandonLbl.text = _confirmAbandonKey == q.Key ? "CONFIRM ABANDON" : "ABANDON QUEST";
@@ -1617,6 +1789,7 @@ namespace TacSim.UI
                 }
                 else if (ActiveQuestSubTab == "available")
                 {
+                    if (_qPrefillBtn != null) _qPrefillBtn.gameObject.SetActive(false);
                     if (LatestPanel.Available.Count == 0)
                     {
                         sb.Append("<color=#88AAC8>No quests are offered in this room right now.</color>");
@@ -1649,6 +1822,7 @@ namespace TacSim.UI
                 else
                 {
                     if (_qPrimaryBtn != null) _qPrimaryBtn.gameObject.SetActive(false);
+                    if (_qPrefillBtn != null) _qPrefillBtn.gameObject.SetActive(false);
                     if (_qWayfinderBtn != null) _qWayfinderBtn.gameObject.SetActive(false);
                     if (_qAbandonBtn != null) _qAbandonBtn.gameObject.SetActive(false);
                     if (_qNextBtn != null) _qNextBtn.gameObject.SetActive(false);

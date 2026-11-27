@@ -11229,5 +11229,84 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestGuidedTourProgress_AndSuggestedCommandPrefill_SyncAcrossJournalAndDialog()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestGuidedTourProgressTestRoot");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                string prefilled = string.Empty;
+                hud.QuestJournal.OnPrefillCommandRequested += cmd => prefilled = cmd;
+
+                var step5Json = JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#12"",
+                    ""room_name"": ""Registry & Co-op Desk"",
+                    ""room_markers"": [],
+                    ""available"": [],
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""Step 1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""Step 2"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""Step 3"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_04_return_haul"", ""title"": ""Step 4"" }
+                    ],
+                    ""active"": [
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"",
+                            ""title"": ""Refit the Dray for Surface Mining"",
+                            ""category"": ""guided"",
+                            ""next_step"": ""Run +coop/refit prospector at Registry"",
+                            ""checkpoints"": [
+                                { ""id"": ""refit_dray_p"", ""title"": ""Refit your Dray into a Dray-P prospector"", ""instructions"": ""Run +coop/refit prospector."", ""checked"": false, ""live_ready"": false }
+                            ]
+                        }
+                    ]
+                }");
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(step5Json));
+
+                Assert.IsTrue(hud.QuestJournal.TryGetGuidedTourProgress(out int done, out int total, out int curStep, out bool allDone));
+                Assert.AreEqual(4, done);
+                Assert.AreEqual(7, total);
+                Assert.AreEqual(5, curStep);
+                Assert.IsFalse(allDone);
+                Assert.AreEqual("TOUR [####>--] 4/7", hud.QuestJournal.GuidedTourProgressSnapshot);
+
+                Assert.IsTrue(hud.QuestJournal.IsJournalPrefillVisible);
+                Assert.IsTrue(hud.QuestJournal.TriggerJournalSuggestedPrefill());
+                Assert.AreEqual("+coop/refit prospector", prefilled);
+
+                // Step 1 Co-op enrollment suggests +coop/enroll
+                var step1Json = JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#12"",
+                    ""room_name"": ""Registry & Co-op Desk"",
+                    ""room_markers"": [],
+                    ""available"": [],
+                    ""completed"": [],
+                    ""active"": [
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                            ""title"": ""First Papers at the Registry"",
+                            ""category"": ""guided"",
+                            ""checkpoints"": [
+                                { ""id"": ""enroll_coop"", ""title"": ""Enroll in the Belt Co-op"", ""instructions"": ""Run +coop/enroll <ship name>."", ""checked"": false, ""live_ready"": false }
+                            ]
+                        }
+                    ]
+                }");
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(step1Json));
+                Assert.AreEqual("TOUR [>------] 0/7", hud.QuestJournal.GuidedTourProgressSnapshot);
+                Assert.IsTrue(hud.QuestJournal.TriggerJournalSuggestedPrefill());
+                Assert.AreEqual("+coop/enroll ", prefilled);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

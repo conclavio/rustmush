@@ -852,6 +852,7 @@ namespace TacSim.Core
             if (Hud.QuestJournal != null)
             {
                 Hud.QuestJournal.OnCommandRequested += ExecutePlayerCommand;
+                Hud.QuestJournal.OnPrefillCommandRequested += cmd => Hud?.PrefillChatInput(cmd);
                 Hud.QuestJournal.OnWayfinderRoomRequested += targetRoom =>
                 {
                     if (!string.IsNullOrEmpty(targetRoom))
