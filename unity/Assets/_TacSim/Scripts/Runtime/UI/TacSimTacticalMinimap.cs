@@ -42,6 +42,8 @@ namespace TacSim.UI
         public int LastArenaMinimapContactBlipCount => _arenaContactHits.Count;
         public int LastReplayMinimapUnitCount => _replayUnitHits.Count;
         public bool LastArenaMinimapHasSensorRing { get; private set; }
+        public bool LastArenaMinimapHasWeaponRangeRing { get; private set; }
+        public bool LastArenaMinimapHasEcmRing { get; private set; }
         public bool LastArenaMinimapHasObjective { get; private set; }
         public bool LastArenaMinimapHasWaypoint { get; private set; }
         public Texture2D MinimapTexture => _mapTex;
@@ -675,6 +677,8 @@ namespace TacSim.UI
             _arenaContactHits.Clear();
             _replayUnitHits.Clear();
             LastArenaMinimapHasSensorRing = false;
+            LastArenaMinimapHasWeaponRangeRing = false;
+            LastArenaMinimapHasEcmRing = false;
             LastArenaMinimapHasObjective = false;
             LastArenaMinimapHasWaypoint = false;
 
@@ -852,6 +856,24 @@ namespace TacSim.UI
                             : new Color32(58, 174, 206, 255));
                     DrawCircleOutline(ownPx, sightPx, ringCol);
                     LastArenaMinimapHasSensorRing = true;
+                }
+
+                // Primary Weapon Max-Range Envelope Ring (subtle emerald-gold outline)
+                if (!st.IsWreck && siteCellM > 0.01f && _arena.TryGetPrimaryWeaponGunnery(out var primaryWpn) && primaryWpn.MaxRangeM > 15f)
+                {
+                    float wpnCells = primaryWpn.MaxRangeM / siteCellM;
+                    float wpnPx = Mathf.Clamp((wpnCells / _arenaSpanCellsX) * MapTexSize, 10f, MapTexSize * 0.49f);
+                    DrawCircleOutline(ownPx, wpnPx, new Color32(118, 212, 134, 255));
+                    LastArenaMinimapHasWeaponRangeRing = true;
+                }
+
+                // Active ECM Jammer Bubble Ring (violet-magenta outline)
+                if (st.IsEcmJammingActive && siteCellM > 0.01f)
+                {
+                    float ecmCells = Mathf.Max(20f, st.EcmRadiusMeters) / siteCellM;
+                    float ecmPx = Mathf.Clamp((ecmCells / _arenaSpanCellsX) * MapTexSize, 7f, MapTexSize * 0.46f);
+                    DrawCircleOutline(ownPx, ecmPx, new Color32(204, 118, 255, 255));
+                    LastArenaMinimapHasEcmRing = true;
                 }
 
                 // Contacts + click-to-lock hit table

@@ -258,8 +258,10 @@ namespace TacSim.Arena
     {
         public string Kind = string.Empty;       // "hit" | "miss" | "kill" | "target_section_lost" | "struck" | "section_lost" | "destroyed" | "refused" | "slot_fired" | ...
         public string Designator = string.Empty;
+        public string Was = string.Empty;
         public string Section = string.Empty;
         public string Weapon = string.Empty;
+        public string Order = string.Empty;
         public string Cause = string.Empty;
         public string Refusal = string.Empty;
         public string Aspect = string.Empty;
@@ -268,6 +270,9 @@ namespace TacSim.Arena
         public bool Friendly;
         public int Slot;
         public int HitPercent;
+        public float DetailRadiusM;
+        public float DetailSecs;
+        public int DetailFloorPercent;
     }
 
     /// <summary>
@@ -293,6 +298,7 @@ namespace TacSim.Arena
     public sealed class ArenaCockpitState
     {
         public ulong MatchId;
+        public long ArenaClockMs;
         public string Callsign = "R1";
         public string Party = "R";
         public string UnitType = "tacsim.unit.line_tank";
@@ -304,6 +310,8 @@ namespace TacSim.Arena
         public int OddsFloorPercent;
         public bool HasEcm;
         public bool EmconSilent;
+        public float EcmRadiusMeters = 120f;
+        public bool IsEcmJammingActive => HasEcm && !EmconSilent && !IsWreck;
         public bool WeaponsFree = true;
 
         public float Xm = 240f;
@@ -837,6 +845,10 @@ namespace TacSim.Arena
                 _playerMuzzleFlash.gameObject.SetActive(false);
             if (_lockedTargetGroundRing != null)
                 _lockedTargetGroundRing.enabled = false;
+            if (_weaponEnvelopeRing != null)
+                _weaponEnvelopeRing.enabled = false;
+            if (_ecmJammerRing != null)
+                _ecmJammerRing.enabled = false;
             if (_driveWaypointRoot != null)
                 _driveWaypointRoot.gameObject.SetActive(false);
             if (_driveCourseLine != null)
@@ -908,6 +920,8 @@ namespace TacSim.Arena
         private Transform _radarPulseRing;
         private float _radarPulseScale = -1f;
         private LineRenderer _arenaRangeRing;
+        private LineRenderer _weaponEnvelopeRing;
+        private LineRenderer _ecmJammerRing;
         private LineRenderer _arenaLockBeam;
         private LineRenderer _lockedTargetGroundRing;
         private Transform _driveWaypointRoot;
@@ -916,6 +930,8 @@ namespace TacSim.Arena
 
         public bool IsArenaLockBeamActive => _arenaLockBeam != null && _arenaLockBeam.enabled;
         public bool IsArenaRangeRingVisible => _arenaRangeRing != null && _arenaRangeRing.enabled;
+        public bool IsWeaponEnvelopeRingVisible => _weaponEnvelopeRing != null && _weaponEnvelopeRing.enabled;
+        public bool IsEcmJammerRingVisible => _ecmJammerRing != null && _ecmJammerRing.enabled;
         public int ActiveImpactBurstCount { get; private set; }
         public int ActiveWorldPopupCount { get; private set; }
         public string LastWorldPopupText { get; private set; } = string.Empty;
@@ -993,6 +1009,8 @@ namespace TacSim.Arena
             _playerMuzzleFlash = null;
             _playerMuzzleFlashRenderer = null;
             _playerMuzzleFlashUntil = -1f;
+            _weaponEnvelopeRing = null;
+            _ecmJammerRing = null;
             _lockedTargetGroundRing = null;
             _driveWaypointRoot = null;
             _driveWaypointLabel = null;
@@ -1062,6 +1080,28 @@ namespace TacSim.Arena
             _arenaRangeRing.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("ArenaRangeRingMat", new Color(0.24f, 0.86f, 0.96f, 0.32f));
             _arenaRangeRing.positionCount = 40;
             _arenaRangeRing.enabled = false;
+
+            var wpnEnvGo = new GameObject("ArenaPrimaryWeaponEnvelopeRing");
+            wpnEnvGo.transform.SetParent(_vfxRoot, false);
+            _weaponEnvelopeRing = wpnEnvGo.AddComponent<LineRenderer>();
+            _weaponEnvelopeRing.useWorldSpace = true;
+            _weaponEnvelopeRing.loop = true;
+            _weaponEnvelopeRing.startWidth = 0.30f;
+            _weaponEnvelopeRing.endWidth = 0.30f;
+            _weaponEnvelopeRing.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("ArenaWeaponEnvelopeMat", new Color(0.45f, 0.92f, 0.56f, 0.28f));
+            _weaponEnvelopeRing.positionCount = 40;
+            _weaponEnvelopeRing.enabled = false;
+
+            var ecmRingGo = new GameObject("ArenaEcmJammerRing");
+            ecmRingGo.transform.SetParent(_vfxRoot, false);
+            _ecmJammerRing = ecmRingGo.AddComponent<LineRenderer>();
+            _ecmJammerRing.useWorldSpace = true;
+            _ecmJammerRing.loop = true;
+            _ecmJammerRing.startWidth = 0.48f;
+            _ecmJammerRing.endWidth = 0.48f;
+            _ecmJammerRing.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("ArenaEcmJammerMat", new Color(0.80f, 0.44f, 1.0f, 0.44f));
+            _ecmJammerRing.positionCount = 36;
+            _ecmJammerRing.enabled = false;
 
             var lockGo = new GameObject("ArenaTargetLockBeam");
             lockGo.transform.SetParent(_vfxRoot, false);
@@ -1953,6 +1993,8 @@ namespace TacSim.Arena
             long? frameTMs = (d["t_ms"].Kind == JsonKind.Int || d["t_ms"].Kind == JsonKind.Float)
                 ? d.Long("t_ms", 0)
                 : (long?)null;
+            if (frameTMs.HasValue && frameTMs.Value >= 0L)
+                State.ArenaClockMs = frameTMs.Value;
             int? turnRateMdegS = (d["turn_rate_mdeg_s"].Kind == JsonKind.Int || d["turn_rate_mdeg_s"].Kind == JsonKind.Float)
                 ? d.Int("turn_rate_mdeg_s", 0)
                 : (int?)null;
@@ -2212,18 +2254,34 @@ namespace TacSim.Arena
                     string txt = n.Str("text", string.Empty);
                     string kind = n.Str("kind", string.Empty).ToLowerInvariant();
                     string desig = n["designator"].IsNull ? string.Empty : n.Str("designator", string.Empty);
+                    string was = n["was"].IsNull ? string.Empty : n.Str("was", string.Empty);
                     string section = n["section"].IsNull ? string.Empty : n.Str("section", string.Empty);
                     string weapon = n["weapon"].IsNull ? string.Empty : n.Str("weapon", string.Empty);
+                    string order = n["order"].IsNull ? string.Empty : n.Str("order", string.Empty);
                     string cause = n["cause"].IsNull ? string.Empty : n.Str("cause", string.Empty);
                     string refusal = n["refusal"].IsNull ? string.Empty : n.Str("refusal", string.Empty);
                     string aspect = n["aspect"].IsNull ? string.Empty : n.Str("aspect", string.Empty);
+
+                    float detailRadiusM = 0f;
+                    float detailSecs = 0f;
+                    int detailFloorPct = 0;
+                    var detObj = n["detail"];
+                    if (detObj != null && detObj.IsObject)
+                    {
+                        detailRadiusM = detObj.Float("radius_m", 0f);
+                        detailSecs = detObj.Float("secs", 0f);
+                        int floorPm = detObj.Int("floor_permille", 0);
+                        if (floorPm > 0) detailFloorPct = floorPm / 10;
+                    }
 
                     var parsedNotice = new ArenaCombatNotice
                     {
                         Kind = kind,
                         Designator = desig,
+                        Was = was,
                         Section = section,
                         Weapon = weapon,
+                        Order = order,
                         Cause = cause,
                         Refusal = refusal,
                         Aspect = aspect,
@@ -2231,12 +2289,21 @@ namespace TacSim.Arena
                         Spent = n.Bool("spent", false),
                         Friendly = n.Bool("friendly", false),
                         Slot = n.Int("slot", 0),
-                        HitPercent = n.Int("percent", 0)
+                        HitPercent = n.Int("percent", 0),
+                        DetailRadiusM = detailRadiusM,
+                        DetailSecs = detailSecs,
+                        DetailFloorPercent = detailFloorPct
                     };
 
                     if (State.RecentNotices.Count >= 10)
                         State.RecentNotices.RemoveAt(0);
                     State.RecentNotices.Add(parsedNotice);
+
+                    if ((kind == "emcon_on" || kind == "emcon_off") && detailRadiusM > 1f)
+                    {
+                        State.EcmRadiusMeters = Mathf.Clamp(detailRadiusM, 20f, 500f);
+                        SyncArenaTacticalVisuals();
+                    }
 
                     if (kind == "hit") State.MatchHits++;
                     else if (kind == "miss") State.MatchMisses++;
@@ -2601,6 +2668,10 @@ namespace TacSim.Arena
                 _playerMuzzleFlash.gameObject.SetActive(false);
             if (_lockedTargetGroundRing != null)
                 _lockedTargetGroundRing.enabled = false;
+            if (_weaponEnvelopeRing != null)
+                _weaponEnvelopeRing.enabled = false;
+            if (_ecmJammerRing != null)
+                _ecmJammerRing.enabled = false;
             if (_driveWaypointRoot != null)
                 _driveWaypointRoot.gameObject.SetActive(false);
             if (_driveCourseLine != null)
@@ -3161,6 +3232,61 @@ namespace TacSim.Arena
                     _arenaRangeRing.SetPosition(i, new Vector3(wx, wy, wz));
                 }
                 _arenaRangeRing.enabled = true;
+            }
+
+            if (_weaponEnvelopeRing != null)
+            {
+                if (TryGetPrimaryWeaponGunnery(out var primaryWpn) && primaryWpn.MaxRangeM > 15f)
+                {
+                    const int WpnSegs = 40;
+                    float wpnRadiusM = Mathf.Clamp(primaryWpn.MaxRangeM, 18f, 520f);
+                    Color wCol = primaryWpn.Ready
+                        ? new Color(0.45f, 0.94f, 0.56f, 0.30f)
+                        : new Color(0.95f, 0.78f, 0.28f, 0.24f);
+                    _weaponEnvelopeRing.startColor = wCol;
+                    _weaponEnvelopeRing.endColor = wCol;
+                    _weaponEnvelopeRing.positionCount = WpnSegs;
+                    for (int i = 0; i < WpnSegs; i++)
+                    {
+                        float ang = (i / (float)WpnSegs) * Mathf.PI * 2f;
+                        float wx = ownPos.x + Mathf.Cos(ang) * wpnRadiusM;
+                        float wz = ownPos.z + Mathf.Sin(ang) * wpnRadiusM;
+                        float wy = ArenaStageOrigin.y + TerrainGrid.SampleElevationMeters(wx - ArenaStageOrigin.x, wz - ArenaStageOrigin.z) + 0.50f;
+                        _weaponEnvelopeRing.SetPosition(i, new Vector3(wx, wy, wz));
+                    }
+                    _weaponEnvelopeRing.enabled = true;
+                }
+                else
+                {
+                    _weaponEnvelopeRing.enabled = false;
+                }
+            }
+
+            if (_ecmJammerRing != null)
+            {
+                if (State.IsEcmJammingActive)
+                {
+                    const int EcmSegs = 36;
+                    float pulse = 1.0f + 0.03f * Mathf.Sin(Time.unscaledTime * 4.5f);
+                    float ecmRadiusM = Mathf.Clamp(State.EcmRadiusMeters, 20f, 500f) * pulse;
+                    Color eCol = new Color(0.80f, 0.44f, 1.0f, 0.44f);
+                    _ecmJammerRing.startColor = eCol;
+                    _ecmJammerRing.endColor = eCol;
+                    _ecmJammerRing.positionCount = EcmSegs;
+                    for (int i = 0; i < EcmSegs; i++)
+                    {
+                        float ang = (i / (float)EcmSegs) * Mathf.PI * 2f;
+                        float wx = ownPos.x + Mathf.Cos(ang) * ecmRadiusM;
+                        float wz = ownPos.z + Mathf.Sin(ang) * ecmRadiusM;
+                        float wy = ArenaStageOrigin.y + TerrainGrid.SampleElevationMeters(wx - ArenaStageOrigin.x, wz - ArenaStageOrigin.z) + 1.05f;
+                        _ecmJammerRing.SetPosition(i, new Vector3(wx, wy, wz));
+                    }
+                    _ecmJammerRing.enabled = true;
+                }
+                else
+                {
+                    _ecmJammerRing.enabled = false;
+                }
             }
 
             Vector3 targetPos = Vector3.zero;
