@@ -754,6 +754,7 @@ namespace TacSim.Core
                 Hud.OpsDirectory.OnPrefillChatRequested += prefix => Hud?.PrefillChatInput(prefix);
                 Hud.OpsDirectory.OnCommandRequested += ExecutePlayerCommand;
                 Hud.OpsDirectory.OnArenaActionRequested += HandleArenaCockpitVerb;
+                Hud.OpsDirectory.OnOpenNpcQuestDialogRequested += npcId => Hud?.QuestJournal?.OpenNpcQuestDialog(npcId);
             }
 
             if (Hud.CommandPalette != null)

@@ -102,6 +102,20 @@ namespace TacSim.UI
         }
     }
 
+    public readonly struct QuestDestinationHint
+    {
+        public readonly string QuestTitle;
+        public readonly string PortId;
+        public readonly string PortLabel;
+
+        public QuestDestinationHint(string questTitle, string portId, string portLabel)
+        {
+            QuestTitle = questTitle ?? string.Empty;
+            PortId = portId ?? string.Empty;
+            PortLabel = portLabel ?? string.Empty;
+        }
+    }
+
     /// <summary>
     /// WoW-style Quest System for Unity:
     /// 1. Interactive NPC Quest Dialog Modal (narrative, itemized requirements/objectives, rewards,
@@ -727,6 +741,90 @@ namespace TacSim.UI
                         mineDone,
                         q.NextStep);
                     return true;
+                }
+            }
+            return false;
+        }
+
+        private static readonly (string portId, string portLabel, string[] patterns)[] KnownDestinations =
+        {
+            ("stickney", "Stickney Yards", new[] { "+ship/plan stickney", "+ship/order depart stickney", "stickney yards", "stickney" }),
+            ("ceres", "Ceres Freeport", new[] { "+ship/plan ceres", "+ship/order depart ceres", "ceres freeport", "back to ceres", "return to ceres" }),
+            ("luna", "Aitken Highport", new[] { "+ship/plan luna", "+ship/order depart luna", "aitken highport" }),
+            ("deimos", "Voltaire Anchorage", new[] { "+ship/plan deimos", "+ship/order depart deimos", "voltaire anchorage" }),
+            ("titan", "Ligeia Terminal", new[] { "+ship/plan titan", "+ship/order depart titan", "ligeia terminal" }),
+            ("isidis", "Isidis Concession", new[] { "+ship/plan isidis", "+ship/order depart isidis", "isidis concession" }),
+            ("commons", "Freeport Commons", new[] { "+ship/plan commons", "freeport commons" }),
+            ("ahuna", "Ahuna Flank", new[] { "+ship/plan ahuna", "ahuna flank" }),
+            ("occator", "Occator Rim", new[] { "+ship/plan occator", "occator rim" }),
+            ("kerwan", "Kerwan Floor", new[] { "+ship/plan kerwan", "kerwan floor" }),
+            ("juling", "Juling Shadow", new[] { "+ship/plan juling", "juling shadow" }),
+            ("urvara", "Urvara Reach", new[] { "+ship/plan urvara", "urvara reach" }),
+            ("rheasilvia", "Rheasilvia Commons", new[] { "+ship/plan rheasilvia", "rheasilvia commons" }),
+        };
+
+        /// <summary>
+        /// Extracts an active quest's corridor destination port (for Solar Orrery &amp; Sailing Plan guidance).
+        /// </summary>
+        public bool TryGetActiveDestinationPort(out QuestDestinationHint hint)
+        {
+            hint = default;
+            if (LatestPanel == null || LatestPanel.Active.Count == 0) return false;
+
+            var ordered = new List<MushActiveQuest>(LatestPanel.Active.Count);
+            var tracked = GetTrackedActiveQuest();
+            if (tracked != null) ordered.Add(tracked);
+            for (int i = 0; i < LatestPanel.Active.Count; i++)
+            {
+                if (LatestPanel.Active[i] != tracked)
+                    ordered.Add(LatestPanel.Active[i]);
+            }
+
+            string[] cmdPrefixes = { "+ship/plan ", "+ship/order depart ", "+ship/undock " };
+
+            for (int qIdx = 0; qIdx < ordered.Count; qIdx++)
+            {
+                var q = ordered[qIdx];
+                for (int cIdx = 0; cIdx < q.Checkpoints.Count; cIdx++)
+                {
+                    var cp = q.Checkpoints[cIdx];
+                    if (cp.Checked || cp.LiveReady) continue;
+
+                    string combined = $"{cp.Instructions} {cp.Title} {q.NextStep} {q.Introduction}".ToLowerInvariant();
+                    for (int pIdx = 0; pIdx < cmdPrefixes.Length; pIdx++)
+                    {
+                        int pos = combined.IndexOf(cmdPrefixes[pIdx], StringComparison.Ordinal);
+                        if (pos < 0) continue;
+                        int start = pos + cmdPrefixes[pIdx].Length;
+                        int end = start;
+                        while (end < combined.Length && (char.IsLetterOrDigit(combined[end]) || combined[end] == '_'))
+                            end++;
+                        if (end > start)
+                        {
+                            string word = combined.Substring(start, end - start);
+                            for (int d = 0; d < KnownDestinations.Length; d++)
+                            {
+                                if (string.Equals(KnownDestinations[d].portId, word, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    hint = new QuestDestinationHint(q.Title, KnownDestinations[d].portId, KnownDestinations[d].portLabel);
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+
+                    for (int d = 0; d < KnownDestinations.Length; d++)
+                    {
+                        var pats = KnownDestinations[d].patterns;
+                        for (int k = 0; k < pats.Length; k++)
+                        {
+                            if (combined.Contains(pats[k], StringComparison.Ordinal))
+                            {
+                                hint = new QuestDestinationHint(q.Title, KnownDestinations[d].portId, KnownDestinations[d].portLabel);
+                                return true;
+                            }
+                        }
+                    }
                 }
             }
             return false;
