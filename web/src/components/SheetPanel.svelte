@@ -28,6 +28,14 @@
   let { app }: { app: GameApp } = $props();
 
   const sheet = $derived(app.sheet);
+  const trackedQuest = $derived(
+    app.quests?.active.find((q) => q.key === app.quests?.trackedKey) ?? app.quests?.active[0] ?? null,
+  );
+  const completedQuestsCount = $derived(app.quests?.completed.length ?? 0);
+  const availableQuestsCount = $derived(app.quests?.available.length ?? 0);
+  const trackedDoneCount = $derived(
+    trackedQuest ? trackedQuest.checkpoints.filter((c) => c.checked || c.liveReady).length : 0,
+  );
 
   // No poll: since interface cut I1 every command-side sheet write
   // republishes the keyframe to the subject (see web/README.md), so the
@@ -118,6 +126,34 @@
     </div>
 
     <div class="sections">
+      {#if trackedQuest || completedQuestsCount > 0 || availableQuestsCount > 0}
+        <section class="block quest-summary" aria-label="guided quest progress">
+          <div class="qsum-head">
+            <h3>Guided Quests</h3>
+            <button type="button" class="qlog-btn" onclick={() => app.quests?.openLog()}>
+              Open Quest Log
+            </button>
+          </div>
+          {#if trackedQuest}
+            <div class="qsum-line">
+              <strong class="qsum-title">{trackedQuest.title}</strong>
+              {#if trackedQuest.checkpoints.length > 0}
+                <span class="qsum-prog">({trackedDoneCount}/{trackedQuest.checkpoints.length})</span>
+              {/if}
+            </div>
+            {#if trackedQuest.nextStep}
+              <p class="qsum-next">{trackedQuest.nextStep}</p>
+            {/if}
+          {:else if availableQuestsCount > 0}
+            <p class="qsum-next">
+              {availableQuestsCount} quest offer{availableQuestsCount === 1 ? "" : "s"} available here.
+            </p>
+          {/if}
+          {#if completedQuestsCount > 0}
+            <p class="qsum-done">Completed: {completedQuestsCount}</p>
+          {/if}
+        </section>
+      {/if}
       {#each schema.sections as section (section.id)}
         {@const kind = layoutKind(section.layout)}
         {@const fields = visibleFields(sheet.data, section)}
@@ -435,5 +471,67 @@
 
   .tracklevel {
     font-size: 0.75rem;
+  }
+
+  .quest-summary {
+    border-color: rgba(212, 166, 74, 0.65);
+    background: rgba(212, 166, 74, 0.08);
+  }
+
+  .qsum-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-bottom: 0.25rem;
+  }
+
+  .qsum-head h3 {
+    margin: 0;
+    color: #ffd84d;
+  }
+
+  .qlog-btn {
+    border: 1px solid #d4a64a;
+    border-radius: 4px;
+    background: rgba(212, 166, 74, 0.2);
+    color: #fef3c7;
+    font: inherit;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0.1rem 0.45rem;
+    cursor: pointer;
+  }
+
+  .qlog-btn:hover {
+    background: rgba(212, 166, 74, 0.34);
+  }
+
+  .qsum-line {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    font-size: 0.8rem;
+  }
+
+  .qsum-title {
+    color: #fde68a;
+  }
+
+  .qsum-prog {
+    color: #93c5fd;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+  }
+
+  .qsum-next,
+  .qsum-done {
+    margin: 0.18rem 0 0;
+    font-size: 0.75rem;
+    color: var(--fg-muted);
+  }
+
+  .qsum-done {
+    color: #86efac;
   }
 </style>

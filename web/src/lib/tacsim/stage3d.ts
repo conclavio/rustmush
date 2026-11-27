@@ -313,6 +313,60 @@ function cloneRepeatTex(base: THREE.DataTexture, rx: number, ry: number): THREE.
   return c;
 }
 
+export interface QuestWayfinderPath3D {
+  targetRoomEntry: string;
+  targetRoomName: string;
+  hopCount: number;
+  points: THREE.Vector3[];
+}
+
+/**
+ * Pure helper computing a 3D world-space floor ribbon polyline from `fromRoomEntry`
+ * to `toRoomEntry` along authoritative neighborhood BFS exits.
+ */
+export function computeQuestWayfinderPoints(
+  pack: AtlasNeighborhoodPack,
+  fromRoomEntry: string | null,
+  toRoomEntry: string | null,
+  originOffsetX: number,
+  originOffsetZ: number,
+  floorLiftM = 0.28,
+): QuestWayfinderPath3D | null {
+  if (!fromRoomEntry || !toRoomEntry || fromRoomEntry === toRoomEntry) return null;
+  const fromRoom = pack.rooms.get(fromRoomEntry);
+  const destRoom = pack.rooms.get(toRoomEntry);
+  if (!fromRoom || !destRoom) return null;
+  const hops = findStationExitPath(pack, fromRoomEntry, toRoomEntry);
+  if (hops.length === 0) return null;
+
+  const points: THREE.Vector3[] = [];
+  const pushRoomCenter = (room: AtlasRoomDef): void => {
+    const cx = (room.minX + room.maxX) * 0.5;
+    const cy = (room.minY + room.maxY) * 0.5;
+    const y = getFloorElevationY(pack, room.floorIndex) + floorLiftM;
+    const raw = atlasToWorldPos(cx, y, cy, originOffsetX, originOffsetZ);
+    const wp = new THREE.Vector3(raw.x, raw.y, raw.z);
+    const prev = points[points.length - 1];
+    if (!prev || prev.distanceTo(wp) > 0.2) {
+      points.push(wp);
+    }
+  };
+
+  pushRoomCenter(fromRoom);
+  for (const hop of hops) {
+    const r = pack.rooms.get(hop.targetRoom);
+    if (r) pushRoomCenter(r);
+  }
+  if (points.length < 2) return null;
+
+  return {
+    targetRoomEntry: toRoomEntry,
+    targetRoomName: destRoom.name || toRoomEntry,
+    hopCount: hops.length,
+    points,
+  };
+}
+
 export class TacsimStage3D {
   readonly supported: boolean;
   private readonly headlessDom: boolean;
@@ -325,6 +379,10 @@ export class TacsimStage3D {
   private readonly stationRoot = new THREE.Group();
   private readonly shipRoot = new THREE.Group();
   private readonly actorsRoot = new THREE.Group();
+  private readonly questWayfinderRoot = new THREE.Group();
+  private questWayfinderSig = "";
+  private questWayfinderTargetRoom: string | null = null;
+  private questWayfinderHopCount = 0;
   private readonly shipOrigin = new THREE.Vector3(0, 160, 0);
 
   private readonly playerGroup = new THREE.Group();
@@ -449,11 +507,13 @@ export class TacsimStage3D {
 
     this.stationRoot.name = "StationWorld";
     this.shipRoot.name = "ShipInterior";
+    this.questWayfinderRoot.name = "QuestWayfinder3D";
     this.shipRoot.position.copy(this.shipOrigin);
     this.shipRoot.visible = false;
     this.scene.add(this.stationRoot);
     this.scene.add(this.shipRoot);
     this.scene.add(this.actorsRoot);
+    this.scene.add(this.questWayfinderRoot);
 
     this.buildPlayerAvatar();
     this.scene.add(this.playerGroup);
@@ -496,6 +556,7 @@ export class TacsimStage3D {
       this.unbindDomEvents();
     }
     this.clearAllActors();
+    this.clearAndDisposeGroup(this.questWayfinderRoot);
     this.clearAndDisposeGroup(this.stationRoot);
     this.clearAndDisposeGroup(this.shipRoot);
     this.clearAndDisposeGroup(this.playerGroup);
@@ -672,6 +733,7 @@ export class TacsimStage3D {
     actorSpeech: Record<string, { text: string; expiresAt: number }>;
     actorComposing: Record<string, boolean>;
     roomMarkers?: ReadonlyArray<StageQuestMarker>;
+    questRoomEntry?: string | null;
     stowageCargoKg: number;
     holotankData: unknown;
   }): void {
@@ -690,6 +752,7 @@ export class TacsimStage3D {
       actorSpeech,
       actorComposing,
       roomMarkers,
+      questRoomEntry,
       stowageCargoKg,
       holotankData,
     } = params;
@@ -884,6 +947,76 @@ export class TacsimStage3D {
       ? `ship:${shipTemplate.unitId}:${serverShipCompartment ?? "airlock"}`
       : `station:${stationPack.packId}:${serverStationRoomEntry ?? this.activeStationRoomEntry}`;
     this.syncOccupants(scopeKey, visibleActors, actorSpeech, actorComposing, roomMarkers ?? []);
+    this.syncQuestWayfinder(isAboardShip ? null : (questRoomEntry ?? null));
+  }
+
+  private syncQuestWayfinder(targetRoomEntry: string | null): void {
+    const pack = this.activeStationPack;
+    const fromRoom = this.activeStationRoomEntry ?? this.serverStationRoomEntry;
+    const sig =
+      pack && targetRoomEntry && fromRoom
+        ? `${pack.packId}:${fromRoom}:${targetRoomEntry}`
+        : "";
+    if (sig === this.questWayfinderSig) return;
+    this.questWayfinderSig = sig;
+    this.clearAndDisposeGroup(this.questWayfinderRoot);
+    this.questWayfinderTargetRoom = null;
+    this.questWayfinderHopCount = 0;
+
+    if (!pack || !targetRoomEntry || !fromRoom) return;
+    const route = computeQuestWayfinderPoints(
+      pack,
+      fromRoom,
+      targetRoomEntry,
+      this.originOffsetX,
+      this.originOffsetZ,
+    );
+    if (!route) return;
+
+    const lineGeo = new THREE.BufferGeometry().setFromPoints(route.points);
+    const lineMat = new THREE.LineBasicMaterial({ color: 0xffd84d });
+    const ribbon = new THREE.Line(lineGeo, lineMat);
+    ribbon.name = "QuestWayfinderRibbon";
+    this.questWayfinderRoot.add(ribbon);
+
+    const dest = route.points[route.points.length - 1];
+    if (dest) {
+      const pillarGeo = new THREE.CylinderGeometry(0.18, 0.28, 3.2, 12);
+      const pillarMat = new THREE.MeshBasicMaterial({
+        color: 0xffd84d,
+        transparent: true,
+        opacity: 0.42,
+      });
+      const pillar = new THREE.Mesh(pillarGeo, pillarMat);
+      pillar.name = "QuestWayfinderPillar";
+      pillar.position.set(dest.x, dest.y + 1.5, dest.z);
+      this.questWayfinderRoot.add(pillar);
+
+      const ringGeo = new THREE.RingGeometry(0.75, 1.15, 24);
+      const ringMat = new THREE.MeshBasicMaterial({
+        color: 0xffe875,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.72,
+      });
+      const ring = new THREE.Mesh(ringGeo, ringMat);
+      ring.name = "QuestWayfinderRing";
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.set(dest.x, dest.y + 0.04, dest.z);
+      this.questWayfinderRoot.add(ring);
+    }
+
+    this.questWayfinderTargetRoom = route.targetRoomEntry;
+    this.questWayfinderHopCount = route.hopCount;
+  }
+
+  /** Read-only test inspection helper for the 3D golden quest wayfinder trail. */
+  getQuestWayfinderForTest(): { targetRoom: string | null; hopCount: number; childCount: number } {
+    return {
+      targetRoom: this.questWayfinderTargetRoom,
+      hopCount: this.questWayfinderHopCount,
+      childCount: this.questWayfinderRoot.children.length,
+    };
   }
 
   /** Read-only test inspection helper for a spawned actor's active quest marker. */

@@ -157,6 +157,10 @@
       actorSpeech: app.tacsim.actorSpeech,
       actorComposing: app.tacsim.actorComposing,
       roomMarkers: app.quests.roomMarkers,
+      questRoomEntry:
+        trackedQuest?.nextRoomEntry ||
+        trackedQuest?.checkpoints.find((c) => !c.checked && !c.liveReady && c.roomEntry)?.roomEntry ||
+        null,
       stowageCargoKg: app.tacsim.trade.stowage.cargoKg,
       holotankData: app.picture.spaceHolotankData,
     });
