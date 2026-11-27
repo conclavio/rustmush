@@ -96,6 +96,397 @@ pub struct QuestsSnapshot {
     pub completed: Vec<CompletedQuest>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuestTradeNeed {
+    pub quest_title: String,
+    pub checkpoint_title: String,
+    pub commodity_slug: String,
+    pub target_quantity: i64,
+    pub wants_buy: bool,
+    pub wants_sell: bool,
+}
+
+impl QuestTradeNeed {
+    #[must_use]
+    pub fn matches_listing(&self, good_id: &str, good_name: &str, is_bid: bool) -> bool {
+        if is_bid {
+            if !self.wants_sell {
+                return false;
+            }
+        } else if !self.wants_buy {
+            return false;
+        }
+        let code = normalize_good_slug(good_id);
+        if !code.is_empty() && code == self.commodity_slug {
+            return true;
+        }
+        let name = normalize_good_slug(good_name);
+        !name.is_empty() && name == self.commodity_slug
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuestDestinationHint {
+    pub quest_title: String,
+    pub port_id: String,
+    pub port_label: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuestSurfaceMiningStatus {
+    pub quest_title: String,
+    pub target_ore_slug: String,
+    pub recommended_family: String,
+    pub scan_done: bool,
+    pub sound_done: bool,
+    pub mine_done: bool,
+}
+
+const KNOWN_TRADE_COMMODITIES: [(&str, &[&str]); 10] = [
+    (
+        "industrial_parts",
+        &["industrial_parts", "industrial parts"],
+    ),
+    ("carbon_ore", &["carbon_ore", "carbon ore"]),
+    (
+        "structural_alloys",
+        &["structural_alloys", "structural alloys"],
+    ),
+    ("rare_earths", &["rare_earths", "rare earths"]),
+    ("water_ice", &["water_ice", "water ice"]),
+    ("provisions", &["provisions"]),
+    ("propellant", &["propellant"]),
+    ("volatiles", &["volatiles"]),
+    ("silicates", &["silicates"]),
+    ("metals", &["metals"]),
+];
+
+const KNOWN_DESTINATIONS: [(&str, &str, &[&str]); 13] = [
+    (
+        "stickney",
+        "Stickney Yards",
+        &[
+            "+ship/plan stickney",
+            "+ship/order depart stickney",
+            "stickney yards",
+            "stickney",
+        ],
+    ),
+    (
+        "ceres",
+        "Ceres Freeport",
+        &[
+            "+ship/plan ceres",
+            "+ship/order depart ceres",
+            "ceres freeport",
+            "back to ceres",
+            "return to ceres",
+        ],
+    ),
+    (
+        "luna",
+        "Aitken Highport",
+        &[
+            "+ship/plan luna",
+            "+ship/order depart luna",
+            "aitken highport",
+        ],
+    ),
+    (
+        "deimos",
+        "Voltaire Anchorage",
+        &[
+            "+ship/plan deimos",
+            "+ship/order depart deimos",
+            "voltaire anchorage",
+        ],
+    ),
+    (
+        "titan",
+        "Ligeia Terminal",
+        &[
+            "+ship/plan titan",
+            "+ship/order depart titan",
+            "ligeia terminal",
+        ],
+    ),
+    (
+        "isidis",
+        "Isidis Concession",
+        &[
+            "+ship/plan isidis",
+            "+ship/order depart isidis",
+            "isidis concession",
+        ],
+    ),
+    (
+        "commons",
+        "Freeport Commons",
+        &["+ship/plan commons", "freeport commons"],
+    ),
+    ("ahuna", "Ahuna Flank", &["+ship/plan ahuna", "ahuna flank"]),
+    (
+        "occator",
+        "Occator Rim",
+        &["+ship/plan occator", "occator rim"],
+    ),
+    (
+        "kerwan",
+        "Kerwan Floor",
+        &["+ship/plan kerwan", "kerwan floor"],
+    ),
+    (
+        "juling",
+        "Juling Shadow",
+        &["+ship/plan juling", "juling shadow"],
+    ),
+    (
+        "urvara",
+        "Urvara Reach",
+        &["+ship/plan urvara", "urvara reach"],
+    ),
+    (
+        "rheasilvia",
+        "Rheasilvia Commons",
+        &["+ship/plan rheasilvia", "rheasilvia commons"],
+    ),
+];
+
+#[must_use]
+pub fn normalize_good_slug(raw: &str) -> String {
+    let trimmed = raw.trim().to_ascii_lowercase();
+    let tail = trimmed
+        .rsplit_once(':')
+        .map_or(trimmed.as_str(), |(_, rhs)| rhs);
+    let mut out = String::with_capacity(tail.len());
+    let mut prev_us = false;
+    for ch in tail.chars() {
+        let mapped = if ch == '-' || ch.is_ascii_whitespace() {
+            '_'
+        } else {
+            ch
+        };
+        if mapped == '_' {
+            if !prev_us {
+                out.push('_');
+            }
+            prev_us = true;
+        } else {
+            out.push(mapped);
+            prev_us = false;
+        }
+    }
+    out
+}
+
+fn extract_leading_positive_i64(text: &str) -> Option<i64> {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_digit() {
+            let mut val: i64 = 0;
+            while i < bytes.len() && bytes[i].is_ascii_digit() && val < 10_000 {
+                val = val * 10 + i64::from(bytes[i] - b'0');
+                i += 1;
+            }
+            if val > 0 {
+                return Some(val);
+            }
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+impl QuestsSnapshot {
+    fn ordered_active<'a>(&'a self, tracked_key: Option<&str>) -> Vec<&'a ActiveQuest> {
+        let mut out = Vec::with_capacity(self.active.len());
+        if let Some(tk) = tracked_key
+            && let Some(found) = self.active.iter().find(|q| q.key == tk)
+        {
+            out.push(found);
+        }
+        for q in &self.active {
+            if !out.iter().any(|existing| existing.key == q.key) {
+                out.push(q);
+            }
+        }
+        out
+    }
+
+    #[must_use]
+    pub fn active_trade_need(&self, tracked_key: Option<&str>) -> Option<QuestTradeNeed> {
+        for q in self.ordered_active(tracked_key) {
+            for cp in &q.checkpoints {
+                if cp.checked || cp.live_ready {
+                    continue;
+                }
+                let id_low = cp.id.to_ascii_lowercase();
+                let title_low = cp.title.to_ascii_lowercase();
+                let instr_low = cp.instructions.to_ascii_lowercase();
+                if id_low.starts_with("mine_")
+                    || id_low.starts_with("scan_")
+                    || id_low.starts_with("sound_")
+                    || title_low.starts_with("mine ")
+                {
+                    continue;
+                }
+                let combined = format!("{id_low} {title_low} {instr_low}");
+                let slug = KNOWN_TRADE_COMMODITIES
+                    .iter()
+                    .find(|(_, pats)| pats.iter().any(|p| combined.contains(p)))
+                    .map(|(slug, _)| *slug)?;
+                let wants_buy = id_low.starts_with("buy_")
+                    || id_low.starts_with("deliver_")
+                    || id_low.starts_with("return_")
+                    || title_low.contains("buy ")
+                    || title_low.contains("haul ")
+                    || instr_low.contains("buy ");
+                let wants_sell = id_low.starts_with("sell_")
+                    || id_low.starts_with("deliver_")
+                    || id_low.starts_with("return_")
+                    || title_low.contains("sell ")
+                    || title_low.contains("deliver ")
+                    || title_low.contains("haul ")
+                    || instr_low.contains("+market/sell");
+                if !wants_buy && !wants_sell {
+                    continue;
+                }
+                let target_quantity = extract_leading_positive_i64(&cp.title)
+                    .or_else(|| extract_leading_positive_i64(&cp.instructions))
+                    .unwrap_or(1);
+                return Some(QuestTradeNeed {
+                    quest_title: q.title.clone(),
+                    checkpoint_title: cp.title.clone(),
+                    commodity_slug: slug.to_string(),
+                    target_quantity,
+                    wants_buy,
+                    wants_sell,
+                });
+            }
+        }
+        None
+    }
+
+    #[must_use]
+    pub fn active_destination_port(
+        &self,
+        tracked_key: Option<&str>,
+    ) -> Option<QuestDestinationHint> {
+        for q in self.ordered_active(tracked_key) {
+            for cp in &q.checkpoints {
+                if cp.checked || cp.live_ready {
+                    continue;
+                }
+                let combined = format!("{} {} {}", cp.instructions, cp.title, q.introduction)
+                    .to_ascii_lowercase();
+                for prefix in ["+ship/plan ", "+ship/order depart ", "+ship/undock "] {
+                    if let Some(pos) = combined.find(prefix) {
+                        let rest = &combined[pos + prefix.len()..];
+                        let word: String = rest
+                            .chars()
+                            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                            .collect();
+                        if let Some((id, label, _)) =
+                            KNOWN_DESTINATIONS.iter().find(|(id, _, _)| *id == word)
+                        {
+                            return Some(QuestDestinationHint {
+                                quest_title: q.title.clone(),
+                                port_id: (*id).to_string(),
+                                port_label: (*label).to_string(),
+                            });
+                        }
+                    }
+                }
+                if let Some((id, label, _)) = KNOWN_DESTINATIONS
+                    .iter()
+                    .find(|(_, _, pats)| pats.iter().any(|p| combined.contains(p)))
+                {
+                    return Some(QuestDestinationHint {
+                        quest_title: q.title.clone(),
+                        port_id: (*id).to_string(),
+                        port_label: (*label).to_string(),
+                    });
+                }
+            }
+        }
+        None
+    }
+
+    #[must_use]
+    pub fn surface_mining_status(
+        &self,
+        tracked_key: Option<&str>,
+    ) -> Option<QuestSurfaceMiningStatus> {
+        for q in self.ordered_active(tracked_key) {
+            let mut has_any = false;
+            let mut scan_done = false;
+            let mut sound_done = false;
+            let mut mine_done = false;
+            let mut ore_slug = String::new();
+            for cp in &q.checkpoints {
+                let id_low = cp.id.to_ascii_lowercase();
+                let text_low = format!(
+                    "{id_low} {} {}",
+                    cp.title.to_ascii_lowercase(),
+                    cp.instructions.to_ascii_lowercase()
+                );
+                let done = cp.checked || cp.live_ready;
+                if id_low.contains("scan")
+                    || text_low.contains("surface scan")
+                    || text_low.contains("scan go")
+                {
+                    has_any = true;
+                    scan_done = done;
+                } else if id_low.contains("sound")
+                    || text_low.contains("sound a detected")
+                    || text_low.contains("sound go")
+                {
+                    has_any = true;
+                    sound_done = done;
+                } else if id_low.starts_with("mine_")
+                    || text_low.contains("mine at least")
+                    || text_low.contains("mine go")
+                {
+                    has_any = true;
+                    mine_done = done;
+                    if text_low.contains("carbon_ore") || text_low.contains("carbon ore") {
+                        ore_slug = "carbon_ore".to_string();
+                    } else if text_low.contains("rare_earths") || text_low.contains("rare earths") {
+                        ore_slug = "rare_earths".to_string();
+                    } else if text_low.contains("volatiles") || text_low.contains("water_ice") {
+                        ore_slug = "volatiles".to_string();
+                    } else if text_low.contains("metals") {
+                        ore_slug = "metals".to_string();
+                    }
+                }
+            }
+            if has_any {
+                if ore_slug.is_empty() {
+                    ore_slug = "carbon_ore".to_string();
+                }
+                let recommended_family = match ore_slug.as_str() {
+                    "carbon_ore" => "carbon",
+                    "rare_earths" => "strategic",
+                    "metals" => "metals",
+                    _ => "volatiles",
+                }
+                .to_string();
+                return Some(QuestSurfaceMiningStatus {
+                    quest_title: q.title.clone(),
+                    target_ore_slug: ore_slug,
+                    recommended_family,
+                    scan_done,
+                    sound_done,
+                    mine_done,
+                });
+            }
+        }
+        None
+    }
+}
+
 fn str_field(v: &Value, key: &str) -> String {
     v.get(key)
         .and_then(Value::as_str)
@@ -1001,5 +1392,61 @@ mod tests {
             overlay.handle_key(Key::Char('a'), &snap),
             QuestOverlayAction::Submit("+quest/accept #18=123.abc".into())
         );
+    }
+
+    #[test]
+    fn extracts_trade_need_destination_port_and_surface_mining_status() {
+        let step3 = parse_frame(&json!({
+            "schema": 1,
+            "room_name": "Exchange Hall",
+            "active": [{
+                "key": "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+                "title": "Metals Down the Corridor",
+                "checkpoints": [{
+                    "id": "deliver_metals",
+                    "title": "Buy 5 tonnes of metals at Ceres and deliver them to Stickney Yards",
+                    "instructions": "Buy 5 metals, check +ship/plan stickney, and run +market/sell.",
+                    "checked": false,
+                    "live_ready": false
+                }]
+            }]
+        }));
+        let need = step3.active_trade_need(None).expect("metals trade need");
+        assert_eq!(need.commodity_slug, "metals");
+        assert_eq!(need.target_quantity, 5);
+        assert!(need.wants_buy && need.wants_sell);
+        assert!(need.matches_listing("tacsim:metals", "Metals", false));
+        assert!(need.matches_listing("tacsim:metals", "Metals", true));
+        assert!(!need.matches_listing("tacsim:provisions", "Provisions", false));
+
+        let dest = step3
+            .active_destination_port(None)
+            .expect("stickney destination");
+        assert_eq!(dest.port_id, "stickney");
+        assert_eq!(dest.port_label, "Stickney Yards");
+        assert!(step3.surface_mining_status(None).is_none());
+
+        let step6 = parse_frame(&json!({
+            "schema": 1,
+            "room_name": "Freeport Commons",
+            "active": [{
+                "key": "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+                "title": "Scan, Sound, and Mine a Landing Site",
+                "checkpoints": [
+                    { "id": "scan_landing_site", "title": "Surface scan", "instructions": "Run +tv/1 scan go.", "checked": true, "live_ready": true },
+                    { "id": "sound_mineral_pocket", "title": "Sound pocket", "instructions": "Run +tv/1 sound go.", "checked": false, "live_ready": false },
+                    { "id": "mine_carbon_ore", "title": "Mine 1t carbon_ore", "instructions": "Run +tv/1 mine go.", "checked": false, "live_ready": false }
+                ]
+            }]
+        }));
+        assert!(step6.active_trade_need(None).is_none());
+        let mine = step6
+            .surface_mining_status(None)
+            .expect("surface mining status");
+        assert_eq!(mine.target_ore_slug, "carbon_ore");
+        assert_eq!(mine.recommended_family, "carbon");
+        assert!(mine.scan_done);
+        assert!(!mine.sound_done);
+        assert!(!mine.mine_done);
     }
 }

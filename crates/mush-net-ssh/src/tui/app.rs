@@ -2479,6 +2479,11 @@ impl TuiApp {
                         self.quests_overlay.clamp_selection(&self.quests_snap);
                         self.port_walk
                             .observe_quest_markers(&self.quests_snap.room_markers);
+                        let tracked = self.quests_overlay.tracked_key.as_deref();
+                        self.port_walk.observe_quest_guidance(
+                            self.quests_snap.active_trade_need(tracked),
+                            self.quests_snap.active_destination_port(tracked),
+                        );
                         if self.pixel.kind() == PictureKind::StationWalk {
                             self.pixel.invalidate_last_sent();
                         }
@@ -5324,6 +5329,68 @@ impl TuiApp {
                 gauge_area,
             );
         }
+        let body_area = if self.active == QUARRY_SCREEN
+            && body_area.height >= 6
+            && let Some(qm) = self
+                .quests_snap
+                .surface_mining_status(self.quests_overlay.tracked_key.as_deref())
+        {
+            let [quest_bar, rest] =
+                Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(body_area);
+            let chk = |done: bool| {
+                if done {
+                    if self.caps.utf8 { "[✓]" } else { "[x]" }
+                } else {
+                    "[ ]"
+                }
+            };
+            let line = Line::from(vec![
+                Span::styled(
+                    " [QUEST] ",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("{}  ", qm.quest_title),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("{} Scan  ", chk(qm.scan_done)),
+                    Style::default().fg(if qm.scan_done {
+                        Color::Green
+                    } else {
+                        Color::Gray
+                    }),
+                ),
+                Span::styled(
+                    format!("{} Sound  ", chk(qm.sound_done)),
+                    Style::default().fg(if qm.sound_done {
+                        Color::Green
+                    } else {
+                        Color::Gray
+                    }),
+                ),
+                Span::styled(
+                    format!("{} Mine {} ", chk(qm.mine_done), qm.target_ore_slug),
+                    Style::default().fg(if qm.mine_done {
+                        Color::Green
+                    } else {
+                        Color::Gray
+                    }),
+                ),
+                Span::styled(
+                    format!(" (l: {} wash)", qm.recommended_family),
+                    Style::default().fg(Color::Cyan),
+                ),
+            ]);
+            frame.render_widget(Paragraph::new(line), quest_bar);
+            rest
+        } else {
+            body_area
+        };
         self.draw_body(frame, body_area);
         // 17g cut C3b: an open market or action form, inside the screen.
         self.market.draw(frame, body_area);
@@ -12803,5 +12870,33 @@ mod tests {
             crate::tui::quests::QuestTab::Available
         );
         assert_eq!(app.quests_overlay.selected, 0);
+
+        // 8. On Quarry screen with an active surface mining quest, guided checklist bar paints cleanly
+        app.quests_overlay.close();
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "room_name": "Freeport Commons",
+                "active": [{
+                    "key": "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+                    "title": "Scan, Sound, and Mine a Landing Site",
+                    "checkpoints": [
+                        { "id": "scan_landing_site", "title": "Surface scan", "instructions": "Run +tv/1 scan go.", "checked": true, "live_ready": true },
+                        { "id": "sound_mineral_pocket", "title": "Sound pocket", "instructions": "Run +tv/1 sound go.", "checked": false, "live_ready": false },
+                        { "id": "mine_carbon_ore", "title": "Mine 1t carbon_ore", "instructions": "Run +tv/1 mine go.", "checked": false, "live_ready": false }
+                    ]
+                }]
+            }),
+        });
+        app.active = QUARRY_SCREEN;
+        let qbuf = painted(&mut app, 130, 36);
+        assert!(
+            find_in(&qbuf, "[QUEST]", 0).is_some()
+                && find_in(&qbuf, "Mine carbon_ore", 0).is_some(),
+            "Quarry screen must display guided mining quest checklist bar:\n{}",
+            dump(&qbuf)
+        );
     }
 }
