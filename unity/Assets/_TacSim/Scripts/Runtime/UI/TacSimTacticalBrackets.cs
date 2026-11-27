@@ -135,6 +135,7 @@ namespace TacSim.UI
         public bool IsArenaCompassVisible => _arenaCompassWidget != null && _arenaCompassWidget.activeSelf;
         public string ArenaCompassHeadingSnapshot => _arenaCompassHeadingTxt != null ? _arenaCompassHeadingTxt.text : string.Empty;
         public string ArenaCompassTelemetrySnapshot => _arenaCompassTelemetryTxt != null ? _arenaCompassTelemetryTxt.text : string.Empty;
+        public string ArenaTerrainBadgeSnapshot { get; private set; } = string.Empty;
         public bool ArenaCompassLockPipVisible => _compassLockPip != null && _compassLockPip.gameObject.activeSelf;
         public bool ArenaCompassObjectivePipVisible => _compassObjectivePip != null && _compassObjectivePip.gameObject.activeSelf;
         public bool ArenaCompassOrderBugVisible => _compassOrderBugPip != null && _compassOrderBugPip.gameObject.activeSelf;
@@ -1146,8 +1147,22 @@ namespace TacSim.UI
                 string scopeUp = (st.Scope ?? "clear").ToUpperInvariant();
                 string tempoUp = (st.Tempo ?? "alert").ToUpperInvariant();
                 string postureUp = (st.Posture ?? "return").ToUpperInvariant();
-                string rcvrTag = st.HasReceiver ? $"  |  RCVR {st.ReceiverReachPercent}%" : string.Empty;
-                _arenaCompassTelemetryTxt.text = $"SCOPE {scopeUp}  |  {tempoUp}  |  SIGHT {st.SightMeters:0}m  |  {postureUp}{rcvrTag}";
+                string rcvrTag = st.HasReceiver ? $" | RCVR {st.ReceiverReachPercent}%" : string.Empty;
+
+                var ti = _arena.CurrentTerrainIntel;
+                string coverPart = !string.IsNullOrEmpty(ti.CoverLabel) ? ti.CoverLabel : "OPEN";
+                string elevPart = string.Empty;
+                if (ti.HasTargetSample)
+                {
+                    if (ti.ElevationDeltaM >= 3.0f) elevPart = $" HIGH +{Mathf.RoundToInt(ti.ElevationDeltaM)}m";
+                    else if (ti.ElevationDeltaM <= -3.0f) elevPart = $" LOW {Mathf.RoundToInt(ti.ElevationDeltaM)}m";
+                }
+                string losPart = (ti.HasTargetSample && ti.IsLineOfSightObstructed && !string.IsNullOrEmpty(ti.LineOfSightStatus))
+                    ? $" · {ti.LineOfSightStatus} LOS"
+                    : string.Empty;
+                ArenaTerrainBadgeSnapshot = $"{coverPart}{elevPart}{losPart}";
+
+                _arenaCompassTelemetryTxt.text = $"SCOPE {scopeUp} | SIGHT {st.SightMeters:0}m | {postureUp}{rcvrTag} | {ArenaTerrainBadgeSnapshot}";
                 _arenaCompassTelemetryTxt.color = string.Equals(st.Scope, "hostile", StringComparison.OrdinalIgnoreCase)
                     ? new Color(1.0f, 0.44f, 0.36f)
                     : (string.Equals(st.Scope, "unidentified", StringComparison.OrdinalIgnoreCase) || (st.HasReceiver && st.ReceiverReachPercent < 85)

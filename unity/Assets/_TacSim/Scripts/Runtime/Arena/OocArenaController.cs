@@ -326,6 +326,7 @@ namespace TacSim.Arena
         public string Posture = "return"; // "return" | "guard" | "hold"
         public string MatchBanner = string.Empty;
         public float SightMeters = 120f;
+        public float SensorHeightM = 2.5f;
         public string Scope = "clear"; // "clear" | "unidentified" | "hostile"
         public string Tempo = "alert";
         public bool HasReceiver;
@@ -791,6 +792,8 @@ namespace TacSim.Arena
         public int BuiltWallPropCount { get; private set; }
         public int BuiltWaterCellCount { get; private set; }
         public float LastPlayerSlopeTiltDeg { get; private set; }
+        public ArenaTerrainTacticalSample CurrentTerrainIntel { get; private set; }
+        public ArenaBiomeLightingProfile ActiveBiomeLighting { get; private set; }
         public bool IsDynamicObjectiveRingVisible => _dynamicObjectiveRoot != null && _dynamicObjectiveRoot.gameObject.activeSelf;
         public bool IsPlayerDustPlumeActive => _playerDustRoot != null && _playerDustRoot.gameObject.activeSelf;
 
@@ -1079,14 +1082,24 @@ namespace TacSim.Arena
             _driveCourseLine.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("ArenaDriveCourseMat", new Color(0.24f, 0.92f, 1.0f, 0.56f));
             _driveCourseLine.enabled = false;
 
+            ActiveBiomeLighting = TacSimArenaEnvironmentBuilder.ResolveBiomeLighting(TerrainGrid.Biome);
+
             var sunGo = new GameObject("ArenaDirectionalFill");
             sunGo.transform.SetParent(transform, false);
             sunGo.transform.localPosition = new Vector3(1280f, 360f, 1280f);
             var lt = sunGo.AddComponent<Light>();
             lt.type = LightType.Point;
             lt.range = 3200f;
-            lt.intensity = 2.2f;
-            lt.color = TerrainGrid.Biome == "desert" ? new Color(1.0f, 0.88f, 0.75f) : new Color(0.92f, 0.96f, 1.0f);
+            lt.intensity = ActiveBiomeLighting.SunIntensity;
+            lt.color = ActiveBiomeLighting.SunColor;
+
+            if (IsArenaActive || IsSpectatorTheaterActive)
+            {
+                RenderSettings.ambientLight = ActiveBiomeLighting.AmbientColor;
+                RenderSettings.fog = ActiveBiomeLighting.EnableFog;
+                RenderSettings.fogColor = ActiveBiomeLighting.FogColor;
+                RenderSettings.fogDensity = ActiveBiomeLighting.FogDensity;
+            }
         }
 
         private void BuildKeySpotsAndHoldRing()
@@ -1696,6 +1709,8 @@ namespace TacSim.Arena
                 State.OddsFloorPercent = Mathf.Clamp(d.Int("odds_floor_permille", 0) / 10, 0, 100);
             if (d["sight_m"].Kind == JsonKind.Int || d["sight_m"].Kind == JsonKind.Float)
                 State.SightMeters = Mathf.Clamp(d.Float("sight_m", 120f), 20f, 1200f);
+            if (d["sensor_height_cm"].Kind == JsonKind.Int || d["sensor_height_cm"].Kind == JsonKind.Float)
+                State.SensorHeightM = Mathf.Clamp(d.Float("sensor_height_cm", 250f) * 0.01f, 1.2f, 8.0f);
             string rawScope = d.Str("scope", string.Empty);
             if (!string.IsNullOrEmpty(rawScope)) State.Scope = rawScope;
             string rawTempo = d.Str("tempo", string.Empty);
@@ -2983,10 +2998,27 @@ namespace TacSim.Arena
             bool hasLiveLock = TryGetLockedContact(out var lockedCt) &&
                                !lockedCt.IsWreck &&
                                TryGetContactWorldPosition(State.LockedDesignator, out targetPos);
+
+            Vector3 ownLocalForIntel = ownPos - ArenaStageOrigin;
+            Vector3 tgtLocalForIntel = hasLiveLock ? (targetPos - ArenaStageOrigin) : Vector3.zero;
+            CurrentTerrainIntel = TacSimArenaEnvironmentBuilder.EvaluateUnitTerrainContext(
+                TerrainGrid,
+                ownLocalForIntel.x,
+                ownLocalForIntel.z,
+                State.SensorHeightM,
+                hasLiveLock,
+                tgtLocalForIntel.x,
+                tgtLocalForIntel.z);
+
             if (_arenaLockBeam != null)
             {
                 if (hasLiveLock)
                 {
+                    Color beamCol = CurrentTerrainIntel.IsLineOfSightObstructed
+                        ? new Color(1.0f, 0.72f, 0.20f, 0.42f)
+                        : new Color(1.0f, 0.30f, 0.20f, 0.72f);
+                    _arenaLockBeam.startColor = beamCol;
+                    _arenaLockBeam.endColor = beamCol;
                     _arenaLockBeam.SetPosition(0, ownPos + Vector3.up * 2.4f);
                     _arenaLockBeam.SetPosition(1, targetPos);
                     _arenaLockBeam.enabled = true;
