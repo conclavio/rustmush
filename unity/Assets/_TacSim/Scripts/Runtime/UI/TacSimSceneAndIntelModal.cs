@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using TacSim.Arena;
 using TacSim.Core;
 using TacSim.Net;
 using UnityEngine;
@@ -86,17 +87,27 @@ namespace TacSim.UI
         private Button _leaveBtn;
         private Button _endBtn;
 
-        // Tab 1: Signal Contacts
+        // Tab 1: Signal Contacts (IC `tactics.contacts` OR live Arena Signal & Detachment Briefing)
         private Text _contactsHeaderText;
         private Text _contactDetailText;
         private Text _contactsEmptyText;
+        private Button _arenaMindCardBtn;
+        private Button _ordersOrScanBtn;
+        private Text _ordersOrScanBtnLabel;
+        private Button _refreshOrEmconBtn;
+        private Text _refreshOrEmconBtnLabel;
         private readonly List<PooledContactRow> _contactRowPool = new List<PooledContactRow>(MaxVisibleContactRows);
         private readonly List<SignalContactLedgerRow> _contacts = new List<SignalContactLedgerRow>(32);
+        private readonly List<ArenaContactState> _arenaSortedContacts = new List<ArenaContactState>(24);
         private bool _contactsTruncated;
         private string _selectedContactId = string.Empty;
         private readonly List<string> _contactInspectLines = new List<string>(12);
         private bool _capturingContactInspect;
         private float _contactInspectExpiresAt;
+
+        private OocArenaController _arena;
+        private TacSimActiveStage _activeStage = TacSimActiveStage.StationWalk;
+        private float _nextArenaIntelRefreshAt;
 
         private ActiveRpSceneState _scene;
         private string _localCharId = string.Empty;
@@ -106,9 +117,32 @@ namespace TacSim.UI
 
         public bool IsOpen => _modalRoot != null && _modalRoot.activeSelf;
         public bool IsSceneBannerVisible => _sceneBannerRoot != null && _sceneBannerRoot.activeSelf;
+        public bool IsArenaSignalModeActive => _activeStage == TacSimActiveStage.SimulatorArena && _arena != null && _arena.IsArenaActive;
         public SceneIntelTab ActiveTab { get; private set; } = SceneIntelTab.RpScene;
         public ActiveRpSceneState ActiveScene => _scene;
-        public int SignalContactCount => _contacts.Count;
+        public int SignalContactCount => IsArenaSignalModeActive ? (_arena.State != null ? _arena.State.Contacts.Count : 0) : _contacts.Count;
+        public string ContactsHeaderSnapshot => _contactsHeaderText != null ? _contactsHeaderText.text : string.Empty;
+        public string ContactDetailSnapshot => _contactDetailText != null ? _contactDetailText.text : string.Empty;
+        public string GetContactRowSnapshotForTests(int index)
+        {
+            if (index < 0 || index >= _contactRowPool.Count || _contactRowPool[index].Root == null || !_contactRowPool[index].Root.activeSelf)
+                return string.Empty;
+            return _contactRowPool[index].Label != null ? (_contactRowPool[index].Label.text ?? string.Empty) : string.Empty;
+        }
+        public bool ClickContactRowForTests(int index)
+        {
+            if (index < 0 || index >= _contactRowPool.Count || _contactRowPool[index].Root == null || !_contactRowPool[index].Root.activeSelf)
+                return false;
+            HandleContactRowClicked(_contactRowPool[index].ContactId);
+            return true;
+        }
+        public void ClickPrimaryIntelActionForTests() => HandlePrimaryIntelAction();
+        public void ClickSecondaryIntelActionForTests() => HandleSecondaryIntelAction();
+        public void ClickArenaMindCardForTests()
+        {
+            if (IsArenaSignalModeActive)
+                OnCommandRequested?.Invoke("mind");
+        }
         public int VisibleContactRowCount
         {
             get
@@ -133,6 +167,19 @@ namespace TacSim.UI
                 return !string.IsNullOrEmpty(_localCharName) &&
                        string.Equals(_scene.CurrentActor.Name, _localCharName, StringComparison.OrdinalIgnoreCase);
             }
+        }
+
+        public void BindArena(OocArenaController arena)
+        {
+            _arena = arena;
+            RefreshContactsUi();
+        }
+
+        public void SetActiveStage(TacSimActiveStage stage)
+        {
+            if (_activeStage == stage) return;
+            _activeStage = stage;
+            RefreshContactsUi();
         }
 
         public void SetLocalCharacter(string id, string name)
@@ -261,17 +308,23 @@ namespace TacSim.UI
         {
             var topBar = CreatePanel(body, "ContactsTopBar", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -34f), Vector2.zero, new Color(0.05f, 0.10f, 0.16f, 0.94f));
             _contactsHeaderText = CreateText(topBar.transform, "SIGNAL PROPAGATION CONTACTS: 0  (CLICK ROW TO INSPECT +contact)", 12, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.55f, 0.92f, 1f));
-            SetRect(_contactsHeaderText.rectTransform, new Vector2(0f, 0f), new Vector2(0.68f, 1f), new Vector2(10f, 0f), Vector2.zero);
+            SetRect(_contactsHeaderText.rectTransform, new Vector2(0f, 0f), new Vector2(0.56f, 1f), new Vector2(10f, 0f), Vector2.zero);
 
-            var ordersBtn = CreateButton(topBar.transform, "+orders", new Color(0.16f, 0.34f, 0.46f), () => OnCommandRequested?.Invoke("+orders"));
-            SetRect(ordersBtn.GetComponent<RectTransform>(), new Vector2(0.70f, 0f), new Vector2(0.84f, 1f), new Vector2(2f, 3f), new Vector2(-2f, -3f));
-
-            var refBtn = CreateButton(topBar.transform, "REFRESH", new Color(0.14f, 0.44f, 0.40f), () =>
+            _arenaMindCardBtn = CreateButton(topBar.transform, "MIND CARD", new Color(0.24f, 0.28f, 0.50f), () =>
             {
-                OnRefreshContactsRequested?.Invoke();
-                OnCommandRequested?.Invoke("+contacts");
+                if (IsArenaSignalModeActive)
+                    OnCommandRequested?.Invoke("mind");
             });
-            SetRect(refBtn.GetComponent<RectTransform>(), new Vector2(0.85f, 0f), new Vector2(1f, 1f), new Vector2(2f, 3f), new Vector2(-6f, -3f));
+            SetRect(_arenaMindCardBtn.GetComponent<RectTransform>(), new Vector2(0.57f, 0f), new Vector2(0.69f, 1f), new Vector2(2f, 3f), new Vector2(-2f, -3f));
+            _arenaMindCardBtn.gameObject.SetActive(false);
+
+            _ordersOrScanBtn = CreateButton(topBar.transform, "+orders", new Color(0.16f, 0.34f, 0.46f), HandlePrimaryIntelAction);
+            _ordersOrScanBtnLabel = _ordersOrScanBtn.GetComponentInChildren<Text>();
+            SetRect(_ordersOrScanBtn.GetComponent<RectTransform>(), new Vector2(0.70f, 0f), new Vector2(0.84f, 1f), new Vector2(2f, 3f), new Vector2(-2f, -3f));
+
+            _refreshOrEmconBtn = CreateButton(topBar.transform, "REFRESH", new Color(0.14f, 0.44f, 0.40f), HandleSecondaryIntelAction);
+            _refreshOrEmconBtnLabel = _refreshOrEmconBtn.GetComponentInChildren<Text>();
+            SetRect(_refreshOrEmconBtn.GetComponent<RectTransform>(), new Vector2(0.85f, 0f), new Vector2(1f, 1f), new Vector2(2f, 3f), new Vector2(-6f, -3f));
 
             var listBox = CreatePanel(body, "ContactsLedgerBox", new Vector2(0f, 0.30f), new Vector2(1f, 1f), new Vector2(0f, 6f), new Vector2(0f, -40f), new Color(0.02f, 0.05f, 0.09f, 0.90f));
             var vlg = listBox.AddComponent<VerticalLayoutGroup>();
@@ -287,7 +340,7 @@ namespace TacSim.UI
                 var row = new PooledContactRow();
                 var btn = CreateButton(listBox.transform, string.Empty, new Color(0.08f, 0.15f, 0.22f, 0.94f), () =>
                 {
-                    InspectContactById(row.ContactId);
+                    HandleContactRowClicked(row.ContactId);
                 });
                 btn.GetComponent<RectTransform>().sizeDelta = new Vector2(0f, 28f);
                 var lbl = btn.GetComponentInChildren<Text>();
@@ -316,6 +369,50 @@ namespace TacSim.UI
             SetRect(_contactDetailText.rectTransform, Vector2.zero, Vector2.one, new Vector2(10f, 6f), new Vector2(-10f, -6f));
         }
 
+        private void HandlePrimaryIntelAction()
+        {
+            if (IsArenaSignalModeActive)
+            {
+                OnCommandRequested?.Invoke("scan");
+                return;
+            }
+            OnCommandRequested?.Invoke("+orders");
+        }
+
+        private void HandleSecondaryIntelAction()
+        {
+            if (IsArenaSignalModeActive)
+            {
+                OnCommandRequested?.Invoke("emcon");
+                return;
+            }
+            OnRefreshContactsRequested?.Invoke();
+            OnCommandRequested?.Invoke("+contacts");
+        }
+
+        private void HandleContactRowClicked(string rawContactId)
+        {
+            if (IsArenaSignalModeActive)
+            {
+                if (!MushProtocol.TryValidateSafeCommandToken(rawContactId, out string safeDesig, maxLen: 24))
+                    return;
+                _selectedContactId = safeDesig;
+                RefreshContactsUi();
+                OnCommandRequested?.Invoke($"lock {safeDesig}");
+                return;
+            }
+            InspectContactById(rawContactId);
+        }
+
+        private void Update()
+        {
+            if (IsOpen && IsArenaSignalModeActive && Time.unscaledTime >= _nextArenaIntelRefreshAt)
+            {
+                _nextArenaIntelRefreshAt = Time.unscaledTime + 0.25f;
+                RefreshContactsUi();
+            }
+        }
+
         public void SelectTab(SceneIntelTab tab)
         {
             ActiveTab = tab;
@@ -329,7 +426,8 @@ namespace TacSim.UI
             if (IsOpen)
             {
                 if (tab == SceneIntelTab.RpScene) OnRefreshScenesRequested?.Invoke();
-                else OnRefreshContactsRequested?.Invoke();
+                else if (!IsArenaSignalModeActive) OnRefreshContactsRequested?.Invoke();
+                RefreshContactsUi();
             }
         }
 
@@ -340,8 +438,12 @@ namespace TacSim.UI
             if (open)
             {
                 _modalRoot.transform.SetAsLastSibling();
-                if (ActiveTab == SceneIntelTab.RpScene) OnRefreshScenesRequested?.Invoke();
-                else OnRefreshContactsRequested?.Invoke();
+                if (IsArenaSignalModeActive)
+                    SelectTab(SceneIntelTab.SignalContacts);
+                else if (ActiveTab == SceneIntelTab.RpScene)
+                    OnRefreshScenesRequested?.Invoke();
+                else
+                    OnRefreshContactsRequested?.Invoke();
                 RefreshSceneUi();
                 RefreshContactsUi();
             }
@@ -625,6 +727,17 @@ namespace TacSim.UI
 
         private void RefreshContactsUi()
         {
+            if (IsArenaSignalModeActive)
+            {
+                RefreshArenaSignalIntelUi();
+                return;
+            }
+
+            if (_arenaMindCardBtn != null && _arenaMindCardBtn.gameObject.activeSelf)
+                _arenaMindCardBtn.gameObject.SetActive(false);
+            if (_ordersOrScanBtnLabel != null) _ordersOrScanBtnLabel.text = "+orders";
+            if (_refreshOrEmconBtnLabel != null) _refreshOrEmconBtnLabel.text = "REFRESH";
+
             if (_contactsHeaderText != null)
             {
                 string trunc = _contactsTruncated ? " (TRUNCATED)" : string.Empty;
@@ -656,7 +769,153 @@ namespace TacSim.UI
                 if (_contactRowPool[i].Root.activeSelf) _contactRowPool[i].Root.SetActive(false);
             }
             if (_contactsEmptyText != null)
+            {
+                _contactsEmptyText.text = "No propagation contacts currently held by your platform sensors.";
                 _contactsEmptyText.gameObject.SetActive(shown == 0);
+            }
+        }
+
+        private void RefreshArenaSignalIntelUi()
+        {
+            var st = _arena != null ? _arena.State : null;
+            if (st == null) return;
+
+            if (_arenaMindCardBtn != null && !_arenaMindCardBtn.gameObject.activeSelf)
+                _arenaMindCardBtn.gameObject.SetActive(true);
+            if (_ordersOrScanBtnLabel != null) _ordersOrScanBtnLabel.text = "SCAN";
+            if (_refreshOrEmconBtnLabel != null) _refreshOrEmconBtnLabel.text = st.EmconSilent ? "ECM ON" : "EMCON";
+
+            if (_contactsHeaderText != null)
+            {
+                string scopeTag = string.IsNullOrEmpty(st.Scope) ? "CLEAR" : st.Scope.ToUpperInvariant();
+                _contactsHeaderText.text = $"ARENA #{st.MatchId} SIGNAL & DETACHMENT INTEL  |  SCOPE: {scopeTag}  |  SIGHT: {st.SightMeters:0}m  |  CONTACTS: {st.Contacts.Count}";
+            }
+
+            _arenaSortedContacts.Clear();
+            for (int i = 0; i < st.Contacts.Count; i++)
+            {
+                if (st.Contacts[i] != null && !string.IsNullOrEmpty(st.Contacts[i].Designator))
+                    _arenaSortedContacts.Add(st.Contacts[i]);
+            }
+            _arenaSortedContacts.Sort((a, b) =>
+            {
+                int wa = a.IsWreck ? 2 : (a.Friendly ? 1 : 0);
+                int wb = b.IsWreck ? 2 : (b.Friendly ? 1 : 0);
+                int cmp = wa.CompareTo(wb);
+                if (cmp != 0) return cmp;
+                return a.RangeM.CompareTo(b.RangeM);
+            });
+
+            ArenaContactState focusContact = null;
+            string focusDesig = !string.IsNullOrEmpty(_selectedContactId) ? _selectedContactId : st.LockedDesignator;
+            int shown = Mathf.Min(_arenaSortedContacts.Count, _contactRowPool.Count);
+            for (int i = 0; i < shown; i++)
+            {
+                var c = _arenaSortedContacts[i];
+                var slot = _contactRowPool[i];
+                bool isLocked = !string.IsNullOrEmpty(st.LockedDesignator) &&
+                                string.Equals(st.LockedDesignator, c.Designator, StringComparison.OrdinalIgnoreCase);
+                bool isSelected = !string.IsNullOrEmpty(focusDesig) &&
+                                  string.Equals(focusDesig, c.Designator, StringComparison.OrdinalIgnoreCase);
+                if (isSelected) focusContact = c;
+
+                string relCol = c.IsWreck ? "#888899" : (c.Friendly ? "#55CCFF" : (string.Equals(c.Relation, "hostile", StringComparison.OrdinalIgnoreCase) ? "#FF6655" : "#FFCC55"));
+                string aspUpper = string.IsNullOrEmpty(c.Aspect) ? "FRONT" : c.Aspect.ToUpperInvariant();
+                string aspCol = aspUpper == "REAR" ? "#FFEE55" : (aspUpper == "LEFT" || aspUpper == "RIGHT" || aspUpper == "FLANK" ? "#FFAA44" : "#99BBCC");
+                string oddsPart = !c.Friendly && !c.IsWreck && c.HitOddsPct > 0 ? $"  |  ODDS: <color=#88FFAA><b>{c.HitOddsPct}%</b></color>" : string.Empty;
+                string movePart = c.Moving ? " ▶" : string.Empty;
+                string agePart = c.AgeMs >= 1000 ? $"  ({c.AgeMs / 1000f:0.0}s)" : string.Empty;
+                string lockTag = isLocked ? "<color=#FFEE55>[LOCKED] </color>" : string.Empty;
+                string healthTxt = string.IsNullOrEmpty(c.HealthWord) ? (c.IsWreck ? "WRECK" : "INTACT") : c.HealthWord.ToUpperInvariant();
+
+                slot.ContactId = c.Designator;
+                slot.Label.text =
+                    $"{lockTag}<color={relCol}><b>{MushProtocol.EscapeUnityRichText(c.Designator)}</b></color>{movePart}  " +
+                    $"{MushProtocol.EscapeUnityRichText(string.IsNullOrEmpty(c.ClassLabel) ? c.UnitType : c.ClassLabel)}  |  " +
+                    $"<b>{c.RangeM:0}m</b> {c.BearingDeg:000}°  |  <color={aspCol}><b>{aspUpper}</b></color>{oddsPart}  |  {MushProtocol.EscapeUnityRichText(healthTxt)}{agePart}";
+                slot.Background.color = isLocked
+                    ? new Color(0.36f, 0.24f, 0.12f, 0.96f)
+                    : (isSelected ? new Color(0.18f, 0.34f, 0.46f, 0.96f) : new Color(0.08f, 0.14f, 0.22f, 0.92f));
+                if (!slot.Root.activeSelf) slot.Root.SetActive(true);
+            }
+            for (int i = shown; i < _contactRowPool.Count; i++)
+            {
+                if (_contactRowPool[i].Root.activeSelf) _contactRowPool[i].Root.SetActive(false);
+            }
+            if (_contactsEmptyText != null)
+            {
+                _contactsEmptyText.text = "No Arena contacts currently on scope — click SCAN to pulse active sensors.";
+                _contactsEmptyText.gameObject.SetActive(shown == 0);
+            }
+
+            if (_contactDetailText != null)
+            {
+                var sb = new StringBuilder(320);
+                string ecmTxt = !st.HasEcm
+                    ? "NONE"
+                    : (st.EmconSilent ? "<color=#88CCFF>SILENT (EMCON)</color>" : $"<color=#CC88FF>JAMMING ({st.EcmRadiusMeters:0}m)</color>");
+                string rxTxt = st.HasReceiver
+                    ? $"<b>{st.ReceiverReachPercent}%</b> ({st.ReceiverBudget}/{st.ReceiverBudgetMax})"
+                    : "NONE";
+                sb.AppendLine(
+                    $"<color=#66EECC><b>SENSORS:</b></color> Sight <b>{st.SightMeters:0}m</b> · Mast <b>{st.SensorHeightM:0.0}m</b> · " +
+                    $"ECM: {ecmTxt} · Receiver: {rxTxt}");
+
+                if (st.Detachment != null)
+                {
+                    sb.Append($"<color=#FFCC55><b>DETACHMENT #{MushProtocol.EscapeUnityRichText(st.Detachment.Id)}</b></color> ({st.Detachment.Slots.Count} units): ");
+                    for (int i = 0; i < st.Detachment.Slots.Count; i++)
+                    {
+                        var sl = st.Detachment.Slots[i];
+                        if (i > 0) sb.Append(", ");
+                        bool isLeader = st.Detachment.LeaderSlot.HasValue && st.Detachment.LeaderSlot.Value == sl.Slot;
+                        string ctrlTag = sl.Controller == "player" ? "P" : (sl.Controller == "npc" ? "NPC" : "AI");
+                        sb.Append($"{(isLeader ? "*" : "")}{MushProtocol.EscapeUnityRichText(sl.Callsign)}[{ctrlTag}]");
+                    }
+                    if (st.Detachment.MyOrder != null)
+                    {
+                        sb.Append($"  |  <color=#FFEE66>ORDER ({MushProtocol.EscapeUnityRichText(st.Detachment.MyOrder.From)}): {MushProtocol.EscapeUnityRichText(st.Detachment.MyOrder.Objective)}</color>");
+                    }
+                    sb.AppendLine();
+                }
+                else if (st.StandingOrder != null && !string.IsNullOrEmpty(st.StandingOrder.Objective))
+                {
+                    sb.AppendLine(
+                        $"<color=#FFCC55><b>STANDING ORDER [{MushProtocol.EscapeUnityRichText(st.StandingOrder.Squad)}]:</b></color> " +
+                        $"{MushProtocol.EscapeUnityRichText(st.StandingOrder.Objective)} {MushProtocol.EscapeUnityRichText(st.StandingOrder.Target)}");
+                }
+                else
+                {
+                    sb.AppendLine(
+                        $"<color=#99CCEE><b>POSTURE:</b></color> {MushProtocol.EscapeUnityRichText(st.Posture.ToUpperInvariant())} · " +
+                        $"Squad: <b>{MushProtocol.EscapeUnityRichText(st.SquadPosture)}</b> · Power: <b>{MushProtocol.EscapeUnityRichText(st.Power.ToUpperInvariant())}</b>");
+                }
+
+                if (focusContact != null)
+                {
+                    string cond = string.IsNullOrEmpty(focusContact.ConditionBands)
+                        ? (string.IsNullOrEmpty(focusContact.HealthWord) ? "intact" : focusContact.HealthWord)
+                        : focusContact.ConditionBands;
+                    sb.Append(
+                        $"<color=#FFEE66><b>TARGET {MushProtocol.EscapeUnityRichText(focusContact.Designator)}</b></color> " +
+                        $"({MushProtocol.EscapeUnityRichText(string.IsNullOrEmpty(focusContact.ClassLabel) ? focusContact.UnitType : focusContact.ClassLabel)}) · " +
+                        $"{focusContact.RangeM:0}m brg {focusContact.BearingDeg:000}° · Aspect <b>{(focusContact.Aspect ?? "front").ToUpperInvariant()}</b> · " +
+                        $"Odds <b>{focusContact.HitOddsPct}%</b> · Cond: {MushProtocol.EscapeUnityRichText(cond)}");
+                }
+                else if (st.Mind != null)
+                {
+                    string mName = string.IsNullOrEmpty(st.Mind.Name) ? "OWN MIND" : st.Mind.Name;
+                    string prof = st.Mind.IsOff ? "OFF" : (string.IsNullOrEmpty(st.Mind.ActiveProfileName) ? st.Posture : st.Mind.ActiveProfileName);
+                    string chans = st.Mind.Channels.Count > 0 ? string.Join(", ", st.Mind.Channels) : "none";
+                    sb.Append($"<color=#88DDFF><b>MIND:</b></color> {MushProtocol.EscapeUnityRichText(mName)} [<b>{MushProtocol.EscapeUnityRichText(prof.ToUpperInvariant())}</b>] · Channels: {MushProtocol.EscapeUnityRichText(chans)}");
+                }
+                else
+                {
+                    sb.Append("Click any Arena contact above to lock (`lock <designator>`) and inspect its full telemetry.");
+                }
+
+                _contactDetailText.text = sb.ToString();
+            }
         }
 
         private static void ParseObjRefArray(List<JsonNode> arr, List<MushObjRef> dest)
