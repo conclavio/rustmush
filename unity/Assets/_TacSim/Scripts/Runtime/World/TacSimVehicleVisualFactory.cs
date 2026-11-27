@@ -25,11 +25,18 @@ namespace TacSim.World
         public GameObject HitFlashVisual;
         public MeshRenderer HitFlashRenderer;
         public MeshRenderer StatusBeaconRenderer;
+        public GameObject HealthBarRoot;
+        public Transform HealthBarFill;
+        public MeshRenderer HealthBarFillRenderer;
+        public MeshRenderer GroundIffRingRenderer;
+        public string TeamPartyCode = string.Empty;
         public WorldBillboard Billboard;
         public bool IsBiped;
         public bool IsSpiderWalker;
         public bool IsRover;
         public string CurrentHealthWord { get; private set; } = "intact";
+        public float CurrentHealthBarFillFrac { get; private set; } = 1.0f;
+        public bool IsHealthBarVisible => HealthBarRoot != null && HealthBarRoot.activeSelf;
         public bool IsDamageSmokeActive => DamageSmokeVisual != null && DamageSmokeVisual.activeSelf;
         public bool IsHitFlashActive => HitFlashVisual != null && HitFlashVisual.activeSelf && _hitFlashRemainSec > 0f;
         public float CurrentRecoilKickOffset => _recoilKickOffset;
@@ -320,6 +327,80 @@ namespace TacSim.World
                 if (damaged)
                     DamageSmokeVisual.transform.localScale = Vector3.one * (crippled ? 1.45f : 0.95f);
             }
+
+            if (wrecked)
+            {
+                SetHealthBarFraction(0f, visible: false);
+            }
+            else if (CurrentHealthWord == "crippled" || CurrentHealthWord == "critical")
+            {
+                SetHealthBarFraction(0.28f, visible: true);
+            }
+            else if (CurrentHealthWord == "scarred" || CurrentHealthWord == "damaged")
+            {
+                SetHealthBarFraction(0.62f, visible: true);
+            }
+            else
+            {
+                SetHealthBarFraction(1.0f, visible: true);
+            }
+
+            if (GroundIffRingRenderer != null)
+            {
+                if (wrecked)
+                {
+                    GroundIffRingRenderer.sharedMaterial = UrpMaterialFactory.GetHologramUnlit(
+                        "RigGroundIff_Wreck", new Color(0.32f, 0.30f, 0.30f, 0.22f));
+                }
+                else
+                {
+                    bool isRed = string.Equals(TeamPartyCode, "R", StringComparison.OrdinalIgnoreCase) ||
+                                 string.Equals(TeamPartyCode, "red", StringComparison.OrdinalIgnoreCase);
+                    bool isBlue = string.Equals(TeamPartyCode, "B", StringComparison.OrdinalIgnoreCase) ||
+                                  string.Equals(TeamPartyCode, "blue", StringComparison.OrdinalIgnoreCase);
+                    string matKey = isRed ? "RigGroundIff_Red" : (isBlue ? "RigGroundIff_Blue" : "RigGroundIff_Neutral");
+                    Color col = isRed
+                        ? new Color(0.96f, 0.28f, 0.22f, 0.34f)
+                        : (isBlue ? new Color(0.24f, 0.64f, 1.0f, 0.34f) : new Color(0.95f, 0.82f, 0.26f, 0.32f));
+                    GroundIffRingRenderer.sharedMaterial = UrpMaterialFactory.GetHologramUnlit(matKey, col);
+                }
+            }
+        }
+
+        public void SetHealthBarFraction(float fraction, bool visible = true)
+        {
+            float clamped = Mathf.Clamp01(fraction);
+            CurrentHealthBarFillFrac = visible ? clamped : 0f;
+            if (HealthBarRoot != null && HealthBarRoot.activeSelf != visible)
+                HealthBarRoot.SetActive(visible);
+            if (!visible || HealthBarFill == null) return;
+
+            const float FullBarWidth = 3.24f;
+            float w = Mathf.Max(0.08f, FullBarWidth * clamped);
+            HealthBarFill.localScale = new Vector3(w, 0.16f, 0.08f);
+            HealthBarFill.localPosition = new Vector3(-(FullBarWidth - w) * 0.5f, 0f, -0.02f);
+
+            if (HealthBarFillRenderer != null)
+            {
+                string key;
+                Color col;
+                if (clamped < 0.40f)
+                {
+                    key = "RigHpFill_Crippled";
+                    col = new Color(1.0f, 0.24f, 0.20f);
+                }
+                else if (clamped < 0.75f)
+                {
+                    key = "RigHpFill_Scarred";
+                    col = new Color(1.0f, 0.74f, 0.18f);
+                }
+                else
+                {
+                    key = "RigHpFill_Intact";
+                    col = new Color(0.22f, 0.96f, 0.56f);
+                }
+                HealthBarFillRenderer.sharedMaterial = UrpMaterialFactory.GetEmissive(key, col, col * 1.9f);
+            }
         }
     }
 
@@ -371,6 +452,7 @@ namespace TacSim.World
             {
                 Root = root,
                 HullTiltRoot = tilt,
+                TeamPartyCode = party ?? string.Empty,
                 IsBiped = isBiped,
                 IsSpiderWalker = isScout
             };
@@ -483,7 +565,23 @@ namespace TacSim.World
             rig.StatusBeaconRenderer = beaconGo.GetComponent<MeshRenderer>();
             rig.SetOperationalBeacon(overheated: false, immobile: false, wrecked: false);
 
-            // Tactical floating nameplate & armor/health status
+            // Subtle Ground IFF Faction Base Ring for instant battlefield legibility from chase/overhead cameras
+            var iffRingGo = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
+            iffRingGo.name = "GroundIffHalo";
+            iffRingGo.transform.SetParent(root.transform, false);
+            float haloDia = isBiped ? 4.4f : (isHeavy ? 6.2f : 5.4f);
+            iffRingGo.transform.localPosition = new Vector3(0f, 0.08f, 0f);
+            iffRingGo.transform.localScale = new Vector3(haloDia, 0.05f, haloDia);
+            var iffCol = iffRingGo.GetComponent<Collider>();
+            if (iffCol != null) { if (Application.isPlaying) UnityEngine.Object.Destroy(iffCol); else UnityEngine.Object.DestroyImmediate(iffCol); }
+            rig.GroundIffRingRenderer = iffRingGo.GetComponent<MeshRenderer>();
+            string iffMatKey = isRed ? "RigGroundIff_Red" : (isBlue ? "RigGroundIff_Blue" : "RigGroundIff_Neutral");
+            Color iffColor = isRed
+                ? new Color(0.96f, 0.28f, 0.22f, 0.34f)
+                : (isBlue ? new Color(0.24f, 0.64f, 1.0f, 0.34f) : new Color(0.95f, 0.82f, 0.26f, 0.32f));
+            rig.GroundIffRingRenderer.sharedMaterial = UrpMaterialFactory.GetHologramUnlit(iffMatKey, iffColor);
+
+            // Tactical floating nameplate & 3D billboarded armor/health status bar
             var bbGo = new GameObject("TacticalTag");
             bbGo.transform.SetParent(root.transform, false);
             bbGo.transform.localPosition = new Vector3(0f, isBiped ? 6.2f : 4.2f, 0f);
@@ -491,6 +589,18 @@ namespace TacSim.World
             Color tagCol = isRed ? new Color(1f, 0.45f, 0.40f) : isBlue ? new Color(0.45f, 0.78f, 1f) : new Color(1f, 0.90f, 0.45f);
             bb.NameplateText = CreateTmp(bbGo.transform, "TagText", Vector3.zero, MushProtocol.EscapeUnityRichText(callsign), 5.2f, tagCol, allowRichText: true);
             rig.Billboard = bb;
+
+            var hpRoot = new GameObject("HealthBarRoot");
+            hpRoot.transform.SetParent(bbGo.transform, false);
+            hpRoot.transform.localPosition = new Vector3(0f, -0.82f, 0f);
+            Material hpBgMat = UrpMaterialFactory.GetHologramUnlit("RigHpBg", new Color(0.05f, 0.08f, 0.12f, 0.86f));
+            CreatePart(hpRoot.transform, "HealthBarBg", Vector3.zero, new Vector3(3.40f, 0.24f, 0.06f), hpBgMat);
+            Material hpFillMat = UrpMaterialFactory.GetEmissive("RigHpFill_Intact", new Color(0.22f, 0.96f, 0.56f), new Color(0.22f, 0.96f, 0.56f) * 1.9f);
+            var hpFillGo = CreatePart(hpRoot.transform, "HealthBarFill", new Vector3(0f, 0f, -0.02f), new Vector3(3.24f, 0.16f, 0.08f), hpFillMat);
+            rig.HealthBarRoot = hpRoot;
+            rig.HealthBarFill = hpFillGo.transform;
+            rig.HealthBarFillRenderer = hpFillGo.GetComponent<MeshRenderer>();
+            rig.SetHealthBarFraction(1.0f, visible: true);
 
             return rig;
         }

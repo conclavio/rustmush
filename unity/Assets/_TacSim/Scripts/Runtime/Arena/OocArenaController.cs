@@ -884,7 +884,10 @@ namespace TacSim.Arena
         private Transform _spectatorCenterAnchor;
         private Transform _dynamicObjectiveRoot;
         private Transform _dynamicObjectiveRing;
+        private MeshRenderer _dynamicObjectivePillarRenderer;
+        private MeshRenderer _dynamicObjectiveRingRenderer;
         private TextMeshPro _dynamicObjectiveLabel;
+        private readonly List<TrackedKeySpotBeacon> _keySpotBeacons = new List<TrackedKeySpotBeacon>(8);
         private Transform _playerDustRoot;
         private readonly Transform[] _playerDustPuffs = new Transform[3];
         private Transform _playerMuzzleFlash;
@@ -932,10 +935,55 @@ namespace TacSim.Arena
         public bool IsArenaRangeRingVisible => _arenaRangeRing != null && _arenaRangeRing.enabled;
         public bool IsWeaponEnvelopeRingVisible => _weaponEnvelopeRing != null && _weaponEnvelopeRing.enabled;
         public bool IsEcmJammerRingVisible => _ecmJammerRing != null && _ecmJammerRing.enabled;
+        public string ActiveHoldZoneVisualOwner { get; private set; } = "NEUTRAL";
         public int ActiveImpactBurstCount { get; private set; }
         public int ActiveWorldPopupCount { get; private set; }
         public string LastWorldPopupText { get; private set; } = string.Empty;
         public ArenaImpactKind LastImpactKind { get; private set; }
+
+        public string GetContactNameplateTextForTests(string designator)
+        {
+            if (TryGetContactRig(designator, out var rig) && rig?.Billboard?.NameplateText != null)
+                return rig.Billboard.NameplateText.text;
+            return string.Empty;
+        }
+
+        public float GetContactHealthBarFillFracForTests(string designator)
+        {
+            return TryGetContactRig(designator, out var rig) && rig != null ? rig.CurrentHealthBarFillFrac : -1f;
+        }
+
+        public bool IsContactHealthBarVisibleForTests(string designator)
+        {
+            return TryGetContactRig(designator, out var rig) && rig != null && rig.IsHealthBarVisible;
+        }
+
+        public string GetKeySpotLabelForTests(string letter)
+        {
+            if (string.IsNullOrWhiteSpace(letter)) return string.Empty;
+            for (int i = 0; i < _keySpotBeacons.Count; i++)
+            {
+                if (string.Equals(_keySpotBeacons[i].Letter, letter.Trim(), StringComparison.OrdinalIgnoreCase) &&
+                    _keySpotBeacons[i].Label != null)
+                {
+                    return _keySpotBeacons[i].Label.text;
+                }
+            }
+            return string.Empty;
+        }
+
+        private sealed class TrackedKeySpotBeacon
+        {
+            public string Letter = string.Empty;
+            public string DisplayName = string.Empty;
+            public int CellX;
+            public int CellY;
+            public bool IsHoldSpot;
+            public Vector3 WorldPos;
+            public TextMeshPro Label;
+            public MeshRenderer PillarRenderer;
+            public MeshRenderer HoldRingRenderer;
+        }
 
         private sealed class PooledImpactBurst
         {
@@ -1004,7 +1052,11 @@ namespace TacSim.Arena
             _propsRoot = null;
             _dynamicObjectiveRoot = null;
             _dynamicObjectiveRing = null;
+            _dynamicObjectivePillarRenderer = null;
+            _dynamicObjectiveRingRenderer = null;
             _dynamicObjectiveLabel = null;
+            _keySpotBeacons.Clear();
+            ActiveHoldZoneVisualOwner = "NEUTRAL";
             _playerDustRoot = null;
             _playerMuzzleFlash = null;
             _playerMuzzleFlashRenderer = null;
@@ -1197,6 +1249,7 @@ namespace TacSim.Arena
         private void BuildKeySpotsAndHoldRing()
         {
             if (TerrainGrid == null || _beaconsRoot == null) return;
+            _keySpotBeacons.Clear();
 
             for (int i = 0; i < TerrainGrid.KeySpots.Count; i++)
             {
@@ -1220,8 +1273,10 @@ namespace TacSim.Arena
                 pillar.transform.localScale = new Vector3(1.4f, 14f, 1.4f);
                 var pc = pillar.GetComponent<Collider>();
                 if (pc != null) { if (Application.isPlaying) Destroy(pc); else DestroyImmediate(pc); }
-                pillar.GetComponent<MeshRenderer>().sharedMaterial = UrpMaterialFactory.GetHologramUnlit($"SpotBeam_{sp.Letter}", new Color(col.r, col.g, col.b, 0.42f));
+                var pillarRenderer = pillar.GetComponent<MeshRenderer>();
+                pillarRenderer.sharedMaterial = UrpMaterialFactory.GetHologramUnlit($"SpotBeam_{sp.Letter}", new Color(col.r, col.g, col.b, 0.42f));
 
+                MeshRenderer holdRingRenderer = null;
                 if (isHold)
                 {
                     float ringDiameter = Mathf.Max(20f, TerrainGrid.HoldRadiusCells * TerrainGrid.CellSizeM * 2f);
@@ -1232,7 +1287,8 @@ namespace TacSim.Arena
                     capRing.transform.localScale = new Vector3(ringDiameter, 0.12f, ringDiameter);
                     var cc = capRing.GetComponent<Collider>();
                     if (cc != null) { if (Application.isPlaying) Destroy(cc); else DestroyImmediate(cc); }
-                    capRing.GetComponent<MeshRenderer>().sharedMaterial = UrpMaterialFactory.GetHologramUnlit("HoldRing", new Color(1f, 0.78f, 0.18f, 0.16f));
+                    holdRingRenderer = capRing.GetComponent<MeshRenderer>();
+                    holdRingRenderer.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("HoldRing_NEUTRAL", new Color(1f, 0.78f, 0.18f, 0.18f));
                 }
 
                 var bbGo = new GameObject("SpotLabel");
@@ -1250,8 +1306,21 @@ namespace TacSim.Arena
                 tmp.color = col;
                 tmp.alignment = TextAlignmentOptions.Center;
                 tmp.textWrappingMode = TextWrappingModes.NoWrap;
-                tmp.rectTransform.sizeDelta = new Vector2(80f, 8f);
+                tmp.rectTransform.sizeDelta = new Vector2(104f, 8f);
                 bb.NameplateText = tmp;
+
+                _keySpotBeacons.Add(new TrackedKeySpotBeacon
+                {
+                    Letter = safeLetter,
+                    DisplayName = safeSpotName,
+                    CellX = sp.CellX,
+                    CellY = sp.CellY,
+                    IsHoldSpot = isHold,
+                    WorldPos = worldPos,
+                    Label = tmp,
+                    PillarRenderer = pillarRenderer,
+                    HoldRingRenderer = holdRingRenderer
+                });
             }
         }
 
@@ -1269,7 +1338,8 @@ namespace TacSim.Arena
             pillar.transform.localScale = new Vector3(1.8f, 18f, 1.8f);
             var pc = pillar.GetComponent<Collider>();
             if (pc != null) { if (Application.isPlaying) Destroy(pc); else DestroyImmediate(pc); }
-            pillar.GetComponent<MeshRenderer>().sharedMaterial = UrpMaterialFactory.GetHologramUnlit("DynamicObjPillar", new Color(1.0f, 0.84f, 0.22f, 0.45f));
+            _dynamicObjectivePillarRenderer = pillar.GetComponent<MeshRenderer>();
+            _dynamicObjectivePillarRenderer.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("DynamicObjPillar_NEUTRAL", new Color(1.0f, 0.84f, 0.22f, 0.45f));
 
             var capRing = GameObject.CreatePrimitive(PrimitiveType.Cylinder);
             capRing.name = "ObjectivePerimeterRing";
@@ -1278,7 +1348,8 @@ namespace TacSim.Arena
             capRing.transform.localScale = new Vector3(60f, 0.14f, 60f);
             var cc = capRing.GetComponent<Collider>();
             if (cc != null) { if (Application.isPlaying) Destroy(cc); else DestroyImmediate(cc); }
-            capRing.GetComponent<MeshRenderer>().sharedMaterial = UrpMaterialFactory.GetHologramUnlit("DynamicObjRing", new Color(1.0f, 0.80f, 0.18f, 0.22f));
+            _dynamicObjectiveRingRenderer = capRing.GetComponent<MeshRenderer>();
+            _dynamicObjectiveRingRenderer.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("DynamicObjRing_NEUTRAL", new Color(1.0f, 0.80f, 0.18f, 0.22f));
             _dynamicObjectiveRing = capRing.transform;
 
             var bbGo = new GameObject("ObjectiveLabel");
@@ -1959,6 +2030,11 @@ namespace TacSim.Arena
             {
                 State.HasDynamicObjective = false;
             }
+
+            if (d["hold_score"].Kind == JsonKind.Int || d["hold_score"].Kind == JsonKind.Float)
+                State.HoldControlScore = d.Int("hold_score", State.HoldControlScore);
+            else if (d["hold_control_score"].Kind == JsonKind.Int || d["hold_control_score"].Kind == JsonKind.Float)
+                State.HoldControlScore = d.Int("hold_control_score", State.HoldControlScore);
 
             // Live frames.rs:633 emits "ecm": "on" (radiating) | "off" (silent) | null (no pod); keep object fallback too.
             var ecmNode = d["ecm"];
@@ -2653,7 +2729,36 @@ namespace TacSim.Arena
             {
                 bool locked = string.Equals(State.LockedDesignator, cs.Designator, StringComparison.OrdinalIgnoreCase);
                 string lockMark = locked ? "<color=#FFEE44>>> LOCKED <<</color>\n" : string.Empty;
-                rig.Billboard.NameplateText.text = $"{lockMark}{safeDesig} [{safeClass}] {(int)cs.RangeM}m";
+                var sb = new System.Text.StringBuilder(72);
+                sb.Append(lockMark).Append(safeDesig).Append(" [").Append(safeClass).Append("] ").Append((int)cs.RangeM).Append('m');
+                if (cs.IsWreck)
+                {
+                    sb.Append(" <color=#FF6666>[WRECK]</color>");
+                }
+                else
+                {
+                    if (!cs.Friendly && cs.HitOddsPct > 0)
+                    {
+                        string oddsHex = cs.HitOddsPct >= 70 ? "#55FF88" : (cs.HitOddsPct >= 40 ? "#FFCC44" : "#FF6655");
+                        sb.Append(" · <color=").Append(oddsHex).Append('>').Append(cs.HitOddsPct).Append("%</color>");
+                    }
+                    if (!string.IsNullOrEmpty(cs.Aspect))
+                    {
+                        string aspUp = MushProtocol.EscapeUnityRichText(cs.Aspect.Replace("_", " ").Trim().ToUpperInvariant());
+                        if (string.Equals(cs.Aspect, "rear", StringComparison.OrdinalIgnoreCase))
+                            sb.Append(" · <color=#FFDD55>").Append(aspUp).Append("</color>");
+                        else
+                            sb.Append(" · ").Append(aspUp);
+                    }
+                    string hw = (cs.HealthWord ?? string.Empty).Trim().ToLowerInvariant();
+                    if (hw == "crippled" || hw == "critical")
+                        sb.Append(" <color=#FF5544>[CRIT]</color>");
+                    else if (hw == "scarred" || hw == "damaged")
+                        sb.Append(" <color=#FFAA44>[SCAR]</color>");
+                    if (cs.Moving)
+                        sb.Append(" <color=#66DDFF>▶</color>");
+                }
+                rig.Billboard.NameplateText.text = sb.ToString();
             }
         }
 
@@ -3075,6 +3180,7 @@ namespace TacSim.Arena
                         ? "scarred"
                         : "intact";
             PlayerRig.SetDamageState(ownHealthWord, State.IsWreck);
+            PlayerRig.SetHealthBarFraction((minArmor + State.InternalsPct) / 200f, visible: !State.IsWreck);
             PlayerRig.SetOperationalBeacon(State.Overheated, State.Immobile, State.IsWreck);
 
             float? aimYaw = null;
@@ -3211,6 +3317,8 @@ namespace TacSim.Arena
             }
 
             Vector3 ownPos = PlayerRig.Root.transform.position;
+            SyncKeySpotBeaconsAndHoldZoneTint(ownPos);
+
             if (_arenaRangeRing != null)
             {
                 const int Segs = 40;
@@ -3383,6 +3491,144 @@ namespace TacSim.Arena
                 if (_driveWaypointRoot.gameObject.activeSelf != showWp)
                     _driveWaypointRoot.gameObject.SetActive(showWp);
                 _driveCourseLine.enabled = showWp;
+            }
+        }
+
+        private void SyncKeySpotBeaconsAndHoldZoneTint(Vector3 ownPos)
+        {
+            if (TerrainGrid == null || State == null) return;
+
+            bool hasHoldZone = false;
+            Vector3 holdCenterWorld = Vector3.zero;
+            float holdRadiusM = 40f;
+
+            if (State.HasDynamicObjective)
+            {
+                hasHoldZone = true;
+                holdCenterWorld = ArenaStageOrigin + TerrainGrid.SiteCellToLocalPos(State.ObjectiveCellX, State.ObjectiveCellY, 0f);
+                holdRadiusM = Mathf.Max(15f, State.ObjectiveRadiusCells * TerrainGrid.CellSizeM);
+            }
+            else
+            {
+                for (int i = 0; i < _keySpotBeacons.Count; i++)
+                {
+                    if (_keySpotBeacons[i].IsHoldSpot)
+                    {
+                        hasHoldZone = true;
+                        holdCenterWorld = _keySpotBeacons[i].WorldPos;
+                        holdRadiusM = Mathf.Max(15f, TerrainGrid.HoldRadiusCells * TerrainGrid.CellSizeM);
+                        break;
+                    }
+                }
+            }
+
+            string owner = "NEUTRAL";
+            if (State.HoldControlScore > 5)
+            {
+                owner = "RED";
+            }
+            else if (State.HoldControlScore < -5)
+            {
+                owner = "BLUE";
+            }
+            else if (hasHoldZone)
+            {
+                int redIn = 0;
+                int blueIn = 0;
+                float rSq = holdRadiusM * holdRadiusM;
+
+                if (!State.IsWreck)
+                {
+                    float odx = ownPos.x - holdCenterWorld.x;
+                    float odz = ownPos.z - holdCenterWorld.z;
+                    if (odx * odx + odz * odz <= rSq)
+                    {
+                        if (string.Equals(State.Party, "R", StringComparison.OrdinalIgnoreCase)) redIn++;
+                        else if (string.Equals(State.Party, "B", StringComparison.OrdinalIgnoreCase)) blueIn++;
+                    }
+                }
+
+                for (int i = 0; i < State.Contacts.Count; i++)
+                {
+                    var ct = State.Contacts[i];
+                    if (ct.IsWreck) continue;
+                    Vector3 ctWorld = ArenaStageOrigin + TerrainGrid.SiteCellToLocalPos(ct.CellX, ct.CellY, 0f);
+                    float cdx = ctWorld.x - holdCenterWorld.x;
+                    float cdz = ctWorld.z - holdCenterWorld.z;
+                    if (cdx * cdx + cdz * cdz <= rSq)
+                    {
+                        if (string.Equals(ct.Party, "R", StringComparison.OrdinalIgnoreCase)) redIn++;
+                        else if (string.Equals(ct.Party, "B", StringComparison.OrdinalIgnoreCase)) blueIn++;
+                    }
+                }
+
+                if (redIn > 0 && blueIn > 0) owner = "CONTESTED";
+                else if (redIn > 0) owner = "RED";
+                else if (blueIn > 0) owner = "BLUE";
+            }
+
+            ActiveHoldZoneVisualOwner = owner;
+
+            Color holdColor;
+            switch (owner)
+            {
+                case "RED":
+                    holdColor = new Color(0.98f, 0.26f, 0.22f);
+                    break;
+                case "BLUE":
+                    holdColor = new Color(0.24f, 0.64f, 1.0f);
+                    break;
+                case "CONTESTED":
+                    holdColor = new Color(1.0f, 0.86f, 0.20f);
+                    break;
+                default:
+                    holdColor = new Color(0.98f, 0.78f, 0.26f);
+                    break;
+            }
+
+            string ownerSuffix = owner != "NEUTRAL" ? $" [{owner}]" : string.Empty;
+
+            for (int i = 0; i < _keySpotBeacons.Count; i++)
+            {
+                var b = _keySpotBeacons[i];
+                float dx = b.WorldPos.x - ownPos.x;
+                float dz = b.WorldPos.z - ownPos.z;
+                int distM = Mathf.RoundToInt(Mathf.Sqrt(dx * dx + dz * dz));
+
+                if (b.Label != null)
+                {
+                    b.Label.text = b.IsHoldSpot
+                        ? $"[{b.Letter}] {b.DisplayName} · {distM}m{ownerSuffix}"
+                        : $"[{b.Letter}] {b.DisplayName} · {distM}m";
+                    if (b.IsHoldSpot)
+                        b.Label.color = holdColor;
+                }
+                if (b.IsHoldSpot)
+                {
+                    if (b.HoldRingRenderer != null)
+                        b.HoldRingRenderer.sharedMaterial = UrpMaterialFactory.GetHologramUnlit($"HoldRing_{owner}", new Color(holdColor.r, holdColor.g, holdColor.b, owner == "NEUTRAL" ? 0.18f : 0.28f));
+                    if (b.PillarRenderer != null)
+                        b.PillarRenderer.sharedMaterial = UrpMaterialFactory.GetHologramUnlit($"HoldBeam_{owner}", new Color(holdColor.r, holdColor.g, holdColor.b, 0.48f));
+                }
+            }
+
+            if (State.HasDynamicObjective && _dynamicObjectiveRoot != null && _dynamicObjectiveRoot.gameObject.activeSelf)
+            {
+                float dx = holdCenterWorld.x - ownPos.x;
+                float dz = holdCenterWorld.z - ownPos.z;
+                int distM = Mathf.RoundToInt(Mathf.Sqrt(dx * dx + dz * dz));
+                if (_dynamicObjectiveRingRenderer != null)
+                    _dynamicObjectiveRingRenderer.sharedMaterial = UrpMaterialFactory.GetHologramUnlit($"DynamicObjRing_{owner}", new Color(holdColor.r, holdColor.g, holdColor.b, owner == "NEUTRAL" ? 0.22f : 0.30f));
+                if (_dynamicObjectivePillarRenderer != null)
+                    _dynamicObjectivePillarRenderer.sharedMaterial = UrpMaterialFactory.GetHologramUnlit($"DynamicObjPillar_{owner}", new Color(holdColor.r, holdColor.g, holdColor.b, 0.48f));
+                if (_dynamicObjectiveLabel != null)
+                {
+                    string baseTxt = !string.IsNullOrEmpty(State.ObjectiveLetter)
+                        ? $"[{State.ObjectiveLetter}] HOLD ZONE"
+                        : "HOLD OBJECTIVE";
+                    _dynamicObjectiveLabel.text = $"{baseTxt} · {distM}m{ownerSuffix}";
+                    _dynamicObjectiveLabel.color = holdColor;
+                }
             }
         }
 
