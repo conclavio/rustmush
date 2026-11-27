@@ -107,6 +107,14 @@ namespace TacSim.UI
         private Image _arenaCritBannerBg;
         private Text _arenaCritBannerText;
 
+        // Arena Diegetic Gunner Optics Crosshair & Laser Rangefinder Reticle (active when zoomed or in cupola view)
+        private GameObject _arenaOpticsReticleRoot;
+        private Text _opticsModeLabel;
+        private Text _opticsWeaponStatusLabel;
+        private Text _opticsRangefinderLabel;
+        private Image _opticsRangefinderBg;
+        private readonly List<Image> _opticsFrameStrokes = new List<Image>(16);
+
         // Surface Rover Compass & Drill Strip (bottom-center above SurfaceRoverActions)
         private GameObject _surfaceCompassWidget;
         private Text _surfaceCompassText;
@@ -156,6 +164,10 @@ namespace TacSim.UI
         public ArenaHitmarkerKind ActiveHitmarkerKind => _activeHitmarkerKind;
         public bool IsCriticalStatusBannerVisible => _arenaCritBannerRoot != null && _arenaCritBannerRoot.activeSelf;
         public string CriticalStatusBannerText => _arenaCritBannerText != null ? _arenaCritBannerText.text : string.Empty;
+        public bool IsGunnerOpticsReticleVisible => _arenaOpticsReticleRoot != null && _arenaOpticsReticleRoot.activeSelf;
+        public string GunnerOpticsModeSnapshot => _opticsModeLabel != null ? _opticsModeLabel.text : string.Empty;
+        public string GunnerOpticsRangefinderSnapshot => _opticsRangefinderLabel != null ? _opticsRangefinderLabel.text : string.Empty;
+        public string GunnerOpticsWeaponStatusSnapshot => _opticsWeaponStatusLabel != null ? _opticsWeaponStatusLabel.text : string.Empty;
 
         public float GetDamageArcAlpha(string facetLabel)
         {
@@ -317,6 +329,7 @@ namespace TacSim.UI
             BuildArenaArmorSchematic(_layerRect);
             BuildArenaCompassTape(_layerRect);
             BuildArenaCombatFeedbackWidgets(_layerRect);
+            BuildArenaGunnerOpticsReticle(_layerRect);
         }
 
         public void BindControllers(SpaceFlightController space, SurfaceMiningController surface, OocArenaController arena)
@@ -337,6 +350,7 @@ namespace TacSim.UI
             if (_arenaHitmarkerRoot != null) _arenaHitmarkerRoot.SetActive(false);
             if (_arenaDamageArcsRoot != null) _arenaDamageArcsRoot.SetActive(false);
             if (_arenaCritBannerRoot != null) _arenaCritBannerRoot.SetActive(false);
+            if (_arenaOpticsReticleRoot != null) _arenaOpticsReticleRoot.SetActive(false);
             _activeHitmarkerKind = ArenaHitmarkerKind.None;
             _hitmarkerRemainSec = 0f;
             _dmgAlphaFront = _dmgAlphaRear = _dmgAlphaLeft = _dmgAlphaRight = 0f;
@@ -439,7 +453,7 @@ namespace TacSim.UI
             anchoredPos = new Vector2(clampedX, clampedY);
         }
 
-        public void SyncBrackets(TacSimActiveStage stage, Camera cam, bool hideForOverlay = false)
+        public void SyncBrackets(TacSimActiveStage stage, Camera cam, bool hideForOverlay = false, int arenaOpticsZoomLevel = 0, bool arenaCupolaView = false)
         {
             if (_layerRect == null) return;
 
@@ -452,6 +466,7 @@ namespace TacSim.UI
                 if (_arenaArmorWidget != null) _arenaArmorWidget.SetActive(false);
                 if (_arenaCompassWidget != null) _arenaCompassWidget.SetActive(false);
                 if (_arenaCritBannerRoot != null) _arenaCritBannerRoot.SetActive(false);
+                if (_arenaOpticsReticleRoot != null) _arenaOpticsReticleRoot.SetActive(false);
                 return;
             }
 
@@ -474,6 +489,8 @@ namespace TacSim.UI
                 _arenaCompassWidget.SetActive(stage == TacSimActiveStage.SimulatorArena);
             if (_arenaCritBannerRoot != null && stage != TacSimActiveStage.SimulatorArena)
                 _arenaCritBannerRoot.SetActive(false);
+            if (_arenaOpticsReticleRoot != null && stage != TacSimActiveStage.SimulatorArena)
+                _arenaOpticsReticleRoot.SetActive(false);
 
             if (dockingActive)
             {
@@ -491,7 +508,7 @@ namespace TacSim.UI
                     SyncSurfaceBracketsAndCompass(cam, sw, sh, canvasSize);
                     break;
                 case TacSimActiveStage.SimulatorArena:
-                    SyncArenaBracketsAndArmor(cam, sw, sh, canvasSize);
+                    SyncArenaBracketsAndArmor(cam, sw, sh, canvasSize, arenaOpticsZoomLevel, arenaCupolaView);
                     break;
                 default:
                     HideAllBrackets();
@@ -604,10 +621,11 @@ namespace TacSim.UI
             HideUnusedBracketsFrom(used);
         }
 
-        private void SyncArenaBracketsAndArmor(Camera cam, float sw, float sh, Vector2 canvasSize)
+        private void SyncArenaBracketsAndArmor(Camera cam, float sw, float sh, Vector2 canvasSize, int opticsZoomLevel = 0, bool cupolaView = false)
         {
             if (_arena == null || _arena.State == null)
             {
+                if (_arenaOpticsReticleRoot != null) _arenaOpticsReticleRoot.SetActive(false);
                 HideAllBrackets();
                 return;
             }
@@ -665,6 +683,7 @@ namespace TacSim.UI
 
             SyncArenaCompassTape();
             SyncArenaCriticalBanner();
+            SyncArenaGunnerOpticsReticle(opticsZoomLevel, cupolaView);
 
             ArenaObjectiveBracketActive = false;
             if (cam == null)
@@ -1261,6 +1280,165 @@ namespace TacSim.UI
                 float pulse = 0.80f + 0.20f * Mathf.Sin(Time.unscaledTime * 6.5f);
                 if (_arenaCritBannerBg != null) _arenaCritBannerBg.color = new Color(bg.r, bg.g, bg.b, bg.a * pulse);
                 if (_arenaCritBannerText != null) _arenaCritBannerText.text = msg;
+            }
+        }
+
+        private void BuildArenaGunnerOpticsReticle(Transform parent)
+        {
+            _opticsFrameStrokes.Clear();
+            _arenaOpticsReticleRoot = new GameObject("ArenaGunnerOpticsReticle", typeof(RectTransform));
+            _arenaOpticsReticleRoot.transform.SetParent(parent, false);
+            var rt = _arenaOpticsReticleRoot.GetComponent<RectTransform>();
+            SetRect(rt, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-190f, -134f), new Vector2(190f, 134f));
+
+            Color strokeCol = new Color(0.32f, 0.92f, 1.0f, 0.55f);
+
+            // Outer optical visor corner L-brackets (non-blocking)
+            const float cLen = 28f;
+            const float cThick = 2f;
+            _opticsFrameStrokes.Add(CreateStroke(_arenaOpticsReticleRoot.transform, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0f, -cThick), new Vector2(cLen, 0f), strokeCol));
+            _opticsFrameStrokes.Add(CreateStroke(_arenaOpticsReticleRoot.transform, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(0f, -cLen), new Vector2(cThick, 0f), strokeCol));
+            _opticsFrameStrokes.Add(CreateStroke(_arenaOpticsReticleRoot.transform, new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-cLen, -cThick), Vector2.zero, strokeCol));
+            _opticsFrameStrokes.Add(CreateStroke(_arenaOpticsReticleRoot.transform, new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-cThick, -cLen), Vector2.zero, strokeCol));
+            _opticsFrameStrokes.Add(CreateStroke(_arenaOpticsReticleRoot.transform, new Vector2(0f, 0f), new Vector2(0f, 0f), Vector2.zero, new Vector2(cLen, cThick), strokeCol));
+            _opticsFrameStrokes.Add(CreateStroke(_arenaOpticsReticleRoot.transform, new Vector2(0f, 0f), new Vector2(0f, 0f), Vector2.zero, new Vector2(cThick, cLen), strokeCol));
+            _opticsFrameStrokes.Add(CreateStroke(_arenaOpticsReticleRoot.transform, new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-cLen, 0f), new Vector2(0f, cThick), strokeCol));
+            _opticsFrameStrokes.Add(CreateStroke(_arenaOpticsReticleRoot.transform, new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-cThick, 0f), new Vector2(0f, cLen), strokeCol));
+
+            // Center open-aperture mil-dot crosshairs + ballistic drop stadia ticks
+            _opticsFrameStrokes.Add(CreateStroke(_arenaOpticsReticleRoot.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-92f, -1f), new Vector2(-14f, 1f), strokeCol));
+            _opticsFrameStrokes.Add(CreateStroke(_arenaOpticsReticleRoot.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(14f, -1f), new Vector2(92f, 1f), strokeCol));
+            _opticsFrameStrokes.Add(CreateStroke(_arenaOpticsReticleRoot.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-1f, 14f), new Vector2(1f, 54f), strokeCol));
+            _opticsFrameStrokes.Add(CreateStroke(_arenaOpticsReticleRoot.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-1f, -68f), new Vector2(1f, -14f), strokeCol));
+
+            // Stadia range drop ticks along bottom vertical hair
+            _opticsFrameStrokes.Add(CreateStroke(_arenaOpticsReticleRoot.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-18f, -28f), new Vector2(18f, -26f), strokeCol));
+            _opticsFrameStrokes.Add(CreateStroke(_arenaOpticsReticleRoot.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-12f, -44f), new Vector2(12f, -42f), strokeCol));
+            _opticsFrameStrokes.Add(CreateStroke(_arenaOpticsReticleRoot.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-7f, -60f), new Vector2(7f, -58f), strokeCol));
+
+            // Top-left magnification badge & top-right weapon readiness readout
+            _opticsModeLabel = CreateText(_arenaOpticsReticleRoot.transform, "OPTICS 2.5x · GUNNER", 11, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.45f, 0.96f, 1f));
+            SetRect(_opticsModeLabel.rectTransform, new Vector2(0f, 1f), new Vector2(0.56f, 1f), new Vector2(8f, -22f), new Vector2(0f, -4f));
+
+            _opticsWeaponStatusLabel = CreateText(_arenaOpticsReticleRoot.transform, "RDY · MAIN GUN", 11, FontStyle.Bold, TextAnchor.MiddleRight, new Color(0.38f, 0.98f, 0.64f));
+            SetRect(_opticsWeaponStatusLabel.rectTransform, new Vector2(0.44f, 1f), new Vector2(1f, 1f), new Vector2(0f, -22f), new Vector2(-8f, -4f));
+
+            // Bottom-center live laser rangefinder & firing solution bar
+            var rfBar = CreatePanel(_arenaOpticsReticleRoot.transform, "OpticsRangefinderBar", new Vector2(0.5f, 0f), new Vector2(0.5f, 0f), new Vector2(-186f, 6f), new Vector2(186f, 26f), new Color(0.02f, 0.06f, 0.10f, 0.78f));
+            _opticsRangefinderBg = rfBar.GetComponent<Image>();
+            _opticsRangefinderBg.raycastTarget = false;
+            _opticsRangefinderLabel = CreateText(rfBar.transform, "NO LOCK · TAB TO ACQUIRE", 10, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(0.74f, 0.94f, 1f));
+            SetRect(_opticsRangefinderLabel.rectTransform, Vector2.zero, Vector2.one, new Vector2(6f, 0f), new Vector2(-6f, 0f));
+
+            _arenaOpticsReticleRoot.SetActive(false);
+        }
+
+        private void SyncArenaGunnerOpticsReticle(int opticsZoomLevel, bool cupolaView)
+        {
+            if (_arenaOpticsReticleRoot == null) return;
+            bool show = _arena != null && _arena.State != null && (opticsZoomLevel > 0 || cupolaView);
+            if (_arenaOpticsReticleRoot.activeSelf != show)
+                _arenaOpticsReticleRoot.SetActive(show);
+            if (!show) return;
+
+            var st = _arena.State;
+            var ti = _arena.CurrentTerrainIntel;
+
+            if (_opticsModeLabel != null)
+            {
+                if (opticsZoomLevel >= 2)
+                    _opticsModeLabel.text = cupolaView ? "OPTICS 4.0x · CUPOLA" : "OPTICS 4.0x · SNIPER";
+                else if (opticsZoomLevel == 1)
+                    _opticsModeLabel.text = cupolaView ? "OPTICS 2.5x · CUPOLA" : "OPTICS 2.5x · GUNNER";
+                else
+                    _opticsModeLabel.text = "CUPOLA VISOR 1.0x";
+            }
+
+            if (_opticsWeaponStatusLabel != null)
+            {
+                if (st.IsWreck)
+                {
+                    _opticsWeaponStatusLabel.text = "HULL WRECKED";
+                    _opticsWeaponStatusLabel.color = new Color(1.0f, 0.30f, 0.24f);
+                }
+                else if (st.Overheated)
+                {
+                    _opticsWeaponStatusLabel.text = $"OVERHEAT {st.Heat}/{st.HeatMax}";
+                    _opticsWeaponStatusLabel.color = new Color(1.0f, 0.34f, 0.22f);
+                }
+                else if (!st.WeaponsFree)
+                {
+                    _opticsWeaponStatusLabel.text = "HOLD FIRE";
+                    _opticsWeaponStatusLabel.color = new Color(1.0f, 0.76f, 0.26f);
+                }
+                else if (_arena.TryGetPrimaryWeaponGunnery(out var primary))
+                {
+                    string wpn = (primary.Id ?? "MAIN").Replace("_", " ").ToUpperInvariant();
+                    if (primary.Ready)
+                    {
+                        _opticsWeaponStatusLabel.text = $"RDY · {wpn}";
+                        _opticsWeaponStatusLabel.color = new Color(0.38f, 0.98f, 0.64f);
+                    }
+                    else
+                    {
+                        _opticsWeaponStatusLabel.text = $"CYCLE {primary.ReadyInMs / 1000f:0.0}s · {wpn}";
+                        _opticsWeaponStatusLabel.color = new Color(1.0f, 0.74f, 0.24f);
+                    }
+                }
+                else
+                {
+                    _opticsWeaponStatusLabel.text = "WEAPONS READY";
+                    _opticsWeaponStatusLabel.color = new Color(0.38f, 0.98f, 0.64f);
+                }
+            }
+
+            bool obstructed = ti.HasTargetSample && ti.IsLineOfSightObstructed;
+            if (_opticsRangefinderLabel != null)
+            {
+                if (!string.IsNullOrEmpty(st.LockedDesignator))
+                {
+                    ArenaContactState locked = null;
+                    for (int i = 0; i < st.Contacts.Count; i++)
+                    {
+                        if (string.Equals(st.Contacts[i].Designator, st.LockedDesignator, StringComparison.OrdinalIgnoreCase))
+                        {
+                            locked = st.Contacts[i];
+                            break;
+                        }
+                    }
+
+                    float rangeM = st.LockRangeM > 0.5f ? st.LockRangeM : (locked != null ? locked.RangeM : 0f);
+                    string aspectTag = locked != null && !string.IsNullOrEmpty(locked.Aspect)
+                        ? $" · {locked.Aspect.ToUpperInvariant()}"
+                        : string.Empty;
+                    string elevTag = string.Empty;
+                    if (ti.HasTargetSample && Mathf.Abs(ti.ElevationDeltaM) >= 3.0f)
+                        elevTag = ti.ElevationDeltaM > 0f ? $" · +{Mathf.RoundToInt(ti.ElevationDeltaM)}m" : $" · {Mathf.RoundToInt(ti.ElevationDeltaM)}m";
+                    string losTag = obstructed && !string.IsNullOrEmpty(ti.LineOfSightStatus)
+                        ? $" · {ti.LineOfSightStatus} LOS"
+                        : " · CLEAR LOS";
+
+                    _opticsRangefinderLabel.text = $"LOCK {st.LockedDesignator} · {rangeM:0}m · HIT {st.LockHitPercent}%{aspectTag}{elevTag}{losTag}";
+                    _opticsRangefinderLabel.color = obstructed
+                        ? new Color(1.0f, 0.74f, 0.24f)
+                        : (st.LockHitPercent >= 65 ? new Color(0.45f, 1.0f, 0.68f) : new Color(0.84f, 0.96f, 1.0f));
+                }
+                else
+                {
+                    string cover = !string.IsNullOrEmpty(ti.CoverLabel) ? ti.CoverLabel : "OPEN";
+                    _opticsRangefinderLabel.text = $"NO LOCK · TAB TO ACQUIRE · SIGHT {st.SightMeters:0}m · {cover}";
+                    _opticsRangefinderLabel.color = new Color(0.68f, 0.88f, 0.96f);
+                }
+            }
+
+            float frameAlpha = opticsZoomLevel >= 2 ? 0.72f : (opticsZoomLevel == 1 ? 0.56f : 0.34f);
+            Color frameColor = obstructed
+                ? new Color(1.0f, 0.68f, 0.22f, frameAlpha)
+                : new Color(0.32f, 0.92f, 1.0f, frameAlpha);
+            for (int i = 0; i < _opticsFrameStrokes.Count; i++)
+            {
+                if (_opticsFrameStrokes[i] != null)
+                    _opticsFrameStrokes[i].color = frameColor;
             }
         }
 

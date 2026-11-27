@@ -464,6 +464,7 @@ namespace TacSim.Core
                 Hud?.FloatingCallouts?.ShowCallout($"ORDER FROM {ord.From.ToUpperInvariant()}: {ord.Objective}", new Color(1.0f, 0.86f, 0.34f, 1f), 2.8f);
             };
             ArenaStage.OnToggleCameraViewRequested += ToggleGroundVehicleCameraMode;
+            ArenaStage.OnCycleOpticsZoomRequested += CycleArenaOpticsZoom;
 
             Hud.OnCloseReplayRequested += CloseActiveReplayOrObserver;
             Hud.OnEscapePressedWithNoModal += () =>
@@ -556,6 +557,7 @@ namespace TacSim.Core
                 Hud.Overlays.OnArenaCockpitVerbRequested += HandleArenaCockpitVerb;
                 Hud.Overlays.OnPrefillChatRequested += prefix => Hud?.PrefillChatInput(prefix);
                 Hud.Overlays.OnToggleVehicleCameraViewRequested += ToggleGroundVehicleCameraMode;
+                Hud.Overlays.OnCycleArenaOpticsRequested += CycleArenaOpticsZoom;
             }
 
             if (Hud.SolarMap != null)
@@ -1256,7 +1258,9 @@ namespace TacSim.Core
                     (ArenaStage != null && ArenaStage.IsSpectatorTheaterActive) ||
                     (Hud.SolarMap != null && Hud.SolarMap.IsOpen) ||
                     (Hud.DisplayOptions != null && Hud.DisplayOptions.IsOpen);
-                Hud.TacticalBrackets.SyncBrackets(stage, activeCam, hideBrackets);
+                int opticsLevel = CameraRig != null ? CameraRig.ArenaOpticsZoomLevel : 0;
+                bool cupolaView = CameraRig != null && CameraRig.Mode == CameraRigMode.GroundVehicleCupola;
+                Hud.TacticalBrackets.SyncBrackets(stage, activeCam, hideBrackets, opticsLevel, cupolaView);
                 Hud.TacticalOverview?.SyncOverview(stage, hideBrackets || TacSimDisplayOptions.CurrentHudDensity == TacSimHudDensityPreset.Compact);
             }
 
@@ -3613,6 +3617,24 @@ namespace TacSim.Core
                 CameraRig.SetMode(CameraRigMode.GroundVehicleChase);
                 Hud?.FloatingCallouts?.ShowCallout("CAMERA: CHASE VIEW", new Color(0.75f, 0.90f, 1f, 1f), 1.3f);
             }
+            Hud?.Overlays?.UpdateArenaOpticsButton(CameraRig.ArenaOpticsZoomLevel);
+        }
+
+        public void CycleArenaOpticsZoom()
+        {
+            if (CameraRig == null) return;
+            bool inArenaOrReplay = ActiveStage == TacSimActiveStage.SimulatorArena ||
+                                   (ArenaStage != null && ArenaStage.IsSpectatorTheaterActive);
+            if (!inArenaOrReplay) return;
+
+            int level = CameraRig.CycleArenaOpticsZoom();
+            Audio?.PlayUiClick();
+            Hud?.Overlays?.UpdateArenaOpticsButton(level);
+            string label = level == 2
+                ? "OPTICS: 4.0x SNIPER ZOOM"
+                : (level == 1 ? "OPTICS: 2.5x GUNNER ZOOM" : "OPTICS: 1.0x WIDE VIEW");
+            Color col = level > 0 ? new Color(0.36f, 0.96f, 1f, 1f) : new Color(0.75f, 0.90f, 1f, 1f);
+            Hud?.FloatingCallouts?.ShowCallout(label, col, 1.2f);
         }
     }
 }

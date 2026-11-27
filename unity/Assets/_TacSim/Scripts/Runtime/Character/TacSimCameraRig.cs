@@ -60,6 +60,11 @@ namespace TacSim.Character
         public bool OrbitInputEnabled { get; set; } = true;
         public Vector3 CurrentShakeOffset { get; private set; }
         public bool IsCameraShakeActive => _shakeRemainingSec > 0f && _shakeIntensity > 0.0001f;
+        public int ArenaOpticsZoomLevel { get; private set; }
+        public bool SupportsArenaOptics => Mode == CameraRigMode.GroundVehicleChase || Mode == CameraRigMode.GroundVehicleCupola;
+        public bool IsArenaOpticsZoomed => ArenaOpticsZoomLevel > 0 && SupportsArenaOptics;
+        public float ArenaOpticsMagnification => ArenaOpticsZoomLevel == 2 ? 4.0f : (ArenaOpticsZoomLevel == 1 ? 2.5f : 1.0f);
+        public float TargetOpticsFov => ComputeTargetFov();
 
         private float _yawDeg = 0f;
         private float _pitchDeg = 16f;
@@ -148,6 +153,64 @@ namespace TacSim.Character
             ApplyCameraPreferences(sens, zoom, invY, fov, savePrefs: false);
         }
 
+        private float ComputeTargetFov()
+        {
+            if (Mode == CameraRigMode.BowDockingCollar)
+                return 66f;
+            if (SupportsArenaOptics)
+            {
+                if (ArenaOpticsZoomLevel == 2)
+                    return Mathf.Clamp(FieldOfViewDeg / 3.4f, 15f, 30f);
+                if (ArenaOpticsZoomLevel == 1)
+                    return Mathf.Clamp(FieldOfViewDeg / 2.15f, 22f, 44f);
+            }
+            return FieldOfViewDeg;
+        }
+
+        public int CycleArenaOpticsZoom()
+        {
+            if (Mode == CameraRigMode.GroundVehicleOverhead)
+            {
+                SetMode(CameraRigMode.GroundVehicleCupola);
+                ArenaOpticsZoomLevel = 1;
+                return ArenaOpticsZoomLevel;
+            }
+            if (!SupportsArenaOptics)
+            {
+                ArenaOpticsZoomLevel = 0;
+                return 0;
+            }
+            ArenaOpticsZoomLevel = (ArenaOpticsZoomLevel + 1) % 3;
+            return ArenaOpticsZoomLevel;
+        }
+
+        public void SetArenaOpticsZoom(int level, bool immediate = false)
+        {
+            ArenaOpticsZoomLevel = SupportsArenaOptics ? Mathf.Clamp(level, 0, 2) : 0;
+            if (immediate && ControlledCamera != null)
+                ControlledCamera.fieldOfView = ComputeTargetFov();
+        }
+
+        public void ResetArenaOpticsZoom(bool immediate = false)
+        {
+            ArenaOpticsZoomLevel = 0;
+            if (immediate && ControlledCamera != null)
+                ControlledCamera.fieldOfView = ComputeTargetFov();
+        }
+
+        public void StepOpticsFov(float dt)
+        {
+            if (ControlledCamera == null) return;
+            float target = ComputeTargetFov();
+            float step = Mathf.Max(0f, dt);
+            if (step <= 0f || Mathf.Abs(ControlledCamera.fieldOfView - target) < 0.05f)
+            {
+                ControlledCamera.fieldOfView = target;
+                return;
+            }
+            ControlledCamera.fieldOfView = Mathf.Lerp(ControlledCamera.fieldOfView, target, 1f - Mathf.Exp(-14f * step));
+        }
+
         public void ApplyCameraPreferences(int sensPct, int zoomPct, bool invertY, int fovDeg, bool savePrefs = true)
         {
             OrbitSensitivityPct = Mathf.Clamp(sensPct, 50, 200);
@@ -157,7 +220,7 @@ namespace TacSim.Character
             mouseSensitivity = 2.8f * (OrbitSensitivityPct / 100f);
 
             if (ControlledCamera != null && Mode != CameraRigMode.BowDockingCollar)
-                ControlledCamera.fieldOfView = FieldOfViewDeg;
+                ControlledCamera.fieldOfView = ComputeTargetFov();
 
             if (savePrefs && Application.isPlaying)
             {
@@ -172,6 +235,8 @@ namespace TacSim.Character
         public void SetMode(CameraRigMode mode)
         {
             Mode = mode;
+            if (!SupportsArenaOptics)
+                ArenaOpticsZoomLevel = 0;
             if (ControlledCamera != null)
             {
                 ControlledCamera.nearClipPlane = mode == CameraRigMode.BowDockingCollar ? 0.05f : 0.15f;
@@ -180,7 +245,7 @@ namespace TacSim.Character
                     mode == CameraRigMode.GroundVehicleChase ||
                     mode == CameraRigMode.GroundVehicleCupola ||
                     mode == CameraRigMode.GroundVehicleOverhead) ? 8000f : 1500f;
-                ControlledCamera.fieldOfView = mode == CameraRigMode.BowDockingCollar ? 66f : FieldOfViewDeg;
+                ControlledCamera.fieldOfView = ComputeTargetFov();
             }
         }
 
@@ -251,6 +316,7 @@ namespace TacSim.Character
                     break;
             }
 
+            StepOpticsFov(dt);
             StepCameraShake(dt);
             if (CurrentShakeOffset.sqrMagnitude > 1e-8f)
             {
@@ -401,8 +467,9 @@ namespace TacSim.Character
                 if (UpdateRmbOrbitDragState(overUi))
                 {
                     float ySign = InvertY ? 1f : -1f;
-                    _vehicleYawOffsetDeg += Input.GetAxis("Mouse X") * mouseSensitivity * 1.8f;
-                    _vehiclePitchDeg = Mathf.Clamp(_vehiclePitchDeg + ySign * Input.GetAxis("Mouse Y") * mouseSensitivity * 1.3f, 5f, 72f);
+                    float zoomDamp = IsArenaOpticsZoomed ? (1f / Mathf.Sqrt(ArenaOpticsMagnification)) : 1f;
+                    _vehicleYawOffsetDeg += Input.GetAxis("Mouse X") * mouseSensitivity * 1.8f * zoomDamp;
+                    _vehiclePitchDeg = Mathf.Clamp(_vehiclePitchDeg + ySign * Input.GetAxis("Mouse Y") * mouseSensitivity * 1.3f * zoomDamp, 5f, 72f);
                 }
                 float scroll = Input.mouseScrollDelta.y;
                 if (!overUi && Mathf.Abs(scroll) > 0.01f)

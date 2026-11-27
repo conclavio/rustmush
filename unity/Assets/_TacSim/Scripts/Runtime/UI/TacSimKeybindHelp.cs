@@ -119,8 +119,8 @@ namespace TacSim.UI
                 "<b>[LMB Unit]</b> Lock   <b>[Shift+LMB / Minimap]</b> Drive Cell\n" +
                 "<b>[Space]</b> Fire   <b>[G]</b> Volley   <b>[F]</b> Hold/Free   <b>[Tab]</b> Cycle\n" +
                 "<b>[N]</b> Scan   <b>[M]</b> EMCON   <b>[L]</b> Auto-Lock   <b>[Z]</b> Startup\n" +
-                "<b>[V]</b> Chase / Cupola / Overhead Cam   <b>[Y]</b> Detachment Wilco\n" +
-                "<b>[F5–F8]</b> Fire Custom User Macros (below)");
+                "<b>[V]</b> Chase / Cupola / Overhead   <b>[Q]</b> Gunner Optics (1x/2.5x/4x)\n" +
+                "<b>[Y]</b> Detachment Wilco   <b>[F5–F8]</b> Fire Custom User Macros (below)");
 
             // Bottom: 4 Persistent Custom Macros (F5-F8)
             var macroBox = CreatePanel(_modalRoot.transform, "CustomMacrosPanel", new Vector2(0f, 0f), new Vector2(1f, 0.43f), new Vector2(16f, 14f), new Vector2(-16f, -4f), new Color(0.05f, 0.09f, 0.15f, 0.94f));
