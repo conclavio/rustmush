@@ -9528,5 +9528,45 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void Arena3DBiomeSunLightingRoadMarkersAndPerimeterBoundary_BuildFromTerrainGrid()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave15PR1_BiomeSunRoadMarkersPerimeterTest");
+            try
+            {
+                // 1. Biome atmosphere profiles provide distinct sky tints & angled directional sun vectors
+                var desert = TacSim.Arena.TacSimArenaEnvironmentBuilder.ResolveBiomeLighting("desert");
+                var arctic = TacSim.Arena.TacSimArenaEnvironmentBuilder.ResolveBiomeLighting("arctic");
+                var regolith = TacSim.Arena.TacSimArenaEnvironmentBuilder.ResolveBiomeLighting("regolith");
+                var temperate = TacSim.Arena.TacSimArenaEnvironmentBuilder.ResolveBiomeLighting("temperate");
+                Assert.AreNotEqual(desert.SkyColor, arctic.SkyColor);
+                Assert.AreNotEqual(regolith.SkyColor, temperate.SkyColor);
+                Assert.Greater(desert.SunDirectionEuler.x, 10f);
+                Assert.Greater(arctic.SunDirectionEuler.x, 10f);
+
+                // 2. Build a synthetic terrain grid containing roads & platforms and verify batched 3D road markers
+                var grid = TacSimTerrainDecoder.LoadStaticArena("proving_ground");
+                for (int x = 4; x < System.Math.Min(grid.Width - 4, 48); x++)
+                {
+                    grid.Classes[12 * grid.Width + x] = TacSim.World.TerrainCellClass.Road;
+                    grid.Classes[14 * grid.Width + x] = TacSim.World.TerrainCellClass.Platform;
+                }
+
+                var arenaGo = new UnityEngine.GameObject("ArenaLandmarks");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(TacSimAssetCatalog.LoadOrDefault(), grid);
+
+                Assert.Greater(arena.BuiltRoadMarkerCount, 0, "Road and platform cells must spawn batched 3D guide markers");
+                Assert.IsTrue(arena.IsPerimeterBoundaryBuilt, "Arena terrain build must project terrain-hugging 3D perimeter line");
+                Assert.AreEqual(4, arena.BuiltPerimeterPylonCount, "Arena boundary must build 4 corner sector pylons (NW/NE/SE/SW)");
+                Assert.AreEqual(UnityEngine.LightType.Directional, arena.ActiveSunLightType, "Arena sun light must be directional for crisp battlefield shading");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
