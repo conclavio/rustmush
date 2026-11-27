@@ -8998,5 +8998,86 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void Arena3DWeaponEnvelopeEcmDomeMatchClockAndNoticeDetails_ProjectRingsAndRenderRichFeed()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave12PR1_ArenaWeaponEcmClockTest");
+            try
+            {
+                var catalog = TacSimAssetCatalog.LoadOrDefault();
+                var arenaGo = new UnityEngine.GameObject("ArenaRings");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(catalog, TacSimTerrainDecoder.LoadStaticArena("proving_ground"));
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.Overlays.BindControllers(null, arena, null);
+                hud.Minimap.BindWorldSources(null, null, null, null, arena);
+
+                // 1. Live frame with t_ms=165000 (02:45), active ECM pod ("on"), weapon range bands (360m max), and structured notices
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 155, ""seated"": true, ""t_ms"": 165000, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""mode"": ""skirmish"", ""power"": ""online"",
+                    ""x_cm"": 10000, ""y_cm"": 10000, ""heading_deg"": 90, ""speed_kph"": 0,
+                    ""sight_m"": 240, ""ecm"": ""on"",
+                    ""weapons"": [
+                        { ""id"": ""cannon"", ""ready"": false, ""ready_in_ms"": 2000, ""rounds"": 22, ""rounds_max"": 24, ""hit_percent"": 76, ""range_band"": 2, ""bands_cm"": [12000, 24000, 36000] }
+                    ],
+                    ""notices"": [
+                        { ""kind"": ""emcon_on"", ""detail"": { ""radius_m"": 140 } },
+                        { ""kind"": ""identified"", ""designator"": ""B2"", ""was"": ""?1"" },
+                        { ""kind"": ""refused"", ""weapon"": ""cannon"", ""refusal"": ""cycling"", ""detail"": { ""secs"": 2 } }
+                    ]
+                }"));
+
+                Assert.AreEqual(165000L, arena.State.ArenaClockMs);
+                Assert.AreEqual(140f, arena.State.EcmRadiusMeters, 0.1f);
+                Assert.IsTrue(arena.State.IsEcmJammingActive);
+                Assert.IsTrue(arena.IsWeaponEnvelopeRingVisible, "3D Primary Weapon Envelope Ring must be visible when weapon has max range > 15m");
+                Assert.IsTrue(arena.IsEcmJammerRingVisible, "3D ECM Jammer Dome Ring must be visible when ECM pod is active");
+
+                // Scoreboard displays live match clock & Combat Feed displays structured ECM radius / ID / Cycling details
+                hud.Overlays.RefreshArenaHud();
+                StringAssert.Contains("2:45", hud.Overlays.ArenaScoreboardSnapshot);
+                Assert.AreEqual(3, hud.Overlays.VisibleCombatFeedEntryCount);
+                StringAssert.Contains("140m", hud.Overlays.CombatFeedSnapshot);
+                StringAssert.Contains("?1", hud.Overlays.CombatFeedSnapshot);
+                StringAssert.Contains("B2", hud.Overlays.CombatFeedSnapshot);
+                StringAssert.Contains("2s", hud.Overlays.CombatFeedSnapshot);
+
+                // Arena Minimap renders Weapon Range Ring and active ECM Jammer Ring
+                hud.Minimap.SyncMinimap(TacSimActiveStage.SimulatorArena, UnityEngine.Vector3.zero, 90f, rightCornerOccupied: true, forceRedraw: true);
+                Assert.IsTrue(hud.Minimap.LastArenaMinimapHasSensorRing);
+                Assert.IsTrue(hud.Minimap.LastArenaMinimapHasWeaponRangeRing);
+                Assert.IsTrue(hud.Minimap.LastArenaMinimapHasEcmRing);
+
+                // Switching ECM pod to "off" (EMCON silent) hides 3D & Minimap ECM rings cleanly while preserving weapon envelope
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 155, ""seated"": true, ""t_ms"": 170000, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""mode"": ""skirmish"", ""power"": ""online"",
+                    ""x_cm"": 10000, ""y_cm"": 10000, ""heading_deg"": 90, ""speed_kph"": 0,
+                    ""sight_m"": 240, ""ecm"": ""off"",
+                    ""weapons"": [
+                        { ""id"": ""cannon"", ""ready"": true, ""ready_in_ms"": 0, ""rounds"": 22, ""rounds_max"": 24, ""hit_percent"": 76, ""range_band"": 2, ""bands_cm"": [12000, 24000, 36000] }
+                    ]
+                }"));
+                Assert.IsFalse(arena.State.IsEcmJammingActive);
+                Assert.IsFalse(arena.IsEcmJammerRingVisible, "EMCON silent must hide 3D ECM Jammer Dome");
+                Assert.IsTrue(arena.IsWeaponEnvelopeRingVisible);
+                hud.Minimap.SyncMinimap(TacSimActiveStage.SimulatorArena, UnityEngine.Vector3.zero, 90f, rightCornerOccupied: true, forceRedraw: true);
+                Assert.IsFalse(hud.Minimap.LastArenaMinimapHasEcmRing);
+
+                // Reset hides both 3D tactical rings cleanly
+                arena.ResetSessionState();
+                Assert.IsFalse(arena.IsWeaponEnvelopeRingVisible);
+                Assert.IsFalse(arena.IsEcmJammerRingVisible);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

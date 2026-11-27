@@ -1533,6 +1533,7 @@ namespace TacSim.UI
         }
 
         public string ArenaOpticsButtonSnapshot => _opticsBtnLabel != null ? _opticsBtnLabel.text : string.Empty;
+        public string ArenaScoreboardSnapshot => _arenaScoreboardText != null ? _arenaScoreboardText.text : string.Empty;
 
         public void UpdateArenaOpticsButton(int zoomLevel)
         {
@@ -1556,9 +1557,12 @@ namespace TacSim.UI
             if (!active) return;
 
             var s = _arena.State;
+            string clockTag = s.ArenaClockMs > 0
+                ? $" · {TacSimArenaReplayModel.FormatClockText(s.ArenaClockMs)}"
+                : string.Empty;
             string holdStr = s.Mode == "hold"
-                ? $"  |  HOLD ZONE: {(s.HoldControlScore >= 0 ? $"<color=#FF6655>RED +{s.HoldControlScore}%</color>" : $"<color=#55AAFF>BLUE {Mathf.Abs(s.HoldControlScore)}%</color>")}"
-                : $"  |  MATCH #{s.MatchId}";
+                ? $"  |  HOLD ZONE: {(s.HoldControlScore >= 0 ? $"<color=#FF6655>RED +{s.HoldControlScore}%</color>" : $"<color=#55AAFF>BLUE {Mathf.Abs(s.HoldControlScore)}%</color>")}{clockTag}"
+                : $"  |  MATCH #{s.MatchId}{clockTag}";
 
             _arenaScoreboardText.text =
                 $"<color=#FF5544>RED ON SENSORS: {s.RedAliveCount}</color>    vs    <color=#55AAFF>BLUE ON SENSORS: {s.BlueAliveCount}</color>{holdStr}";
@@ -1716,7 +1720,22 @@ namespace TacSim.UI
                 case "refused":
                 case "blocked":
                     string why = MushProtocol.EscapeUnityRichText(!string.IsNullOrEmpty(n.Refusal) ? n.Refusal : n.Cause);
-                    return $"<color=#FFAA44>[WARN]</color> {(string.IsNullOrEmpty(why) ? n.Kind : why).ToUpperInvariant()}";
+                    string wpnTag = !string.IsNullOrEmpty(wpn) ? $"{wpn} " : string.Empty;
+                    string extra = n.DetailSecs > 0.05f
+                        ? $" ({n.DetailSecs:0.#}s)"
+                        : (n.DetailFloorPercent > 0 ? $" (FLOOR {n.DetailFloorPercent}%)" : string.Empty);
+                    return $"<color=#FFAA44>[WARN]</color> {wpnTag}{(string.IsNullOrEmpty(why) ? n.Kind : why).ToUpperInvariant()}{extra}";
+                case "emcon_on":
+                    return n.DetailRadiusM > 1f
+                        ? $"<color=#CC88FF>[ECM]</color> POD ACTIVE ({n.DetailRadiusM:0}m RADIUS)"
+                        : "<color=#CC88FF>[ECM]</color> POD ACTIVE";
+                case "emcon_off":
+                    return "<color=#88CCEE>[ECM]</color> EMCON SILENT";
+                case "identified":
+                    string wasTag = !string.IsNullOrEmpty(n.Was) ? $"{MushProtocol.EscapeUnityRichText(n.Was)} -> " : string.Empty;
+                    return $"<color=#FFEE66>[ID]</color> {wasTag}<b>{desig}</b>";
+                case "unidentified_again":
+                    return $"<color=#CCAA66>[ID]</color> LOST ID ON {desig}";
                 case "receiver_degraded":
                     return "<color=#FFCC44>[ECM]</color> SENSOR REACH DEGRADED";
                 case "receiver_clear":
