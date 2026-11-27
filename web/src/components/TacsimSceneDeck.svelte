@@ -51,7 +51,15 @@
     switch (wi.kind) {
       case "npc":
         if (wi.npcMeta) {
-          app.tacsim.openNpcModal(wi.npcMeta);
+          const qm =
+            wi.npcMeta.questMarker ??
+            app.quests.roomMarkers.find((m) => m.npcId === wi.npcMeta?.id) ??
+            null;
+          if (qm && (qm.marker === "available" || qm.marker === "turn_in")) {
+            app.quests.openNpcDialog(wi.npcMeta.id);
+          } else {
+            app.tacsim.openNpcModal(wi.npcMeta);
+          }
         }
         break;
       case "plaque":
@@ -87,6 +95,7 @@
       },
       isUiBlockingInput: () =>
         app.tacsim.activeModal !== null ||
+        app.quests.hasOpenOverlay ||
         app.requests.current !== null ||
         app.screens.helpOpen ||
         app.screens.paletteOpen,
@@ -147,6 +156,7 @@
       visibleActors: app.tacsim.visibleActors,
       actorSpeech: app.tacsim.actorSpeech,
       actorComposing: app.tacsim.actorComposing,
+      roomMarkers: app.quests.roomMarkers,
       stowageCargoKg: app.tacsim.trade.stowage.cargoKg,
       holotankData: app.picture.spaceHolotankData,
     });
