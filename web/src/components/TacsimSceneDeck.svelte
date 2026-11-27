@@ -8,6 +8,7 @@
   import { PICTURE_PREF_KEY } from "$lib/picture";
   import { storageGet, storageSet } from "$lib/storage";
   import { tacsimAudio } from "$lib/tacsim/audio";
+  import { extractActiveDestinationPort } from "$lib/stores/quests.svelte";
   import {
     formatHeldLockSummary,
     formatMountAtLockEffect,
@@ -192,11 +193,20 @@
   const trackedQuest = $derived(
     app.quests?.active.find((q) => q.key === app.quests?.trackedKey) ?? app.quests?.active[0] ?? null,
   );
+  const questDest = $derived(
+    app.quests ? extractActiveDestinationPort(app.quests.active, app.quests.trackedKey) : null,
+  );
   const roomOfferMarker = $derived(
     !trackedQuest
       ? (app.quests?.roomMarkers.find((m) => m.marker === "available" || m.marker === "turn_in") ?? null)
       : null,
   );
+
+  function planQuestDestination(): void {
+    if (!questDest) return;
+    app.tacsim.selectedDestination = questDest.portId;
+    onCmd(`+ship/plan ${questDest.portId}`);
+  }
 </script>
 
 {#if app.tacsim.available}
@@ -221,6 +231,17 @@
       </span>
     {/if}
 
+    {#if app.tacsim.isAboardShip && questDest}
+      <button
+        type="button"
+        class="quest-dest-chip"
+        onclick={planQuestDestination}
+        title="Plan quest route to {questDest.portLabel} (+ship/plan {questDest.portId})"
+      >
+        <span class="qdest-tag">[QUEST]</span>{" "}Dest: {questDest.portLabel}
+      </button>
+    {/if}
+
     <div class="quick-actions">
       {#each app.tacsim.quickActions as qa (qa.label)}
         <button
@@ -240,6 +261,16 @@
       <div class="helm-visor">
         <div class="visor-bar">
           <span class="visor-title">Bridge Flight Visor · Orbital & 60 Hz Docking</span>
+          {#if questDest}
+            <button
+              type="button"
+              class="quest-dest-chip"
+              onclick={planQuestDestination}
+              title="Plan quest route to {questDest.portLabel} (+ship/plan {questDest.portId})"
+            >
+              <span class="qdest-tag">[QUEST]</span>{" "}Dest: {questDest.portLabel}
+            </button>
+          {/if}
           <div class="visor-btns">
             <button type="button" class="qbtn" onclick={() => onCmd("+helm/thrust 0")}>0%</button>
             <button type="button" class="qbtn" onclick={() => onCmd("+helm/thrust 500")}>50%</button>
@@ -412,6 +443,31 @@
     border-radius: 999px;
     border: 1px solid rgb(80 170 230 / 35%);
     background: rgb(16 42 68 / 45%);
+  }
+
+  .quest-dest-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-family: var(--font-mono);
+    font-size: 0.73rem;
+    font-weight: 600;
+    color: #fef3c7;
+    padding: 0.12rem 0.55rem;
+    border-radius: 999px;
+    border: 1px solid #fbbf24;
+    background: rgba(251, 191, 36, 0.18);
+    cursor: pointer;
+    box-shadow: 0 0 8px rgba(251, 191, 36, 0.25);
+  }
+
+  .quest-dest-chip:hover {
+    filter: brightness(1.14);
+  }
+
+  .qdest-tag {
+    color: #fbbf24;
+    font-weight: 800;
   }
 
   .quick-actions {

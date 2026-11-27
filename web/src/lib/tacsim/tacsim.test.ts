@@ -24,9 +24,11 @@ import {
 import type { WebSocketLike } from "../ws";
 import {
   atlasToWorldPos,
+  buildFallbackFreeport,
   classifyStationDesk,
   computeDoorwaysAndStairs,
   computeInterFloorStairPlacement,
+  computeNextQuestExitBreadcrumb,
   computeRightHandedMoveDelta,
   contextualQuickActions,
   decodeTacsimRoomAmbient,
@@ -2706,5 +2708,87 @@ describe("PR #693 Web review regressions (items 1-7, 9-11)", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Open Quest Log" }));
     expect(app.quests.logOpen).toBe(true);
     rendered.unmount();
+  });
+
+  it("computes multi-hop station quest exit breadcrumbs and renders in-flight quest destination HUD chip", async () => {
+    const pack = buildFallbackFreeport();
+    const rooms = [...pack.rooms.keys()];
+    expect(rooms.length).toBeGreaterThanOrEqual(3);
+    const startRoom = rooms[0]!;
+    const destRoom = rooms[rooms.length - 1]!;
+    const crumb = computeNextQuestExitBreadcrumb(pack, startRoom, destRoom);
+    expect(crumb).not.toBeNull();
+    expect(crumb!.targetRoomEntry).toBe(destRoom);
+    expect(crumb!.hops).toBeGreaterThanOrEqual(1);
+    expect(crumb!.nextExitCommand.toLowerCase().startsWith("goto ")).toBe(true);
+    expect(computeNextQuestExitBreadcrumb(pack, destRoom, destRoom)).toBeNull();
+
+    // Mounted TacsimSceneDeck renders golden [QUEST] Dest chip aboard ship & at Bridge Helm
+    let ws: FakeSocket | null = null;
+    const app = new GameApp({
+      url: "ws://test/ws",
+      webSocketFactory: (url) => (ws = new FakeSocket(url)),
+      random: () => 1,
+    });
+    app.client.connect("tok", "7");
+    const socket = ws as unknown as FakeSocket;
+    socket.readyState = 1;
+    socket.onopen?.();
+    socket.deliver(
+      {
+        t: "hello",
+        d: {
+          proto: 1,
+          server: "test",
+          features: [],
+          panels: [PORT_TRADE_FEED, TACSIM_CONTENT_FEED],
+        },
+      } as OutputEvent,
+      0,
+    );
+    app.tacsim.view3dOpen = true;
+    app.tacsim.isAboardShip = true;
+    app.tacsim.seatedAtBridgeHelm = true;
+    app.tacsim.ambient = {
+      ...app.tacsim.ambient,
+      hullName: "M/V Starling",
+      docked: false,
+    };
+    app.quests.applyFrame({
+      schema: 1,
+      room_id: "#50",
+      room_name: "M/V Starling - Bridge",
+      room_markers: [],
+      available: [],
+      completed: [],
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+          title: "Run Metals to Stickney Yards",
+          next_step: "Sail to Stickney Yards (+ship/plan stickney)",
+          checkpoints: [
+            {
+              id: "sail_stickney",
+              title: "Sail to Stickney Yards",
+              instructions: "Run +ship/plan stickney and depart.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    const sent: string[] = [];
+    const deck = render(TacsimSceneDeck, {
+      props: { app, onCmd: (c: string) => sent.push(c) },
+    });
+    await tick();
+    const destChips = screen.getAllByRole("button", { name: /\[QUEST\]\s+Dest: Stickney Yards/i });
+    expect(destChips.length).toBeGreaterThanOrEqual(2); // port-bar + helm visor bar
+    await fireEvent.click(destChips[0]!);
+    expect(app.tacsim.selectedDestination).toBe("stickney");
+    expect(sent).toContain("+ship/plan stickney");
+    deck.unmount();
   });
 });

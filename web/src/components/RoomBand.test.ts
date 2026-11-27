@@ -14,6 +14,7 @@ import VitalsStrip from "./VitalsStrip.svelte";
 import type { GameApp } from "$lib/game.svelte";
 import type { RoomView } from "$lib/proto";
 import type { ChannelMeta } from "$lib/stores/channels.svelte";
+import { buildFallbackFreeport } from "$lib/tacsim/spatial";
 
 const HALL: RoomView = {
   name: "The Hall",
@@ -116,6 +117,60 @@ describe("room band exit buttons submit safe goto commands", () => {
     expect(buttons).toHaveLength(3);
     await fireEvent.click(buttons[1]!);
     expect(onCmd).toHaveBeenCalledWith("goto North");
+  });
+
+  it("highlights the exact next exit along the tracked quest shortest path", () => {
+    const pack = buildFallbackFreeport();
+    const rooms = [...pack.rooms.keys()];
+    const startEntry = rooms[0]!;
+    const targetEntry = rooms[rooms.length - 1]!;
+    const firstOut = pack.exits.find((ex) => ex.fromRoom === startEntry || ex.toRoom === startEntry);
+    expect(firstOut).toBeDefined();
+    const onPathLabel =
+      firstOut!.fromRoom === startEntry ? firstOut!.forwardLabel : firstOut!.reverseLabel;
+    const onPathCmd =
+      firstOut!.fromRoom === startEntry ? firstOut!.forwardCommand : firstOut!.reverseCommand;
+
+    const roomView: RoomView = {
+      ...HALL,
+      name: pack.rooms.get(startEntry)!.name,
+      exits: [
+        { name: onPathLabel, aliases: [onPathCmd] },
+        { name: "Side Closet", aliases: ["closet"] },
+      ],
+    };
+    const app = {
+      roomView,
+      screens: { exits: new Map() },
+      presence: { prune: vi.fn(), thinking: [], composing: [] },
+      quests: {
+        roomMarkers: [],
+        trackedKey: "q.walk",
+        active: [
+          {
+            key: "q.walk",
+            title: "Walk to Objective",
+            nextRoomEntry: targetEntry,
+            checkpoints: [],
+          },
+        ],
+      },
+      tacsim: {
+        isAboardShip: false,
+        view3dOpen: false,
+        physicalLocationKey: null,
+        serverStationRoomEntry: startEntry,
+        stationPack: pack,
+      },
+    } as unknown as GameApp;
+
+    const { container } = render(RoomBand, { props: { app, onCmd: vi.fn() } });
+    const highlighted = Array.from(container.querySelectorAll("button.exit.quest-exit"));
+    expect(highlighted.length).toBeGreaterThanOrEqual(1);
+    expect(highlighted[0]!.getAttribute("data-quest-exit")).toBe("true");
+    expect(highlighted[0]!.getAttribute("title")).toContain("Quest route");
+    const sideBtn = screen.getByRole("button", { name: "Side Closet" });
+    expect(sideBtn.getAttribute("data-quest-exit")).toBeNull();
   });
 });
 
