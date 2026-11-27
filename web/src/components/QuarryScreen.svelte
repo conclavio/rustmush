@@ -29,6 +29,13 @@
   const ground = $derived(q.ground);
   const groundBlock = $derived(ground?.ground ?? null);
   const moving = $derived(block?.rigs.some((r) => r.leg !== null) ?? false);
+  const questMining = $derived(app.quests?.surfaceMiningStatus ?? null);
+
+  function selectQuestWash(): void {
+    if (!questMining) return;
+    app.quarry.family = questMining.recommendedFamily;
+    app.refreshQuarry();
+  }
 
   /** The paint clock (ms): ticks each second while one of the viewer's rigs has a leg. */
   let now = $state(Date.now());
@@ -101,6 +108,22 @@
   </div>
 
   <div class="map">
+    {#if questMining}
+      <div class="quest-mining-pill" role="status" aria-label="quest mining checklist">
+        <div class="qm-head">
+          <span class="qm-tag">[QUEST]</span>
+          <strong>{questMining.questTitle}</strong>
+          <button type="button" class="qm-wash" onclick={selectQuestWash}>
+            {questMining.recommendedFamily.toUpperCase()} wash
+          </button>
+        </div>
+        <div class="qm-steps">
+          <span class:done={questMining.scanDone}>{questMining.scanDone ? "[✓]" : "[ ]"} Scan Site</span>
+          <span class:done={questMining.soundDone}>{questMining.soundDone ? "[✓]" : "[ ]"} Sound Pocket</span>
+          <span class:done={questMining.mineDone}>{questMining.mineDone ? "[✓]" : "[ ]"} Mine {questMining.targetOreSlug}</span>
+        </div>
+      </div>
+    {/if}
     {#if q.mode === "ground"}
       {#if !ground || !groundBlock}
         <p class="muted pad">{ground?.grid.title || "No ground chart yet: r asks the server."}</p>
@@ -344,5 +367,48 @@
   }
   .log {
     font-size: 0.85rem;
+  }
+  .quest-mining-pill {
+    margin-bottom: 0.5rem;
+    padding: 0.45rem 0.65rem;
+    border-radius: 6px;
+    border: 1px solid #d4a634;
+    background: rgba(58, 44, 12, 0.88);
+    color: #fff2c4;
+    font-size: 0.82rem;
+  }
+  .qm-head {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.2rem;
+  }
+  .qm-tag {
+    color: #ffd84d;
+    font-weight: 700;
+    font-family: var(--mono, monospace);
+  }
+  .qm-wash {
+    margin-left: auto;
+    padding: 0.15rem 0.5rem;
+    border-radius: 4px;
+    border: 1px solid #f2c94c;
+    background: #6c4c12;
+    color: #fff;
+    font: inherit;
+    font-size: 0.75rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .qm-steps {
+    display: flex;
+    gap: 0.85rem;
+    flex-wrap: wrap;
+    font-family: var(--mono, monospace);
+    font-size: 0.78rem;
+  }
+  .qm-steps .done {
+    color: #6ee7a8;
   }
 </style>

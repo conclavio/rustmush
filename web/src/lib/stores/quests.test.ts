@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { QUESTS_FEED, QuestsStore, parseQuestMarkers } from "./quests.svelte";
+import {
+  QUESTS_FEED,
+  QuestsStore,
+  matchesQuestTradeRow,
+  parseQuestMarkers,
+} from "./quests.svelte";
 
 describe("QuestsStore", () => {
   it("parses room ambient quest markers with priority symbols", () => {
@@ -138,5 +143,151 @@ describe("QuestsStore", () => {
     expect(store.loaded).toBe(false);
     expect(store.active).toHaveLength(0);
     expect(store.roomMarkers).toHaveLength(0);
+  });
+
+  it("extracts active trade needs, corridor destination ports, and surface mining checklists", () => {
+    const store = new QuestsStore();
+
+    // 1. Step 2: Buy 10 provisions -> Buy 5 propellant
+    store.applyFrame({
+      schema: 1,
+      room_id: "#18",
+      room_name: "Co-op Chandlery",
+      room_markers: [],
+      available: [],
+      completed: [],
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel",
+          title: "Stock the Locker and Tanks",
+          checkpoints: [
+            {
+              id: "buy_provisions",
+              title: "Buy at least 10 provisions at Ceres Co-op Chandlery",
+              instructions: "Request quote for 10 provisions.",
+              checked: false,
+              live_ready: false,
+            },
+            {
+              id: "buy_propellant",
+              title: "Buy at least 5 tonnes of propellant at Ceres Exchange Hall",
+              instructions: "Request quote for 5 propellant.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+    expect(store.activeTradeNeed).toEqual({
+      questTitle: "Stock the Locker and Tanks",
+      checkpointTitle: "Buy at least 10 provisions at Ceres Co-op Chandlery",
+      commoditySlug: "provisions",
+      targetQuantity: 10,
+      wantsBuy: true,
+      wantsSell: false,
+    });
+    expect(
+      matchesQuestTradeRow(
+        store.activeTradeNeed,
+        { goodCode: "tacsim:provisions", itemName: "Provisions" },
+        false,
+      ),
+    ).toBe(true);
+    expect(
+      matchesQuestTradeRow(
+        store.activeTradeNeed,
+        { goodCode: "tacsim:provisions", itemName: "Provisions" },
+        true,
+      ),
+    ).toBe(false);
+    expect(store.surfaceMiningStatus).toBeNull();
+
+    // 2. Step 3: Buy 5t metals and deliver to Stickney Yards -> both buy & sell metals + Stickney destination
+    store.applyFrame({
+      schema: 1,
+      room_id: "#17",
+      room_name: "Exchange Hall",
+      room_markers: [],
+      available: [],
+      completed: [],
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+          title: "Metals Down the Corridor",
+          checkpoints: [
+            {
+              id: "deliver_metals",
+              title: "Buy 5 tonnes of metals at Ceres and deliver them to Stickney Yards",
+              instructions: "Check +ship/plan stickney, fly to Stickney Yards, and run +market/sell.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+    expect(store.activeTradeNeed?.commoditySlug).toBe("metals");
+    expect(store.activeTradeNeed?.targetQuantity).toBe(5);
+    expect(store.activeTradeNeed?.wantsBuy).toBe(true);
+    expect(store.activeTradeNeed?.wantsSell).toBe(true);
+    expect(store.activeDestinationPort).toEqual({
+      questTitle: "Metals Down the Corridor",
+      portId: "stickney",
+      portLabel: "Stickney Yards",
+    });
+
+    // 3. Step 6: Scan / Sound / Mine carbon_ore -> surface mining checklist (and NO trade banner)
+    store.applyFrame({
+      schema: 1,
+      room_id: "#30",
+      room_name: "Freeport Commons",
+      room_markers: [],
+      available: [],
+      completed: [],
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+          title: "Scan, Sound, and Mine a Landing Site",
+          next_step: "Sound a detected mineral pocket on the surface",
+          checkpoints: [
+            {
+              id: "scan_landing_site",
+              title: "Complete a surface scan at a Ceres landing site",
+              instructions: "Run +tv/1 scan go.",
+              checked: true,
+              live_ready: true,
+            },
+            {
+              id: "sound_mineral_pocket",
+              title: "Sound a detected mineral pocket on the surface",
+              instructions: "Run +tv/1 sound go.",
+              checked: false,
+              live_ready: false,
+            },
+            {
+              id: "mine_carbon_ore",
+              title: "Mine at least 1 tonne of carbon ore on the surface",
+              instructions: "Run +tv/1 mine go on carbon_ore.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+    expect(store.activeTradeNeed).toBeNull();
+    expect(store.surfaceMiningStatus).toEqual({
+      questTitle: "Scan, Sound, and Mine a Landing Site",
+      targetOreSlug: "carbon_ore",
+      recommendedFamily: "carbon",
+      hasScanStep: true,
+      scanDone: true,
+      hasSoundStep: true,
+      soundDone: false,
+      hasMineStep: true,
+      mineDone: false,
+      nextStepText: "Sound a detected mineral pocket on the surface",
+    });
   });
 });

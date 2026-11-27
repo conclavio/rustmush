@@ -10,6 +10,7 @@ import { tick } from "svelte";
 import { describe, expect, it, vi } from "vitest";
 
 import Game from "../../components/Game.svelte";
+import QuarryScreen from "../../components/QuarryScreen.svelte";
 import TacsimSceneDeck from "../../components/TacsimSceneDeck.svelte";
 import { GameApp } from "../game.svelte";
 import type { Envelope, OutputEvent, RoomView } from "../proto";
@@ -2426,5 +2427,128 @@ describe("PR #693 Web review regressions (items 1-7, 9-11)", () => {
     expect(app.tacsim.activeModal).toBeNull();
     expect(app.quests.dialogOpen).toBe(true);
     expect(app.quests.dialogNpcId).toBe("#55");
+  });
+
+  it("highlights quest trade listings, sets exact quest lot qty, highlights sailing port, and shows quarry checklist", async () => {
+    const app = new GameApp({
+      url: "ws://test/ws",
+      webSocketFactory: (u) => new FakeSocket(u),
+      random: () => 1,
+    });
+    app.tacsim.observeRoom({
+      id: "#17",
+      name: "Exchange Hall",
+      desc: [{ text: "Exchange floor." }],
+      exits: [],
+      contents: [],
+      ambient: {
+        atlas: { pack: "neighborhood.ceres_freeport", entry: "room.c07_exchange" },
+      },
+    } as RoomView);
+    app.tacsim.observePortTrade({
+      enabled: true,
+      venue: "ceres",
+      port_name: "Ceres Exchange Hall",
+      balance_minor: 500_000,
+      balance_text: "5,000.00cr",
+      listings: [
+        {
+          id: 201,
+          side: "ask",
+          good: "tacsim:metals",
+          good_label: "Metals",
+          available_qty: 20,
+          unit_price_minor: 1500,
+          price_text: "15.00cr",
+          vendor_name: "Freeport Smelters",
+          funded: true,
+        },
+        {
+          id: 202,
+          side: "ask",
+          good: "tacsim:provisions",
+          good_label: "Provisions",
+          available_qty: 30,
+          unit_price_minor: 900,
+          price_text: "9.00cr",
+          vendor_name: "Co-op Chandlery",
+          funded: true,
+        },
+      ],
+    });
+    app.quests.applyFrame({
+      schema: 1,
+      room_id: "#17",
+      room_name: "Exchange Hall",
+      room_markers: [],
+      available: [],
+      completed: [],
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+          title: "Metals Down the Corridor",
+          checkpoints: [
+            {
+              id: "deliver_metals",
+              title: "Buy 5 tonnes of metals at Ceres and deliver them to Stickney Yards",
+              instructions: "Buy 5 metals, run +ship/plan stickney, fly to Stickney Yards, and run +market/sell.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    app.tacsim.selectedQtyPreset = 25;
+    app.tacsim.activeModal = "trade";
+    const deck = render(TacsimSceneDeck, { props: { app, onCmd: vi.fn() } });
+    await tick();
+
+    // 1. Trade banner + 1-click Set Quest Qty (5)
+    expect(screen.getByRole("status", { name: /active quest trade guidance/i }).textContent).toContain("METALS");
+    const setQtyBtn = screen.getByRole("button", { name: /Set Quest Qty \(5\)/i });
+    await fireEvent.click(setQtyBtn);
+    await tick();
+    expect(app.tacsim.selectedQtyPreset).toBe(5);
+
+    // 2. Sailing tab shows Stickney Yards destination banner + 1-click Select Quest Port
+    app.tacsim.selectedDestination = "luna";
+    app.tacsim.activeModal = "sailing";
+    await tick();
+    const selPortBtn = screen.getByRole("button", { name: /Select Quest Port \(stickney\)/i });
+    await fireEvent.click(selPortBtn);
+    await tick();
+    expect(app.tacsim.selectedDestination).toBe("stickney");
+    deck.unmount();
+
+    // 3. QuarryScreen renders guided mining checklist for Step 6 and switches wash to carbon
+    app.quests.applyFrame({
+      schema: 1,
+      room_id: "#30",
+      room_name: "Freeport Commons",
+      room_markers: [],
+      available: [],
+      completed: [],
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+          title: "Scan, Sound, and Mine a Landing Site",
+          checkpoints: [
+            { id: "scan_landing_site", title: "Scan site", instructions: "Run +tv/1 scan go.", checked: true, live_ready: true },
+            { id: "sound_mineral_pocket", title: "Sound pocket", instructions: "Run +tv/1 sound go.", checked: false, live_ready: false },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", instructions: "Run +tv/1 mine go.", checked: false, live_ready: false },
+          ],
+        },
+      ],
+    });
+    render(QuarryScreen, { props: { app } });
+    await tick();
+    const pill = screen.getByRole("status", { name: /quest mining checklist/i });
+    expect(pill.textContent).toContain("[✓] Scan Site");
+    expect(pill.textContent).toContain("Mine carbon_ore");
+    const washBtn = screen.getByRole("button", { name: /CARBON wash/i });
+    await fireEvent.click(washBtn);
+    expect(app.quarry.family).toBe("carbon");
   });
 });
