@@ -9358,5 +9358,90 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ArenaOffscreenThreatBracketsWaypointCompassAndHoldTint_ProjectAndClickToLock()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave14PR1_OffscreenThreatsAndWaypointTest");
+            try
+            {
+                var camGo = new UnityEngine.GameObject("ArenaCam", typeof(UnityEngine.Camera));
+                camGo.transform.SetParent(rootGo.transform, false);
+                var cam = camGo.GetComponent<UnityEngine.Camera>();
+                cam.fieldOfView = 60f;
+                cam.nearClipPlane = 0.5f;
+                cam.farClipPlane = 4000f;
+
+                var arenaGo = new UnityEngine.GameObject("ArenaBracketsTest");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                var grid = TacSimTerrainDecoder.LoadStaticArena("proving_ground");
+                arena.BuildArenaTerrain(TacSimAssetCatalog.LoadOrDefault(), grid);
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.TacticalBrackets.BindControllers(null, null, arena);
+
+                // Place player at cell (100, 100) facing North (+Z), hostile B1 behind player at (100, 75),
+                // friendly R2 behind player at (95, 75), and hold_score = +20 (RED).
+                float siteCellM = grid.CellSizeM / System.Math.Max(1, grid.SpanCells);
+                int ownXcm = UnityEngine.Mathf.RoundToInt((grid.OriginCellX + 100) * siteCellM * 100f);
+                int ownYcm = UnityEngine.Mathf.RoundToInt((grid.OriginCellY + 100) * siteCellM * 100f);
+
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse($@"{{
+                    ""match"": 190, ""seated"": true, ""t_ms"": 45000, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""mode"": ""hold"", ""power"": ""online"",
+                    ""x_cm"": {ownXcm}, ""y_cm"": {ownYcm}, ""heading_deg"": 0, ""speed_kph"": 12,
+                    ""hold_score"": 20,
+                    ""contacts"": [
+                        {{ ""designator"": ""B1"", ""class"": ""scout_mk1"", ""party"": ""B"", ""friendly"": false, ""cell"": [100, 75], ""range_m"": 160, ""aspect"": ""front"", ""health"": ""intact"", ""odds"": [{{ ""percent"": 62 }}] }},
+                        {{ ""designator"": ""R2"", ""class"": ""line_tank"", ""party"": ""R"", ""friendly"": true, ""cell"": [95, 75], ""range_m"": 170, ""aspect"": ""front"", ""health"": ""intact"" }}
+                    ]
+                }}"));
+                // Issue a drive waypoint so both 3D HUD waypoint bracket and Compass Tape pip activate
+                arena.ExecuteCockpitAction("drive 120,120");
+                arena.SyncArenaTacticalVisuals();
+
+                // Position camera slightly behind player looking straight North (+Z), so B1 & R2 (south of player) are strictly behind camera
+                UnityEngine.Vector3 ownWorld = arena.PlayerVehicleTransform.position;
+                cam.transform.position = ownWorld + new UnityEngine.Vector3(0f, 8f, -12f);
+                cam.transform.rotation = UnityEngine.Quaternion.LookRotation(UnityEngine.Vector3.forward, UnityEngine.Vector3.up);
+                hud.TacticalBrackets.ScreenProjectionOverrideForTests = wp =>
+                {
+                    UnityEngine.Vector3 rel = UnityEngine.Quaternion.Inverse(cam.transform.rotation) * (wp - cam.transform.position);
+                    float z = rel.z;
+                    float sx = 960f + (rel.x / UnityEngine.Mathf.Max(1f, UnityEngine.Mathf.Abs(z))) * 900f;
+                    float sy = 540f + (rel.y / UnityEngine.Mathf.Max(1f, UnityEngine.Mathf.Abs(z))) * 900f;
+                    return new UnityEngine.Vector3(sx, sy, z);
+                };
+
+                hud.TacticalBrackets.SyncBrackets(TacSimActiveStage.SimulatorArena, cam, hideForOverlay: false);
+
+                // 1. Hold Zone bracket carries RED ownership tag
+                Assert.IsTrue(hud.TacticalBrackets.ArenaObjectiveBracketActive);
+                StringAssert.Contains("RED", hud.TacticalBrackets.GetActiveBracketTagSnapshot(0));
+
+                // 2. Drive Waypoint activates both 3D screen-space bracket and Compass Tape pip
+                Assert.IsTrue(hud.TacticalBrackets.ArenaDriveWaypointBracketActive, "Active drive waypoint must project cyan HUD bracket");
+                Assert.IsTrue(hud.TacticalBrackets.ArenaCompassWaypointPipVisible, "Active drive waypoint must light up Compass Tape pip");
+                StringAssert.Contains("[WP]", hud.TacticalBrackets.GetActiveBracketTagSnapshot(1));
+
+                // 3. Off-screen hostile B1 projects a clamped interactive THREAT edge indicator while off-screen friendly R2 stays hidden
+                Assert.AreEqual(1, hud.TacticalBrackets.OffscreenThreatBracketCount, "Only off-screen hostile B1 should clamp as a threat edge indicator");
+                string threatTag = hud.TacticalBrackets.GetActiveBracketTagSnapshot(2);
+                StringAssert.Contains("[B1]", threatTag);
+                StringAssert.Contains("THREAT", threatTag);
+
+                // Clicking the off-screen threat edge bracket immediately emits lock designator "B1"
+                string clickedDesig = null;
+                hud.TacticalBrackets.OnArenaBracketClicked += d => clickedDesig = d;
+                Assert.IsTrue(hud.TacticalBrackets.ClickBracketForTests(2));
+                Assert.AreEqual("B1", clickedDesig);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

@@ -738,6 +738,35 @@ namespace TacSim.Arena
             return true;
         }
 
+        public bool TryGetDriveWaypointWorldPos(out Vector3 worldPos, out string label)
+        {
+            worldPos = Vector3.zero;
+            label = string.Empty;
+            if (TerrainGrid == null || State == null || !State.HasDriveWaypoint || State.IsWreck) return false;
+            worldPos = ArenaStageOrigin + TerrainGrid.SiteCellToLocalPos(State.DriveWaypointCellX, State.DriveWaypointCellY, 6f);
+            label = !string.IsNullOrEmpty(State.DriveWaypointLabel)
+                ? State.DriveWaypointLabel
+                : $"CELL {State.DriveWaypointCellX},{State.DriveWaypointCellY}";
+            return true;
+        }
+
+        public bool TryGetDriveWaypointBearingDeg(out float bearingDeg, out float rangeM, out string label)
+        {
+            bearingDeg = 0f;
+            rangeM = 0f;
+            label = string.Empty;
+            if (!TryGetDriveWaypointWorldPos(out Vector3 wpWorld, out label)) return false;
+
+            Vector3 ownWorld = PlayerRig?.Root != null
+                ? PlayerRig.Root.transform.position
+                : ArenaStageOrigin + ArenaWorldMetersToLocalPos(State.Xm, State.Zm);
+            float dx = wpWorld.x - ownWorld.x;
+            float dz = wpWorld.z - ownWorld.z;
+            rangeM = Mathf.Sqrt(dx * dx + dz * dz);
+            bearingDeg = rangeM > 0.5f ? (((Mathf.Atan2(dx, dz) * Mathf.Rad2Deg) % 360f) + 360f) % 360f : State.HeadingDeg;
+            return true;
+        }
+
         public bool HandleArenaCombatHotkey(KeyCode key)
         {
             if (KeyboardSuspended) return false;

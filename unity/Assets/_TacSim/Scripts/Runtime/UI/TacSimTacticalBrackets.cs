@@ -32,6 +32,10 @@ namespace TacSim.UI
     {
         public event Action<string, bool> OnOrbitalBracketClicked; // (id, isRock)
         public event Action<string> OnArenaBracketClicked;         // (designator)
+        public Func<Vector3, Vector3> ScreenProjectionOverrideForTests;
+
+        private Vector3 ProjectToScreen(Camera cam, Vector3 worldPos) =>
+            ScreenProjectionOverrideForTests != null ? ScreenProjectionOverrideForTests(worldPos) : cam.WorldToScreenPoint(worldPos);
 
         private const int MaxBrackets = 12;
 
@@ -84,6 +88,7 @@ namespace TacSim.UI
         private RectTransform _compassLockPip;
         private RectTransform _compassObjectivePip;
         private Text _compassObjectivePipLabel;
+        private RectTransform _compassWaypointPip;
 
         // Arena Screen-Center Hitmarker, 4-Quadrant Directional Damage Arcs & Critical Status Banner
         private GameObject _arenaHitmarkerRoot;
@@ -146,6 +151,7 @@ namespace TacSim.UI
         public string ArenaTerrainBadgeSnapshot { get; private set; } = string.Empty;
         public bool ArenaCompassLockPipVisible => _compassLockPip != null && _compassLockPip.gameObject.activeSelf;
         public bool ArenaCompassObjectivePipVisible => _compassObjectivePip != null && _compassObjectivePip.gameObject.activeSelf;
+        public bool ArenaCompassWaypointPipVisible => _compassWaypointPip != null && _compassWaypointPip.gameObject.activeSelf;
         public bool ArenaCompassOrderBugVisible => _compassOrderBugPip != null && _compassOrderBugPip.gameObject.activeSelf;
         public bool IsSurfaceCompassVisible => _surfaceCompassWidget != null && _surfaceCompassWidget.activeSelf;
         public bool IsDockingReticleVisible => _dockingReticleWidget != null && _dockingReticleWidget.activeSelf;
@@ -156,10 +162,21 @@ namespace TacSim.UI
         public string ArenaArmorSummarySnapshot => _arenaDriveStrip != null ? _arenaDriveStrip.text : string.Empty;
         public string ArenaGunnerySnapshot => _arenaGunneryStrip != null ? _arenaGunneryStrip.text : string.Empty;
         public bool ArenaObjectiveBracketActive { get; private set; }
+        public bool ArenaDriveWaypointBracketActive { get; private set; }
+        public int OffscreenThreatBracketCount { get; private set; }
         public string GetActiveBracketTagSnapshot(int index) =>
             (index >= 0 && index < ActiveBracketCount && index < _pool.Count && _pool[index].TagLabel != null)
                 ? (_pool[index].TagLabel.text ?? string.Empty)
                 : string.Empty;
+        public bool ClickBracketForTests(int index)
+        {
+            if (index < 0 || index >= ActiveBracketCount || index >= _pool.Count) return false;
+            var b = _pool[index];
+            if (b.Button == null || !b.Button.interactable || string.IsNullOrEmpty(b.BoundId)) return false;
+            if (b.BoundIsArena) OnArenaBracketClicked?.Invoke(b.BoundId);
+            else OnOrbitalBracketClicked?.Invoke(b.BoundId, b.BoundIsRock);
+            return true;
+        }
         public bool IsHitmarkerVisible => _arenaHitmarkerRoot != null && _arenaHitmarkerRoot.activeSelf && _hitmarkerRemainSec > 0f;
         public ArenaHitmarkerKind ActiveHitmarkerKind => _activeHitmarkerKind;
         public bool IsCriticalStatusBannerVisible => _arenaCritBannerRoot != null && _arenaCritBannerRoot.activeSelf;
@@ -686,6 +703,8 @@ namespace TacSim.UI
             SyncArenaGunnerOpticsReticle(opticsZoomLevel, cupolaView);
 
             ArenaObjectiveBracketActive = false;
+            ArenaDriveWaypointBracketActive = false;
+            OffscreenThreatBracketCount = 0;
             if (cam == null)
             {
                 HideAllBrackets();
@@ -694,21 +713,28 @@ namespace TacSim.UI
 
             int used = 0;
 
-            // Project 3D Hold Objective / Dynamic Objective world bracket (gold, edge-clamped so always visible)
+            // 1. Project 3D Hold Objective / Dynamic Objective world bracket (faction-tinted, edge-clamped so always visible)
             if (_arena.TryGetActiveObjectiveWorldPos(out Vector3 objWorldPos, out string objLetter) && used < MaxBrackets)
             {
-                Vector3 osp = cam.WorldToScreenPoint(objWorldPos);
+                Vector3 osp = ProjectToScreen(cam, objWorldPos);
                 ComputeCanvasPositionFromScreenPoint(osp, sw, sh, canvasSize, 52f, out Vector2 objPos, out _, out bool objClamped);
                 float objDistM = _arena.PlayerVehicleTransform != null
                     ? Vector3.Distance(_arena.PlayerVehicleTransform.position, objWorldPos)
                     : 0f;
+                string owner = _arena.ActiveHoldZoneVisualOwner ?? "NEUTRAL";
+                Color objCol = owner == "RED"
+                    ? new Color(1.0f, 0.34f, 0.28f, 0.96f)
+                    : (owner == "BLUE"
+                        ? new Color(0.32f, 0.72f, 1.0f, 0.96f)
+                        : new Color(1.0f, 0.84f, 0.24f, 0.96f));
                 string objPrefix = objClamped ? "» " : string.Empty;
-                string objTag = $"{objPrefix}[{objLetter}] HOLD ZONE";
+                string objOwnerTag = owner != "NEUTRAL" ? $" · {owner}" : string.Empty;
+                string objTag = $"{objPrefix}[{objLetter}] HOLD ZONE{objOwnerTag}";
                 ConfigureBracket(
                     _pool[used],
                     objPos,
                     58f,
-                    new Color(1.0f, 0.82f, 0.24f, 0.94f),
+                    objCol,
                     objTag,
                     $"{objDistM:0} m",
                     string.Empty,
@@ -719,6 +745,33 @@ namespace TacSim.UI
                 used++;
             }
 
+            // 2. Project active Drive Waypoint cyan world bracket (edge-clamped so pilot can always steer toward destination)
+            if (_arena.TryGetDriveWaypointWorldPos(out Vector3 wpWorldPos, out string wpLabel) && used < MaxBrackets)
+            {
+                Vector3 wsp = ProjectToScreen(cam, wpWorldPos);
+                ComputeCanvasPositionFromScreenPoint(wsp, sw, sh, canvasSize, 52f, out Vector2 wpPos, out _, out bool wpClamped);
+                float wpDistM = _arena.PlayerVehicleTransform != null
+                    ? Vector3.Distance(_arena.PlayerVehicleTransform.position, wpWorldPos)
+                    : 0f;
+                string wpPrefix = wpClamped ? "» " : string.Empty;
+                ConfigureBracket(
+                    _pool[used],
+                    wpPos,
+                    52f,
+                    new Color(0.28f, 0.94f, 1.0f, 0.95f),
+                    $"{wpPrefix}[WP] {wpLabel}",
+                    $"{wpDistM:0} m",
+                    string.Empty,
+                    isRock: false,
+                    isArena: true,
+                    interactive: false);
+                ArenaDriveWaypointBracketActive = true;
+                used++;
+            }
+
+            // 3. Project locked target (always clamped) + on-screen contacts, while queuing closest off-screen hostile threats
+            var offscreenHostiles = new List<(ArenaContactState contact, Vector2 pos, bool isLeftEdge)>(4);
+
             for (int i = 0; i < st.Contacts.Count && used < MaxBrackets; i++)
             {
                 var ct = st.Contacts[i];
@@ -726,11 +779,16 @@ namespace TacSim.UI
                 if (!_arena.TryGetContactWorldPosition(ct.Designator, out Vector3 worldPos)) continue;
 
                 bool isLocked = string.Equals(ct.Designator, st.LockedDesignator, StringComparison.OrdinalIgnoreCase);
-                Vector3 sp = cam.WorldToScreenPoint(worldPos);
-                if (!isLocked && sp.z < 0f) continue;
+                Vector3 sp = ProjectToScreen(cam, worldPos);
+                ComputeCanvasPositionFromScreenPoint(sp, sw, sh, canvasSize, 52f, out Vector2 pos, out bool isBehind, out bool clamped);
+                bool isOffscreen = isBehind || clamped;
 
-                ComputeCanvasPositionFromScreenPoint(sp, sw, sh, canvasSize, 52f, out Vector2 pos, out _, out bool clamped);
-                if (!isLocked && clamped) continue;
+                if (!isLocked && isOffscreen)
+                {
+                    if (!ct.Friendly)
+                        offscreenHostiles.Add((ct, pos, pos.x < 0f));
+                    continue;
+                }
 
                 Color col = isLocked
                     ? new Color(1.0f, 0.30f, 0.22f, 0.98f)
@@ -753,6 +811,35 @@ namespace TacSim.UI
 
                 ConfigureBracket(_pool[used], pos, isLocked ? 74f : 54f, col, tag, sub, ct.Designator, isRock: false, isArena: true, interactive: !ct.Friendly);
                 used++;
+            }
+
+            // 4. Clamp up to 2 closest off-screen non-locked hostile contacts as clickable peripheral threat edge chevrons
+            if (offscreenHostiles.Count > 0 && used < MaxBrackets)
+            {
+                offscreenHostiles.Sort((a, b) => a.contact.RangeM.CompareTo(b.contact.RangeM));
+                int maxThreats = Mathf.Min(2, offscreenHostiles.Count);
+                for (int t = 0; t < maxThreats && used < MaxBrackets; t++)
+                {
+                    var item = offscreenHostiles[t];
+                    var ct = item.contact;
+                    string tag = item.isLeftEdge
+                        ? $"« [{ct.Designator}] THREAT"
+                        : $"[{ct.Designator}] THREAT »";
+                    string sub = ct.HitOddsPct > 0 ? $"{ct.RangeM:0}m · {ct.HitOddsPct}%" : $"{ct.RangeM:0}m";
+                    ConfigureBracket(
+                        _pool[used],
+                        item.pos,
+                        42f,
+                        new Color(1.0f, 0.36f, 0.22f, 0.94f),
+                        tag,
+                        sub,
+                        ct.Designator,
+                        isRock: false,
+                        isArena: true,
+                        interactive: true);
+                    used++;
+                    OffscreenThreatBracketCount++;
+                }
             }
 
             HideUnusedBracketsFrom(used);
@@ -1086,6 +1173,14 @@ namespace TacSim.UI
             SetRect(_compassObjectivePipLabel.rectTransform, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero);
             objGo.SetActive(false);
 
+            // Active Drive Waypoint marker (cyan)
+            var wpGo = CreatePanel(_arenaCompassWidget.transform, "CompassWaypointPip", new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(-8f, -20f), new Vector2(8f, -5f), new Color(0.24f, 0.92f, 1.0f, 0.96f));
+            wpGo.GetComponent<Image>().raycastTarget = false;
+            _compassWaypointPip = wpGo.GetComponent<RectTransform>();
+            var wpLbl = CreateText(wpGo.transform, "W", 9, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(0.03f, 0.08f, 0.12f, 1f));
+            SetRect(wpLbl.rectTransform, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero);
+            wpGo.SetActive(false);
+
             // Center digital heading readout pill + telemetry line below
             var hdgBg = CreatePanel(_arenaCompassWidget.transform, "CompassCenterHeadingBg", new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(-26f, -21f), new Vector2(26f, -3f), new Color(0.06f, 0.14f, 0.22f, 0.96f));
             hdgBg.GetComponent<Image>().raycastTarget = false;
@@ -1158,6 +1253,19 @@ namespace TacSim.UI
                     _compassObjectivePip.anchoredPosition = new Vector2(xOff, -12f);
                     if (_compassObjectivePipLabel != null)
                         _compassObjectivePipLabel.text = string.IsNullOrEmpty(objLabel) ? "O" : objLabel;
+                }
+            }
+
+            // Active Drive Waypoint Pip (cyan "W")
+            if (_compassWaypointPip != null)
+            {
+                bool hasWp = _arena.TryGetDriveWaypointBearingDeg(out float wpBearing, out _, out _);
+                if (_compassWaypointPip.gameObject.activeSelf != hasWp)
+                    _compassWaypointPip.gameObject.SetActive(hasWp);
+                if (hasWp)
+                {
+                    float xOff = ComputeCompassTapeOffsetPx(centerHdg, wpBearing, ArenaCompassWidthPx, ArenaCompassFovDeg, out _);
+                    _compassWaypointPip.anchoredPosition = new Vector2(xOff, -12f);
                 }
             }
 

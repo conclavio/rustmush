@@ -1450,7 +1450,10 @@ namespace TacSim.Core
                         string coverTag = !string.IsNullOrEmpty(ArenaStage.CurrentTerrainIntel.CoverLabel)
                             ? $" | {ArenaStage.CurrentTerrainIntel.CoverLabel}"
                             : string.Empty;
-                        string killsTag = st.MatchKills > 0 ? $" | {st.MatchKills}K" : " | TAB: Lock";
+                        string clockTag = st.ArenaClockMs > 0 ? $"{TacSimArenaReplayModel.FormatClockText(st.ArenaClockMs)} | " : string.Empty;
+                        string ecmTag = st.HasEcm ? (st.EmconSilent ? " | SIL" : " | ECM") : string.Empty;
+                        string holdTag = !st.WeaponsFree ? " | HOLD" : string.Empty;
+                        string killsTag = st.MatchKills > 0 ? $" | {st.MatchKills}K" : string.Empty;
                         Hud.UnitFrames.UpdatePlayerFrame(
                             isRed ? "RED" : "BLUE",
                             isRed ? new Color(0.68f, 0.20f, 0.20f, 0.96f) : new Color(0.18f, 0.38f, 0.72f, 0.96f),
@@ -1462,23 +1465,33 @@ namespace TacSim.Core
                             heatFrac,
                             st.Overheated ? "OVERHEATED!" : $"HEAT {Mathf.RoundToInt(heatFrac * 100f)}%",
                             st.Overheated ? new Color(0.96f, 0.22f, 0.18f, 0.95f) : new Color(0.92f, 0.56f, 0.16f, 0.95f),
-                            $"RED {st.RedAliveCount} vs BLUE {st.BlueAliveCount}{killsTag}");
+                            $"{clockTag}R{st.RedAliveCount}vB{st.BlueAliveCount}{ecmTag}{holdTag}{killsTag}");
 
                         if (!string.IsNullOrEmpty(st.LockedDesignator))
                         {
                             string des = st.LockedDesignator;
                             bool validScanDes = MushProtocol.TryValidateSafeCommandToken(des, out string safeDes);
                             string aspectInfo = string.Empty;
+                            string healthBadge = string.Empty;
+                            string bandMoveInfo = string.Empty;
                             if (ArenaStage.TryGetLockedContact(out var lockedCt) && lockedCt != null)
                             {
                                 string asp = !string.IsNullOrEmpty(lockedCt.Aspect) ? lockedCt.Aspect.ToUpperInvariant() : "FRONT";
                                 aspectInfo = $" · {asp}";
+                                string hw = (lockedCt.HealthWord ?? string.Empty).Trim().ToLowerInvariant();
+                                if (lockedCt.IsWreck) healthBadge = " [WRECK]";
+                                else if (hw == "crippled" || hw == "critical") healthBadge = " [CRIT]";
+                                else if (hw == "scarred" || hw == "damaged") healthBadge = " [SCAR]";
+                                if (!string.IsNullOrEmpty(lockedCt.Band))
+                                    bandMoveInfo += $" · {lockedCt.Band.ToUpperInvariant()}";
+                                if (lockedCt.Moving)
+                                    bandMoveInfo += " · MOV";
                             }
                             Hud.UnitFrames.SetTarget(
                                 "LOCK",
                                 new Color(0.76f, 0.20f, 0.18f, 0.96f),
-                                $"CONTACT {des}",
-                                $"{st.LockRangeM:0}m{aspectInfo} | Odds {st.LockHitPercent}%",
+                                $"CONTACT {des}{healthBadge}",
+                                $"{st.LockRangeM:0}m{aspectInfo}{bandMoveInfo}",
                                 st.LockHitPercent / 100f,
                                 $"SOLUTION {st.LockHitPercent}%",
                                 new Color(0.92f, 0.42f, 0.24f, 0.95f),
