@@ -965,6 +965,8 @@ namespace TacSim.Arena
         private Transform _driveWaypointRoot;
         private TextMeshPro _driveWaypointLabel;
         private LineRenderer _driveCourseLine;
+        private LineRenderer _playerHeadingLine;
+        private LineRenderer _playerTurretAimLine;
         private LineRenderer _arenaPerimeterLine;
         private Light _arenaSunLight;
 
@@ -972,6 +974,9 @@ namespace TacSim.Arena
         public bool IsArenaRangeRingVisible => _arenaRangeRing != null && _arenaRangeRing.enabled;
         public bool IsWeaponEnvelopeRingVisible => _weaponEnvelopeRing != null && _weaponEnvelopeRing.enabled;
         public bool IsEcmJammerRingVisible => _ecmJammerRing != null && _ecmJammerRing.enabled;
+        public bool IsPlayerHeadingLineVisible => _playerHeadingLine != null && _playerHeadingLine.enabled;
+        public bool IsPlayerTurretAimLineVisible => _playerTurretAimLine != null && _playerTurretAimLine.enabled;
+        public float LastTurretAimLineYawDeg { get; private set; }
         public string ActiveHoldZoneVisualOwner { get; private set; } = "NEUTRAL";
         public int ActiveImpactBurstCount { get; private set; }
         public int ActiveWorldPopupCount { get; private set; }
@@ -1104,6 +1109,8 @@ namespace TacSim.Arena
             _driveWaypointRoot = null;
             _driveWaypointLabel = null;
             _driveCourseLine = null;
+            _playerHeadingLine = null;
+            _playerTurretAimLine = null;
             _arenaPerimeterLine = null;
             _arenaSunLight = null;
             BuiltRoadMarkerCount = 0;
@@ -1267,6 +1274,26 @@ namespace TacSim.Arena
             _driveCourseLine.endWidth = 0.28f;
             _driveCourseLine.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("ArenaDriveCourseMat", new Color(0.24f, 0.92f, 1.0f, 0.56f));
             _driveCourseLine.enabled = false;
+
+            var hdgGo = new GameObject("ArenaPlayerHullHeadingLine");
+            hdgGo.transform.SetParent(_vfxRoot, false);
+            _playerHeadingLine = hdgGo.AddComponent<LineRenderer>();
+            _playerHeadingLine.useWorldSpace = true;
+            _playerHeadingLine.positionCount = 8;
+            _playerHeadingLine.startWidth = 0.30f;
+            _playerHeadingLine.endWidth = 0.10f;
+            _playerHeadingLine.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("ArenaHullHeadingMat", new Color(0.24f, 0.94f, 0.78f, 0.62f));
+            _playerHeadingLine.enabled = false;
+
+            var aimGo = new GameObject("ArenaPlayerTurretAimLine");
+            aimGo.transform.SetParent(_vfxRoot, false);
+            _playerTurretAimLine = aimGo.AddComponent<LineRenderer>();
+            _playerTurretAimLine.useWorldSpace = true;
+            _playerTurretAimLine.positionCount = 10;
+            _playerTurretAimLine.startWidth = 0.22f;
+            _playerTurretAimLine.endWidth = 0.08f;
+            _playerTurretAimLine.sharedMaterial = UrpMaterialFactory.GetHologramUnlit("ArenaTurretAimMat", new Color(1.0f, 0.80f, 0.26f, 0.68f));
+            _playerTurretAimLine.enabled = false;
 
             ActiveBiomeLighting = TacSimArenaEnvironmentBuilder.ResolveBiomeLighting(TerrainGrid.Biome);
 
@@ -3363,8 +3390,12 @@ namespace TacSim.Arena
             for (int i = 0; i < State.Contacts.Count; i++)
             {
                 var cs = State.Contacts[i];
-                if (cs.IsWreck) continue;
                 if (!_contactRigs.TryGetValue(cs.Designator, out var rig) || rig?.Root == null) continue;
+                if (cs.IsWreck)
+                {
+                    rig.UpdateArticulation(dt, 0f, null);
+                    continue;
+                }
                 float? contactAimYaw = null;
                 if (!cs.Friendly)
                 {
@@ -3470,11 +3501,71 @@ namespace TacSim.Arena
                 if (_lockedTargetGroundRing != null) _lockedTargetGroundRing.enabled = false;
                 if (_driveWaypointRoot != null) _driveWaypointRoot.gameObject.SetActive(false);
                 if (_driveCourseLine != null) _driveCourseLine.enabled = false;
+                if (_playerHeadingLine != null) _playerHeadingLine.enabled = false;
+                if (_playerTurretAimLine != null) _playerTurretAimLine.enabled = false;
                 return;
             }
 
             Vector3 ownPos = PlayerRig.Root.transform.position;
             SyncKeySpotBeaconsAndHoldZoneTint(ownPos);
+
+            if (_playerHeadingLine != null)
+            {
+                if (!ShowArenaTacticalRings)
+                {
+                    _playerHeadingLine.enabled = false;
+                }
+                else
+                {
+                    float hdgRad = PredictedHeadingDeg * Mathf.Deg2Rad;
+                    Vector3 hdgFwd = new Vector3(Mathf.Sin(hdgRad), 0f, Mathf.Cos(hdgRad));
+                    const int HdgPts = 8;
+                    _playerHeadingLine.positionCount = HdgPts;
+                    for (int i = 0; i < HdgPts; i++)
+                    {
+                        float dist = Mathf.Lerp(3.2f, 18.0f, i / (float)(HdgPts - 1));
+                        float wx = ownPos.x + hdgFwd.x * dist;
+                        float wz = ownPos.z + hdgFwd.z * dist;
+                        float wy = ArenaStageOrigin.y + TerrainGrid.SampleElevationMeters(wx - ArenaStageOrigin.x, wz - ArenaStageOrigin.z) + 0.55f;
+                        _playerHeadingLine.SetPosition(i, new Vector3(wx, wy, wz));
+                    }
+                    _playerHeadingLine.enabled = true;
+                }
+            }
+
+            if (_playerTurretAimLine != null)
+            {
+                if (!ShowArenaTacticalRings)
+                {
+                    _playerTurretAimLine.enabled = false;
+                }
+                else
+                {
+                    float aimYawDeg = PlayerRig.TurretPivot != null
+                        ? PlayerRig.TurretPivot.eulerAngles.y
+                        : PlayerRig.Root.transform.eulerAngles.y;
+                    LastTurretAimLineYawDeg = ((aimYawDeg % 360f) + 360f) % 360f;
+                    float aimRad = aimYawDeg * Mathf.Deg2Rad;
+                    Vector3 aimFwd = new Vector3(Mathf.Sin(aimRad), 0f, Mathf.Cos(aimRad));
+                    bool locked = !string.IsNullOrEmpty(State.LockedDesignator);
+                    Color aimCol = locked
+                        ? new Color(1.0f, 0.44f, 0.22f, 0.72f)
+                        : new Color(1.0f, 0.82f, 0.28f, 0.56f);
+                    _playerTurretAimLine.startColor = aimCol;
+                    _playerTurretAimLine.endColor = aimCol;
+                    const int AimPts = 10;
+                    _playerTurretAimLine.positionCount = AimPts;
+                    for (int i = 0; i < AimPts; i++)
+                    {
+                        float dist = Mathf.Lerp(3.8f, 34.0f, i / (float)(AimPts - 1));
+                        float wx = ownPos.x + aimFwd.x * dist;
+                        float wz = ownPos.z + aimFwd.z * dist;
+                        float wy = ArenaStageOrigin.y + TerrainGrid.SampleElevationMeters(wx - ArenaStageOrigin.x, wz - ArenaStageOrigin.z) + 0.72f;
+                        _playerTurretAimLine.SetPosition(i, new Vector3(wx, wy, wz));
+                    }
+                    _playerTurretAimLine.enabled = true;
+                }
+            }
 
             if (_arenaRangeRing != null)
             {

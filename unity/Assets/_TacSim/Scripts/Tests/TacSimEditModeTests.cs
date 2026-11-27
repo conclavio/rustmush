@@ -9984,5 +9984,79 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void Arena3DHeadingTurretAimLinesAndAnimatedSmokePlumes_ProjectToggleAndBillow()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave18PR1_3DAimLinesAndSmokePlumesTest");
+            bool prevRings = TacSim.Arena.OocArenaController.ShowArenaTacticalRings;
+            try
+            {
+                TacSim.Arena.OocArenaController.ShowArenaTacticalRings = true;
+                var arenaGo = new UnityEngine.GameObject("ArenaAimLinesCtrl");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(TacSimAssetCatalog.LoadOrDefault(), TacSimTerrainDecoder.LoadStaticArena("proving_ground"));
+
+                // 1. Live cockpit projects 3D hull heading vector & turret bore sightline
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""seated"": true, ""match"": 401, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""power"": ""online"",
+                    ""x_cm"": 12000, ""y_cm"": 12000, ""heading_deg"": 90,
+                    ""lock_designator"": ""B1"", ""lock_range_m"": 140, ""lock_percent"": 76,
+                    ""contacts"": [
+                        { ""designator"": ""B1"", ""class"": ""line_tank"", ""party"": ""B"", ""friendly"": false, ""cell"": [12, 26], ""range_m"": 140, ""bearing_deg"": 0, ""health"": ""crippled"" }
+                    ]
+                }"));
+                arena.SyncArenaTacticalVisuals();
+
+                Assert.IsTrue(arena.IsPlayerHeadingLineVisible, "3D hull heading indicator must be visible when ShowArenaTacticalRings is enabled");
+                Assert.IsTrue(arena.IsPlayerTurretAimLineVisible, "3D turret aim sightline must be visible when ShowArenaTacticalRings is enabled");
+
+                // 2. Comfort toggle hides both 3D heading and turret aim sightlines cleanly
+                TacSim.Arena.OocArenaController.ShowArenaTacticalRings = false;
+                arena.SyncArenaTacticalVisuals();
+                Assert.IsFalse(arena.IsPlayerHeadingLineVisible);
+                Assert.IsFalse(arena.IsPlayerTurretAimLineVisible);
+
+                TacSim.Arena.OocArenaController.ShowArenaTacticalRings = true;
+                arena.SyncArenaTacticalVisuals();
+                Assert.IsTrue(arena.IsPlayerHeadingLineVisible);
+                Assert.IsTrue(arena.IsPlayerTurretAimLineVisible);
+
+                // 3. Damaged & wrecked 3D rigs dynamically billow rising smoke & ember plumes
+                Assert.IsTrue(arena.TryGetContactRig("B1", out var b1Rig));
+                Assert.IsTrue(b1Rig.IsDamageSmokeActive, "Crippled rig must show damage smoke plume");
+                b1Rig.UpdateArticulation(0.25f, 0f, null);
+                float h1 = b1Rig.ActiveSmokePlumeHeightOffset;
+                float phase1 = b1Rig.SmokePlumeAnimPhase;
+                b1Rig.UpdateArticulation(0.35f, 0f, null);
+                Assert.Greater(b1Rig.SmokePlumeAnimPhase, phase1, "Damage smoke plume animation phase must advance");
+                Assert.AreNotEqual(h1, b1Rig.ActiveSmokePlumeHeightOffset, "Damage smoke puffs must animate vertically across ticks");
+
+                b1Rig.SetDamageState("wreck", wrecked: true);
+                Assert.IsTrue(b1Rig.IsWreckSmokeActive, "Wrecked rig must enable smoldering fire/smoke marker");
+                Assert.IsNotNull(b1Rig.WreckSmokePlumeA);
+                Assert.IsNotNull(b1Rig.WreckSmokePlumeB);
+                float wreckY1 = b1Rig.WreckSmokePlumeA.localPosition.y;
+                b1Rig.UpdateArticulation(0.40f, 0f, null);
+                Assert.AreNotEqual(wreckY1, b1Rig.WreckSmokePlumeA.localPosition.y, "Wreck smoke plume must rise/billow dynamically");
+
+                // 4. Player wreck disables player heading & turret aim sightlines
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""seated"": true, ""match"": 401, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""power"": ""offline"", ""wreck"": true,
+                    ""x_cm"": 12000, ""y_cm"": 12000, ""heading_deg"": 90
+                }"));
+                arena.SyncArenaTacticalVisuals();
+                Assert.IsFalse(arena.IsPlayerHeadingLineVisible);
+                Assert.IsFalse(arena.IsPlayerTurretAimLineVisible);
+            }
+            finally
+            {
+                TacSim.Arena.OocArenaController.ShowArenaTacticalRings = prevRings;
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

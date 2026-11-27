@@ -22,6 +22,12 @@ namespace TacSim.World
         public Animator WeaponAnimator;
         public GameObject WreckSmokeVisual;
         public GameObject DamageSmokeVisual;
+        public Transform DamageSmokeLowPuff;
+        public Transform DamageSmokeMidPuff;
+        public Transform DamageSparkCore;
+        public Transform WreckCoreGlow;
+        public Transform WreckSmokePlumeA;
+        public Transform WreckSmokePlumeB;
         public GameObject HitFlashVisual;
         public MeshRenderer HitFlashRenderer;
         public MeshRenderer StatusBeaconRenderer;
@@ -38,8 +44,11 @@ namespace TacSim.World
         public float CurrentHealthBarFillFrac { get; private set; } = 1.0f;
         public bool IsHealthBarVisible => HealthBarRoot != null && HealthBarRoot.activeSelf;
         public bool IsDamageSmokeActive => DamageSmokeVisual != null && DamageSmokeVisual.activeSelf;
+        public bool IsWreckSmokeActive => WreckSmokeVisual != null && WreckSmokeVisual.activeSelf;
         public bool IsHitFlashActive => HitFlashVisual != null && HitFlashVisual.activeSelf && _hitFlashRemainSec > 0f;
         public float CurrentRecoilKickOffset => _recoilKickOffset;
+        public float SmokePlumeAnimPhase => _smokeAnimPhase;
+        public float ActiveSmokePlumeHeightOffset { get; private set; }
 
         private float _walkCycleRad;
         private Vector3 _chassisSpawnLocalPos;
@@ -52,6 +61,7 @@ namespace TacSim.World
         private float _weaponRecoilStopAt = -1f;
         private float _recoilKickOffset;
         private float _hitFlashRemainSec;
+        private float _smokeAnimPhase;
 
         public void CaptureInitialCommercialPose()
         {
@@ -188,6 +198,51 @@ namespace TacSim.World
                 {
                     float s = 3.2f + (_hitFlashRemainSec / 0.28f) * 1.4f;
                     HitFlashVisual.transform.localScale = Vector3.one * s;
+                }
+            }
+
+            if (IsDamageSmokeActive || IsWreckSmokeActive)
+            {
+                _smokeAnimPhase += Mathf.Max(0f, dt) * 2.4f;
+                float p1 = (_smokeAnimPhase * 0.42f) % 1.0f;
+                float p2 = (_smokeAnimPhase * 0.42f + 0.5f) % 1.0f;
+                float flicker = 0.88f + 0.24f * Mathf.Abs(Mathf.Sin(_smokeAnimPhase * 3.1f));
+
+                if (IsDamageSmokeActive)
+                {
+                    ActiveSmokePlumeHeightOffset = 0.25f + p1 * 1.45f;
+                    if (DamageSmokeLowPuff != null)
+                    {
+                        DamageSmokeLowPuff.localPosition = new Vector3(Mathf.Sin(_smokeAnimPhase * 1.4f) * 0.14f, 0.25f + p1 * 1.45f, -0.08f * p1);
+                        float s1 = Mathf.Lerp(0.65f, 1.25f, p1);
+                        DamageSmokeLowPuff.localScale = new Vector3(s1, s1 * 0.88f, s1);
+                    }
+                    if (DamageSmokeMidPuff != null)
+                    {
+                        DamageSmokeMidPuff.localPosition = new Vector3(-0.18f + Mathf.Cos(_smokeAnimPhase * 1.1f) * 0.16f, 0.25f + p2 * 1.65f, -0.15f - 0.10f * p2);
+                        float s2 = Mathf.Lerp(0.75f, 1.40f, p2);
+                        DamageSmokeMidPuff.localScale = new Vector3(s2, s2 * 0.86f, s2);
+                    }
+                    if (DamageSparkCore != null)
+                        DamageSparkCore.localScale = new Vector3(0.42f * flicker, 0.32f * flicker, 0.42f * flicker);
+                }
+                else if (IsWreckSmokeActive)
+                {
+                    ActiveSmokePlumeHeightOffset = 0.65f + p1 * 3.4f;
+                    if (WreckCoreGlow != null)
+                        WreckCoreGlow.localScale = Vector3.one * (1.12f * flicker);
+                    if (WreckSmokePlumeA != null)
+                    {
+                        WreckSmokePlumeA.localPosition = new Vector3(Mathf.Sin(_smokeAnimPhase * 1.2f) * 0.28f, 0.65f + p1 * 3.4f, -0.18f * p1);
+                        float sA = Mathf.Lerp(1.0f, 2.2f, p1);
+                        WreckSmokePlumeA.localScale = new Vector3(sA, sA * 0.84f, sA);
+                    }
+                    if (WreckSmokePlumeB != null)
+                    {
+                        WreckSmokePlumeB.localPosition = new Vector3(-0.22f + Mathf.Cos(_smokeAnimPhase * 0.95f) * 0.28f, 0.65f + p2 * 3.6f, 0.14f - 0.20f * p2);
+                        float sB = Mathf.Lerp(1.1f, 2.4f, p2);
+                        WreckSmokePlumeB.localScale = new Vector3(sB, sB * 0.82f, sB);
+                    }
                 }
             }
 
@@ -535,10 +590,10 @@ namespace TacSim.World
             rig.CupolaCameraAnchor = cupola;
 
             // Damage smoke (scarred/crippled) & wreck fire/smoke visual (hidden until triggered)
-            rig.DamageSmokeVisual = BuildDamageSmokeMarker(tilt, catalog);
+            rig.DamageSmokeVisual = BuildDamageSmokeMarker(tilt, catalog, rig);
             rig.DamageSmokeVisual.SetActive(false);
 
-            rig.WreckSmokeVisual = BuildWreckMarker(tilt, catalog);
+            rig.WreckSmokeVisual = BuildWreckMarker(tilt, catalog, rig);
             rig.WreckSmokeVisual.SetActive(false);
 
             // 3D Impact Hit-Flash burst sphere (illuminates briefly on incoming hit/crit)
@@ -767,7 +822,7 @@ namespace TacSim.World
             rig.MuzzlePoint = muzzle;
         }
 
-        private static GameObject BuildDamageSmokeMarker(Transform parent, TacSimAssetCatalog catalog)
+        private static GameObject BuildDamageSmokeMarker(Transform parent, TacSimAssetCatalog catalog, SpawnedGroundVehicleRig rig)
         {
             var dRoot = new GameObject("DamageSmokeMarker");
             dRoot.transform.SetParent(parent, false);
@@ -782,13 +837,19 @@ namespace TacSim.World
 
             Material smokeMat = UrpMaterialFactory.GetHologramUnlit("DamageSmokePlume", new Color(0.32f, 0.30f, 0.28f, 0.50f));
             Material sparkMat = UrpMaterialFactory.GetEmissive("DamageVentGlow", new Color(0.95f, 0.48f, 0.14f), new Color(1.0f, 0.45f, 0.10f) * 1.4f);
-            CreatePart(dRoot.transform, "SmokePuffLow", new Vector3(0f, 0.25f, 0f), new Vector3(0.75f, 0.75f, 0.75f), smokeMat);
-            CreatePart(dRoot.transform, "SmokePuffMid", new Vector3(-0.18f, 0.95f, -0.15f), new Vector3(1.05f, 0.90f, 1.05f), smokeMat);
-            CreatePart(dRoot.transform, "DamageSparkCore", new Vector3(0.10f, 0.08f, 0.05f), new Vector3(0.42f, 0.32f, 0.42f), sparkMat);
+            var lowPuff = CreatePart(dRoot.transform, "SmokePuffLow", new Vector3(0f, 0.25f, 0f), new Vector3(0.75f, 0.75f, 0.75f), smokeMat);
+            var midPuff = CreatePart(dRoot.transform, "SmokePuffMid", new Vector3(-0.18f, 0.95f, -0.15f), new Vector3(1.05f, 0.90f, 1.05f), smokeMat);
+            var sparkCore = CreatePart(dRoot.transform, "DamageSparkCore", new Vector3(0.10f, 0.08f, 0.05f), new Vector3(0.42f, 0.32f, 0.42f), sparkMat);
+            if (rig != null)
+            {
+                rig.DamageSmokeLowPuff = lowPuff.transform;
+                rig.DamageSmokeMidPuff = midPuff.transform;
+                rig.DamageSparkCore = sparkCore.transform;
+            }
             return dRoot;
         }
 
-        private static GameObject BuildWreckMarker(Transform parent, TacSimAssetCatalog catalog)
+        private static GameObject BuildWreckMarker(Transform parent, TacSimAssetCatalog catalog, SpawnedGroundVehicleRig rig)
         {
             var wRoot = new GameObject("WreckFireMarker");
             wRoot.transform.SetParent(parent, false);
@@ -802,7 +863,16 @@ namespace TacSim.World
             }
 
             Material emberMat = UrpMaterialFactory.GetEmissive("WreckEmber", new Color(0.9f, 0.3f, 0.08f), new Color(1.0f, 0.38f, 0.05f) * 2.4f);
-            CreatePart(wRoot.transform, "WreckCoreGlow", Vector3.zero, new Vector3(1.2f, 1.2f, 1.2f), emberMat);
+            Material wreckSmokeMat = UrpMaterialFactory.GetHologramUnlit("WreckSmokePlume", new Color(0.16f, 0.15f, 0.15f, 0.56f));
+            var core = CreatePart(wRoot.transform, "WreckCoreGlow", Vector3.zero, new Vector3(1.2f, 1.2f, 1.2f), emberMat);
+            var plumeA = CreatePart(wRoot.transform, "WreckSmokePlumeA", new Vector3(0f, 1.15f, 0f), new Vector3(1.35f, 1.15f, 1.35f), wreckSmokeMat);
+            var plumeB = CreatePart(wRoot.transform, "WreckSmokePlumeB", new Vector3(-0.22f, 2.55f, 0.14f), new Vector3(1.75f, 1.40f, 1.75f), wreckSmokeMat);
+            if (rig != null)
+            {
+                rig.WreckCoreGlow = core.transform;
+                rig.WreckSmokePlumeA = plumeA.transform;
+                rig.WreckSmokePlumeB = plumeB.transform;
+            }
             return wRoot;
         }
 
