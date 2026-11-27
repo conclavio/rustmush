@@ -1664,8 +1664,10 @@ mod tests {
             Some(("room.c03_arrivals".to_string(), true))
         );
 
-        let mut overlay = QuestOverlayState::default();
-        overlay.confirm_abandon = true;
+        let mut overlay = QuestOverlayState {
+            confirm_abandon: true,
+            ..Default::default()
+        };
         overlay.open_tab_index(QuestTab::Available, 2);
         assert!(overlay.open);
         assert!(!overlay.confirm_abandon);
