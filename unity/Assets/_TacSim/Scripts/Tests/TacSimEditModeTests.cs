@@ -9655,5 +9655,88 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ArenaMinimapLockVectorHoldFactionTintAndReplayShotLines_RenderTelemetry()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave16PR1_MinimapVectorsAndReplayShotsTest");
+            try
+            {
+                var arenaGo = new UnityEngine.GameObject("ArenaMinimapEnhanced");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                var grid = TacSimTerrainDecoder.LoadStaticArena("proving_ground");
+                arena.BuildArenaTerrain(TacSimAssetCatalog.LoadOrDefault(), grid);
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.Minimap.BindWorldSources(null, null, null, null, arena);
+
+                // 1. Live Arena frame locked on B1 with RED hold control -> lock vector active & hold owner RED
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 230, ""seated"": true, ""t_ms"": 60000, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""mode"": ""hold"", ""power"": ""online"",
+                    ""x_cm"": 12000, ""y_cm"": 12000, ""heading_deg"": 45, ""sight_m"": 240,
+                    ""hold_score"": 25, ""lock_designator"": ""B1"", ""lock_range_m"": 160, ""lock_percent"": 82,
+                    ""contacts"": [
+                        { ""designator"": ""B1"", ""class"": ""line_tank"", ""party"": ""B"", ""friendly"": false, ""cell"": [18, 18], ""range_m"": 160, ""health"": ""intact"" }
+                    ]
+                }"));
+                arena.SyncArenaTacticalVisuals();
+                hud.Minimap.SyncMinimap(TacSimActiveStage.SimulatorArena, UnityEngine.Vector3.zero, 45f, rightCornerOccupied: true, forceRedraw: true);
+
+                Assert.IsTrue(hud.Minimap.LastArenaMinimapHasLockLine, "Minimap must render target lock vector when locked onto a live contact");
+                Assert.IsTrue(hud.Minimap.LastArenaMinimapHasObjective);
+                Assert.AreEqual("RED", hud.Minimap.LastArenaMinimapHoldOwner);
+
+                // Unlocking target and switching Hold Zone to BLUE clears lock vector and flips minimap hold tint to BLUE
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 230, ""seated"": true, ""t_ms"": 65000, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""mode"": ""hold"", ""power"": ""online"",
+                    ""x_cm"": 12000, ""y_cm"": 12000, ""heading_deg"": 45, ""sight_m"": 240,
+                    ""hold_score"": -25, ""lock_designator"": """",
+                    ""contacts"": [
+                        { ""designator"": ""B1"", ""class"": ""line_tank"", ""party"": ""B"", ""friendly"": false, ""cell"": [18, 18], ""range_m"": 160, ""health"": ""intact"" }
+                    ]
+                }"));
+                arena.SyncArenaTacticalVisuals();
+                hud.Minimap.SyncMinimap(TacSimActiveStage.SimulatorArena, UnityEngine.Vector3.zero, 45f, rightCornerOccupied: true, forceRedraw: true);
+                Assert.IsFalse(hud.Minimap.LastArenaMinimapHasLockLine, "Unlocking contact must clear minimap target lock vector");
+                Assert.AreEqual("BLUE", hud.Minimap.LastArenaMinimapHoldOwner);
+
+                // 2. Replay Theater minimap draws active firefight shot tracer lines within [curMs - 1500ms .. curMs]
+                arena.ExitArena();
+                arena.HandleReplayPanelFrame(JsonNode.Parse(@"{
+                    ""schema"": { ""id"": ""arena.replay"", ""shape"": ""replay"", ""version"": 1 },
+                    ""match"": 231, ""arena"": ""proving_ground"", ""cell_cm"": 1000, ""width"": 64, ""height"": 64,
+                    ""end_ms"": 8000, ""outcome"": ""red"", ""reason"": ""elimination"", ""mode"": ""skirmish"",
+                    ""roster"": [
+                        { ""callsign"": ""R1"", ""team"": ""red"" },
+                        { ""callsign"": ""B1"", ""team"": ""blue"" }
+                    ],
+                    ""keyframes"": [
+                        [0, [[16, 16, 90], [40, 16, 270]]],
+                        [8000, [[22, 16, 90], [34, 16, 270]]]
+                    ],
+                    ""shots"": [
+                        [1200, 0, 1, ""hit""],
+                        [1800, 1, 0, ""miss""]
+                    ],
+                    ""destroyed"": []
+                }"));
+
+                arena.SeekReplayMs(2000f);
+                hud.Minimap.SyncMinimap(TacSimActiveStage.SimulatorArena, UnityEngine.Vector3.zero, 0f, rightCornerOccupied: true, forceRedraw: true);
+                Assert.AreEqual(2, hud.Minimap.LastReplayMinimapShotLineCount, "Replay minimap must draw both recent shots within 1.5s window");
+
+                arena.SeekReplayMs(6000f);
+                hud.Minimap.SyncMinimap(TacSimActiveStage.SimulatorArena, UnityEngine.Vector3.zero, 0f, rightCornerOccupied: true, forceRedraw: true);
+                Assert.AreEqual(0, hud.Minimap.LastReplayMinimapShotLineCount, "Expired replay shots older than 1.5s must clear from minimap");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
