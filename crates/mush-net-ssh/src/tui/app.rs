@@ -51,8 +51,8 @@ use super::pixel::{KeyUse, PictureKind, PixelView};
 use super::port_walk::{PORT_TRADE_FEED, PortWalkState, TACSIM_CONTENT_FEED};
 use super::quests::{
     QUESTS_FEED, QuestMilestoneKind, QuestMilestoneTracker, QuestOverlayAction, QuestOverlayState,
-    QuestsSnapshot, parse_frame as parse_quests_frame, parse_room_markers, render_quest_overlay,
-    render_quest_tracker_lines,
+    QuestTab, QuestsSnapshot, parse_frame as parse_quests_frame, parse_room_markers,
+    render_quest_overlay, render_quest_tracker_lines,
 };
 use super::render::{
     BODY_GROUND_FEED, CHART_FEED, Entry, GUTTER_W, PaneRows, RenderCtx, SITE_MAP_FEED,
@@ -431,6 +431,8 @@ struct PaletteEntry {
     label: String,
     /// The right column.
     detail: String,
+    /// Direct quest overlay action (`(QuestTab, index)`) when selecting a live quest entry.
+    quest_action: Option<(QuestTab, usize)>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -2485,6 +2487,9 @@ impl TuiApp {
                         self.port_walk.observe_quest_guidance(
                             self.quests_snap.active_trade_need(tracked),
                             self.quests_snap.active_destination_port(tracked),
+                        );
+                        self.port_walk.observe_quest_objective_room(
+                            self.quests_snap.active_objective_room(tracked),
                         );
                         let milestones = self.quest_milestones.observe(&self.quests_snap);
                         for m in &milestones {
@@ -4969,6 +4974,7 @@ impl TuiApp {
                 insert: (*cmd).to_string(),
                 label: (*cmd).to_string(),
                 detail: (*desc).to_string(),
+                quest_action: None,
             });
         }
         for alias in &self.channel_aliases {
@@ -4976,6 +4982,7 @@ impl TuiApp {
                 insert: format!("{alias} "),
                 label: alias.clone(),
                 detail: "channel".to_string(),
+                quest_action: None,
             });
         }
         if let Some(room) = &self.room {
@@ -4987,6 +4994,7 @@ impl TuiApp {
                     insert: cmd.clone(),
                     label: sanitize(&exit.name),
                     detail: "exit".to_string(),
+                    quest_action: None,
                 });
             }
         }
@@ -4995,6 +5003,35 @@ impl TuiApp {
                 insert: c.usage.clone(),
                 label: c.name.clone(),
                 detail: c.summary.clone(),
+                quest_action: None,
+            });
+        }
+        for (idx, q) in self.quests_snap.available.iter().enumerate() {
+            let search = format!("{} {} quest", q.title, q.giver_name);
+            consider(&search, &|| PaletteEntry {
+                insert: "/quests".to_string(),
+                label: format!("[!] {}", q.title),
+                detail: format!("Quest offer — {}", q.giver_name),
+                quest_action: Some((QuestTab::Available, idx)),
+            });
+        }
+        for (idx, q) in self.quests_snap.active.iter().enumerate() {
+            let search = format!("{} {} {} quest", q.title, q.next_step, q.turn_in_name);
+            let badge = if q.can_finish_now || q.ready_to_finish {
+                "[?]"
+            } else {
+                "[*]"
+            };
+            let detail = if q.next_step.is_empty() {
+                format!("Quest — {}", q.turn_in_name)
+            } else {
+                format!("Quest — {}", q.next_step)
+            };
+            consider(&search, &|| PaletteEntry {
+                insert: "/quests".to_string(),
+                label: format!("{badge} {}", q.title),
+                detail: detail.clone(),
+                quest_action: Some((QuestTab::Active, idx)),
             });
         }
         let mut entries = prefix;
@@ -5013,12 +5050,20 @@ impl TuiApp {
         let Some(p) = self.palette.take() else {
             return false;
         };
-        match p.entries.get(p.selected) {
-            Some(e) if e.insert != self.line.text() => {
-                self.line.set(&e.insert);
-                true
-            }
-            _ => false,
+        let Some(e) = p.entries.get(p.selected) else {
+            return false;
+        };
+        if let Some((tab, idx)) = e.quest_action {
+            self.line.clear();
+            self.leave_input(false);
+            self.quests_overlay.open_tab_index(tab, idx);
+            return true;
+        }
+        if e.insert != self.line.text() {
+            self.line.set(&e.insert);
+            true
+        } else {
+            false
         }
     }
 
@@ -6451,12 +6496,17 @@ impl TuiApp {
                 .take(rows)
                 .map(|(i, e)| {
                     let text = format!("{:<20} {}", sanitize(&e.label), sanitize(&e.detail));
-                    let line = Line::from(Span::raw(text));
-                    if i == p.selected {
-                        line.style(Style::default().add_modifier(Modifier::REVERSED))
+                    let mut style = if e.quest_action.is_some() {
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
                     } else {
-                        line
+                        Style::default()
+                    };
+                    if i == p.selected {
+                        style = style.add_modifier(Modifier::REVERSED);
                     }
+                    Line::from(Span::styled(text, style))
                 })
                 .collect()
         };
@@ -12985,5 +13035,81 @@ mod tests {
             "Sky Chart screen must display golden quest destination bar:\n{}",
             dump(&cbuf)
         );
+    }
+
+    #[test]
+    fn palette_lists_live_quests_and_opens_quest_dialog_on_pick() {
+        let mut app = app();
+        let dump = |b: &ratatui::buffer::Buffer| -> String {
+            (0..b.area.height)
+                .map(|y| {
+                    (0..b.area.width)
+                        .map(|x| b[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "room_name": "Port Watch Arrivals",
+                "available": [{
+                    "key": "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+                    "title": "First Berth",
+                    "giver_name": "Maren Halvorsen",
+                    "turn_in_name": "Maren Halvorsen",
+                    "accept_cmd": "+quest/accept #42=tok123"
+                }],
+                "active": [{
+                    "key": "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel",
+                    "title": "Provisions and Reaction Mass",
+                    "giver_name": "Maren Halvorsen",
+                    "turn_in_name": "Maren Halvorsen",
+                    "next_step": "Buy 2 provisions",
+                    "next_room_entry": "room.c04_coop_registry",
+                    "ready_to_finish": false
+                }]
+            }),
+        });
+
+        // Ctrl-K opens the palette, and typing "first" filters directly to [!] First Berth
+        app.feed_input(b"\x0bfirst");
+        assert!(app.palette_open());
+        let pbuf = painted(&mut app, 120, 32);
+        assert!(
+            find_in(&pbuf, "[!] First Berth", 0).is_some(),
+            "command palette must list matching live available quest:\n{}",
+            dump(&pbuf)
+        );
+
+        // Pressing Enter picks the quest entry, clears the input line, and opens Quest Dialog on Available[0]
+        let out = app.feed_input(b"\r");
+        assert!(
+            out.submit.is_empty(),
+            "picking quest from palette must not submit raw slash text"
+        );
+        assert!(app.line.text().is_empty());
+        assert!(app.quests_overlay.open);
+        assert_eq!(app.quests_overlay.tab, QuestTab::Available);
+        assert_eq!(app.quests_overlay.selected, 0);
+
+        // Esc closes the Quest Dialog cleanly, and Ctrl-K + "provisions" opens Active[0] directly
+        app.feed_input(b"\x1b");
+        assert!(!app.quests_overlay.open);
+        app.feed_input(b"\x0bprovisions");
+        assert!(app.palette_open());
+        let pbuf2 = painted(&mut app, 120, 32);
+        assert!(
+            find_in(&pbuf2, "[*] Provisions", 0).is_some(),
+            "command palette must list matching active quest:\n{}",
+            dump(&pbuf2)
+        );
+        app.feed_input(b"\r");
+        assert!(app.quests_overlay.open);
+        assert_eq!(app.quests_overlay.tab, QuestTab::Active);
+        assert_eq!(app.quests_overlay.selected, 0);
     }
 }

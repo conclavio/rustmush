@@ -432,6 +432,8 @@ pub struct PortWalkState {
     quest_markers: Vec<QuestMarker>,
     quest_trade_need: Option<QuestTradeNeed>,
     quest_dest_port: Option<QuestDestinationHint>,
+    quest_room_entry: Option<String>,
+    quest_room_turn_in: bool,
     speech_bubbles: HashMap<String, (String, Instant)>,
     interactables: Vec<InteractableTarget>,
     focus_idx: usize,
@@ -535,6 +537,8 @@ impl PortWalkState {
             quest_markers: Vec::new(),
             quest_trade_need: None,
             quest_dest_port: None,
+            quest_room_entry: None,
+            quest_room_turn_in: false,
             speech_bubbles: HashMap::new(),
             interactables: Vec::new(),
             focus_idx: 0,
@@ -829,6 +833,20 @@ impl PortWalkState {
     ) {
         self.quest_trade_need = trade_need;
         self.quest_dest_port = dest_port;
+    }
+
+    /// Sync the tracked active quest's next station room target onto the 2.5D station cutaway feed.
+    pub fn observe_quest_objective_room(&mut self, objective: Option<(String, bool)>) {
+        let (entry, turn_in) = match objective {
+            Some((room_entry, is_turn_in)) => (Some(room_entry), is_turn_in),
+            None => (None, false),
+        };
+        if self.quest_room_entry == entry && self.quest_room_turn_in == turn_in {
+            return;
+        }
+        self.quest_room_entry = entry;
+        self.quest_room_turn_in = turn_in;
+        self.bump_scene();
     }
 
     fn active_trade_qty_setting(&self) -> i64 {
@@ -2436,6 +2454,11 @@ impl PortWalkState {
         let rooms_json: Vec<Value> = active_rooms
             .iter()
             .map(|r| {
+                let is_quest_target = !self.aboard_ship
+                    && self
+                        .quest_room_entry
+                        .as_deref()
+                        .is_some_and(|e| e == r.entry_id);
                 json!({
                     "id": r.entry_id,
                     "name": r.name,
@@ -2446,6 +2469,8 @@ impl PortWalkState {
                     "max_y": r.max_y,
                     "active": r.entry_id == self.active_location_key,
                     "kind": r.kind,
+                    "quest_target": is_quest_target,
+                    "quest_turn_in": is_quest_target && self.quest_room_turn_in,
                 })
             })
             .collect();
@@ -7927,5 +7952,46 @@ mod tests {
         let dest_jump = st.handle_key(Key::Char('g'), false, false, &[], now);
         assert!(dest_jump.consumed);
         assert_eq!(CORRIDORS[st.corridor_idx].0, "stickney");
+    }
+
+    #[test]
+    fn quest_objective_room_propagates_to_kitty_feed() {
+        let mut st = PortWalkState::new();
+        let mut ambient = std::collections::BTreeMap::new();
+        ambient.insert(
+            "atlas".into(),
+            json!({ "pack": "neighborhood.ceres_freeport", "entry": "room.c03_arrivals" }),
+        );
+        let rv = RoomView {
+            id: "#10".into(),
+            name: "Port Watch Arrivals".into(),
+            desc: mush_proto::RichText::plain("Arrivals desk."),
+            exits: Vec::new(),
+            contents: Vec::new(),
+            zone: None,
+            ambient,
+        };
+        st.observe_room(&rv, Some("Pilot"));
+        st.observe_quest_objective_room(Some(("room.c03_arrivals".into(), true)));
+
+        let feed = st.to_feed_value();
+        let rooms = feed["rooms"].as_array().expect("rooms array");
+        let target = rooms
+            .iter()
+            .find(|r| r["id"] == "room.c03_arrivals")
+            .expect("arrivals room present");
+        assert_eq!(target["quest_target"], true);
+        assert_eq!(target["quest_turn_in"], true);
+
+        st.observe_quest_objective_room(None);
+        let feed_cleared = st.to_feed_value();
+        let cleared = feed_cleared["rooms"]
+            .as_array()
+            .expect("rooms array")
+            .iter()
+            .find(|r| r["id"] == "room.c03_arrivals")
+            .expect("arrivals room present");
+        assert_eq!(cleared["quest_target"], false);
+        assert_eq!(cleared["quest_turn_in"], false);
     }
 }

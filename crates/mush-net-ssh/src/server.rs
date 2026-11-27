@@ -1098,7 +1098,9 @@ fn pixel_encoder_reply(
         Some((probe, None)) => format!(" Your terminal: {probe}. Ctrl-G draws nothing here."),
         None => " Your terminal is asked what it can show when you enter @tui.".to_string(),
     };
-    set + &then
+    let mut out = set;
+    out.push_str(&then);
+    out
 }
 
 /// What an `@history` line asks for (interface plan I12).

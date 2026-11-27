@@ -325,6 +325,8 @@ struct WalkRoom {
     max_y: f64,
     active: bool,
     kind: String,
+    quest_target: bool,
+    quest_turn_in: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -469,6 +471,14 @@ impl WalkScene {
                     max_y,
                     active: item.get("active").and_then(Value::as_bool).unwrap_or(false),
                     kind: as_str(item.get("kind"), "room").to_string(),
+                    quest_target: item
+                        .get("quest_target")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
+                    quest_turn_in: item
+                        .get("quest_turn_in")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
                 });
             }
         }
@@ -482,6 +492,8 @@ impl WalkScene {
                 max_y: (you_y + 8.0).clamp(-MAX_WORLD_COORD_M, MAX_WORLD_COORD_M),
                 active: true,
                 kind: "room".to_string(),
+                quest_target: false,
+                quest_turn_in: false,
             });
         }
 
@@ -849,6 +861,12 @@ fn draw_room_floor(frame: &mut Frame, proj: &IsoProj, room: &WalkRoom, you_floor
         line(frame, c1.0, c1.1, c2.0, c2.1, WALL_KICK);
         line(frame, c2.0, c2.1, c3.0, c3.1, WALL_KICK);
         line(frame, c3.0, c3.1, c0.0, c0.1, WALL_KICK);
+    }
+    if room.quest_target {
+        line(frame, c0.0, c0.1, c1.0, c1.1, QUEST_GOLD_BG);
+        line(frame, c1.0, c1.1, c2.0, c2.1, QUEST_GOLD_BG);
+        line(frame, c2.0, c2.1, c3.0, c3.1, QUEST_GOLD_BG);
+        line(frame, c3.0, c3.1, c0.0, c0.1, QUEST_GOLD_BG);
     }
 }
 
@@ -1554,6 +1572,19 @@ fn draw_cutaway_25d(frame: &mut Frame, scene: &WalkScene, look: &Look) {
         let (fx, fy, _) = proj.project(foc.x_m, foc.y_m, (foc.floor as f64) * 3.8 + 0.6);
         let r = 9i64;
         outline_rect(frame, fx - r, fy - r, r * 2, r * 2, LOCK);
+    }
+
+    for room in &active_rooms {
+        if room.quest_target {
+            let z = (room.floor as f64) * 3.8 + 1.8;
+            let (rx, ry, _) = proj.project(
+                (room.min_x + room.max_x) * 0.5,
+                (room.min_y + room.max_y) * 0.5,
+                z,
+            );
+            let sym = if room.quest_turn_in { '?' } else { '!' };
+            draw_quest_marker_badge(frame, rx, ry - 4, sym, true, scene.pulse_phase);
+        }
     }
 
     for plate in &nameplates {
@@ -2543,5 +2574,74 @@ mod tests {
                 "{cam} with quest markers must remain within the 256-color PNG/Sixel palette ceiling"
             );
         }
+    }
+
+    #[test]
+    fn quest_target_room_renders_gold_beacon_under_palette_budget() {
+        let mut pic = StationWalkPicture::new();
+        let look = Look {
+            offset_mdeg: 0,
+            hull_offset_mdeg: 0,
+            ordered_mdeg: None,
+            dx_cm: 0,
+            dy_cm: 0,
+            zoom_permille: 1000,
+        };
+        let make_scene = |target: bool, turn_in: bool| {
+            json!({
+                "camera": "cutaway",
+                "mode": "station",
+                "title": "Port Watch Arrivals",
+                "you": { "x_m": 0.0, "y_m": 0.0, "floor": 0, "heading_mdeg": 0, "stride": 0 },
+                "rooms": [
+                    {
+                        "name": "Port Watch Arrivals",
+                        "floor": 0,
+                        "min_x": -8.0,
+                        "min_y": -8.0,
+                        "max_x": 8.0,
+                        "max_y": 8.0,
+                        "active": true,
+                        "kind": "room"
+                    },
+                    {
+                        "name": "Co-op Registry",
+                        "floor": 0,
+                        "min_x": 10.0,
+                        "min_y": -8.0,
+                        "max_x": 24.0,
+                        "max_y": 8.0,
+                        "active": false,
+                        "kind": "room",
+                        "quest_target": target,
+                        "quest_turn_in": turn_in
+                    }
+                ]
+            })
+        };
+
+        let mut f_plain = Frame::new(320, 200);
+        assert!(pic.draw(&mut f_plain, &SingleFeed(make_scene(false, false)), &look));
+
+        let mut f_obj = Frame::new(320, 200);
+        assert!(pic.draw(&mut f_obj, &SingleFeed(make_scene(true, false)), &look));
+
+        let mut f_turn_in = Frame::new(320, 200);
+        assert!(pic.draw(&mut f_turn_in, &SingleFeed(make_scene(true, true)), &look));
+
+        assert_ne!(
+            f_plain.hash(),
+            f_obj.hash(),
+            "quest_target room must render golden deck outline and floating beacon"
+        );
+        assert_ne!(
+            f_obj.hash(),
+            f_turn_in.hash(),
+            "quest_turn_in must distinguish '?' turn-in beacon from '!' objective beacon"
+        );
+        assert!(
+            f_obj.count_colours(257) <= 256 && f_turn_in.count_colours(257) <= 256,
+            "room quest beacon must stay within 256-color palette budget"
+        );
     }
 }
