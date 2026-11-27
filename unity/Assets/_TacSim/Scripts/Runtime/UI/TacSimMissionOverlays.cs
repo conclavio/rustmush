@@ -159,12 +159,15 @@ namespace TacSim.UI
             public GameObject Root;
             public Button Button;
             public Image Background;
+            public Image CooldownFill;
             public Text Label;
             public string BoundWeaponId;
+            public float CooldownFillFrac = 1f;
         }
 
         private const int MaxPooledWeaponSlotButtons = 4;
         private readonly List<PooledWeaponSlotButton> _weaponSlotPool = new List<PooledWeaponSlotButton>(MaxPooledWeaponSlotButtons);
+        private readonly Dictionary<string, int> _weaponMaxCooldownMs = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
         // OOC Arena Locked Target Inspection Paper-Doll Card (`contacts[i].condition` + `scan_tables`)
         private GameObject _targetInspectCard;
@@ -201,7 +204,10 @@ namespace TacSim.UI
         // OOC Arena Wrecked / Match Debrief Card (appears cleanly in center-screen when hull wrecked)
         private GameObject _arenaDebriefCard;
         private Text _arenaDebriefText;
+        private Button _debriefReplayBtn;
+        private Text _debriefReplayBtnLabel;
         private ulong _dismissedDebriefMatchId;
+        private ulong _lastWeaponCooldownMatchId;
 
         // OOC Arena Collapsible Standing Rules & Sealed Mind Inspector Drawer (`rules` + `mind.sealed_rules` + `order`)
         private GameObject _rulesDrawer;
@@ -1326,9 +1332,13 @@ namespace TacSim.UI
                 int capturedIdx = wIdx;
                 var wSlot = new PooledWeaponSlotButton();
                 var wBtn = CreateBtn(wpnSlotsRow.transform, string.Empty, new Color(0.18f, 0.32f, 0.26f), () => FireWeaponSlotAt(capturedIdx));
+                var cdFillGo = CreatePanel(wBtn.transform, "CooldownFill", new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(2f, 1f), new Vector2(-2f, 5f), new Color(0.32f, 0.96f, 0.60f, 0.95f));
+                var cdFillImg = cdFillGo.GetComponent<Image>();
+                cdFillImg.raycastTarget = false;
                 wSlot.Root = wBtn.gameObject;
                 wSlot.Button = wBtn;
                 wSlot.Background = wBtn.GetComponent<Image>();
+                wSlot.CooldownFill = cdFillImg;
                 wSlot.Label = wBtn.GetComponentInChildren<Text>();
                 if (wSlot.Label != null) wSlot.Label.fontSize = 10;
                 wSlot.Root.SetActive(false);
@@ -1523,8 +1533,10 @@ namespace TacSim.UI
 
             var debriefBtns = CreatePanel(_arenaDebriefCard.transform, "DebriefActionsRow", new Vector2(0f, 0f), new Vector2(1f, 0.34f), new Vector2(12f, 10f), new Vector2(-12f, -4f), Color.clear);
             var dbHlg = debriefBtns.AddComponent<HorizontalLayoutGroup>();
-            dbHlg.spacing = 8f; dbHlg.childControlWidth = true; dbHlg.childControlHeight = true; dbHlg.childForceExpandWidth = true;
+            dbHlg.spacing = 6f; dbHlg.childControlWidth = true; dbHlg.childControlHeight = true; dbHlg.childForceExpandWidth = true;
             CreateBtn(debriefBtns.transform, "EXIT POD (exit)", new Color(0.62f, 0.18f, 0.18f), HandleDebriefExitClick);
+            _debriefReplayBtn = CreateBtn(debriefBtns.transform, "REPLAY", new Color(0.18f, 0.44f, 0.34f), HandleDebriefWatchReplayClick);
+            _debriefReplayBtnLabel = _debriefReplayBtn.GetComponentInChildren<Text>();
             CreateBtn(debriefBtns.transform, "MATCH HISTORY", new Color(0.18f, 0.34f, 0.48f), () => OnCommandRequested?.Invoke("sim history"));
             CreateBtn(debriefBtns.transform, "KEEP WATCHING", new Color(0.22f, 0.26f, 0.34f), HandleDebriefDismissClick);
             _arenaDebriefCard.SetActive(false);
@@ -1631,11 +1643,23 @@ namespace TacSim.UI
 
         public void ClickDebriefExitForTests() => HandleDebriefExitClick();
         public void ClickDebriefDismissForTests() => HandleDebriefDismissClick();
+        public bool ClickDebriefWatchReplayForTests()
+        {
+            if (_arena?.State == null || _arena.State.MatchId == 0) return false;
+            HandleDebriefWatchReplayClick();
+            return true;
+        }
 
         private void HandleDebriefExitClick()
         {
             if (_arenaDebriefCard != null) _arenaDebriefCard.SetActive(false);
             OnArenaCockpitVerbRequested?.Invoke("exit");
+        }
+
+        private void HandleDebriefWatchReplayClick()
+        {
+            if (_arena?.State == null || _arena.State.MatchId == 0) return;
+            OnCommandRequested?.Invoke($"sim replay {_arena.State.MatchId}");
         }
 
         private void HandleDebriefDismissClick()
@@ -1656,10 +1680,18 @@ namespace TacSim.UI
             int shots = s.MatchHits + s.MatchMisses;
             int accPct = shots > 0 ? Mathf.RoundToInt((s.MatchHits * 100f) / shots) : 0;
             string accStr = shots > 0 ? $"{s.MatchHits}/{shots} ({accPct}%)" : "0/0";
+            string timeTag = s.ArenaClockMs > 0
+                ? $"   |   TIME: <b>{TacSimArenaReplayModel.FormatClockText(s.ArenaClockMs)}</b>"
+                : string.Empty;
             _arenaDebriefText.text =
                 $"<color=#FF6655><b>VEHICLE DESTROYED — MATCH #{s.MatchId} DEBRIEF</b></color>\n" +
-                $"KILLS: <b>{s.MatchKills}</b>   |   HITS: <b>{accStr}</b>   |   MODE: <b>{MushProtocol.EscapeUnityRichText((s.Mode ?? "skirmish").ToUpperInvariant())}</b>\n" +
+                $"KILLS: <b>{s.MatchKills}</b>   |   HITS: <b>{accStr}</b>{timeTag}   |   MODE: <b>{MushProtocol.EscapeUnityRichText((s.Mode ?? "skirmish").ToUpperInvariant())}</b>\n" +
                 $"<color=#FF7766>RED ALIVE: {s.RedAliveCount}</color>   vs   <color=#66BBFF>BLUE ALIVE: {s.BlueAliveCount}</color>   |   HEAT: {s.Heat}/{s.HeatMax}";
+
+            if (_debriefReplayBtn != null)
+                _debriefReplayBtn.interactable = s.MatchId > 0;
+            if (_debriefReplayBtnLabel != null)
+                _debriefReplayBtnLabel.text = s.MatchId > 0 ? $"REPLAY #{s.MatchId}" : "REPLAY";
         }
 
         private void UpdateCombatFeed(ArenaCockpitState s)
@@ -1814,6 +1846,8 @@ namespace TacSim.UI
 
             if (!_mindStrip.activeSelf) _mindStrip.SetActive(true);
 
+            bool switchCooling = mind != null && mind.NextSwitchMs.HasValue && mind.NextSwitchMs.Value > 0L;
+
             if (_mindHeaderText != null)
             {
                 if (mind != null)
@@ -1825,7 +1859,8 @@ namespace TacSim.UI
                         ? $" [{MushProtocol.EscapeUnityRichText(mind.ClassWord)}/{MushProtocol.EscapeUnityRichText(string.IsNullOrEmpty(mind.CoreWord) ? "-" : mind.CoreWord)}]"
                         : string.Empty;
                     string stateTag = mind.IsOff ? " <color=#FF9966>[ROM]</color>" : string.Empty;
-                    _mindHeaderText.text = $"MIND: <b>{safeName}</b>{classBadge}{stateTag}";
+                    string cdTag = switchCooling ? $" <color=#FFCC55>CD {mind.NextSwitchMs.Value / 1000f:0.0}s</color>" : string.Empty;
+                    _mindHeaderText.text = $"MIND: <b>{safeName}</b>{classBadge}{stateTag}{cdTag}";
                 }
                 else
                 {
@@ -1843,9 +1878,9 @@ namespace TacSim.UI
                 if (slot.Label != null)
                     slot.Label.text = isActive ? $"● {pName.ToUpperInvariant()}" : pName.ToUpperInvariant();
                 if (slot.Background != null)
-                    slot.Background.color = isActive ? new Color(0.14f, 0.52f, 0.34f) : new Color(0.14f, 0.28f, 0.42f);
+                    slot.Background.color = isActive ? new Color(0.14f, 0.52f, 0.34f) : (switchCooling ? new Color(0.16f, 0.20f, 0.28f) : new Color(0.14f, 0.28f, 0.42f));
                 if (slot.Button != null)
-                    slot.Button.interactable = !isActive;
+                    slot.Button.interactable = !isActive && !switchCooling;
                 if (slot.Root != null && !slot.Root.activeSelf)
                     slot.Root.SetActive(true);
             }
@@ -1936,6 +1971,15 @@ namespace TacSim.UI
                     else
                     {
                         sb.Append($"<color=#77DDFF>SEALED MIND{schema}:</color> No sealed rules listed.");
+                    }
+                    if (s.Mind.Channels.Count > 0)
+                    {
+                        sb.Append("  |  <color=#88EEAA>CHANNELS:</color> ");
+                        for (int i = 0; i < s.Mind.Channels.Count; i++)
+                        {
+                            if (i > 0) sb.Append(", ");
+                            sb.Append(MushProtocol.EscapeUnityRichText(s.Mind.Channels[i].ToUpperInvariant()));
+                        }
                     }
                 }
                 else if (s.Rules.Count == 0)
@@ -2080,9 +2124,43 @@ namespace TacSim.UI
             OnArenaCockpitVerbRequested?.Invoke($"fire {safeWpn}");
         }
 
+        public float GetWeaponSlotCooldownFillForTests(int index)
+        {
+            if (index < 0 || index >= _weaponSlotPool.Count || _weaponSlotPool[index].Root == null || !_weaponSlotPool[index].Root.activeSelf)
+                return -1f;
+            return _weaponSlotPool[index].CooldownFillFrac;
+        }
+
+        public string GetWeaponSlotLabelForTests(int index)
+        {
+            if (index < 0 || index >= _weaponSlotPool.Count || _weaponSlotPool[index].Label == null || !_weaponSlotPool[index].Root.activeSelf)
+                return string.Empty;
+            return _weaponSlotPool[index].Label.text ?? string.Empty;
+        }
+
+        public bool IsWeaponSlotInteractableForTests(int index)
+        {
+            if (index < 0 || index >= _weaponSlotPool.Count || _weaponSlotPool[index].Button == null || !_weaponSlotPool[index].Root.activeSelf)
+                return false;
+            return _weaponSlotPool[index].Button.interactable;
+        }
+
+        public bool IsMindProfileButtonInteractableForTests(int index)
+        {
+            if (index < 0 || index >= _mindProfilePool.Count || _mindProfilePool[index].Button == null || !_mindProfilePool[index].Root.activeSelf)
+                return false;
+            return _mindProfilePool[index].Button.interactable;
+        }
+
         private void UpdateStandingRulesAndWeaponDeck(ArenaCockpitState s)
         {
             if (s == null) return;
+
+            if (s.MatchId != _lastWeaponCooldownMatchId)
+            {
+                _lastWeaponCooldownMatchId = s.MatchId;
+                _weaponMaxCooldownMs.Clear();
+            }
 
             bool autoLockOn = _arena != null && _arena.HasAutoLockRule;
             if (_autoLockRuleLabel != null)
@@ -2099,22 +2177,67 @@ namespace TacSim.UI
             if (_autoFireOddsLabel != null)
                 _autoFireOddsLabel.text = $"ODDS >= {_autoFireOddsPct}%";
 
+            bool hasLock = !string.IsNullOrEmpty(s.LockedDesignator);
             int shown = Mathf.Min(s.Weapons.Count, _weaponSlotPool.Count);
             for (int i = 0; i < shown; i++)
             {
                 var w = s.Weapons[i];
                 var slot = _weaponSlotPool[i];
+                string wKey = w.Id ?? $"W{i + 1}";
                 slot.BoundWeaponId = w.Id ?? string.Empty;
-                string shortName = (w.Id ?? $"W{i + 1}").ToUpperInvariant();
-                if (shortName.Length > 9) shortName = shortName.Substring(0, 9);
-                string rdyTxt = w.Ready ? "RDY" : $"{w.ReadyInMs / 1000f:F1}s";
+                string shortName = wKey.ToUpperInvariant();
+                if (shortName.Length > 8) shortName = shortName.Substring(0, 8);
+
+                bool outOfAmmo = w.RoundsMax > 0 && w.Rounds <= 0;
+                bool lowAmmo = !outOfAmmo && w.RoundsMax > 0 && w.Rounds * 5 <= w.RoundsMax;
+
+                int maxCd = 1000;
+                if (_weaponMaxCooldownMs.TryGetValue(wKey, out int knownMax))
+                    maxCd = Mathf.Max(1000, knownMax);
+                if (!w.Ready && w.ReadyInMs > maxCd)
+                {
+                    maxCd = w.ReadyInMs;
+                    _weaponMaxCooldownMs[wKey] = maxCd;
+                }
+                else if (!w.Ready && !_weaponMaxCooldownMs.ContainsKey(wKey))
+                {
+                    maxCd = Mathf.Max(1000, w.ReadyInMs);
+                    _weaponMaxCooldownMs[wKey] = maxCd;
+                }
+
+                float fillFrac = outOfAmmo
+                    ? 0f
+                    : (w.Ready ? 1f : Mathf.Clamp01(1f - w.ReadyInMs / (float)Mathf.Max(1000, maxCd)));
+                slot.CooldownFillFrac = fillFrac;
+
+                string statusTxt;
+                if (outOfAmmo)
+                    statusTxt = "OUT";
+                else if (w.Ready)
+                    statusTxt = (hasLock && w.HitPercent > 0 ? $"{w.HitPercent}%" : "RDY") + (lowAmmo ? "*" : string.Empty);
+                else
+                    statusTxt = $"{w.ReadyInMs / 1000f:F1}s";
+
                 if (slot.Label != null)
-                    slot.Label.text = $"[{i + 1}] {shortName} {rdyTxt}";
+                    slot.Label.text = $"[{i + 1}] {shortName} {statusTxt}";
+                if (slot.Button != null)
+                    slot.Button.interactable = !outOfAmmo && !s.IsWreck;
                 if (slot.Background != null)
                 {
-                    slot.Background.color = w.ArmedSlot > 0
-                        ? new Color(0.16f, 0.38f, 0.54f)
-                        : (w.Ready ? new Color(0.18f, 0.42f, 0.28f) : new Color(0.28f, 0.22f, 0.16f));
+                    slot.Background.color = outOfAmmo
+                        ? new Color(0.32f, 0.14f, 0.16f)
+                        : (w.ArmedSlot > 0
+                            ? new Color(0.16f, 0.38f, 0.54f)
+                            : (w.Ready ? new Color(0.18f, 0.42f, 0.28f) : new Color(0.28f, 0.22f, 0.16f)));
+                }
+                if (slot.CooldownFill != null)
+                {
+                    slot.CooldownFill.rectTransform.anchorMax = new Vector2(fillFrac, 0f);
+                    slot.CooldownFill.color = outOfAmmo
+                        ? new Color(0.86f, 0.24f, 0.22f, 0.90f)
+                        : (w.Ready
+                            ? (lowAmmo ? new Color(1.0f, 0.72f, 0.20f, 0.96f) : new Color(0.32f, 0.96f, 0.60f, 0.95f))
+                            : new Color(1.0f, 0.76f, 0.26f, 0.95f));
                 }
                 if (slot.Root != null && !slot.Root.activeSelf)
                     slot.Root.SetActive(true);
@@ -2122,6 +2245,7 @@ namespace TacSim.UI
             for (int i = shown; i < _weaponSlotPool.Count; i++)
             {
                 _weaponSlotPool[i].BoundWeaponId = string.Empty;
+                _weaponSlotPool[i].CooldownFillFrac = 0f;
                 if (_weaponSlotPool[i].Root != null && _weaponSlotPool[i].Root.activeSelf)
                     _weaponSlotPool[i].Root.SetActive(false);
             }

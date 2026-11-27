@@ -9568,5 +9568,92 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ArenaWeaponCooldownBarsMindSwitchCooldownAndDebriefReplay_UpdateAndDispatch()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave15PR2_WeaponBarsMindCooldownDebriefTest");
+            try
+            {
+                var arenaGo = new UnityEngine.GameObject("ArenaCockpitHudTest");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(TacSimAssetCatalog.LoadOrDefault(), TacSimTerrainDecoder.LoadStaticArena("proving_ground"));
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.Overlays.BindControllers(null, arena, null);
+
+                // 1. Frame with cycling cannon (4000ms), ready laser (84% locked hit odds), empty missile rack (0/8), and Mind switch CD 3500ms
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 225, ""seated"": true, ""t_ms"": 165000, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.heavy_mk1"", ""mode"": ""skirmish"", ""power"": ""online"",
+                    ""x_cm"": 10000, ""y_cm"": 10000, ""lock_designator"": ""B1"", ""lock_range_m"": 180, ""lock_percent"": 84,
+                    ""mind"": {
+                        ""name"": ""Aegis Doctrine"", ""profiles"": [""Line"", ""Sniper""], ""active"": 0,
+                        ""class"": ""I"", ""core"": ""II"", ""channels"": [""helm"", ""sensors"", ""fire""],
+                        ""next_switch_ms"": 3500, ""off"": false
+                    },
+                    ""weapons"": [
+                        { ""id"": ""cannon"", ""ready"": false, ""ready_in_ms"": 4000, ""rounds"": 18, ""rounds_max"": 24, ""percent"": 76 },
+                        { ""id"": ""laser"", ""ready"": true, ""ready_in_ms"": 0, ""rounds"": 0, ""rounds_max"": 0, ""percent"": 84 },
+                        { ""id"": ""missiles"", ""ready"": true, ""ready_in_ms"": 0, ""rounds"": 0, ""rounds_max"": 8, ""percent"": 62 }
+                    ]
+                }"));
+                hud.Overlays.RefreshArenaHud();
+
+                Assert.AreEqual(3, hud.Overlays.ActiveWeaponSlotButtonCount);
+                Assert.AreEqual(0f, hud.Overlays.GetWeaponSlotCooldownFillForTests(0), 0.02f, "Peak cycling weapon starts at 0% recharge fill");
+                Assert.AreEqual(1f, hud.Overlays.GetWeaponSlotCooldownFillForTests(1), 0.02f, "Ready laser must show 100% fill");
+                StringAssert.Contains("84%", hud.Overlays.GetWeaponSlotLabelForTests(1));
+                Assert.IsTrue(hud.Overlays.IsWeaponSlotInteractableForTests(1));
+                StringAssert.Contains("OUT", hud.Overlays.GetWeaponSlotLabelForTests(2));
+                Assert.IsFalse(hud.Overlays.IsWeaponSlotInteractableForTests(2), "Out-of-ammo weapon slot must be non-interactable");
+
+                // Mind strip displays switch cooldown and disables inactive profile button while cooling down
+                StringAssert.Contains("CD 3.5s", hud.Overlays.MindStripHeaderSnapshot);
+                Assert.IsFalse(hud.Overlays.IsMindProfileButtonInteractableForTests(1), "Inactive Mind profile button must wait for switch cooldown");
+
+                hud.Overlays.ToggleRulesDrawerForTests();
+                StringAssert.Contains("CHANNELS:", hud.Overlays.RulesDrawerSnapshot);
+                StringAssert.Contains("HELM", hud.Overlays.RulesDrawerSnapshot);
+
+                // 2. Halfway through cannon reload (2000ms of 4000ms) -> 50% fill; Mind switch CD clears (0ms) -> Sniper button re-enables
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 225, ""seated"": true, ""t_ms"": 167000, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.heavy_mk1"", ""mode"": ""skirmish"", ""power"": ""online"",
+                    ""x_cm"": 10000, ""y_cm"": 10000, ""lock_designator"": ""B1"", ""lock_range_m"": 180, ""lock_percent"": 84,
+                    ""mind"": {
+                        ""name"": ""Aegis Doctrine"", ""profiles"": [""Line"", ""Sniper""], ""active"": 0,
+                        ""class"": ""I"", ""core"": ""II"", ""channels"": [""helm"", ""sensors"", ""fire""],
+                        ""next_switch_ms"": 0, ""off"": false
+                    },
+                    ""weapons"": [
+                        { ""id"": ""cannon"", ""ready"": false, ""ready_in_ms"": 2000, ""rounds"": 18, ""rounds_max"": 24, ""percent"": 76 }
+                    ]
+                }"));
+                hud.Overlays.RefreshArenaHud();
+                Assert.AreEqual(0.5f, hud.Overlays.GetWeaponSlotCooldownFillForTests(0), 0.05f, "Half-cycled weapon must show 50% fill bar");
+                Assert.IsTrue(hud.Overlays.IsMindProfileButtonInteractableForTests(1), "Clearing Mind switch cooldown must re-enable profile switching");
+
+                // 3. Wrecked debrief card displays match survival clock (2:45) and 1-click REPLAY #225 emits `sim replay 225`
+                var cmds = new List<string>();
+                hud.Overlays.OnCommandRequested += cmds.Add;
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 225, ""seated"": true, ""t_ms"": 165000, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.heavy_mk1"", ""mode"": ""skirmish"", ""power"": ""offline"", ""wreck"": true,
+                    ""x_cm"": 10000, ""y_cm"": 10000
+                }"));
+                hud.Overlays.RefreshArenaHud();
+                Assert.IsTrue(hud.Overlays.IsDebriefCardVisible);
+                StringAssert.Contains("2:45", hud.Overlays.DebriefSummarySnapshot);
+                Assert.IsTrue(hud.Overlays.ClickDebriefWatchReplayForTests());
+                CollectionAssert.AreEqual(new[] { "sim replay 225" }, cmds);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
