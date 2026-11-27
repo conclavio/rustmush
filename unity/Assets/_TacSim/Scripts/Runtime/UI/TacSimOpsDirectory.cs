@@ -33,6 +33,7 @@ namespace TacSim.UI
         public event Action<string, string, bool> OnPresenceTargetRequested; // (id, name, isPlayer)
         public event Action<string> OnPrefillChatRequested;
         public event Action<string> OnCommandRequested;
+        public event Action<string> OnArenaActionRequested;
 
         private const int MaxDirectoryRows = 24;
         private const int MaxPresenceRows = 16;
@@ -43,9 +44,12 @@ namespace TacSim.UI
             public Image Background;
             public Text Label;
             public Button TrailButton;
+            public Text TrailButtonLabel;
             public Button WalkButton;
+            public Text WalkButtonLabel;
             public string BoundId;
             public bool BoundIsShip;
+            public bool BoundIsArenaSpot;
         }
 
         private sealed class PooledPresenceRow
@@ -84,6 +88,9 @@ namespace TacSim.UI
 
         // Tab 2: Active Ops & Orders
         private Text _opsSummaryText;
+        private GameObject _standardOpsActionsRow;
+        private GameObject _arenaOpsActionsRow;
+        private Button _arenaScanOpsBtn;
 
         // Bound live data sources
         private StationWorldController _station;
@@ -215,18 +222,30 @@ namespace TacSim.UI
                 {
                     if (string.IsNullOrEmpty(row.BoundId)) return;
                     SetOpen(false);
-                    if (row.BoundIsShip) OnPlotShipCompartmentRequested?.Invoke(row.BoundId, false);
+                    if (row.BoundIsArenaSpot)
+                    {
+                        if (MushProtocol.TryValidateSafeCommandToken(row.BoundId, out string safeSpot, maxLen: 16))
+                            OnArenaActionRequested?.Invoke($"{ResolveArenaAllOrderPrefix()}advance {safeSpot}");
+                    }
+                    else if (row.BoundIsShip) OnPlotShipCompartmentRequested?.Invoke(row.BoundId, false);
                     else OnPlotStationRoomRequested?.Invoke(row.BoundId, false);
                 });
+                row.TrailButtonLabel = row.TrailButton.GetComponentInChildren<Text>();
                 SetRect(row.TrailButton.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-194f, 4f), new Vector2(-102f, -4f));
 
                 row.WalkButton = CreateButton(go.transform, "WALK", new Color(0.14f, 0.48f, 0.38f), () =>
                 {
                     if (string.IsNullOrEmpty(row.BoundId)) return;
                     SetOpen(false);
-                    if (row.BoundIsShip) OnPlotShipCompartmentRequested?.Invoke(row.BoundId, true);
+                    if (row.BoundIsArenaSpot)
+                    {
+                        if (MushProtocol.TryValidateSafeCommandToken(row.BoundId, out string safeSpot, maxLen: 16))
+                            OnArenaActionRequested?.Invoke($"drive {safeSpot}");
+                    }
+                    else if (row.BoundIsShip) OnPlotShipCompartmentRequested?.Invoke(row.BoundId, true);
                     else OnPlotStationRoomRequested?.Invoke(row.BoundId, true);
                 });
+                row.WalkButtonLabel = row.WalkButton.GetComponentInChildren<Text>();
                 SetRect(row.WalkButton.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-96f, 4f), new Vector2(-8f, -4f));
 
                 go.SetActive(false);
@@ -304,18 +323,35 @@ namespace TacSim.UI
             _opsSummaryText.supportRichText = true;
             SetRect(_opsSummaryText.rectTransform, new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(16f, 64f), new Vector2(-16f, -14f));
 
-            var actRow = CreatePanel(body.transform, "OpsActionsRow", new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(14f, 12f), new Vector2(-14f, 54f), Color.clear);
-            var hlg = actRow.AddComponent<HorizontalLayoutGroup>();
+            _standardOpsActionsRow = CreatePanel(body.transform, "OpsActionsRow", new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(14f, 12f), new Vector2(-14f, 54f), Color.clear);
+            var hlg = _standardOpsActionsRow.AddComponent<HorizontalLayoutGroup>();
             hlg.spacing = 8f;
             hlg.childControlWidth = true;
             hlg.childControlHeight = true;
             hlg.childForceExpandWidth = true;
 
-            CreateButton(actRow.transform, "JOBS (+jobs)", new Color(0.16f, 0.42f, 0.54f), () => OnCommandRequested?.Invoke("+jobs"));
-            CreateButton(actRow.transform, "Escorts (+escort)", new Color(0.24f, 0.38f, 0.54f), () => OnCommandRequested?.Invoke("+escort"));
-            CreateButton(actRow.transform, "Ship Orders", new Color(0.16f, 0.46f, 0.40f), () => OnCommandRequested?.Invoke("+ship/orders"));
-            CreateButton(actRow.transform, "Co-op Ledger", new Color(0.42f, 0.32f, 0.14f), () => OnCommandRequested?.Invoke("+coop/statement"));
-            CreateButton(actRow.transform, "Who Online", new Color(0.22f, 0.30f, 0.44f), () => OnCommandRequested?.Invoke("WHO"));
+            CreateButton(_standardOpsActionsRow.transform, "JOBS (+jobs)", new Color(0.16f, 0.42f, 0.54f), () => OnCommandRequested?.Invoke("+jobs"));
+            CreateButton(_standardOpsActionsRow.transform, "Escorts (+escort)", new Color(0.24f, 0.38f, 0.54f), () => OnCommandRequested?.Invoke("+escort"));
+            CreateButton(_standardOpsActionsRow.transform, "Ship Orders", new Color(0.16f, 0.46f, 0.40f), () => OnCommandRequested?.Invoke("+ship/orders"));
+            CreateButton(_standardOpsActionsRow.transform, "Co-op Ledger", new Color(0.42f, 0.32f, 0.14f), () => OnCommandRequested?.Invoke("+coop/statement"));
+            CreateButton(_standardOpsActionsRow.transform, "Who Online", new Color(0.22f, 0.30f, 0.44f), () => OnCommandRequested?.Invoke("WHO"));
+
+            _arenaOpsActionsRow = CreatePanel(body.transform, "ArenaOpsActionsRow", new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(14f, 12f), new Vector2(-14f, 54f), Color.clear);
+            var ahlg = _arenaOpsActionsRow.AddComponent<HorizontalLayoutGroup>();
+            ahlg.spacing = 8f;
+            ahlg.childControlWidth = true;
+            ahlg.childControlHeight = true;
+            ahlg.childForceExpandWidth = true;
+
+            _arenaScanOpsBtn = CreateButton(_arenaOpsActionsRow.transform, "SCAN SECTOR", new Color(0.14f, 0.44f, 0.52f), () =>
+            {
+                SetOpen(false);
+                OnArenaActionRequested?.Invoke("scan");
+            });
+            CreateButton(_arenaOpsActionsRow.transform, "SIM STATUS", new Color(0.18f, 0.38f, 0.52f), () => OnCommandRequested?.Invoke("sim status"));
+            CreateButton(_arenaOpsActionsRow.transform, "MATCH HISTORY", new Color(0.26f, 0.34f, 0.50f), () => OnCommandRequested?.Invoke("sim history"));
+            CreateButton(_arenaOpsActionsRow.transform, "WHO ONLINE", new Color(0.22f, 0.30f, 0.44f), () => OnCommandRequested?.Invoke("WHO"));
+            _arenaOpsActionsRow.SetActive(false);
         }
 
         public void BindSources(
@@ -406,12 +442,80 @@ namespace TacSim.UI
             RefreshActiveOpsTab();
         }
 
+        public string GetDirectoryRowLabel(int index) =>
+            (index >= 0 && index < VisibleDirectoryRowCount && index < _dirPool.Count && _dirPool[index].Label != null)
+                ? (_dirPool[index].Label.text ?? string.Empty)
+                : string.Empty;
+
+        public bool TriggerDirectoryRowAction(int index, bool secondary = false)
+        {
+            if (index < 0 || index >= VisibleDirectoryRowCount || index >= _dirPool.Count)
+                return false;
+            var row = _dirPool[index];
+            var btn = secondary ? row.TrailButton : row.WalkButton;
+            if (btn == null || !btn.interactable || !row.Root.activeSelf)
+                return false;
+            btn.onClick.Invoke();
+            return true;
+        }
+
+        private string ResolveArenaAllOrderPrefix()
+        {
+            var det = _arena?.State?.Detachment;
+            if (det != null && !_arena.State.DetachmentProjectionInvalid && !string.IsNullOrEmpty(det.AllOrderPrefill))
+                return det.AllOrderPrefill;
+            return "order all ";
+        }
+
         private void RefreshDirectoryTab()
         {
+            bool inArena = _activeStage == TacSimActiveStage.SimulatorArena && _arena != null && _arena.TerrainGrid != null;
             bool aboardShip = _activeStage == TacSimActiveStage.ShipInteriorWalk || _activeStage == TacSimActiveStage.ShipHelmSeated;
             int used = 0;
 
-            if (aboardShip && _ship?.Template != null)
+            if (inArena)
+            {
+                string arenaName = !string.IsNullOrEmpty(_arena.TerrainGrid.DisplayName)
+                    ? _arena.TerrainGrid.DisplayName
+                    : (!string.IsNullOrEmpty(_arena.TerrainGrid.Id) ? _arena.TerrainGrid.Id : "BATTLEFIELD");
+                if (_modalMetaText != null) _modalMetaText.text = $"ARENA SECTOR: {arenaName.ToUpperInvariant()}";
+
+                var spots = _arena.TerrainGrid.KeySpots;
+                if (spots != null)
+                {
+                    string activeHold = _arena.State != null && _arena.State.HasDynamicObjective && !string.IsNullOrEmpty(_arena.State.ObjectiveLetter)
+                        ? _arena.State.ObjectiveLetter
+                        : (_arena.TerrainGrid.HoldSpotLetter ?? string.Empty);
+                    Vector3 ownLocal = _arena.PlayerVehicleTransform != null
+                        ? _arena.PlayerVehicleTransform.position - OocArenaController.ArenaStageOrigin
+                        : (_arena.State != null ? _arena.ArenaWorldMetersToLocalPos(_arena.State.Xm, _arena.State.Zm) : Vector3.zero);
+
+                    for (int i = 0; i < spots.Count && used < MaxDirectoryRows; i++)
+                    {
+                        var sp = spots[i];
+                        if (sp == null || string.IsNullOrWhiteSpace(sp.Letter)) continue;
+                        bool isObj = !string.IsNullOrEmpty(activeHold) &&
+                                     string.Equals(sp.Letter, activeHold, StringComparison.OrdinalIgnoreCase);
+                        Vector3 spotLocal = _arena.TerrainGrid.SiteCellToLocalPos(sp.CellX, sp.CellY, 0f);
+                        float distM = Vector2.Distance(new Vector2(ownLocal.x, ownLocal.z), new Vector2(spotLocal.x, spotLocal.z));
+
+                        var row = _dirPool[used++];
+                        row.BoundId = sp.Letter.Trim();
+                        row.BoundIsShip = false;
+                        row.BoundIsArenaSpot = true;
+                        string objTag = isObj ? " <color=#FFDD55>[OBJECTIVE]</color>" : string.Empty;
+                        string spotTitle = string.IsNullOrWhiteSpace(sp.Name) ? $"Sector {row.BoundId}" : sp.Name;
+                        row.Label.text = $"<color=#66EEFF>[{MushProtocol.EscapeUnityRichText(row.BoundId)}]</color> <b>{MushProtocol.EscapeUnityRichText(spotTitle)}</b>{objTag}   <color=#99CCEE>({sp.CellX},{sp.CellY}) · {distM:0}m</color>";
+                        row.Background.color = isObj ? new Color(0.24f, 0.20f, 0.08f, 0.96f) : new Color(0.07f, 0.12f, 0.19f, 0.92f);
+                        if (row.TrailButtonLabel != null) row.TrailButtonLabel.text = "SQUAD ADV";
+                        if (row.WalkButtonLabel != null) row.WalkButtonLabel.text = "DRIVE";
+                        row.TrailButton.interactable = true;
+                        row.WalkButton.interactable = true;
+                        row.Root.SetActive(true);
+                    }
+                }
+            }
+            else if (aboardShip && _ship?.Template != null)
             {
                 if (_modalMetaText != null) _modalMetaText.text = $"SHIP DECKS ({_ship.LoadedUnitId.ToUpperInvariant()})";
                 var comps = new List<ShipCompartmentDef>(_ship.Template.Compartments.Values);
@@ -425,9 +529,12 @@ namespace TacSim.UI
                     var row = _dirPool[used++];
                     row.BoundId = c.Id;
                     row.BoundIsShip = true;
+                    row.BoundIsArenaSpot = false;
                     string tag = isHere ? "<color=#66FFAA>[HERE]</color>" : $"<color=#88CCFF>{hops} hop{(hops == 1 ? "" : "s")}</color>";
                     row.Label.text = $"[DECK] <b>{MushProtocol.EscapeUnityRichText(string.IsNullOrEmpty(c.Name) ? c.Id.ToUpperInvariant() : c.Name)}</b>   {tag}";
                     row.Background.color = isHere ? new Color(0.10f, 0.24f, 0.22f, 0.95f) : new Color(0.07f, 0.12f, 0.19f, 0.92f);
+                    if (row.TrailButtonLabel != null) row.TrailButtonLabel.text = "3D TRAIL";
+                    if (row.WalkButtonLabel != null) row.WalkButtonLabel.text = "WALK";
                     row.TrailButton.interactable = !isHere && hops > 0;
                     row.WalkButton.interactable = !isHere && hops > 0;
                     row.Root.SetActive(true);
@@ -453,10 +560,13 @@ namespace TacSim.UI
                     var row = _dirPool[used++];
                     row.BoundId = r.EntryId;
                     row.BoundIsShip = false;
+                    row.BoundIsArenaSpot = false;
                     string roleBadge = ClassifyRoomBadge(r.EntryId, r.Kind);
                     string hopStr = isHere ? "<color=#66FFAA>[HERE]</color>" : $"<color=#88CCFF>{hops} hop{(hops == 1 ? "" : "s")}</color>";
                     row.Label.text = $"<color=#FFCC66>[FL {r.FloorIndex + 1}]</color> <b>{MushProtocol.EscapeUnityRichText(r.Name ?? r.EntryId)}</b> {roleBadge}   {hopStr}";
                     row.Background.color = isHere ? new Color(0.10f, 0.24f, 0.22f, 0.95f) : new Color(0.07f, 0.12f, 0.19f, 0.92f);
+                    if (row.TrailButtonLabel != null) row.TrailButtonLabel.text = "3D TRAIL";
+                    if (row.WalkButtonLabel != null) row.WalkButtonLabel.text = "WALK";
                     row.TrailButton.interactable = !isHere;
                     row.WalkButton.interactable = !isHere;
                     row.Root.SetActive(true);
@@ -507,7 +617,72 @@ namespace TacSim.UI
         private void RefreshActiveOpsTab()
         {
             if (_opsSummaryText == null) return;
-            var sb = new StringBuilder(512);
+            var sb = new StringBuilder(640);
+
+            bool inArena = _arena != null && _arena.IsArenaActive && _arena.State != null;
+            bool inSimLobby = _lastRoomView != null &&
+                              _lastRoomView.Atlas != null &&
+                              string.Equals(_lastRoomView.Atlas.Entry, "room.simulator_lobby", StringComparison.OrdinalIgnoreCase);
+
+            if (_standardOpsActionsRow != null) _standardOpsActionsRow.SetActive(!inArena && !inSimLobby);
+            if (_arenaOpsActionsRow != null) _arenaOpsActionsRow.SetActive(inArena || inSimLobby);
+            if (_arenaScanOpsBtn != null) _arenaScanOpsBtn.gameObject.SetActive(inArena);
+
+            if (inArena)
+            {
+                var st = _arena.State;
+                var ti = _arena.CurrentTerrainIntel;
+                int shots = st.MatchHits + st.MatchMisses;
+                int accPct = shots > 0 ? Mathf.RoundToInt((st.MatchHits * 100f) / shots) : 0;
+                string lockDesc = !string.IsNullOrEmpty(st.LockedDesignator)
+                    ? $"LOCK {MushProtocol.EscapeUnityRichText(st.LockedDesignator)} · {st.LockRangeM:0}m · {st.LockHitPercent}%"
+                    : "NO LOCK";
+                string coverDesc = !string.IsNullOrEmpty(ti.CoverLabel) ? ti.CoverLabel : "OPEN";
+                string losDesc = ti.HasTargetSample && ti.IsLineOfSightObstructed && !string.IsNullOrEmpty(ti.LineOfSightStatus)
+                    ? $" · {ti.LineOfSightStatus} LOS"
+                    : (ti.HasTargetSample ? " · CLEAR LOS" : string.Empty);
+
+                sb.AppendLine("<color=#FF7766><b>ACTIVE ARENA BATTLEFIELD INTEL</b></color>");
+                sb.AppendFormat("• MATCH #{0} — <b>{1}</b> ({2})  |  RED {3} vs BLUE {4}\n",
+                    st.MatchId,
+                    MushProtocol.EscapeUnityRichText(st.Callsign ?? "R1"),
+                    MushProtocol.EscapeUnityRichText((st.Mode ?? "skirmish").ToUpperInvariant()),
+                    st.RedAliveCount,
+                    st.BlueAliveCount);
+                sb.AppendFormat("• Combat: <b>{0}</b> kills · <b>{1}/{2}</b> hits ({3}%)  |  {4}\n",
+                    st.MatchKills, st.MatchHits, shots, accPct, lockDesc);
+                sb.AppendFormat("• Terrain &amp; Sensors: Cover <b>{0}</b>{1} · Sight {2:0}m · Scope {3}\n",
+                    MushProtocol.EscapeUnityRichText(coverDesc),
+                    MushProtocol.EscapeUnityRichText(losDesc),
+                    st.SightMeters,
+                    MushProtocol.EscapeUnityRichText((st.Scope ?? "clear").ToUpperInvariant()));
+
+                if (st.StandingOrder != null)
+                {
+                    string ordTarget = !string.IsNullOrEmpty(st.StandingOrder.Target)
+                        ? $" -> {MushProtocol.EscapeUnityRichText(st.StandingOrder.Target)}"
+                        : (st.StandingOrder.HasToCell ? $" -> ({st.StandingOrder.ToCellX},{st.StandingOrder.ToCellY})" : string.Empty);
+                    sb.AppendFormat("• Standing Order: <b>{0}</b> {1}{2}\n",
+                        MushProtocol.EscapeUnityRichText((st.StandingOrder.Squad ?? "UNIT").ToUpperInvariant()),
+                        MushProtocol.EscapeUnityRichText((st.StandingOrder.Objective ?? "HOLD").ToUpperInvariant()),
+                        ordTarget);
+                }
+                if (st.Mind != null)
+                {
+                    string mindTitle = string.IsNullOrWhiteSpace(st.Mind.Name) ? "OWN MIND" : st.Mind.Name;
+                    string prof = string.IsNullOrWhiteSpace(st.Mind.ActiveProfileName) ? "DEFAULT" : st.Mind.ActiveProfileName;
+                    sb.AppendFormat("• Mind Doctrine: <b>{0}</b> (Profile: <b>{1}</b> · Rules: {2})\n",
+                        MushProtocol.EscapeUnityRichText(mindTitle),
+                        MushProtocol.EscapeUnityRichText(prof),
+                        st.Rules.Count);
+                }
+                sb.AppendLine();
+            }
+            else if (inSimLobby)
+            {
+                sb.AppendLine("<color=#FFCC66><b>OOC SIMULATOR POD BAY</b></color>");
+                sb.AppendLine("• Use the Sim Console (`sim status`, `sim history`) or step into a pod (`board`) to deploy.\n");
+            }
 
             sb.AppendLine("<color=#66EEFF><b>ACTIVE WAYFINDER TRAIL</b></color>");
             if (_wayfinder != null && _wayfinder.HasActiveRoute)
@@ -551,13 +726,8 @@ namespace TacSim.UI
                     _surface.HopperLoadedTonnes,
                     _surface.HopperCapacityTonnes,
                     _surface.BatteryPct);
-            if (_arena != null && _arena.IsArenaActive)
-                sb.AppendFormat("• OOC Arena Match #{0}: {1} ({2}) — Red {3} vs Blue {4}\n",
-                    _arena.State.MatchId,
-                    MushProtocol.EscapeUnityRichText(_arena.State.Callsign),
-                    MushProtocol.EscapeUnityRichText(_arena.State.Mode.ToUpperInvariant()),
-                    _arena.State.RedAliveCount,
-                    _arena.State.BlueAliveCount);
+            if (!inArena && _arena != null && _arena.IsSpectatorTheaterActive)
+                sb.AppendFormat("• Spectator Replay / Observer: Match #{0} active\n", _arena.ActiveSpectatorMatchId);
 
             _opsSummaryText.text = sb.ToString();
         }

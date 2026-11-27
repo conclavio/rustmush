@@ -8673,5 +8673,108 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ArenaCombatAudioPolishAndOpsDirectoryIntel_SynthesizesLazySfxModulatesPitchAndDrivesKeySpots()
+        {
+            // 1. Validate phase-continuous, bounded procedural PCM buffers for Arena Target Lock & Kill Confirm
+            float[] lockPcm = TacSimAudioSynthesizer.GenerateTargetLockToneSamples();
+            float[] killPcm = TacSimAudioSynthesizer.GenerateKillConfirmChordSamples();
+            Assert.Greater(lockPcm.Length, 1000);
+            Assert.Greater(killPcm.Length, 1000);
+            float lockPeak = 0f, killPeak = 0f;
+            for (int i = 0; i < lockPcm.Length; i++)
+            {
+                Assert.GreaterOrEqual(lockPcm[i], -1f);
+                Assert.LessOrEqual(lockPcm[i], 1f);
+                if (System.Math.Abs(lockPcm[i]) > lockPeak) lockPeak = System.Math.Abs(lockPcm[i]);
+                if (i > 0) Assert.LessOrEqual(System.Math.Abs(lockPcm[i] - lockPcm[i - 1]), 0.45f, "Lock tone must be smooth");
+            }
+            for (int i = 0; i < killPcm.Length; i++)
+            {
+                Assert.GreaterOrEqual(killPcm[i], -1f);
+                Assert.LessOrEqual(killPcm[i], 1f);
+                if (System.Math.Abs(killPcm[i]) > killPeak) killPeak = System.Math.Abs(killPcm[i]);
+                if (i > 0) Assert.LessOrEqual(System.Math.Abs(killPcm[i] - killPcm[i - 1]), 0.45f, "Kill chord must be smooth");
+            }
+            Assert.Greater(lockPeak, 0.15f);
+            Assert.Greater(killPeak, 0.15f);
+
+            var rootGo = new UnityEngine.GameObject("Wave10PR2_ArenaAudioAndOpsIntelTest");
+            try
+            {
+                // 2. Preserve AllocatedClipCount == 11 on InitializeAudioGraph, lazy-allocate new Arena SFX, modulate engine pitch
+                var synth = rootGo.AddComponent<TacSimAudioSynthesizer>();
+                synth.InitializeAudioGraph();
+                Assert.AreEqual(11, synth.AllocatedClipCount, "InitializeAudioGraph must keep exact 11 eager clips");
+
+                synth.PlayForCommandLine("lock B1");
+                Assert.AreEqual(12, synth.AllocatedClipCount, "First lock command lazy-allocates TargetLockTone clip");
+                synth.PlayKillConfirmChord();
+                Assert.AreEqual(13, synth.AllocatedClipCount, "First kill confirm lazy-allocates KillConfirmChord clip");
+
+                synth.SetArenaEngineThrottle(0f);
+                Assert.AreEqual(0.95f, synth.CurrentAmbientPitch, 0.01f);
+                synth.SetArenaEngineThrottle(1f);
+                Assert.AreEqual(1.22f, synth.CurrentAmbientPitch, 0.01f);
+                synth.ResetAmbientPitch();
+                Assert.AreEqual(1.0f, synth.CurrentAmbientPitch, 0.005f);
+
+                synth.DisposeClips();
+                Assert.AreEqual(0, synth.AllocatedClipCount, "DisposeClips must cleanly release all clips including lazy Arena SFX");
+
+                // 3. [N] Ops Directory in SimulatorArena lists surveyed KeySpots with DRIVE/SQUAD ADV + rich Arena battle intel
+                var catalog = TacSimAssetCatalog.LoadOrDefault();
+                var arenaGo = new UnityEngine.GameObject("ArenaOpsTest");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(catalog, TacSimTerrainDecoder.LoadStaticArena("proving_ground"));
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 145, ""seated"": true, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""mode"": ""hold"", ""power"": ""online"",
+                    ""x_cm"": 6000, ""y_cm"": 6000, ""heading_deg"": 90, ""speed_kph"": 27, ""max_speed_kph"": 54,
+                    ""lock_designator"": ""B1"", ""lock_range_m"": 180, ""lock_percent"": 82,
+                    ""mind"": {
+                        ""name"": ""Armored Doctrine"", ""profiles"": [""Sniper"", ""Line""],
+                        ""active"": 0, ""class"": ""I"", ""core"": ""II"", ""channels"": [""helm"", ""sensors"", ""fire""], ""off"": false
+                    },
+                    ""order"": { ""squad"": ""ALPHA"", ""objective"": ""hold"", ""to"": [128, 128], ""hold_fire"": false, ""expires_in_ms"": 45000 },
+                    ""contacts"": [
+                        { ""designator"": ""B1"", ""class"": ""line_tank"", ""party"": ""B"", ""friendly"": false, ""cell"": [78, 60], ""range_m"": 180, ""bearing_deg"": 90, ""facing"": ""front"", ""aspect"": ""front"", ""band"": ""close"", ""health"": ""scarred"", ""odds"": [{ ""weapon"": ""main_gun"", ""percent"": 82 }] }
+                    ]
+                }"));
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.OpsDirectory.BindSources(null, null, null, null, null, null, arena);
+
+                var arenaVerbs = new List<string>();
+                hud.OpsDirectory.OnArenaActionRequested += arenaVerbs.Add;
+
+                hud.OpsDirectory.UpdateLiveRoom(null, TacSimActiveStage.SimulatorArena);
+                hud.OpsDirectory.SetOpen(true);
+                Assert.GreaterOrEqual(hud.OpsDirectory.VisibleDirectoryRowCount, 3, "Arena Ops Directory must list surveyed battlefield KeySpots");
+                StringAssert.Contains("[", hud.OpsDirectory.GetDirectoryRowLabel(0));
+
+                // Primary action on KeySpot row dispatches `drive <letter>`; secondary action dispatches `order all advance <letter>`
+                Assert.IsTrue(hud.OpsDirectory.TriggerDirectoryRowAction(0, secondary: false));
+                Assert.IsTrue(hud.OpsDirectory.TriggerDirectoryRowAction(0, secondary: true));
+                Assert.AreEqual(2, arenaVerbs.Count);
+                StringAssert.StartsWith("drive ", arenaVerbs[0]);
+                StringAssert.StartsWith("order all advance ", arenaVerbs[1]);
+
+                // Tab 2 Active Ops displays rich Arena match, Mind doctrine, Standing Order, and Lock telemetry
+                hud.OpsDirectory.SelectTab(TacSim.UI.OpsDirectoryTab.ActiveOps);
+                StringAssert.Contains("ACTIVE ARENA BATTLEFIELD INTEL", hud.OpsDirectory.OpsSummarySnapshot);
+                StringAssert.Contains("MATCH #145", hud.OpsDirectory.OpsSummarySnapshot);
+                StringAssert.Contains("Armored Doctrine", hud.OpsDirectory.OpsSummarySnapshot);
+                StringAssert.Contains("ALPHA", hud.OpsDirectory.OpsSummarySnapshot);
+                StringAssert.Contains("LOCK B1", hud.OpsDirectory.OpsSummarySnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
