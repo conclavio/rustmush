@@ -9888,5 +9888,101 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ArenaSignalIntelTabAndDetachmentBriefing_AutoFocusesRendersAndDispatchesVerbs()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave17PR2_ArenaSignalIntelTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                var arenaGo = new UnityEngine.GameObject("ArenaIntelCtrl");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(null, null);
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""seated"": true,
+                    ""match"": 312,
+                    ""callsign"": ""R1"",
+                    ""party"": ""R"",
+                    ""mode"": ""hold"",
+                    ""power"": ""online"",
+                    ""scope"": ""hostile"",
+                    ""sight_m"": 260,
+                    ""sensor_height_cm"": 350,
+                    ""ecm"": ""on"",
+                    ""receiver"": { ""budget"": 8, ""budget_max"": 12, ""reach_percent"": 85 },
+                    ""detachment"": {
+                        ""id"": ""7"", ""revision"": ""2"", ""term"": ""1"", ""leader_slot"": 1,
+                        ""all_order_prefill"": ""ORDER DT:7:2:1 ALL "",
+                        ""slots"": [
+                            { ""slot"": 1, ""callsign"": ""R1"", ""pilot"": ""Voss"", ""controller"": ""player"", ""order_prefill"": ""ORDER DT:7:2:1 1 "" },
+                            { ""slot"": 2, ""callsign"": ""R2"", ""pilot"": null, ""controller"": ""automated"", ""order_prefill"": ""ORDER DT:7:2:1 2 "" }
+                        ],
+                        ""my_order"": { ""sequence"": ""3"", ""from"": ""R1"", ""objective"": ""HOLD RIDGE"", ""response"": null },
+                        ""wilco_command"": ""WILCO DT:7:2 3"",
+                        ""negative_command"": ""NEGATIVE DT:7:2 3""
+                    },
+                    ""mind"": {
+                        ""name"": ""IRON GUARD"",
+                        ""profiles"": [""return"", ""guard""],
+                        ""active"": 1,
+                        ""channels"": [""sight"", ""radar""]
+                    },
+                    ""contacts"": [
+                        { ""designator"": ""R2"", ""class"": ""line_tank"", ""party"": ""R"", ""friendly"": true, ""relation"": ""friendly"", ""cell"": [12, 12], ""range_m"": 90, ""bearing_deg"": 180, ""aspect"": ""front"", ""health"": ""intact"" },
+                        { ""designator"": ""B2"", ""class"": ""scout_buggy"", ""party"": ""B"", ""friendly"": false, ""relation"": ""hostile"", ""cell"": [22, 20], ""range_m"": 310, ""bearing_deg"": 65, ""aspect"": ""flank"", ""odds"": [{ ""weapon"": ""cannon"", ""percent"": 52 }], ""health"": ""scarred"", ""moving"": true },
+                        { ""designator"": ""B1"", ""class"": ""line_tank"", ""party"": ""B"", ""friendly"": false, ""relation"": ""hostile"", ""cell"": [16, 15], ""range_m"": 180, ""bearing_deg"": 45, ""aspect"": ""rear"", ""odds"": [{ ""weapon"": ""cannon"", ""percent"": 84 }], ""health"": ""intact"" }
+                    ]
+                }"));
+
+                hud.SceneIntelModal.BindArena(arena);
+                hud.SceneIntelModal.SetActiveStage(TacSim.Core.TacSimActiveStage.SimulatorArena);
+
+                // 1. Opening [L] in SimulatorArena auto-focuses Tab 1 and renders live sensor/ECM/detachment intel
+                hud.SceneIntelModal.SelectTab(TacSim.UI.SceneIntelTab.RpScene);
+                hud.SceneIntelModal.SetOpen(true);
+                Assert.AreEqual(TacSim.UI.SceneIntelTab.SignalContacts, hud.SceneIntelModal.ActiveTab, "Opening [L] in SimulatorArena must auto-focus Signal Contacts tab");
+                Assert.IsTrue(hud.SceneIntelModal.IsArenaSignalModeActive);
+                StringAssert.Contains("ARENA #312", hud.SceneIntelModal.ContactsHeaderSnapshot);
+                StringAssert.Contains("260m", hud.SceneIntelModal.ContactsHeaderSnapshot);
+                StringAssert.Contains("3.5m", hud.SceneIntelModal.ContactDetailSnapshot);
+                StringAssert.Contains("JAMMING (120m)", hud.SceneIntelModal.ContactDetailSnapshot);
+                StringAssert.Contains("85%", hud.SceneIntelModal.ContactDetailSnapshot);
+                StringAssert.Contains("8/12", hud.SceneIntelModal.ContactDetailSnapshot);
+                StringAssert.Contains("DETACHMENT #7", hud.SceneIntelModal.ContactDetailSnapshot);
+                StringAssert.Contains("HOLD RIDGE", hud.SceneIntelModal.ContactDetailSnapshot);
+
+                // 2. Hostile contacts sort ahead of friendlies and nearest-first (B1 before B2 before R2)
+                Assert.AreEqual(3, hud.SceneIntelModal.VisibleContactRowCount);
+                StringAssert.Contains("B1", hud.SceneIntelModal.GetContactRowSnapshotForTests(0));
+                StringAssert.Contains("REAR", hud.SceneIntelModal.GetContactRowSnapshotForTests(0));
+                StringAssert.Contains("84%", hud.SceneIntelModal.GetContactRowSnapshotForTests(0));
+                StringAssert.Contains("B2", hud.SceneIntelModal.GetContactRowSnapshotForTests(1));
+                StringAssert.Contains("R2", hud.SceneIntelModal.GetContactRowSnapshotForTests(2));
+
+                // 3. Clicking a contact row locks it, updates dossier card, and contextual Arena buttons dispatch verified verbs
+                var verbs = new List<string>();
+                hud.SceneIntelModal.OnCommandRequested += verbs.Add;
+                Assert.IsTrue(hud.SceneIntelModal.ClickContactRowForTests(0));
+                StringAssert.Contains("TARGET B1", hud.SceneIntelModal.ContactDetailSnapshot);
+                hud.SceneIntelModal.ClickPrimaryIntelActionForTests();
+                hud.SceneIntelModal.ClickSecondaryIntelActionForTests();
+                hud.SceneIntelModal.ClickArenaMindCardForTests();
+                CollectionAssert.AreEqual(new[] { "lock B1", "scan", "emcon", "mind" }, verbs);
+
+                // 4. Leaving SimulatorArena cleanly restores IC `tactics.contacts` propagation ledger mode
+                arena.ExitArena();
+                hud.SceneIntelModal.SetActiveStage(TacSim.Core.TacSimActiveStage.StationWalk);
+                Assert.IsFalse(hud.SceneIntelModal.IsArenaSignalModeActive);
+                StringAssert.Contains("SIGNAL PROPAGATION CONTACTS", hud.SceneIntelModal.ContactsHeaderSnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

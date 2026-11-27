@@ -851,6 +851,7 @@ namespace TacSim.Core
 
             if (Hud.SceneIntelModal != null)
             {
+                Hud.SceneIntelModal.BindArena(ArenaStage);
                 Hud.SceneIntelModal.OnCommandRequested += ExecutePlayerCommand;
                 Hud.SceneIntelModal.OnRefreshScenesRequested += () =>
                 {
@@ -1264,6 +1265,7 @@ namespace TacSim.Core
                 Hud.Minimap.SyncMinimap(stage, pos, yaw, rightCornerBusy);
                 Hud.TacticalOverview?.SetAvoidMidLeftMinimap(rightCornerBusy && !Hud.Minimap.IsCollapsed);
                 Hud.QuestJournal?.SyncTrackerVisibility(stage, rightCornerBusy || compactHud);
+                Hud.SceneIntelModal?.SetActiveStage(stage);
                 Hud.SceneIntelModal?.SetBannerSuppressed(cinematicHud || stage == TacSimActiveStage.SimulatorArena || Hud.IsLoginOverlayVisible);
             }
 
