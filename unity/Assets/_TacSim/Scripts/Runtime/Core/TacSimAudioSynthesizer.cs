@@ -60,6 +60,8 @@ namespace TacSim.Core
         private AudioClip _redAlertKlaxonClip;
         private AudioClip _targetLockToneClip;
         private AudioClip _killConfirmChordClip;
+        private AudioClip _hitConfirmTickClip;
+        private AudioClip _armorImpactThudClip;
 
         private static double MonotonicSeconds() =>
             Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
@@ -99,6 +101,8 @@ namespace TacSim.Core
             DestroyClip(ref _redAlertKlaxonClip);
             DestroyClip(ref _targetLockToneClip);
             DestroyClip(ref _killConfirmChordClip);
+            DestroyClip(ref _hitConfirmTickClip);
+            DestroyClip(ref _armorImpactThudClip);
         }
 
         private static void DestroyClip(ref AudioClip clip)
@@ -126,6 +130,8 @@ namespace TacSim.Core
             if (_redAlertKlaxonClip != null) c++;
             if (_targetLockToneClip != null) c++;
             if (_killConfirmChordClip != null) c++;
+            if (_hitConfirmTickClip != null) c++;
+            if (_armorImpactThudClip != null) c++;
             return c;
         }
 
@@ -303,6 +309,20 @@ namespace TacSim.Core
             if (_killConfirmChordClip == null)
                 _killConfirmChordClip = BuildClipFromSamples("KillConfirmChord", GenerateKillConfirmChordSamples());
             PlayOneShotIfUnmuted(_killConfirmChordClip, 0.66f);
+        }
+
+        public void PlayHitConfirmTick(bool isCrit = false)
+        {
+            if (_hitConfirmTickClip == null)
+                _hitConfirmTickClip = BuildClipFromSamples("HitConfirmTick", GenerateHitConfirmTickSamples());
+            PlayOneShotIfUnmuted(_hitConfirmTickClip, isCrit ? 0.64f : 0.44f);
+        }
+
+        public void PlayArmorImpactThud()
+        {
+            if (_armorImpactThudClip == null)
+                _armorImpactThudClip = BuildClipFromSamples("ArmorImpactThud", GenerateArmorImpactThudSamples());
+            PlayOneShotIfUnmuted(_armorImpactThudClip, 0.72f);
         }
 
         /// <summary>
@@ -620,6 +640,59 @@ namespace TacSim.Core
                 if (local < ramp) env *= local / (float)ramp;
                 if (local >= len - ramp) env *= Math.Max(0, len - 1 - local) / (float)ramp;
                 float sig = (Mathf.Sin(p1) * 0.28f + Mathf.Sin(p2) * 0.24f + Mathf.Sin(p3) * 0.16f) * env;
+                buf[i] = Mathf.Clamp(sig, -1f, 1f);
+            }
+            return buf;
+        }
+
+        public static float[] GenerateHitConfirmTickSamples()
+        {
+            int samples = (int)(SampleRate * 0.11f);
+            float[] buf = new float[samples];
+            float p1 = 0f, p2 = 0f;
+            int ramp = Math.Max(1, (int)(SampleRate * 0.002f));
+            for (int i = 0; i < samples; i++)
+            {
+                float t = i / (float)SampleRate;
+                float f1 = Mathf.Lerp(1568.0f, 1760.0f, Mathf.Clamp01(t / 0.05f));
+                float f2 = f1 * 2.0f;
+                p1 += (f1 / SampleRate) * Mathf.PI * 2f;
+                p2 += (f2 / SampleRate) * Mathf.PI * 2f;
+                float env = Mathf.Exp(-t * 34f);
+                if (i < ramp) env *= i / (float)ramp;
+                float snap = i < (int)(SampleRate * 0.006f) ? ((i % 3 == 0 ? 0.16f : -0.14f) * (1f - i / (SampleRate * 0.006f))) : 0f;
+                float sig = (Mathf.Sin(p1) * 0.42f + Mathf.Sin(p2) * 0.18f) * env + snap;
+                buf[i] = Mathf.Clamp(sig, -1f, 1f);
+            }
+            return buf;
+        }
+
+        public static float[] GenerateArmorImpactThudSamples()
+        {
+            int samples = (int)(SampleRate * 0.22f);
+            float[] buf = new float[samples];
+            float phase = 0f;
+            uint rng = 0x5EED1234u;
+            int ramp = Math.Max(1, (int)(SampleRate * 0.003f));
+            float lpNoise = 0f;
+            for (int i = 0; i < samples; i++)
+            {
+                float t = i / (float)SampleRate;
+                float u = i / (float)Math.Max(1, samples - 1);
+                float freq = Mathf.Lerp(92f, 38f, u);
+                phase += (freq / SampleRate) * Mathf.PI * 2f;
+                rng = rng * 1664525u + 1013904223u;
+                float white = ((rng >> 9) / (float)(1 << 23)) * 2f - 1f;
+                lpNoise = lpNoise * 0.78f + white * 0.22f;
+                float bodyEnv = Mathf.Exp(-t * 14f);
+                float crunchEnv = Mathf.Exp(-t * 28f);
+                if (i < ramp)
+                {
+                    float r = i / (float)ramp;
+                    bodyEnv *= r;
+                    crunchEnv *= r;
+                }
+                float sig = Mathf.Sin(phase) * bodyEnv * 0.62f + lpNoise * crunchEnv * 0.38f;
                 buf[i] = Mathf.Clamp(sig, -1f, 1f);
             }
             return buf;

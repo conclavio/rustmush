@@ -3562,13 +3562,14 @@ namespace TacSim.Core
                     Hud?.TacticalBrackets?.TriggerArenaHitmarker(ArenaHitmarkerKind.Kill);
                     CameraRig?.TriggerCameraShake(0.32f, 0.28f);
                     Audio?.PlayKillConfirmChord();
-                    Hud?.FloatingCallouts?.ShowCallout(
-                        string.IsNullOrEmpty(safeDesig) ? "TARGET DESTROYED!" : $"TARGET DESTROYED: {safeDesig}!",
-                        new Color(1.0f, 0.34f, 0.24f, 1f), 2.6f);
+                    Hud?.FloatingCallouts?.ShowMilestoneBanner(
+                        TacSimFloatingCallouts.FormatKillStreakTitle(ArenaStage?.State?.MatchKills ?? 1, safeDesig),
+                        new Color(1.0f, 0.30f, 0.20f, 0.96f),
+                        3.0f);
                     break;
                 case "target_section_lost":
                     Hud?.TacticalBrackets?.TriggerArenaHitmarker(ArenaHitmarkerKind.SectionCrit);
-                    Audio?.PlayUiClick();
+                    Audio?.PlayHitConfirmTick(isCrit: true);
                     Hud?.FloatingCallouts?.ShowCallout(
                         $"{safeDesig} {safeSec} DESTROYED!",
                         new Color(1.0f, 0.74f, 0.18f, 1f), 2.2f);
@@ -3580,9 +3581,26 @@ namespace TacSim.Core
                     break;
                 case "hit":
                     Hud?.TacticalBrackets?.TriggerArenaHitmarker(ArenaHitmarkerKind.Hit);
+                    Audio?.PlayHitConfirmTick(isCrit: false);
                     break;
                 case "miss":
                     Hud?.TacticalBrackets?.TriggerArenaHitmarker(ArenaHitmarkerKind.Miss);
+                    break;
+                case "struck":
+                case "struck_spent":
+                    Audio?.PlayArmorImpactThud();
+                    CameraRig?.TriggerCameraShake(0.24f, 0.18f);
+                    Hud?.TacticalBrackets?.TriggerDirectionalDamageArc(string.IsNullOrEmpty(safeSec) ? "FRONT" : safeSec, internalBreach: false);
+                    break;
+                case "emcon_on":
+                    Audio?.PlayRadarScanPing();
+                    Hud?.FloatingCallouts?.ShowCallout(
+                        notice.DetailRadiusM > 1f ? $"ECM POD ACTIVE ({notice.DetailRadiusM:0}m)" : "ECM POD ACTIVE",
+                        new Color(0.80f, 0.54f, 1.0f, 1f), 1.8f);
+                    break;
+                case "emcon_off":
+                    Audio?.PlayUiClick();
+                    Hud?.FloatingCallouts?.ShowCallout("EMCON SILENT", new Color(0.54f, 0.82f, 0.96f, 1f), 1.6f);
                     break;
                 case "section_lost":
                     Hud?.TacticalBrackets?.TriggerDirectionalDamageArc("INTERNALS", internalBreach: true);
