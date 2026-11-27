@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Text;
 using TacSim.Core;
 using TacSim.Net;
+using TacSim.World;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -14,6 +15,91 @@ namespace TacSim.UI
         Passages = 1,
         Surveys = 2,
         Claims = 3
+    }
+
+    public readonly struct QuestTradeNeed
+    {
+        public readonly string QuestTitle;
+        public readonly string CheckpointTitle;
+        public readonly string CommoditySlug;
+        public readonly int TargetQuantity;
+        public readonly bool WantsBuy;
+        public readonly bool WantsSell;
+
+        public QuestTradeNeed(string questTitle, string checkpointTitle, string commoditySlug, int targetQuantity, bool wantsBuy, bool wantsSell)
+        {
+            QuestTitle = questTitle ?? string.Empty;
+            CheckpointTitle = checkpointTitle ?? string.Empty;
+            CommoditySlug = commoditySlug ?? string.Empty;
+            TargetQuantity = Mathf.Max(1, targetQuantity);
+            WantsBuy = wantsBuy;
+            WantsSell = wantsSell;
+        }
+
+        public bool MatchesListing(MarketListingRow row)
+        {
+            if (row == null || string.IsNullOrEmpty(CommoditySlug)) return false;
+            bool sideMatch = row.IsWantedBid ? WantsSell : WantsBuy;
+            if (!sideMatch) return false;
+
+            string code = NormalizeGoodSlug(row.GoodCode);
+            if (!string.IsNullOrEmpty(code) && string.Equals(code, CommoditySlug, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            string item = NormalizeGoodSlug(row.ItemName);
+            return !string.IsNullOrEmpty(item) && string.Equals(item, CommoditySlug, StringComparison.OrdinalIgnoreCase);
+        }
+
+        public static string NormalizeGoodSlug(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return string.Empty;
+            string s = raw.Trim().ToLowerInvariant();
+            int colon = s.LastIndexOf(':');
+            if (colon >= 0 && colon < s.Length - 1)
+                s = s.Substring(colon + 1);
+            s = s.Replace('-', '_').Replace(' ', '_');
+            while (s.Contains("__", StringComparison.Ordinal))
+                s = s.Replace("__", "_");
+            return s;
+        }
+    }
+
+    public readonly struct QuestSurfaceMiningStatus
+    {
+        public readonly string QuestTitle;
+        public readonly string TargetOreSlug;
+        public readonly string RecommendedFamily;
+        public readonly bool HasScanStep;
+        public readonly bool ScanDone;
+        public readonly bool HasSoundStep;
+        public readonly bool SoundDone;
+        public readonly bool HasMineStep;
+        public readonly bool MineDone;
+        public readonly string NextStepText;
+
+        public QuestSurfaceMiningStatus(
+            string questTitle,
+            string targetOreSlug,
+            string recommendedFamily,
+            bool hasScanStep,
+            bool scanDone,
+            bool hasSoundStep,
+            bool soundDone,
+            bool hasMineStep,
+            bool mineDone,
+            string nextStepText)
+        {
+            QuestTitle = questTitle ?? string.Empty;
+            TargetOreSlug = targetOreSlug ?? string.Empty;
+            RecommendedFamily = recommendedFamily ?? "carbon";
+            HasScanStep = hasScanStep;
+            ScanDone = scanDone;
+            HasSoundStep = hasSoundStep;
+            SoundDone = soundDone;
+            HasMineStep = hasMineStep;
+            MineDone = mineDone;
+            NextStepText = nextStepText ?? string.Empty;
+        }
     }
 
     /// <summary>
@@ -30,6 +116,7 @@ namespace TacSim.UI
     {
         public event Action<string> OnCommandRequested;
         public event Action<string> OnWayfinderRoomRequested;
+        public event Action OnQuestsPanelUpdated;
         /// <summary>
         /// Fires on genuine server state transitions after initial hydration:
         /// kind is "accepted", "ready" (ready to turn in), or "completed", paired with the quest title.
@@ -425,6 +512,8 @@ namespace TacSim.UI
             if (IsQuestDialogOpen)
                 RefreshQuestDialogUi();
 
+            OnQuestsPanelUpdated?.Invoke();
+
             if (milestones != null)
             {
                 for (int i = 0; i < milestones.Count; i++)
@@ -436,6 +525,211 @@ namespace TacSim.UI
         {
             if (LatestPanel == null) return null;
             return FindActiveByKey(TrackedQuestKey) ?? (LatestPanel.Active.Count > 0 ? LatestPanel.Active[0] : null);
+        }
+
+        private static readonly (string slug, string[] patterns)[] KnownTradeCommodities =
+        {
+            ("industrial_parts", new[] { "industrial_parts", "industrial parts" }),
+            ("carbon_ore", new[] { "carbon_ore", "carbon ore" }),
+            ("structural_alloys", new[] { "structural_alloys", "structural alloys" }),
+            ("rare_earths", new[] { "rare_earths", "rare earths" }),
+            ("water_ice", new[] { "water_ice", "water ice" }),
+            ("provisions", new[] { "provisions" }),
+            ("propellant", new[] { "propellant" }),
+            ("volatiles", new[] { "volatiles" }),
+            ("silicates", new[] { "silicates" }),
+            ("metals", new[] { "metals" }),
+        };
+
+        /// <summary>
+        /// Extracts the next active trade commodity need (commodity slug, target lot quantity, buy/sell side)
+        /// from the tracked (or first matching) active quest so the Visual Commodity Exchange can highlight
+        /// matching listings and provide a 1-click "SET QUEST QTY" button.
+        /// </summary>
+        public bool TryGetActiveTradeNeed(out QuestTradeNeed need)
+        {
+            need = default;
+            if (LatestPanel == null || LatestPanel.Active.Count == 0) return false;
+
+            var ordered = new List<MushActiveQuest>(LatestPanel.Active.Count);
+            var tracked = GetTrackedActiveQuest();
+            if (tracked != null) ordered.Add(tracked);
+            for (int i = 0; i < LatestPanel.Active.Count; i++)
+            {
+                if (LatestPanel.Active[i] != tracked)
+                    ordered.Add(LatestPanel.Active[i]);
+            }
+
+            for (int qIdx = 0; qIdx < ordered.Count; qIdx++)
+            {
+                var q = ordered[qIdx];
+                for (int cIdx = 0; cIdx < q.Checkpoints.Count; cIdx++)
+                {
+                    var cp = q.Checkpoints[cIdx];
+                    if (cp.Checked || cp.LiveReady) continue;
+                    if (TryExtractTradeNeedFromCheckpoint(q.Title, cp, out need))
+                        return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool TryExtractTradeNeedFromCheckpoint(string questTitle, MushQuestCheckpoint cp, out QuestTradeNeed need)
+        {
+            need = default;
+            if (cp == null) return false;
+            string idLow = (cp.Id ?? string.Empty).ToLowerInvariant();
+            string titleLow = (cp.Title ?? string.Empty).ToLowerInvariant();
+            string instrLow = (cp.Instructions ?? string.Empty).ToLowerInvariant();
+            string combined = $"{idLow} {titleLow} {instrLow}";
+
+            // Do not treat surface mining extraction checkpoints ("Mine 1t carbon_ore") as exchange trade rows
+            if (idLow.StartsWith("mine_", StringComparison.Ordinal) ||
+                idLow.StartsWith("scan_", StringComparison.Ordinal) ||
+                idLow.StartsWith("sound_", StringComparison.Ordinal) ||
+                titleLow.StartsWith("mine ", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            string matchedSlug = null;
+            for (int i = 0; i < KnownTradeCommodities.Length; i++)
+            {
+                var patterns = KnownTradeCommodities[i].patterns;
+                for (int p = 0; p < patterns.Length; p++)
+                {
+                    if (combined.Contains(patterns[p], StringComparison.Ordinal))
+                    {
+                        matchedSlug = KnownTradeCommodities[i].slug;
+                        break;
+                    }
+                }
+                if (matchedSlug != null) break;
+            }
+            if (string.IsNullOrEmpty(matchedSlug)) return false;
+
+            bool wantsBuy = idLow.StartsWith("buy_", StringComparison.Ordinal) ||
+                            idLow.StartsWith("deliver_", StringComparison.Ordinal) ||
+                            idLow.StartsWith("return_", StringComparison.Ordinal) ||
+                            titleLow.Contains("buy ", StringComparison.Ordinal) ||
+                            titleLow.Contains("haul ", StringComparison.Ordinal) ||
+                            instrLow.Contains("buy ", StringComparison.Ordinal);
+            bool wantsSell = idLow.StartsWith("sell_", StringComparison.Ordinal) ||
+                             idLow.StartsWith("deliver_", StringComparison.Ordinal) ||
+                             idLow.StartsWith("return_", StringComparison.Ordinal) ||
+                             titleLow.Contains("sell ", StringComparison.Ordinal) ||
+                             titleLow.Contains("deliver ", StringComparison.Ordinal) ||
+                             titleLow.Contains("haul ", StringComparison.Ordinal) ||
+                             instrLow.Contains("+market/sell", StringComparison.Ordinal);
+
+            if (!wantsBuy && !wantsSell) return false;
+
+            int qty = ExtractLeadingPositiveInt(cp.Title);
+            if (qty <= 0) qty = ExtractLeadingPositiveInt(cp.Instructions);
+            if (qty <= 0) qty = 1;
+
+            need = new QuestTradeNeed(questTitle, cp.Title, matchedSlug, qty, wantsBuy, wantsSell);
+            return true;
+        }
+
+        private static int ExtractLeadingPositiveInt(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return 0;
+            for (int i = 0; i < text.Length; i++)
+            {
+                if (!char.IsDigit(text[i])) continue;
+                int val = 0;
+                int j = i;
+                while (j < text.Length && char.IsDigit(text[j]) && val < 10000)
+                {
+                    val = val * 10 + (text[j] - '0');
+                    j++;
+                }
+                if (val > 0) return val;
+            }
+            return 0;
+        }
+
+        /// <summary>
+        /// Extracts live Scan / Sound / Mine checkpoint progress for any active surface prospecting quest
+        /// so the Surface Quarry HUD and Planetary Ground Chart can render a guided mining checklist.
+        /// </summary>
+        public bool TryGetActiveSurfaceMiningStatus(out QuestSurfaceMiningStatus status)
+        {
+            status = default;
+            if (LatestPanel == null || LatestPanel.Active.Count == 0) return false;
+
+            var ordered = new List<MushActiveQuest>(LatestPanel.Active.Count);
+            var tracked = GetTrackedActiveQuest();
+            if (tracked != null) ordered.Add(tracked);
+            for (int i = 0; i < LatestPanel.Active.Count; i++)
+            {
+                if (LatestPanel.Active[i] != tracked)
+                    ordered.Add(LatestPanel.Active[i]);
+            }
+
+            for (int qIdx = 0; qIdx < ordered.Count; qIdx++)
+            {
+                var q = ordered[qIdx];
+                bool hasScan = false, scanDone = false;
+                bool hasSound = false, soundDone = false;
+                bool hasMine = false, mineDone = false;
+                string oreSlug = string.Empty;
+
+                for (int cIdx = 0; cIdx < q.Checkpoints.Count; cIdx++)
+                {
+                    var cp = q.Checkpoints[cIdx];
+                    string idLow = (cp.Id ?? string.Empty).ToLowerInvariant();
+                    string textLow = $"{idLow} {(cp.Title ?? string.Empty).ToLowerInvariant()} {(cp.Instructions ?? string.Empty).ToLowerInvariant()}";
+                    bool done = cp.Checked || cp.LiveReady;
+
+                    if (idLow.Contains("scan", StringComparison.Ordinal) || textLow.Contains("surface scan", StringComparison.Ordinal) || textLow.Contains("scan go", StringComparison.Ordinal))
+                    {
+                        hasScan = true;
+                        scanDone = done;
+                    }
+                    else if (idLow.Contains("sound", StringComparison.Ordinal) || textLow.Contains("sound a detected", StringComparison.Ordinal) || textLow.Contains("sound go", StringComparison.Ordinal))
+                    {
+                        hasSound = true;
+                        soundDone = done;
+                    }
+                    else if (idLow.StartsWith("mine_", StringComparison.Ordinal) || textLow.Contains("mine at least", StringComparison.Ordinal) || textLow.Contains("mine go", StringComparison.Ordinal))
+                    {
+                        hasMine = true;
+                        mineDone = done;
+                        if (textLow.Contains("carbon_ore", StringComparison.Ordinal) || textLow.Contains("carbon ore", StringComparison.Ordinal))
+                            oreSlug = "carbon_ore";
+                        else if (textLow.Contains("rare_earths", StringComparison.Ordinal) || textLow.Contains("rare earths", StringComparison.Ordinal))
+                            oreSlug = "rare_earths";
+                        else if (textLow.Contains("volatiles", StringComparison.Ordinal) || textLow.Contains("water_ice", StringComparison.Ordinal))
+                            oreSlug = "volatiles";
+                        else if (textLow.Contains("metals", StringComparison.Ordinal))
+                            oreSlug = "metals";
+                    }
+                }
+
+                if (hasScan || hasSound || hasMine)
+                {
+                    if (string.IsNullOrEmpty(oreSlug)) oreSlug = "carbon_ore";
+                    string family = oreSlug == "carbon_ore" ? "carbon"
+                                  : oreSlug == "rare_earths" ? "strategic"
+                                  : oreSlug == "metals" ? "metals"
+                                  : "volatiles";
+                    status = new QuestSurfaceMiningStatus(
+                        q.Title,
+                        oreSlug,
+                        family,
+                        hasScan,
+                        scanDone,
+                        hasSound,
+                        soundDone,
+                        hasMine,
+                        mineDone,
+                        q.NextStep);
+                    return true;
+                }
+            }
+            return false;
         }
 
         public bool TryGetMinimapObjective(out string roomEntry, out bool isTurnIn, out bool currentRoomHasOffer)
@@ -563,6 +857,7 @@ namespace TacSim.UI
             TrackedQuestKey = questKey ?? string.Empty;
             _manualPinActive = false;
             SyncStructuredTrackerCard();
+            OnQuestsPanelUpdated?.Invoke();
         }
 
         public void SetOpen(bool open, QuestJournalTab? tabOverride = null)
@@ -603,6 +898,7 @@ namespace TacSim.UI
             ClearPinnedObjective();
             CloseQuestDialog();
             SetOpen(false);
+            OnQuestsPanelUpdated?.Invoke();
         }
 
         public void SelectTab(QuestJournalTab tab, bool queryServer = true)

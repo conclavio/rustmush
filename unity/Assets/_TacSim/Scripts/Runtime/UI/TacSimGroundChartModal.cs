@@ -236,6 +236,13 @@ namespace TacSim.UI
         private Text _headingText;
         private Text _footerText;
         private Text _dossierText;
+        private GameObject _questBanner;
+        private Text _questBannerText;
+        private Button _questWashBtn;
+        private Text _questWashBtnLbl;
+        private RectTransform _sitesListBoxRect;
+        private TacSimQuestJournal _questJournal;
+        private string _questRecommendedFamily = string.Empty;
         private RawImage _mapImage;
         private RectTransform _mapRect;
         private Texture2D _mapTex;
@@ -244,6 +251,8 @@ namespace TacSim.UI
         private readonly List<PooledFamilyBtn> _familyPool = new List<PooledFamilyBtn>(MaxFamilyButtons);
 
         public bool IsOpen => _overlay != null && _overlay.activeSelf;
+        public bool HasQuestMiningBanner => _questBanner != null && _questBanner.activeSelf;
+        public string QuestMiningBannerText => _questBannerText != null ? _questBannerText.text : string.Empty;
         public GroundChartFrame CurrentFrame { get; private set; }
         public string ActiveFamily { get; private set; } = "volatiles";
         public string SelectedSiteVenue { get; private set; } = string.Empty;
@@ -350,7 +359,17 @@ namespace TacSim.UI
             var listHdr = CreateText(rightPane.transform, "PLANETARY PROSPECTING SITES & LANDING VENUES", 13, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.76f, 0.92f, 1f));
             SetRect(listHdr.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(10f, -30f), new Vector2(-10f, -4f));
 
+            _questBanner = CreatePanel(rightPane.transform, "QuestMiningBanner", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(10f, -64f), new Vector2(-10f, -34f), new Color(0.24f, 0.18f, 0.05f, 0.96f));
+            _questBannerText = CreateText(_questBanner.transform, string.Empty, 11, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(1f, 0.88f, 0.44f));
+            _questBannerText.supportRichText = true;
+            SetRect(_questBannerText.rectTransform, Vector2.zero, Vector2.one, new Vector2(8f, 0f), new Vector2(-112f, 0f));
+            _questWashBtn = CreateButton(_questBanner.transform, "CARBON WASH", new Color(0.62f, 0.44f, 0.12f), () => ApplyQuestWashFilter());
+            SetRect(_questWashBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-106f, 3f), new Vector2(-4f, -3f));
+            _questWashBtnLbl = _questWashBtn.GetComponentInChildren<Text>();
+            _questBanner.SetActive(false);
+
             var listBox = CreatePanel(rightPane.transform, "SitesListBox", new Vector2(0f, 0.44f), new Vector2(1f, 1f), new Vector2(10f, 4f), new Vector2(-10f, -34f), new Color(0.02f, 0.04f, 0.07f, 0.92f));
+            _sitesListBoxRect = listBox.GetComponent<RectTransform>();
             var vlg = listBox.AddComponent<VerticalLayoutGroup>();
             vlg.spacing = 4f;
             vlg.padding = new RectOffset(6, 6, 6, 6);
@@ -402,11 +421,59 @@ namespace TacSim.UI
 
         private void OnDestroy()
         {
+            if (_questJournal != null)
+            {
+                _questJournal.OnQuestsPanelUpdated -= RefreshQuestMiningBanner;
+                _questJournal = null;
+            }
             if (_mapTex != null)
             {
                 if (Application.isPlaying) Destroy(_mapTex);
                 else DestroyImmediate(_mapTex);
                 _mapTex = null;
+            }
+        }
+
+        public void BindQuestJournal(TacSimQuestJournal journal)
+        {
+            if (_questJournal != null)
+                _questJournal.OnQuestsPanelUpdated -= RefreshQuestMiningBanner;
+            _questJournal = journal;
+            if (_questJournal != null)
+                _questJournal.OnQuestsPanelUpdated += RefreshQuestMiningBanner;
+            RefreshQuestMiningBanner();
+        }
+
+        public bool ApplyQuestWashFilter()
+        {
+            if (string.IsNullOrEmpty(_questRecommendedFamily)) return false;
+            SelectFamily(_questRecommendedFamily);
+            return true;
+        }
+
+        private void RefreshQuestMiningBanner()
+        {
+            if (_questBanner == null) return;
+            if (_questJournal != null && _questJournal.TryGetActiveSurfaceMiningStatus(out var qMine))
+            {
+                _questRecommendedFamily = qMine.RecommendedFamily;
+                string scanMark = qMine.ScanDone ? "<color=#55EE99>[✓]</color>" : "<color=#99BBCC>[ ]</color>";
+                string soundMark = qMine.SoundDone ? "<color=#55EE99>[✓]</color>" : "<color=#99BBCC>[ ]</color>";
+                string mineMark = qMine.MineDone ? "<color=#55EE99>[✓]</color>" : "<color=#99BBCC>[ ]</color>";
+                if (_questBannerText != null)
+                    _questBannerText.text = $"[QUEST] {scanMark} Scan  {soundMark} Sound  {mineMark} Mine {MushProtocol.EscapeUnityRichText(qMine.TargetOreSlug)}";
+                if (_questWashBtnLbl != null)
+                    _questWashBtnLbl.text = $"{qMine.RecommendedFamily.ToUpperInvariant()} WASH";
+                _questBanner.SetActive(true);
+                if (_sitesListBoxRect != null)
+                    _sitesListBoxRect.offsetMax = new Vector2(-10f, -68f);
+            }
+            else
+            {
+                _questRecommendedFamily = string.Empty;
+                _questBanner.SetActive(false);
+                if (_sitesListBoxRect != null)
+                    _sitesListBoxRect.offsetMax = new Vector2(-10f, -34f);
             }
         }
 
@@ -538,6 +605,7 @@ namespace TacSim.UI
                     ? $"{CurrentFrame.Footer}  |  Wash: [.] Barren [-] Lean [+] Fair [*] Rich"
                     : "Wash: [.] Barren  [-] Lean  [+] Fair  [*] Rich  |  Click any beacon to inspect landing site & plot passage";
             }
+            RefreshQuestMiningBanner();
             RefreshFamilyButtons();
             RefreshSiteRowsAndDossier();
             RedrawMapTexture();

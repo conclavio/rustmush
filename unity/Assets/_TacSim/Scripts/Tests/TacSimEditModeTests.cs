@@ -10674,5 +10674,152 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestTradeExchangeGuidance_AndSurfaceMiningChecklist_HighlightObjectivesEndToEnd()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestTradeAndSurfaceGuidanceTestRoot");
+            try
+            {
+                var tradeState = new TacSimTradeAndShipState();
+                var surfaceGo = new UnityEngine.GameObject("SurfaceQuestStage");
+                surfaceGo.transform.SetParent(rootGo.transform, false);
+                var surface = surfaceGo.AddComponent<TacSim.Surface.SurfaceMiningController>();
+                surface.BuildSurfaceStage(null, "occator_rim");
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.BindTradeState(tradeState);
+                hud.Overlays.BindControllers(surface, null, null);
+
+                // Populate exchange book with live port.trade schema: provisions (ASK), propellant (ASK), and carbon_ore (BID)
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""balance_text"": ""5,000 cr"",
+                    ""listings"": [
+                        { ""id"": 101, ""side"": ""ask"", ""good"": ""tacsim:provisions"", ""good_label"": ""Provisions"", ""available_qty"": 30, ""unit_price_minor"": 1200, ""price_text"": ""12.00 cr"", ""funded"": true, ""vendor_name"": ""Co-op Chandlery"" },
+                        { ""id"": 102, ""side"": ""ask"", ""good"": ""tacsim:propellant"", ""good_label"": ""Propellant"", ""available_qty"": 40, ""unit_price_minor"": 900, ""price_text"": ""9.00 cr"", ""funded"": true, ""vendor_name"": ""Ceres Exchange"" },
+                        { ""id"": 103, ""side"": ""bid"", ""good"": ""tacsim:carbon_ore"", ""good_label"": ""Carbon Ore"", ""available_qty"": 20, ""unit_price_minor"": 4500, ""price_text"": ""45.00 cr"", ""funded"": true, ""vendor_name"": ""Kasei Receiving"" }
+                    ]
+                }"));
+
+                // 1. Activate Step 2 quest (Buy 10 provisions -> Buy 5 propellant)
+                var step2Json = JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#20"",
+                    ""room_name"": ""Co-op Chandlery"",
+                    ""room_markers"": [],
+                    ""available"": [],
+                    ""active"": [
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"",
+                            ""title"": ""Stock the Locker and Tanks"",
+                            ""category"": ""guided"",
+                            ""giver_id"": ""#55"", ""giver_name"": ""Ilse"", ""turn_in_id"": ""#55"", ""turn_in_name"": ""Ilse"",
+                            ""next_step"": ""Buy at least 10 provisions at Ceres Co-op Chandlery"",
+                            ""checkpoints"": [
+                                { ""id"": ""buy_provisions"", ""title"": ""Buy at least 10 provisions at Ceres Co-op Chandlery"", ""instructions"": ""Request quote for 10 provisions."", ""checked"": false, ""live_ready"": false },
+                                { ""id"": ""buy_propellant"", ""title"": ""Buy at least 5 tonnes of propellant at Ceres Exchange Hall"", ""instructions"": ""Request quote for 5 propellant."", ""checked"": false, ""live_ready"": false }
+                            ]
+                        }
+                    ],
+                    ""completed"": []
+                }");
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(step2Json));
+
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveTradeNeed(out var tradeNeed));
+                Assert.AreEqual("provisions", tradeNeed.CommoditySlug);
+                Assert.AreEqual(10, tradeNeed.TargetQuantity);
+                Assert.IsTrue(tradeNeed.WantsBuy);
+
+                hud.OpenTradeAndSailingModal("CO-OP CHANDLERY", openSailingTab: false);
+                Assert.IsTrue(hud.IsExchangeQuestBannerVisible, "Exchange must display the active Quest Trade Need banner");
+                StringAssert.Contains("PROVISIONS", hud.ExchangeQuestBannerText);
+                Assert.AreEqual(1, hud.HighlightedQuestListingCount, "Exactly the matching provisions ASK row must be highlighted as [QUEST]");
+
+                // 1-click SET QUEST QTY aligns selected trade lot to 10
+                tradeState.SelectedTradeQuantity = 25;
+                tradeState.SelectedSellAll = true;
+                Assert.IsTrue(hud.ApplyQuestTradeQuantity());
+                Assert.IsFalse(tradeState.SelectedSellAll);
+                Assert.AreEqual(10, tradeState.SelectedTradeQuantity);
+
+                // 2. Activate Step 7 quest (Sell 1t carbon_ore) -> highlights matching BID row and sets qty = 1
+                var step7Json = JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#30"",
+                    ""room_name"": ""Service Counter"",
+                    ""room_markers"": [],
+                    ""available"": [],
+                    ""active"": [
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore"",
+                            ""title"": ""Deliver Your Mined Ore to Market"",
+                            ""category"": ""guided"",
+                            ""giver_id"": ""#60"", ""giver_name"": ""Rosalind"", ""turn_in_id"": ""#70"", ""turn_in_name"": ""Wren"",
+                            ""next_step"": ""Sell at least 1 tonne of carbon ore at Stickney Yards"",
+                            ""checkpoints"": [
+                                { ""id"": ""sell_carbon_ore"", ""title"": ""Sell at least 1 tonne of carbon ore at Stickney Yards"", ""instructions"": ""Run +market/sell for carbon_ore."", ""checked"": false, ""live_ready"": false }
+                            ]
+                        }
+                    ],
+                    ""completed"": []
+                }");
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(step7Json));
+                Assert.AreEqual(1, hud.HighlightedQuestListingCount, "Carbon ore BID listing must be highlighted for Step 7");
+                Assert.IsTrue(hud.ApplyQuestTradeQuantity());
+                Assert.AreEqual(1, tradeState.SelectedTradeQuantity);
+
+                // 3. Activate Step 6 surface mining quest (Scan done, Sound pending, Mine carbon_ore pending)
+                var step6Json = JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#22"",
+                    ""room_name"": ""Occator Rim"",
+                    ""room_markers"": [],
+                    ""available"": [],
+                    ""active"": [
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                            ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                            ""category"": ""guided"",
+                            ""giver_id"": ""#60"", ""giver_name"": ""Rosalind"", ""turn_in_id"": ""#60"", ""turn_in_name"": ""Rosalind"",
+                            ""next_step"": ""Sound a detected mineral pocket on the surface"",
+                            ""checkpoints"": [
+                                { ""id"": ""scan_landing_site"", ""title"": ""Complete a surface scan at a Ceres landing site"", ""instructions"": ""Run +tv/1 scan go."", ""checked"": true, ""live_ready"": true },
+                                { ""id"": ""sound_mineral_pocket"", ""title"": ""Sound a detected mineral pocket on the surface"", ""instructions"": ""Run +tv/1 sound go."", ""checked"": false, ""live_ready"": false },
+                                { ""id"": ""mine_carbon_ore"", ""title"": ""Mine at least 1 tonne of carbon ore on the surface"", ""instructions"": ""Mine carbon_ore."", ""checked"": false, ""live_ready"": false }
+                            ]
+                        }
+                    ],
+                    ""completed"": []
+                }");
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(step6Json));
+
+                // Surface mining quest must NOT show a bogus exchange trade banner
+                Assert.IsFalse(hud.IsExchangeQuestBannerVisible);
+
+                // Ground Chart modal displays the guided mining checklist banner and 1-click switches to carbon wash
+                Assert.IsTrue(hud.GroundChart.HasQuestMiningBanner, "Ground Chart must show the Quest Mining Banner for Step 6");
+                StringAssert.Contains("[✓]", hud.GroundChart.QuestMiningBannerText);
+                StringAssert.Contains("carbon_ore", hud.GroundChart.QuestMiningBannerText);
+                string requestedFamily = null;
+                hud.GroundChart.OnRefreshGroundChartRequested += f => requestedFamily = f;
+                Assert.IsTrue(hud.GroundChart.ApplyQuestWashFilter());
+                Assert.AreEqual("carbon", hud.GroundChart.ActiveFamily);
+                Assert.AreEqual("carbon", requestedFamily);
+
+                // Surface Quarry HUD displays the guided mining checklist when excursion is active
+                surface.EnterSurfaceMode();
+                hud.Overlays.RefreshSurfaceHud();
+                Assert.IsTrue(hud.Overlays.HasSurfaceQuestChecklist, "Surface Quarry HUD must display guided mining checklist");
+                StringAssert.Contains("Scan, Sound, and Mine", hud.Overlays.SurfaceReadingsTextForTests);
+                StringAssert.Contains("carbon_ore", hud.Overlays.SurfaceReadingsTextForTests);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
