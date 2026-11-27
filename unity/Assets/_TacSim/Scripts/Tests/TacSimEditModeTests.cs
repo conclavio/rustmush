@@ -8776,5 +8776,123 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void Arena3DImpactExplosionsAndFloatingCombatPopups_TriggerInLiveCombatAndReplayTheater()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave11PR1_Arena3DImpactsAndPopupsTest");
+            try
+            {
+                var catalog = TacSimAssetCatalog.LoadOrDefault();
+                var arenaGo = new UnityEngine.GameObject("ArenaVfxTest");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(catalog, TacSimTerrainDecoder.LoadStaticArena("proving_ground"));
+
+                Assert.AreEqual(0, arena.ActiveImpactBurstCount);
+                Assert.AreEqual(0, arena.ActiveWorldPopupCount);
+
+                // 1. Live Arena combat frame with hostile B1, then hit / target_section_lost / kill / miss notices
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 150, ""seated"": true, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""mode"": ""skirmish"", ""power"": ""online"",
+                    ""x_cm"": 10000, ""y_cm"": 10000, ""heading_deg"": 90, ""speed_kph"": 0,
+                    ""lock_designator"": ""B1"", ""lock_range_m"": 140, ""lock_percent"": 88,
+                    ""contacts"": [
+                        { ""designator"": ""B1"", ""class"": ""line_tank"", ""party"": ""B"", ""friendly"": false, ""cell"": [114, 100], ""range_m"": 140, ""bearing_deg"": 90, ""facing"": ""front"", ""aspect"": ""front"", ""band"": ""close"", ""health"": ""intact"", ""odds"": [{ ""weapon"": ""main_gun"", ""percent"": 88 }] }
+                    ],
+                    ""notices"": [
+                        { ""kind"": ""hit"", ""designator"": ""B1"", ""section"": ""front"", ""weapon"": ""main_gun"" }
+                    ]
+                }"));
+                Assert.GreaterOrEqual(arena.ActiveImpactBurstCount, 1, "Hit notice must spawn a pooled 3D impact burst");
+                Assert.GreaterOrEqual(arena.ActiveWorldPopupCount, 1, "Hit notice must spawn a 3D floating combat popup");
+                Assert.AreEqual(TacSim.Arena.ArenaImpactKind.Hit, arena.LastImpactKind);
+                StringAssert.Contains("HIT", arena.LastWorldPopupText);
+
+                // Target section destroyed -> SectionCrit fireball + CRIT popup
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 150, ""seated"": true, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""mode"": ""skirmish"", ""power"": ""online"",
+                    ""x_cm"": 10000, ""y_cm"": 10000, ""heading_deg"": 90, ""speed_kph"": 0,
+                    ""lock_designator"": ""B1"", ""lock_range_m"": 140, ""lock_percent"": 88,
+                    ""contacts"": [
+                        { ""designator"": ""B1"", ""class"": ""line_tank"", ""party"": ""B"", ""friendly"": false, ""cell"": [114, 100], ""range_m"": 140, ""bearing_deg"": 90, ""facing"": ""front"", ""aspect"": ""front"", ""band"": ""close"", ""health"": ""crippled"" }
+                    ],
+                    ""notices"": [
+                        { ""kind"": ""target_section_lost"", ""designator"": ""B1"", ""section"": ""turret"" }
+                    ]
+                }"));
+                Assert.AreEqual(TacSim.Arena.ArenaImpactKind.SectionCrit, arena.LastImpactKind);
+                StringAssert.Contains("CRIT", arena.LastWorldPopupText);
+                StringAssert.Contains("TURRET", arena.LastWorldPopupText);
+
+                // Kill notice -> Kill fireball + DESTROYED popup
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 150, ""seated"": true, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""mode"": ""skirmish"", ""power"": ""online"",
+                    ""x_cm"": 10000, ""y_cm"": 10000, ""heading_deg"": 90, ""speed_kph"": 0,
+                    ""contacts"": [
+                        { ""designator"": ""B1"", ""class"": ""line_tank"", ""party"": ""B"", ""friendly"": false, ""cell"": [114, 100], ""range_m"": 140, ""bearing_deg"": 90, ""facing"": ""front"", ""aspect"": ""front"", ""health"": ""wreck"" }
+                    ],
+                    ""notices"": [
+                        { ""kind"": ""kill"", ""designator"": ""B1"" }
+                    ]
+                }"));
+                Assert.AreEqual(TacSim.Arena.ArenaImpactKind.Kill, arena.LastImpactKind);
+                StringAssert.Contains("DESTROYED", arena.LastWorldPopupText);
+
+                // Decay pooled bursts & popups cleanly to zero
+                arena.StepTracersForTests(2.0f);
+                Assert.AreEqual(0, arena.ActiveImpactBurstCount, "Impact bursts must decay cleanly after duration");
+                Assert.AreEqual(0, arena.ActiveWorldPopupCount, "Floating world popups must decay cleanly after duration");
+
+                // 2. 3D Replay Theater crossing shot + wreck timestamps spawns impact bursts & WRECKED! popup
+                arena.ExitArena();
+                arena.HandleReplayPanelFrame(JsonNode.Parse(@"{
+                    ""schema"": { ""id"": ""arena.replay"", ""shape"": ""replay"", ""version"": 1 },
+                    ""match"": 92, ""arena"": ""proving_ground"", ""cell_cm"": 1000, ""width"": 64, ""height"": 64,
+                    ""end_ms"": 8000, ""outcome"": ""red"", ""reason"": ""elimination"", ""mode"": ""skirmish"",
+                    ""roster"": [
+                        { ""callsign"": ""R1"", ""team"": ""red"" },
+                        { ""callsign"": ""B1"", ""team"": ""blue"" }
+                    ],
+                    ""keyframes"": [
+                        [0, [[16, 16, 90], [48, 16, 270]]],
+                        [8000, [[16, 16, 90], [48, 16, 270]]]
+                    ],
+                    ""shots"": [
+                        [1000, 0, 1, ""hit""]
+                    ],
+                    ""destroyed"": [
+                        [2000, 1]
+                    ]
+                }"));
+                arena.SeekReplayMs(500f);
+                arena.SetReplaySpeed(1f);
+                arena.ToggleReplayPlaying(); // Pause -> ensure explicit play state below
+                if (!arena.ReplayPlaying) arena.ToggleReplayPlaying();
+
+                // Step across t=1000ms hit shot
+                arena.StepReplayPlaybackForTests(0.8f); // 500 -> 1300ms
+                Assert.GreaterOrEqual(arena.ActiveImpactBurstCount, 1, "Replay hit shot must spawn 3D impact burst");
+                StringAssert.Contains("HIT", arena.LastWorldPopupText);
+
+                // Step across t=2000ms wreck event
+                arena.StepReplayPlaybackForTests(1.0f); // 1300 -> 2300ms
+                Assert.AreEqual(TacSim.Arena.ArenaImpactKind.Kill, arena.LastImpactKind, "Replay wreck timestamp must spawn Kill fireball");
+                StringAssert.Contains("WRECKED", arena.LastWorldPopupText);
+                StringAssert.Contains("B1", arena.LastWorldPopupText);
+
+                // Reset clears all pooled 3D bursts & popups cleanly
+                arena.ResetSessionState();
+                Assert.AreEqual(0, arena.ActiveImpactBurstCount);
+                Assert.AreEqual(0, arena.ActiveWorldPopupCount);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
