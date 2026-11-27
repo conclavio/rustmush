@@ -94,6 +94,8 @@ const YOU_VISOR: Rgb = [156, 232, 255];
 const SKIN_TONE: Rgb = [214, 176, 148];
 const SPEECH_BG: Rgb = [14, 22, 34];
 const SPEECH_BORDER: Rgb = [228, 196, 96];
+const QUEST_GOLD_BG: Rgb = [242, 198, 44];
+const QUEST_SILVER_BG: Rgb = [148, 166, 186];
 
 const FP_FOG_STEPS: usize = 6;
 const FP_FLOOR_SHADES: [Rgb; FP_FOG_STEPS] = [
@@ -360,6 +362,8 @@ struct WalkActor {
     name: String,
     npc: bool,
     speech: String,
+    quest_marker: Option<char>,
+    quest_gold: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -532,6 +536,15 @@ impl WalkScene {
         let mut actors = Vec::new();
         if let Some(arr) = obj.get("actors").and_then(Value::as_array) {
             for item in arr.iter().take(32) {
+                let quest_marker = item
+                    .get("quest_marker")
+                    .and_then(Value::as_str)
+                    .and_then(|s| s.chars().next())
+                    .filter(|c| matches!(c, '!' | '?'));
+                let quest_gold = item
+                    .get("quest_gold")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(quest_marker == Some('!'));
                 actors.push(WalkActor {
                     x_m: as_coord(item.get("x_m"), 0.0),
                     y_m: as_coord(item.get("y_m"), 0.0),
@@ -539,6 +552,8 @@ impl WalkScene {
                     name: as_str(item.get("name"), "CREW").to_string(),
                     npc: item.get("npc").and_then(Value::as_bool).unwrap_or(false),
                     speech: as_str(item.get("speech"), "").to_string(),
+                    quest_marker,
+                    quest_gold,
                 });
             }
         }
@@ -1151,26 +1166,63 @@ fn draw_humanoid_sprite(
     }
 }
 
-fn draw_speech_or_nameplate(
+fn draw_quest_marker_badge(
     frame: &mut Frame,
     sx: i64,
-    top_y: i64,
-    name: &str,
-    speech: &str,
-    tag_col: Rgb,
+    bottom_y: i64,
+    symbol: char,
+    gold: bool,
+    pulse_phase: i64,
 ) {
-    let sc = 1usize;
-    let short_name: String = name.chars().take(16).collect();
-    let nw = (short_name.chars().count() as i64) * 6;
-    let nx = (sx - nw / 2).clamp(2, (frame.width() as i64).saturating_sub(nw + 4).max(2));
-    let ny = top_y - 10;
-    fill_rect(frame, nx - 2, ny - 2, nw + 4, 10, PANEL);
-    text(frame, nx, ny, &short_name.to_ascii_uppercase(), tag_col, sc);
+    let bob = if gold && (pulse_phase % 6) < 3 { -1 } else { 0 };
+    let bg = if gold { QUEST_GOLD_BG } else { QUEST_SILVER_BG };
+    let border = if gold { SPEECH_BORDER } else { TEXT };
+    let bw = 11i64;
+    let bh = 11i64;
+    let bx = (sx - bw / 2).clamp(2, (frame.width() as i64).saturating_sub(bw + 2).max(2));
+    let by = (bottom_y - bh + bob).max(2);
+    fill_rect(frame, bx, by, bw, bh, bg);
+    outline_rect(frame, bx, by, bw, bh, border);
+    let mut glyph_buf = [0u8; 4];
+    let glyph = symbol.encode_utf8(&mut glyph_buf);
+    text(frame, bx + 3, by + 2, glyph, ACTOR_OUTLINE, 1);
+}
 
-    if !speech.is_empty() {
-        let clipped: String = speech.chars().take(28).collect();
+struct ActorNameplate<'a> {
+    sx: i64,
+    top_y: i64,
+    name: &'a str,
+    speech: &'a str,
+    tag_col: Rgb,
+    quest: Option<(char, bool)>,
+}
+
+fn draw_speech_or_nameplate(frame: &mut Frame, plate: &ActorNameplate<'_>, pulse_phase: i64) {
+    let sc = 1usize;
+    let short_name: String = plate.name.chars().take(16).collect();
+    let nw = (short_name.chars().count() as i64) * 6;
+    let nx = (plate.sx - nw / 2).clamp(2, (frame.width() as i64).saturating_sub(nw + 4).max(2));
+    let ny = plate.top_y - 10;
+    fill_rect(frame, nx - 2, ny - 2, nw + 4, 10, PANEL);
+    let effective_tag = match plate.quest {
+        Some((_, true)) => QUEST_GOLD_BG,
+        Some((_, false)) => QUEST_SILVER_BG,
+        None => plate.tag_col,
+    };
+    text(
+        frame,
+        nx,
+        ny,
+        &short_name.to_ascii_uppercase(),
+        effective_tag,
+        sc,
+    );
+
+    let mut badge_anchor_y = ny - 3;
+    if !plate.speech.is_empty() {
+        let clipped: String = plate.speech.chars().take(28).collect();
         let bw = (clipped.chars().count() as i64) * 6 + 6;
-        let bx = (sx - bw / 2).clamp(2, (frame.width() as i64).saturating_sub(bw + 4).max(2));
+        let bx = (plate.sx - bw / 2).clamp(2, (frame.width() as i64).saturating_sub(bw + 4).max(2));
         let by = ny - 14;
         fill_rect(frame, bx, by, bw, 11, SPEECH_BG);
         outline_rect(frame, bx, by, bw, 11, SPEECH_BORDER);
@@ -1182,6 +1234,11 @@ fn draw_speech_or_nameplate(
             SPEECH_BORDER,
             sc,
         );
+        badge_anchor_y = by - 2;
+    }
+
+    if let Some((symbol, gold)) = plate.quest {
+        draw_quest_marker_badge(frame, plate.sx, badge_anchor_y, symbol, gold, pulse_phase);
     }
 }
 
@@ -1333,7 +1390,7 @@ fn draw_cutaway_25d(frame: &mut Frame, scene: &WalkScene, look: &Look) {
     items.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
 
     let sp_scale = if frame.width() >= 520 { 2 } else { 1 };
-    let mut nameplates: Vec<(i64, i64, &str, &str, Rgb)> = Vec::new();
+    let mut nameplates: Vec<ActorNameplate<'_>> = Vec::new();
 
     for (_, _, item) in items {
         match item {
@@ -1465,7 +1522,15 @@ fn draw_cutaway_25d(frame: &mut Frame, scene: &WalkScene, look: &Look) {
                     (CREW_SUIT, CREW_HIGHLIGHT, GOOD)
                 };
                 draw_humanoid_sprite(frame, (ax, ay), sp_scale, (suit, hi), None, 0.0, 0);
-                nameplates.push((ax, ay - 16 * sp_scale, &act.name, &act.speech, tag));
+                let quest = act.quest_marker.map(|ch| (ch, act.quest_gold));
+                nameplates.push(ActorNameplate {
+                    sx: ax,
+                    top_y: ay - 16 * sp_scale,
+                    name: &act.name,
+                    speech: &act.speech,
+                    tag_col: tag,
+                    quest,
+                });
             }
             CutawayItem::You => {
                 let (ux, uy, _) = proj.project(scene.you_x, scene.you_y, you_z);
@@ -1491,8 +1556,8 @@ fn draw_cutaway_25d(frame: &mut Frame, scene: &WalkScene, look: &Look) {
         outline_rect(frame, fx - r, fy - r, r * 2, r * 2, LOCK);
     }
 
-    for (ax, top_y, name, speech, tag) in nameplates {
-        draw_speech_or_nameplate(frame, ax, top_y, name, speech, tag);
+    for plate in &nameplates {
+        draw_speech_or_nameplate(frame, plate, scene.pulse_phase);
     }
 }
 
@@ -2046,7 +2111,19 @@ fn draw_first_person(
                 (CREW_SUIT, CREW_HIGHLIGHT, GOOD)
             };
             draw_humanoid_sprite(frame, (sx, foot_y), scale, (suit, hi), None, 0.0, 0);
-            draw_speech_or_nameplate(frame, sx, foot_y - 16 * scale, &act.name, &act.speech, tag);
+            let quest = act.quest_marker.map(|ch| (ch, act.quest_gold));
+            draw_speech_or_nameplate(
+                frame,
+                &ActorNameplate {
+                    sx,
+                    top_y: foot_y - 16 * scale,
+                    name: &act.name,
+                    speech: &act.speech,
+                    tag_col: tag,
+                    quest,
+                },
+                scene.pulse_phase,
+            );
         }
     }
 }
@@ -2387,5 +2464,84 @@ mod tests {
         assert!(pic.draw(&mut f_east, &SingleFeed(base_scene(false, 90_000)), &look));
         // Center horizon pixel is in open corridor past wall reach (or distant real east wall at 90 m, not 48 m)
         assert!(f_east.count_colours(257) <= 256);
+    }
+
+    #[test]
+    fn quest_markers_render_in_cutaway_and_first_person_under_palette_budget() {
+        let mut pic = StationWalkPicture::new();
+        let look = Look {
+            offset_mdeg: 0,
+            hull_offset_mdeg: 0,
+            ordered_mdeg: None,
+            dx_cm: 0,
+            dy_cm: 0,
+            zoom_permille: 1000,
+        };
+        let make_scene = |cam: &str, marker: Option<(&str, bool)>| {
+            let actor = match marker {
+                Some((sym, gold)) => json!({
+                    "x_m": 0.0,
+                    "y_m": 3.5,
+                    "floor": 0,
+                    "name": "Maren",
+                    "npc": true,
+                    "speech": "",
+                    "quest_marker": sym,
+                    "quest_gold": gold
+                }),
+                None => json!({
+                    "x_m": 0.0,
+                    "y_m": 3.5,
+                    "floor": 0,
+                    "name": "Maren",
+                    "npc": true,
+                    "speech": ""
+                }),
+            };
+            json!({
+                "camera": cam,
+                "mode": "station",
+                "title": "Port Watch Arrivals",
+                "you": { "x_m": 0.0, "y_m": 0.0, "floor": 0, "heading_mdeg": 0, "stride": 0 },
+                "rooms": [
+                    { "name": "Port Watch Arrivals", "floor": 0, "min_x": -8.0, "min_y": -8.0, "max_x": 8.0, "max_y": 8.0, "active": true, "kind": "room" }
+                ],
+                "actors": [actor]
+            })
+        };
+
+        for cam in ["cutaway", "first_person"] {
+            let mut f_none = Frame::new(320, 200);
+            assert!(pic.draw(&mut f_none, &SingleFeed(make_scene(cam, None)), &look));
+
+            let mut f_gold = Frame::new(320, 200);
+            assert!(pic.draw(
+                &mut f_gold,
+                &SingleFeed(make_scene(cam, Some(("!", true)))),
+                &look
+            ));
+
+            let mut f_silver = Frame::new(320, 200);
+            assert!(pic.draw(
+                &mut f_silver,
+                &SingleFeed(make_scene(cam, Some(("?", false)))),
+                &look
+            ));
+
+            assert_ne!(
+                f_none.hash(),
+                f_gold.hash(),
+                "{cam} must visually render gold '!' quest marker over NPC"
+            );
+            assert_ne!(
+                f_gold.hash(),
+                f_silver.hash(),
+                "{cam} must distinguish gold '!' from silver '?' quest marker"
+            );
+            assert!(
+                f_gold.count_colours(257) <= 256,
+                "{cam} with quest markers must remain within the 256-color PNG/Sixel palette ceiling"
+            );
+        }
     }
 }

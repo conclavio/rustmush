@@ -25,6 +25,7 @@ use serde_json::{Value, json};
 
 use super::backend::sanitize_control_sequences as sanitize;
 use super::keys::{Arrow, Key};
+use super::quests::{QuestMarker, parse_room_markers};
 
 /// Panel/query name for port trade & stowage telemetry.
 pub const PORT_TRADE_FEED: &str = "port.trade";
@@ -109,6 +110,9 @@ pub struct WalkKeyOutcome {
     pub queries: Vec<(String, Value)>,
     pub enter_helm_cockpit: bool,
     pub close_pixel_view: bool,
+    /// When `[E]` targets an NPC with an `available` or `turn_in` quest marker,
+    /// hands off directly to the TUI Quest Dialog (`(npc_id, npc_name)`).
+    pub open_quest_for_npc: Option<(String, String)>,
 }
 
 #[derive(Clone, Debug)]
@@ -167,7 +171,7 @@ struct InteractableTarget {
 #[derive(Clone, Debug)]
 enum InteractAction {
     OpenDrawer(PortDrawerKind),
-    OpenNpc { name: String },
+    OpenNpc { id: String, name: String },
     Command(&'static str),
     TakeBridgeHelm,
 }
@@ -425,6 +429,7 @@ pub struct PortWalkState {
     last_self_name: Option<String>,
 
     actors: Vec<ActorEntry>,
+    quest_markers: Vec<QuestMarker>,
     speech_bubbles: HashMap<String, (String, Instant)>,
     interactables: Vec<InteractableTarget>,
     focus_idx: usize,
@@ -524,6 +529,7 @@ impl PortWalkState {
             last_room_view: None,
             last_self_name: None,
             actors: Vec::new(),
+            quest_markers: Vec::new(),
             speech_bubbles: HashMap::new(),
             interactables: Vec::new(),
             focus_idx: 0,
@@ -799,6 +805,60 @@ impl PortWalkState {
         self.drawer_log_scroll = 0;
     }
 
+    /// Sync live quest markers from `"tacsim.quests"` onto 2.5D NPC actors & `[E]` focus labels.
+    pub fn observe_quest_markers(&mut self, markers: &[QuestMarker]) {
+        if self.quest_markers == markers {
+            return;
+        }
+        self.quest_markers = markers.to_vec();
+        self.refresh_npc_quest_labels();
+        self.bump_scene();
+    }
+
+    fn find_quest_marker(&self, npc_id: &str, npc_name: &str) -> Option<&QuestMarker> {
+        self.quest_markers.iter().find(|m| {
+            (!npc_id.is_empty() && m.npc_id == npc_id)
+                || (!npc_name.is_empty() && m.npc_name.eq_ignore_ascii_case(npc_name))
+        })
+    }
+
+    fn format_npc_interact_label(&self, id: &str, name: &str, npc: bool) -> String {
+        if npc && let Some(m) = self.find_quest_marker(id, name) {
+            return match m.marker.as_str() {
+                "turn_in" => format!("[?] {name} — Turn In Quest"),
+                "available" => format!("[!] {name} — Quest Available"),
+                _ => format!("[?] Talk to {name}"),
+            };
+        }
+        if npc {
+            format!("Talk to {name}")
+        } else {
+            format!("Greet {name}")
+        }
+    }
+
+    fn refresh_npc_quest_labels(&mut self) {
+        let mut updates: Vec<(usize, String)> = Vec::new();
+        for (idx, target) in self.interactables.iter().enumerate() {
+            if let InteractAction::OpenNpc { id, name } = &target.action {
+                let is_npc = self
+                    .actors
+                    .iter()
+                    .find(|a| (!id.is_empty() && a.id == *id) || a.name.eq_ignore_ascii_case(name))
+                    .is_none_or(|a| a.npc);
+                let next_label = self.format_npc_interact_label(id, name, is_npc);
+                if target.label != next_label {
+                    updates.push((idx, next_label));
+                }
+            }
+        }
+        for (idx, lbl) in updates {
+            if let Some(target) = self.interactables.get_mut(idx) {
+                target.label = lbl;
+            }
+        }
+    }
+
     /// Observe a live `RoomView` from the server.
     pub fn observe_room(&mut self, view: &RoomView, self_name: Option<&str>) {
         let was_aboard = self.aboard_ship;
@@ -807,6 +867,7 @@ impl PortWalkState {
         let clean_self = self_name.map(sanitize);
         self.last_room_view = Some(view.clone());
         self.last_self_name.clone_from(&clean_self);
+        self.quest_markers = parse_room_markers(view);
 
         let tac = view.ambient.get("tacsim").and_then(Value::as_object);
         let atlas = view.ambient.get("atlas").and_then(Value::as_object);
@@ -2424,6 +2485,18 @@ impl PortWalkState {
                     .get(&a.id)
                     .or_else(|| self.speech_bubbles.get(&a.name.to_ascii_lowercase()))
                     .map_or("", |(s, _)| s.as_str());
+                let qm = if a.npc {
+                    self.find_quest_marker(&a.id, &a.name)
+                } else {
+                    None
+                };
+                let (quest_marker, quest_gold) = match qm {
+                    Some(m) => (
+                        Value::String(m.symbol.clone()),
+                        Value::Bool(m.marker != "in_progress"),
+                    ),
+                    None => (Value::Null, Value::Bool(false)),
+                };
                 json!({
                     "x_m": a.x_m,
                     "y_m": a.y_m,
@@ -2431,6 +2504,8 @@ impl PortWalkState {
                     "name": a.name,
                     "npc": a.npc,
                     "speech": speech,
+                    "quest_marker": quest_marker,
+                    "quest_gold": quest_gold,
                 })
             })
             .collect();
@@ -3065,7 +3140,13 @@ impl PortWalkState {
             InteractAction::OpenDrawer(kind) => {
                 self.open_drawer(kind, manifest_panels, &mut out.queries, now);
             }
-            InteractAction::OpenNpc { name } => {
+            InteractAction::OpenNpc { id, name } => {
+                if let Some(m) = self.find_quest_marker(&id, &name)
+                    && matches!(m.marker.as_str(), "available" | "turn_in")
+                {
+                    out.open_quest_for_npc = Some((id, name));
+                    return;
+                }
                 self.selected_npc_name = name;
                 self.open_drawer(PortDrawerKind::Npc, manifest_panels, &mut out.queries, now);
             }
@@ -3429,8 +3510,9 @@ impl PortWalkState {
                 if npc_ids.contains(&id_low) {
                     let angle = (idx as f64) * 1.25 + 0.5;
                     let (ax, ay) = clamp_in_room(rcx + angle.cos() * 2.6, rcy + angle.sin() * 2.2);
+                    let label = self.format_npc_interact_label(&id_str, &name, true);
                     self.actors.push(ActorEntry {
-                        id: id_str,
+                        id: id_str.clone(),
                         name: name.clone(),
                         npc: true,
                         x_m: ax,
@@ -3438,11 +3520,11 @@ impl PortWalkState {
                         floor: rfloor,
                     });
                     self.interactables.push(InteractableTarget {
-                        label: format!("Talk to {name}"),
+                        label,
                         x_m: ax,
                         y_m: ay,
                         floor: rfloor,
-                        action: InteractAction::OpenNpc { name },
+                        action: InteractAction::OpenNpc { id: id_str, name },
                     });
                     idx += 1;
                 } else if player_ids.contains(&id_low)
@@ -3451,7 +3533,7 @@ impl PortWalkState {
                     let angle = (idx as f64) * 1.25 + 0.9;
                     let (ax, ay) = clamp_in_room(rcx + angle.cos() * 2.4, rcy + angle.sin() * 2.0);
                     self.actors.push(ActorEntry {
-                        id: id_str,
+                        id: id_str.clone(),
                         name: name.clone(),
                         npc: false,
                         x_m: ax,
@@ -3463,7 +3545,7 @@ impl PortWalkState {
                         x_m: ax,
                         y_m: ay,
                         floor: rfloor,
-                        action: InteractAction::OpenNpc { name },
+                        action: InteractAction::OpenNpc { id: id_str, name },
                     });
                     idx += 1;
                 }
@@ -3500,8 +3582,9 @@ impl PortWalkState {
                     }
                     let angle = (idx as f64) * 1.25 + 0.5;
                     let (ax, ay) = clamp_in_room(rcx + angle.cos() * 2.6, rcy + angle.sin() * 2.2);
+                    let label = self.format_npc_interact_label(&id, &name, true);
                     self.actors.push(ActorEntry {
-                        id,
+                        id: id.clone(),
                         name: name.clone(),
                         npc: true,
                         x_m: ax,
@@ -3509,11 +3592,11 @@ impl PortWalkState {
                         floor: rfloor,
                     });
                     self.interactables.push(InteractableTarget {
-                        label: format!("Talk to {name}"),
+                        label,
                         x_m: ax,
                         y_m: ay,
                         floor: rfloor,
-                        action: InteractAction::OpenNpc { name },
+                        action: InteractAction::OpenNpc { id, name },
                     });
                     idx += 1;
                 }
@@ -3537,7 +3620,7 @@ impl PortWalkState {
                     let angle = (idx as f64) * 1.25 + 0.9;
                     let (ax, ay) = clamp_in_room(rcx + angle.cos() * 2.4, rcy + angle.sin() * 2.0);
                     self.actors.push(ActorEntry {
-                        id,
+                        id: id.clone(),
                         name: name.clone(),
                         npc: false,
                         x_m: ax,
@@ -3549,7 +3632,7 @@ impl PortWalkState {
                         x_m: ax,
                         y_m: ay,
                         floor: rfloor,
-                        action: InteractAction::OpenNpc { name },
+                        action: InteractAction::OpenNpc { id, name },
                     });
                     idx += 1;
                 }
@@ -3563,10 +3646,12 @@ impl PortWalkState {
                     {
                         continue;
                     }
+                    let id = sanitize(&item.id.to_string());
                     let angle = (idx as f64) * 1.3 + 0.6;
                     let (ax, ay) = clamp_in_room(rcx + angle.cos() * 2.5, rcy + angle.sin() * 2.0);
+                    let label = self.format_npc_interact_label(&id, &name, true);
                     self.actors.push(ActorEntry {
-                        id: sanitize(&item.id.to_string()),
+                        id: id.clone(),
                         name: name.clone(),
                         npc: true,
                         x_m: ax,
@@ -3574,11 +3659,11 @@ impl PortWalkState {
                         floor: rfloor,
                     });
                     self.interactables.push(InteractableTarget {
-                        label: format!("Talk to {name}"),
+                        label,
                         x_m: ax,
                         y_m: ay,
                         floor: rfloor,
-                        action: InteractAction::OpenNpc { name },
+                        action: InteractAction::OpenNpc { id, name },
                     });
                     idx += 1;
                 }
@@ -7498,5 +7583,104 @@ mod tests {
         );
         assert_eq!(ship_portals[0].command, "goto \"say owned");
         assert_eq!(ship_portals[1].command, "goto \\emit boom");
+    }
+
+    #[test]
+    fn quest_markers_decorate_walk_actors_and_hand_off_interact_to_quest_dialog() {
+        let mut st = PortWalkState::new();
+        let mut ambient = std::collections::BTreeMap::new();
+        ambient.insert(
+            "atlas".into(),
+            json!({ "pack": "neighborhood.ceres_freeport", "entry": "room.c03_arrivals" }),
+        );
+        ambient.insert(
+            "npcs".into(),
+            json!([
+                { "id": "#42", "name": "Maren Halvorsen" }
+            ]),
+        );
+        ambient.insert(
+            "quest_markers".into(),
+            json!([
+                {
+                    "npc_id": "#42",
+                    "npc_name": "Maren Halvorsen",
+                    "marker": "available",
+                    "symbol": "!",
+                    "quest_key": "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+                    "quest_title": "First Papers at the Registry",
+                    "category": "guided"
+                }
+            ]),
+        );
+        let rv = RoomView {
+            id: "#10".into(),
+            name: "Port Watch Arrivals".into(),
+            desc: mush_proto::RichText::plain("Arrivals desk."),
+            exits: Vec::new(),
+            contents: Vec::new(),
+            zone: None,
+            ambient,
+        };
+        st.observe_room(&rv, Some("Pilot"));
+
+        // 1. Kitty scene JSON carries gold '!' quest marker on Maren
+        let scene = st.to_feed_value();
+        let actors = scene["actors"].as_array().expect("actors array");
+        let maren = actors
+            .iter()
+            .find(|a| a["name"] == "Maren Halvorsen")
+            .expect("Maren spawned in arrivals");
+        assert_eq!(maren["quest_marker"], "!");
+        assert_eq!(maren["quest_gold"], true);
+
+        // 2. Focus Maren and verify [E] focus prompt & direct quest dialog handoff
+        let maren_idx = st
+            .interactables
+            .iter()
+            .position(|i| i.label.contains("Maren Halvorsen"))
+            .expect("Maren interactable");
+        st.focus_idx = maren_idx;
+        assert_eq!(
+            st.focused_label(),
+            Some("[!] Maren Halvorsen — Quest Available")
+        );
+
+        let now = Instant::now();
+        let out = st.handle_key(Key::Char('e'), false, false, &[], now);
+        assert_eq!(
+            out.open_quest_for_npc,
+            Some(("#42".to_string(), "Maren Halvorsen".to_string())),
+            "pressing [E] on available-quest NPC must hand off directly to Quest Dialog"
+        );
+        assert!(
+            !st.drawer_open(),
+            "generic Talk drawer must not open when handing off to Quest Dialog"
+        );
+
+        // 3. Updating marker to in_progress switches badge to silver '?' and [E] opens Talk drawer
+        st.observe_quest_markers(&[QuestMarker {
+            npc_id: "#42".into(),
+            npc_name: "Maren Halvorsen".into(),
+            marker: "in_progress".into(),
+            symbol: "?".into(),
+            quest_key: "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll".into(),
+            quest_title: "First Papers at the Registry".into(),
+            category: "guided".into(),
+        }]);
+        let scene2 = st.to_feed_value();
+        let maren2 = scene2["actors"]
+            .as_array()
+            .expect("actors")
+            .iter()
+            .find(|a| a["name"] == "Maren Halvorsen")
+            .expect("Maren");
+        assert_eq!(maren2["quest_marker"], "?");
+        assert_eq!(maren2["quest_gold"], false);
+        assert_eq!(st.focused_label(), Some("[?] Talk to Maren Halvorsen"));
+
+        let out2 = st.handle_key(Key::Char('e'), false, false, &[], now);
+        assert!(out2.open_quest_for_npc.is_none());
+        assert!(st.drawer_open());
     }
 }

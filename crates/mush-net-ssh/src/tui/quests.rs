@@ -347,6 +347,72 @@ impl QuestOverlayState {
         };
     }
 
+    /// Open the quest dialog focused directly on the quest offered by or turn-in ready at `npc_id` / `npc_name`.
+    pub fn open_for_npc(&mut self, snap: &QuestsSnapshot, npc_id: &str, npc_name: &str) {
+        self.open = true;
+        self.confirm_abandon = false;
+
+        let marker = snap.room_markers.iter().find(|m| {
+            (!npc_id.is_empty() && m.npc_id == npc_id)
+                || (!npc_name.is_empty() && m.npc_name.eq_ignore_ascii_case(npc_name))
+        });
+
+        if let Some(m) = marker {
+            if m.marker == "available" {
+                if let Some(idx) = snap
+                    .available
+                    .iter()
+                    .position(|q| !m.quest_key.is_empty() && q.key == m.quest_key)
+                    .or_else(|| {
+                        snap.available
+                            .iter()
+                            .position(|q| q.giver_name.eq_ignore_ascii_case(&m.npc_name))
+                    })
+                {
+                    self.tab = QuestTab::Available;
+                    self.selected = idx;
+                    return;
+                }
+            } else if let Some(idx) = snap
+                .active
+                .iter()
+                .position(|q| !m.quest_key.is_empty() && q.key == m.quest_key)
+                .or_else(|| {
+                    snap.active.iter().position(|q| {
+                        q.turn_in_name.eq_ignore_ascii_case(&m.npc_name)
+                            || q.giver_name.eq_ignore_ascii_case(&m.npc_name)
+                    })
+                })
+            {
+                self.tab = QuestTab::Active;
+                self.selected = idx;
+                return;
+            }
+        }
+
+        if !npc_name.is_empty() {
+            if let Some(idx) = snap
+                .available
+                .iter()
+                .position(|q| q.giver_name.eq_ignore_ascii_case(npc_name))
+            {
+                self.tab = QuestTab::Available;
+                self.selected = idx;
+                return;
+            }
+            if let Some(idx) = snap.active.iter().position(|q| {
+                q.turn_in_name.eq_ignore_ascii_case(npc_name)
+                    || q.giver_name.eq_ignore_ascii_case(npc_name)
+            }) {
+                self.tab = QuestTab::Active;
+                self.selected = idx;
+                return;
+            }
+        }
+
+        self.open_for(snap);
+    }
+
     pub fn close(&mut self) {
         self.open = false;
         self.confirm_abandon = false;
