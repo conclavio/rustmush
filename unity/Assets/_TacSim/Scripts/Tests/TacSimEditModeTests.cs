@@ -9826,5 +9826,67 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ArenaHitImpactAudioSynthesizerAndKillStreakMilestoneBanners_SynthesizeAndFade()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave17PR1_ArenaAudioAndMilestoneBannersTest");
+            try
+            {
+                // 1. Waveform synthesis bounds & non-silence checks
+                float[] hitSamples = TacSimAudioSynthesizer.GenerateHitConfirmTickSamples();
+                float[] impactSamples = TacSimAudioSynthesizer.GenerateArmorImpactThudSamples();
+                Assert.Greater(hitSamples.Length, 1000);
+                Assert.Greater(impactSamples.Length, 2000);
+                float hitPeak = 0f, impPeak = 0f;
+                for (int i = 0; i < hitSamples.Length; i++)
+                {
+                    Assert.IsFalse(float.IsNaN(hitSamples[i]) || float.IsInfinity(hitSamples[i]));
+                    hitPeak = System.Math.Max(hitPeak, System.Math.Abs(hitSamples[i]));
+                }
+                for (int i = 0; i < impactSamples.Length; i++)
+                {
+                    Assert.IsFalse(float.IsNaN(impactSamples[i]) || float.IsInfinity(impactSamples[i]));
+                    impPeak = System.Math.Max(impPeak, System.Math.Abs(impactSamples[i]));
+                }
+                Assert.Greater(hitPeak, 0.10f);
+                Assert.LessOrEqual(hitPeak, 1.0f);
+                Assert.Greater(impPeak, 0.15f);
+                Assert.LessOrEqual(impPeak, 1.0f);
+
+                // 2. Lazy allocation preserves AllocatedClipCount == 11 after InitializeAudioGraph()
+                var audio = rootGo.AddComponent<TacSimAudioSynthesizer>();
+                audio.InitializeAudioGraph();
+                Assert.AreEqual(11, audio.AllocatedClipCount, "New Arena combat SFX clips must remain lazy-allocated");
+                audio.PlayHitConfirmTick(isCrit: true);
+                Assert.AreEqual(12, audio.AllocatedClipCount);
+                audio.PlayArmorImpactThud();
+                Assert.AreEqual(13, audio.AllocatedClipCount);
+                audio.DisposeClips();
+                Assert.AreEqual(0, audio.AllocatedClipCount, "DisposeClips must destroy lazy combat SFX clips cleanly");
+
+                // 3. Kill-streak formatter & priority upper-center Milestone Banner lifecycle
+                StringAssert.Contains("FIRST BLOOD", TacSim.UI.TacSimFloatingCallouts.FormatKillStreakTitle(1, "B1"));
+                StringAssert.Contains("DOUBLE KILL", TacSim.UI.TacSimFloatingCallouts.FormatKillStreakTitle(2, "B2"));
+                StringAssert.Contains("TRIPLE KILL", TacSim.UI.TacSimFloatingCallouts.FormatKillStreakTitle(3, "B3"));
+                StringAssert.Contains("QUAD KILL", TacSim.UI.TacSimFloatingCallouts.FormatKillStreakTitle(4, "B4"));
+                StringAssert.Contains("UNSTOPPABLE (5 KILLS)", TacSim.UI.TacSimFloatingCallouts.FormatKillStreakTitle(5, "B5"));
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                Assert.IsFalse(hud.FloatingCallouts.IsMilestoneBannerVisible);
+                hud.FloatingCallouts.ShowMilestoneBanner("DOUBLE KILL — B2 DESTROYED!", UnityEngine.Color.red, 2.0f);
+                Assert.IsTrue(hud.FloatingCallouts.IsMilestoneBannerVisible);
+                StringAssert.Contains("DOUBLE KILL", hud.FloatingCallouts.ActiveMilestoneBannerText);
+                hud.FloatingCallouts.StepAnimation(1.0f);
+                Assert.IsTrue(hud.FloatingCallouts.IsMilestoneBannerVisible);
+                hud.FloatingCallouts.StepAnimation(1.2f);
+                Assert.IsFalse(hud.FloatingCallouts.IsMilestoneBannerVisible, "Expired milestone banner must hide cleanly");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
