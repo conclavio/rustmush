@@ -27,9 +27,21 @@ struct SourceQuest {
     #[serde(default)]
     npc_pack: Option<CanonicalId>,
     #[serde(default)]
+    turn_in_npc: Option<CanonicalId>,
+    #[serde(default)]
+    turn_in_npc_pack: Option<CanonicalId>,
+    #[serde(default)]
+    turn_in_destination: Option<String>,
+    #[serde(default)]
     prerequisite: Prerequisite,
     #[serde(default)]
     choice: Option<QuestChoice>,
+    #[serde(default)]
+    category: Option<String>,
+    #[serde(default)]
+    reward_summary: Option<String>,
+    #[serde(default)]
+    allow_restart: bool,
     title: String,
     introduction: String,
     destination: String,
@@ -61,6 +73,23 @@ enum SourceObjective {
     Trade {
         origin: String,
         destination: String,
+        commodity: String,
+        quantity: u64,
+    },
+    MarketPurchase {
+        market: String,
+        commodity: String,
+        quantity: u64,
+    },
+    MarketSale {
+        market: String,
+        commodity: String,
+        quantity: u64,
+    },
+    ShipRefit {
+        unit: String,
+    },
+    SurfaceMine {
         commodity: String,
         quantity: u64,
     },
@@ -321,6 +350,32 @@ fn checkpoint(w: &World, pack: &Pack, source: SourceCheckpoint) -> Result<Checkp
             commodity,
             quantity,
         },
+        SourceObjective::MarketPurchase {
+            market,
+            commodity,
+            quantity,
+        } => Objective::MarketPurchase {
+            market,
+            commodity,
+            quantity,
+        },
+        SourceObjective::MarketSale {
+            market,
+            commodity,
+            quantity,
+        } => Objective::MarketSale {
+            market,
+            commodity,
+            quantity,
+        },
+        SourceObjective::ShipRefit { unit } => Objective::ShipRefit { unit },
+        SourceObjective::SurfaceMine {
+            commodity,
+            quantity,
+        } => Objective::SurfaceMine {
+            commodity,
+            quantity,
+        },
         SourceObjective::Passenger { npc_pack, npc } => Objective::Passenger {
             npc: external_object(w, pack, &npc_pack, &npc, "npc")?,
         },
@@ -364,6 +419,40 @@ fn checkpoint(w: &World, pack: &Pack, source: SourceCheckpoint) -> Result<Checkp
     })
 }
 
+fn resolve_turn_in_npc(
+    w: &World,
+    pack: &Pack,
+    source: &SourceQuest,
+    placed: Option<&BTreeMap<CanonicalId, ObjId>>,
+) -> Result<Option<ObjId>, String> {
+    let Some(npc_entry) = &source.turn_in_npc else {
+        if source.turn_in_npc_pack.is_some() {
+            return Err("turn_in_npc_pack requires turn_in_npc".into());
+        }
+        return Ok(None);
+    };
+    if let Some(dependency) = &source.turn_in_npc_pack {
+        return external_object(w, pack, dependency, npc_entry, "npc").map(Some);
+    }
+    if !pack
+        .entry(npc_entry)
+        .is_some_and(|entry| entry.kind().as_str() == "npc")
+    {
+        return Err(
+            "turn_in_npc must name an NPC entry in this pack or declare turn_in_npc_pack".into(),
+        );
+    }
+    if let Some(id) = placed.and_then(|map| map.get(npc_entry).copied()) {
+        return Ok(Some(id));
+    }
+    let existing = w
+        .module_state::<mush_content::ContentState>()
+        .and_then(|content| content.latches.applied(pack.manifest().id()))
+        .and_then(|latch| latch.entries().get(npc_entry))
+        .and_then(mush_content::AppliedEntry::object);
+    Ok(existing)
+}
+
 fn definition(
     w: &World,
     pack: &Pack,
@@ -378,7 +467,12 @@ fn definition(
     if let Some(npc) = npc.filter(|_| npc_pack.is_some()) {
         quest_profile(w, npc)?;
     }
-    let def = source_definition(w, pack, id, source)?;
+    if let Some(turn_in) = resolve_turn_in_npc(w, pack, &source, None)?
+        && source.turn_in_npc_pack.is_some()
+    {
+        quest_profile(w, turn_in)?;
+    }
+    let def = source_definition(w, pack, id, source, None)?;
     let mut catalog = npc
         .map(|npc| role_catalog(w, npc))
         .transpose()?
@@ -398,7 +492,10 @@ fn definition(
             || (npc.is_some() && other_npc == npc)
         {
             check_source_binding(w, pack, other_id, other_npc)?;
-            merge_definition(&mut catalog, source_definition(w, pack, other_id, other)?);
+            merge_definition(
+                &mut catalog,
+                source_definition(w, pack, other_id, other, None)?,
+            );
         }
     }
     merge_definition(&mut catalog, def.clone());
@@ -411,7 +508,9 @@ fn source_definition(
     pack: &Pack,
     id: &CanonicalId,
     source: SourceQuest,
+    placed: Option<&BTreeMap<CanonicalId, ObjId>>,
 ) -> Result<QuestDef, String> {
+    let turn_in_npc = resolve_turn_in_npc(w, pack, &source, placed)?;
     let checkpoints = source
         .checkpoints
         .into_iter()
@@ -427,6 +526,11 @@ fn source_definition(
         completion: source.completion,
         prerequisite: source.prerequisite,
         choice: source.choice,
+        category: source.category,
+        reward_summary: source.reward_summary,
+        turn_in_npc,
+        turn_in_destination: source.turn_in_destination,
+        allow_restart: source.allow_restart,
     };
     def.check()?;
     Ok(def)
@@ -446,8 +550,15 @@ impl QuestApplier {
         placed: &BTreeMap<CanonicalId, ObjId>,
         existing: Option<ObjId>,
     ) -> Result<Option<ObjId>, String> {
-        let (npc_entry, def) = definition(ctx.w, pack, id, entry)?;
+        let (npc_entry, _) = definition(ctx.w, pack, id, entry)?;
         let source: SourceQuest = entry.decode().map_err(|error| format!("{id}: {error}"))?;
+        let def = source_definition(
+            ctx.w,
+            pack,
+            id,
+            entry.decode().map_err(|error| format!("{id}: {error}"))?,
+            Some(placed),
+        )?;
         let npc = source
             .npc_pack
             .as_ref()
@@ -463,6 +574,9 @@ impl QuestApplier {
         if existing.is_some_and(|old| old != npc) {
             return Err(format!("{id}: a quest role cannot move to another NPC"));
         }
+        let turn_in_to_extend = def
+            .turn_in_npc
+            .filter(|_| source.turn_in_npc_pack.is_some());
         let mut catalog = role_catalog(ctx.w, npc)?;
         merge_definition(&mut catalog, def);
         let attr = catalog_attr(catalog)?;
@@ -472,6 +586,14 @@ impl QuestApplier {
             let profile_attr = quest_profile(ctx.w, npc)?;
             ctx.w
                 .set_attr(npc, mush_npc::PROFILE_ATTR, profile_attr)
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(turn_in) = turn_in_to_extend
+            && turn_in != npc
+        {
+            let profile_attr = quest_profile(ctx.w, turn_in)?;
+            ctx.w
+                .set_attr(turn_in, mush_npc::PROFILE_ATTR, profile_attr)
                 .map_err(|e| e.to_string())?;
         }
         ctx.w.set_attr(npc, ATTR, attr).map_err(|e| e.to_string())?;

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text;
 using TacSim.Core;
 using TacSim.Net;
 using UnityEngine;
@@ -16,13 +17,19 @@ namespace TacSim.UI
     }
 
     /// <summary>
-    /// WoW / EverQuest-style `[J]` Quest, Passage, Survey &amp; Mining Claims Journal +
-    /// collapsible right-edge Pinned Objective Tracker Card docked cleanly below the Minimap.
-    /// Powered 100% by live verified `mushd` verbs (`+quest`, `+passage`, `+survey`, `+claim/list`).
+    /// WoW-style Quest System for Unity:
+    /// 1. Interactive NPC Quest Dialog Modal (narrative, itemized requirements/objectives, rewards,
+    ///    and 1-click Accept / Verify / Complete / Abandon / Wayfinder buttons).
+    /// 2. Full `[J]` Quest, Passage, Survey &amp; Mining Claims Journal with Active / Available Here /
+    ///    Completed sub-tabs powered by the live `"tacsim.quests"` panel feed.
+    /// 3. Collapsible right-edge HUD Quest Tracker Card auto-tracking active server quests (or manual pins).
+    /// Powered 100% by live verified `mushd` verbs (`+quest`, `+quest/accept`, `+quest/check`,
+    /// `+quest/finish`, `+quest/abandon`, `+passage`, `+survey`, `+claim/list`).
     /// </summary>
     public sealed class TacSimQuestJournal : MonoBehaviour
     {
         public event Action<string> OnCommandRequested;
+        public event Action<string> OnWayfinderRoomRequested;
 
         private const int MaxLinesPerTab = 48;
 
@@ -48,13 +55,47 @@ namespace TacSim.UI
         private Text _tabHintText;
         private readonly List<Image> _tabImages = new List<Image>();
 
-        // Right-edge Collapsible Pinned Objective Tracker Card (docked below TacticalMinimap)
+        // Structured Quests sub-tab bar & action controls inside [J] modal
+        private GameObject _questSubBar;
+        private Image _subActiveImg;
+        private Image _subAvailImg;
+        private Image _subDoneImg;
+        private Text _subActiveLbl;
+        private Text _subAvailLbl;
+        private Text _subDoneLbl;
+        private GameObject _questStructActions;
+        private Button _qPrimaryBtn;
+        private Text _qPrimaryLbl;
+        private Button _qWayfinderBtn;
+        private Button _qAbandonBtn;
+        private Text _qAbandonLbl;
+        private Button _qNextBtn;
+
+        // WoW-style NPC Quest Dialog Modal
+        private GameObject _questDialogRoot;
+        private Text _dlgCrestText;
+        private Image _dlgCrestBg;
+        private Text _dlgTitleText;
+        private Text _dlgSubtitleText;
+        private Text _dlgBodyText;
+        private Text _dlgRewardText;
+        private Button _dlgPrimaryBtn;
+        private Text _dlgPrimaryLbl;
+        private Button _dlgWayfinderBtn;
+        private Button _dlgAbandonBtn;
+        private Text _dlgAbandonLbl;
+        private Button _dlgCycleBtn;
+        private Text _dlgCycleLbl;
+
+        // Right-edge Collapsible HUD Quest Tracker Card (docked below TacticalMinimap)
         private GameObject _trackerRoot;
         private RectTransform _trackerRect;
         private GameObject _trackerBody;
         private Text _trackerHeaderText;
         private Text _trackerDetailText;
         private Text _trackerCollapseLbl;
+        private Button _trackerActionBtn;
+        private Text _trackerActionLbl;
         private bool _trackerCollapsed;
 
         private readonly List<string>[] _tabLines =
@@ -74,9 +115,23 @@ namespace TacSim.UI
 
         private QuestJournalTab? _capturingTab;
         private float _captureExpiresAt;
+        private bool _manualPinActive;
+        private int _selectedQuestIndex;
+        private string _confirmAbandonKey = string.Empty;
 
         public bool IsOpen => _modalRoot != null && _modalRoot.activeSelf;
+        public bool IsQuestDialogOpen => _questDialogRoot != null && _questDialogRoot.activeSelf;
+        public bool HasAnyModalOpen => IsOpen || IsQuestDialogOpen;
         public QuestJournalTab ActiveTab { get; private set; } = QuestJournalTab.Quests;
+        public string ActiveQuestSubTab { get; private set; } = "active";
+        public MushQuestsPanel LatestPanel { get; private set; }
+        public string TrackedQuestKey { get; private set; } = string.Empty;
+        public string DialogNpcId { get; private set; } = string.Empty;
+        public string DialogQuestKey { get; private set; } = string.Empty;
+        public int ActiveQuestCount => LatestPanel?.Active.Count ?? 0;
+        public int AvailableQuestCount => LatestPanel?.Available.Count ?? 0;
+        public int CompletedQuestCount => LatestPanel?.Completed.Count ?? 0;
+
         public bool HasPinnedObjective => !string.IsNullOrEmpty(PinnedTitle);
         public bool IsTrackerVisible => _trackerRoot != null && _trackerRoot.activeSelf;
         public bool IsTrackerCollapsed => _trackerCollapsed;
@@ -94,6 +149,7 @@ namespace TacSim.UI
 
             BuildPinnedTrackerCard(hudRoot);
             BuildJournalModal(hudRoot);
+            BuildNpcQuestDialogModal(hudRoot);
         }
 
         private void BuildPinnedTrackerCard(Transform hudRoot)
@@ -104,12 +160,12 @@ namespace TacSim.UI
                 "PinnedObjectiveTracker",
                 new Vector2(1f, 1f),
                 new Vector2(1f, 1f),
-                new Vector2(-232f, -456f),
+                new Vector2(-232f, -478f),
                 new Vector2(-16f, -328f),
-                new Color(0.03f, 0.06f, 0.11f, 0.90f));
+                new Color(0.03f, 0.06f, 0.11f, 0.92f));
             _trackerRect = _trackerRoot.GetComponent<RectTransform>();
 
-            var hdrBar = CreatePanel(_trackerRoot.transform, "TrackerHeader", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -24f), Vector2.zero, new Color(0.10f, 0.22f, 0.30f, 0.96f));
+            var hdrBar = CreatePanel(_trackerRoot.transform, "TrackerHeader", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -24f), Vector2.zero, new Color(0.16f, 0.22f, 0.28f, 0.97f));
             _trackerHeaderText = CreateText(hdrBar.transform, "OBJECTIVE [J]", 10, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(1f, 0.86f, 0.44f));
             SetRect(_trackerHeaderText.rectTransform, Vector2.zero, Vector2.one, new Vector2(8f, 0f), new Vector2(-56f, 0f));
 
@@ -124,7 +180,11 @@ namespace TacSim.UI
             _trackerDetailText.supportRichText = true;
             _trackerDetailText.horizontalOverflow = HorizontalWrapMode.Wrap;
             _trackerDetailText.verticalOverflow = VerticalWrapMode.Truncate;
-            SetRect(_trackerDetailText.rectTransform, Vector2.zero, Vector2.one, new Vector2(8f, 24f), new Vector2(-8f, -6f));
+            SetRect(_trackerDetailText.rectTransform, Vector2.zero, Vector2.one, new Vector2(8f, 26f), new Vector2(-8f, -6f));
+
+            _trackerActionBtn = CreateSmallButton(_trackerBody.transform, "DIALOG", new Color(0.56f, 0.40f, 0.12f), TriggerTrackerQuickAction, out _trackerActionLbl);
+            SetRect(_trackerActionBtn.GetComponent<RectTransform>(), new Vector2(0f, 0f), new Vector2(0f, 0f), new Vector2(6f, 4f), new Vector2(126f, 22f));
+            _trackerActionBtn.gameObject.SetActive(false);
 
             var unpinBtn = CreateSmallButton(_trackerBody.transform, "UNPIN", new Color(0.36f, 0.16f, 0.18f), ClearPinnedObjective, out _);
             SetRect(unpinBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 0f), new Vector2(-62f, 4f), new Vector2(-6f, 22f));
@@ -139,13 +199,13 @@ namespace TacSim.UI
                 "QuestAndOpsJournalModal",
                 new Vector2(0.5f, 0.5f),
                 new Vector2(0.5f, 0.5f),
-                new Vector2(-455f, -290f),
-                new Vector2(455f, 290f),
+                new Vector2(-465f, -305f),
+                new Vector2(465f, 305f),
                 new Color(0.03f, 0.06f, 0.11f, 0.985f));
 
             CreatePanel(_modalRoot.transform, "TopAccent", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -3f), Vector2.zero, new Color(1f, 0.82f, 0.36f, 0.95f));
 
-            var hdr = CreateText(_modalRoot.transform, "MISSION, PASSAGE, SURVEY & CLAIMS JOURNAL [J]", 18, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(1f, 0.86f, 0.44f));
+            var hdr = CreateText(_modalRoot.transform, "QUEST LOG, PASSAGES, SURVEYS & CLAIMS [J]", 18, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(1f, 0.86f, 0.44f));
             SetRect(hdr.rectTransform, new Vector2(0f, 1f), new Vector2(0.76f, 1f), new Vector2(18f, -42f), new Vector2(0f, -8f));
 
             var closeBtn = CreateButton(_modalRoot.transform, "CLOSE [ESC]", new Color(0.46f, 0.16f, 0.18f), () => SetOpen(false));
@@ -166,18 +226,46 @@ namespace TacSim.UI
                 _tabImages.Add(tb.GetComponent<Image>());
             }
 
-            _tabHintText = CreateText(_modalRoot.transform, "Live ledger synchronized via +quest", 12, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.68f, 0.86f, 0.96f));
-            SetRect(_tabHintText.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(18f, -106f), new Vector2(-18f, -84f));
+            // Sub-tab bar for structured Quests (Active / Available Here / Completed)
+            _questSubBar = CreatePanel(_modalRoot.transform, "QuestSubTabs", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(16f, -112f), new Vector2(-16f, -84f), Color.clear);
+            var shlg = _questSubBar.AddComponent<HorizontalLayoutGroup>();
+            shlg.spacing = 6f;
+            shlg.childControlWidth = true;
+            shlg.childControlHeight = true;
+            shlg.childForceExpandWidth = true;
 
-            var bodyPanel = CreatePanel(_modalRoot.transform, "JournalBody", Vector2.zero, Vector2.one, new Vector2(16f, 64f), new Vector2(-16f, -110f), new Color(0.02f, 0.05f, 0.09f, 0.94f));
+            var bAct = CreateLabeledButton(_questSubBar.transform, "ACTIVE (0)", new Color(0.48f, 0.36f, 0.14f), () => SelectQuestSubTab("active"), out _subActiveLbl);
+            _subActiveImg = bAct.GetComponent<Image>();
+            var bAv = CreateLabeledButton(_questSubBar.transform, "AVAILABLE HERE (0)", new Color(0.12f, 0.22f, 0.32f), () => SelectQuestSubTab("available"), out _subAvailLbl);
+            _subAvailImg = bAv.GetComponent<Image>();
+            var bDn = CreateLabeledButton(_questSubBar.transform, "COMPLETED (0)", new Color(0.12f, 0.22f, 0.32f), () => SelectQuestSubTab("completed"), out _subDoneLbl);
+            _subDoneImg = bDn.GetComponent<Image>();
+
+            _tabHintText = CreateText(_modalRoot.transform, "Live ledger synchronized via +quest", 12, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.68f, 0.86f, 0.96f));
+            SetRect(_tabHintText.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(18f, -134f), new Vector2(-18f, -114f));
+
+            var bodyPanel = CreatePanel(_modalRoot.transform, "JournalBody", Vector2.zero, Vector2.one, new Vector2(16f, 98f), new Vector2(-16f, -138f), new Color(0.02f, 0.05f, 0.09f, 0.94f));
             _bodyText = CreateText(bodyPanel.transform, string.Empty, 13, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.88f, 0.94f, 0.99f));
             _bodyText.supportRichText = true;
             _bodyText.horizontalOverflow = HorizontalWrapMode.Wrap;
             _bodyText.verticalOverflow = VerticalWrapMode.Truncate;
             SetRect(_bodyText.rectTransform, Vector2.zero, Vector2.one, new Vector2(14f, 12f), new Vector2(-14f, -12f));
 
+            // Structured Quest contextual actions row
+            _questStructActions = CreatePanel(_modalRoot.transform, "QuestStructActions", new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(16f, 56f), new Vector2(-16f, 92f), Color.clear);
+            var qHlg = _questStructActions.AddComponent<HorizontalLayoutGroup>();
+            qHlg.spacing = 6f;
+            qHlg.childControlWidth = true;
+            qHlg.childControlHeight = true;
+            qHlg.childForceExpandWidth = true;
+
+            _qNextBtn = CreateButton(_questStructActions.transform, "NEXT QUEST ▸", new Color(0.14f, 0.28f, 0.40f), CycleSelectedJournalQuest);
+            _qPrimaryBtn = CreateLabeledButton(_questStructActions.transform, "ACCEPT / VERIFY", new Color(0.66f, 0.46f, 0.12f), TriggerJournalPrimaryAction, out _qPrimaryLbl);
+            _qWayfinderBtn = CreateButton(_questStructActions.transform, "WAYFINDER ROUTE", new Color(0.12f, 0.44f, 0.56f), TriggerJournalWayfinder);
+            _qAbandonBtn = CreateLabeledButton(_questStructActions.transform, "ABANDON QUEST", new Color(0.46f, 0.16f, 0.18f), TriggerJournalAbandon, out _qAbandonLbl);
+
             // Bottom action strip
-            var actRow = CreatePanel(_modalRoot.transform, "JournalActions", new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(16f, 14f), new Vector2(-16f, 54f), Color.clear);
+            var actRow = CreatePanel(_modalRoot.transform, "JournalActions", new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(16f, 14f), new Vector2(-16f, 50f), Color.clear);
             var aHlg = actRow.AddComponent<HorizontalLayoutGroup>();
             aHlg.spacing = 8f;
             aHlg.childControlWidth = true;
@@ -194,9 +282,194 @@ namespace TacSim.UI
             _modalRoot.SetActive(false);
         }
 
+        private void BuildNpcQuestDialogModal(Transform hudRoot)
+        {
+            _questDialogRoot = CreatePanel(
+                hudRoot,
+                "NpcQuestDialogModal",
+                new Vector2(0.5f, 0.5f),
+                new Vector2(0.5f, 0.5f),
+                new Vector2(-355f, -260f),
+                new Vector2(355f, 260f),
+                new Color(0.04f, 0.06f, 0.10f, 0.99f));
+
+            CreatePanel(_questDialogRoot.transform, "GoldBar", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -4f), Vector2.zero, new Color(1f, 0.80f, 0.24f, 1f));
+
+            var crestGo = CreatePanel(_questDialogRoot.transform, "QuestCrest", new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(18f, -60f), new Vector2(60f, -18f), new Color(0.95f, 0.72f, 0.18f, 1f));
+            _dlgCrestBg = crestGo.GetComponent<Image>();
+            _dlgCrestText = CreateText(crestGo.transform, "!", 26, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(0.08f, 0.05f, 0.01f, 1f));
+            SetRect(_dlgCrestText.rectTransform, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero);
+
+            _dlgTitleText = CreateText(_questDialogRoot.transform, "QUEST DIALOG", 18, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(1f, 0.88f, 0.48f));
+            SetRect(_dlgTitleText.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(72f, -42f), new Vector2(-118f, -14f));
+
+            _dlgSubtitleText = CreateText(_questDialogRoot.transform, string.Empty, 12, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.62f, 0.86f, 0.98f));
+            SetRect(_dlgSubtitleText.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(72f, -64f), new Vector2(-118f, -42f));
+
+            var closeBtn = CreateButton(_questDialogRoot.transform, "CLOSE [ESC]", new Color(0.42f, 0.16f, 0.18f), CloseQuestDialog);
+            SetRect(closeBtn.GetComponent<RectTransform>(), new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-110f, -46f), new Vector2(-14f, -16f));
+
+            var bodyPanel = CreatePanel(_questDialogRoot.transform, "DialogBody", Vector2.zero, Vector2.one, new Vector2(18f, 108f), new Vector2(-18f, -74f), new Color(0.02f, 0.04f, 0.08f, 0.95f));
+            _dlgBodyText = CreateText(bodyPanel.transform, string.Empty, 13, FontStyle.Normal, TextAnchor.UpperLeft, new Color(0.90f, 0.95f, 1f));
+            _dlgBodyText.supportRichText = true;
+            _dlgBodyText.horizontalOverflow = HorizontalWrapMode.Wrap;
+            _dlgBodyText.verticalOverflow = VerticalWrapMode.Truncate;
+            SetRect(_dlgBodyText.rectTransform, Vector2.zero, Vector2.one, new Vector2(14f, 12f), new Vector2(-14f, -12f));
+
+            var rewardPanel = CreatePanel(_questDialogRoot.transform, "RewardBar", new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(18f, 62f), new Vector2(-18f, 100f), new Color(0.14f, 0.11f, 0.05f, 0.95f));
+            _dlgRewardText = CreateText(rewardPanel.transform, "REWARD: —", 12, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(1f, 0.86f, 0.44f));
+            _dlgRewardText.supportRichText = true;
+            SetRect(_dlgRewardText.rectTransform, Vector2.zero, Vector2.one, new Vector2(12f, 2f), new Vector2(-12f, -2f));
+
+            var btnRow = CreatePanel(_questDialogRoot.transform, "DialogActions", new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(18f, 14f), new Vector2(-18f, 54f), Color.clear);
+            var hlg = btnRow.AddComponent<HorizontalLayoutGroup>();
+            hlg.spacing = 8f;
+            hlg.childControlWidth = true;
+            hlg.childControlHeight = true;
+            hlg.childForceExpandWidth = true;
+
+            _dlgPrimaryBtn = CreateLabeledButton(btnRow.transform, "ACCEPT QUEST", new Color(0.72f, 0.50f, 0.12f), () => TriggerPrimaryDialogAction(), out _dlgPrimaryLbl);
+            _dlgWayfinderBtn = CreateButton(btnRow.transform, "WAYFINDER", new Color(0.14f, 0.44f, 0.56f), TriggerDialogWayfinder);
+            _dlgCycleBtn = CreateLabeledButton(btnRow.transform, "OTHER QUEST", new Color(0.16f, 0.28f, 0.42f), CycleNpcDialogQuest, out _dlgCycleLbl);
+            _dlgAbandonBtn = CreateLabeledButton(btnRow.transform, "ABANDON", new Color(0.46f, 0.16f, 0.18f), () => AbandonDialogQuest(), out _dlgAbandonLbl);
+            CreateButton(btnRow.transform, "NOT NOW", new Color(0.20f, 0.24f, 0.30f), CloseQuestDialog);
+
+            _questDialogRoot.SetActive(false);
+        }
+
+        public void ApplyQuestsPanel(MushQuestsPanel panel)
+        {
+            if (panel == null) return;
+            LatestPanel = panel;
+            _confirmAbandonKey = string.Empty;
+
+            // Keep TrackedQuestKey valid or auto-track the first active quest
+            if (!string.IsNullOrEmpty(TrackedQuestKey))
+            {
+                bool stillActive = false;
+                for (int i = 0; i < panel.Active.Count; i++)
+                {
+                    if (panel.Active[i].Key == TrackedQuestKey)
+                    {
+                        stillActive = true;
+                        break;
+                    }
+                }
+                if (!stillActive) TrackedQuestKey = string.Empty;
+            }
+            if (string.IsNullOrEmpty(TrackedQuestKey) && panel.Active.Count > 0)
+            {
+                TrackedQuestKey = panel.Active[0].Key;
+            }
+
+            SyncStructuredTrackerCard();
+            RefreshJournalBody();
+            if (IsQuestDialogOpen)
+                RefreshQuestDialogUi();
+        }
+
+        public bool HasQuestForNpc(string npcId)
+        {
+            if (LatestPanel == null || string.IsNullOrEmpty(npcId)) return false;
+            for (int i = 0; i < LatestPanel.RoomMarkers.Count; i++)
+            {
+                if (LatestPanel.RoomMarkers[i].NpcId == npcId) return true;
+            }
+            for (int i = 0; i < LatestPanel.Available.Count; i++)
+            {
+                if (LatestPanel.Available[i].GiverId == npcId) return true;
+            }
+            for (int i = 0; i < LatestPanel.Active.Count; i++)
+            {
+                if (LatestPanel.Active[i].TurnInId == npcId || LatestPanel.Active[i].GiverId == npcId)
+                    return true;
+            }
+            return false;
+        }
+
+        public bool OpenNpcQuestDialog(string npcId)
+        {
+            if (LatestPanel == null || string.IsNullOrEmpty(npcId)) return false;
+            string pickKey = string.Empty;
+            for (int i = 0; i < LatestPanel.RoomMarkers.Count; i++)
+            {
+                if (LatestPanel.RoomMarkers[i].NpcId == npcId && !string.IsNullOrEmpty(LatestPanel.RoomMarkers[i].QuestKey))
+                {
+                    pickKey = LatestPanel.RoomMarkers[i].QuestKey;
+                    break;
+                }
+            }
+            if (string.IsNullOrEmpty(pickKey))
+            {
+                for (int i = 0; i < LatestPanel.Active.Count; i++)
+                {
+                    if (LatestPanel.Active[i].TurnInId == npcId || LatestPanel.Active[i].GiverId == npcId)
+                    {
+                        pickKey = LatestPanel.Active[i].Key;
+                        break;
+                    }
+                }
+            }
+            if (string.IsNullOrEmpty(pickKey))
+            {
+                for (int i = 0; i < LatestPanel.Available.Count; i++)
+                {
+                    if (LatestPanel.Available[i].GiverId == npcId)
+                    {
+                        pickKey = LatestPanel.Available[i].Key;
+                        break;
+                    }
+                }
+            }
+            if (string.IsNullOrEmpty(pickKey)) return false;
+
+            DialogNpcId = npcId;
+            DialogQuestKey = pickKey;
+            _confirmAbandonKey = string.Empty;
+            if (_modalRoot != null) _modalRoot.SetActive(false);
+            if (_questDialogRoot != null) _questDialogRoot.SetActive(true);
+            RefreshQuestDialogUi();
+            return true;
+        }
+
+        public bool OpenQuestDialogByKey(string questKey)
+        {
+            if (LatestPanel == null || string.IsNullOrEmpty(questKey)) return false;
+            DialogNpcId = string.Empty;
+            DialogQuestKey = questKey;
+            _confirmAbandonKey = string.Empty;
+            if (_modalRoot != null) _modalRoot.SetActive(false);
+            if (_questDialogRoot != null) _questDialogRoot.SetActive(true);
+            RefreshQuestDialogUi();
+            return true;
+        }
+
+        public void CloseQuestDialog()
+        {
+            _confirmAbandonKey = string.Empty;
+            if (_questDialogRoot != null)
+                _questDialogRoot.SetActive(false);
+        }
+
+        public void SelectQuestSubTab(string subTab)
+        {
+            ActiveQuestSubTab = subTab ?? "active";
+            _selectedQuestIndex = 0;
+            _confirmAbandonKey = string.Empty;
+            RefreshJournalBody();
+        }
+
+        public void TrackQuest(string questKey)
+        {
+            TrackedQuestKey = questKey ?? string.Empty;
+            _manualPinActive = false;
+            SyncStructuredTrackerCard();
+        }
+
         public void SetOpen(bool open, QuestJournalTab? tabOverride = null)
         {
             if (_modalRoot == null) return;
+            if (open) CloseQuestDialog();
             _modalRoot.SetActive(open);
             if (open)
             {
@@ -216,9 +489,16 @@ namespace TacSim.UI
                 _tabLines[i].Clear();
                 _tabPlainLines[i].Clear();
             }
+            LatestPanel = null;
+            TrackedQuestKey = string.Empty;
+            DialogNpcId = string.Empty;
+            DialogQuestKey = string.Empty;
+            _confirmAbandonKey = string.Empty;
+            _manualPinActive = false;
             _capturingTab = null;
             _captureExpiresAt = 0f;
             ClearPinnedObjective();
+            CloseQuestDialog();
             SetOpen(false);
         }
 
@@ -303,6 +583,12 @@ namespace TacSim.UI
                     detail = $"Run {TabCommands[idx]} to check live progress.";
                 }
             }
+            else if (ActiveTab == QuestJournalTab.Quests && LatestPanel != null && LatestPanel.Active.Count > 0)
+            {
+                var q = LatestPanel.Active[0];
+                title = q.Title;
+                detail = q.NextStep;
+            }
             else
             {
                 title = $"Check {TabTitles[idx]}";
@@ -313,6 +599,7 @@ namespace TacSim.UI
 
         public void PinObjective(string category, string title, string detail)
         {
+            _manualPinActive = true;
             PinnedCategory = (category ?? "OBJECTIVE").Trim().ToUpperInvariant();
             PinnedTitle = (title ?? string.Empty).Trim();
             PinnedDetail = (detail ?? string.Empty).Trim();
@@ -322,10 +609,13 @@ namespace TacSim.UI
             {
                 _trackerDetailText.text = $"<b><color=#66EEFF>{MushProtocol.EscapeUnityRichText(PinnedTitle)}</color></b>\n{MushProtocol.EscapeUnityRichText(PinnedDetail)}";
             }
+            if (_trackerActionBtn != null) _trackerActionBtn.gameObject.SetActive(false);
         }
 
         public void ClearPinnedObjective()
         {
+            _manualPinActive = false;
+            TrackedQuestKey = string.Empty;
             PinnedCategory = string.Empty;
             PinnedTitle = string.Empty;
             PinnedDetail = string.Empty;
@@ -339,7 +629,7 @@ namespace TacSim.UI
             if (_trackerBody != null) _trackerBody.SetActive(!_trackerCollapsed);
             if (_trackerCollapseLbl != null) _trackerCollapseLbl.text = _trackerCollapsed ? "+" : "—";
             if (_trackerRect != null)
-                _trackerRect.offsetMin = new Vector2(-232f, _trackerCollapsed ? -352f : -456f);
+                _trackerRect.offsetMin = new Vector2(-232f, _trackerCollapsed ? -352f : -478f);
         }
 
         public void SyncTrackerVisibility(TacSimActiveStage stage, bool rightCornerBusy)
@@ -352,9 +642,502 @@ namespace TacSim.UI
                 _trackerRoot.SetActive(show);
         }
 
+        public bool TriggerPrimaryDialogAction()
+        {
+            if (LatestPanel == null) return false;
+            var active = FindActiveByKey(DialogQuestKey);
+            if (active != null)
+            {
+                if (active.CanFinishNow && !string.IsNullOrEmpty(active.FinishCmd))
+                {
+                    OnCommandRequested?.Invoke(active.FinishCmd);
+                    CloseQuestDialog();
+                    return true;
+                }
+                if (active.CanCheckNow && !string.IsNullOrEmpty(active.CheckCmd))
+                {
+                    OnCommandRequested?.Invoke(active.CheckCmd);
+                    return true;
+                }
+                TrackQuest(active.Key);
+                CloseQuestDialog();
+                return true;
+            }
+            var offer = FindAvailableByKey(DialogQuestKey);
+            if (offer != null && !string.IsNullOrEmpty(offer.AcceptCmd))
+            {
+                TrackedQuestKey = offer.Key;
+                _manualPinActive = false;
+                OnCommandRequested?.Invoke(offer.AcceptCmd);
+                CloseQuestDialog();
+                return true;
+            }
+            return false;
+        }
+
+        public bool AbandonDialogQuest()
+        {
+            var active = FindActiveByKey(DialogQuestKey);
+            if (active == null || string.IsNullOrEmpty(active.AbandonCmd)) return false;
+            if (_confirmAbandonKey != active.Key)
+            {
+                _confirmAbandonKey = active.Key;
+                RefreshQuestDialogUi();
+                return false;
+            }
+            _confirmAbandonKey = string.Empty;
+            OnCommandRequested?.Invoke(active.AbandonCmd);
+            CloseQuestDialog();
+            return true;
+        }
+
+        private void SyncStructuredTrackerCard()
+        {
+            if (_manualPinActive || LatestPanel == null) return;
+            var active = FindActiveByKey(TrackedQuestKey) ?? (LatestPanel.Active.Count > 0 ? LatestPanel.Active[0] : null);
+            if (active != null)
+            {
+                int done = 0;
+                var sb = new StringBuilder(160);
+                for (int i = 0; i < active.Checkpoints.Count; i++)
+                {
+                    var cp = active.Checkpoints[i];
+                    if (cp.Checked) done++;
+                    string sym = cp.Checked ? "<color=#55EE99>[✓]</color>" : (cp.LiveReady ? "<color=#FFDD55>[◆]</color>" : "<color=#99BBCC>[ ]</color>");
+                    sb.Append(sym).Append(' ').Append(MushProtocol.EscapeUnityRichText(cp.Title)).Append('\n');
+                }
+                if (!string.IsNullOrEmpty(active.NextStep))
+                    sb.Append("<color=#77DDFF>Next:</color> ").Append(MushProtocol.EscapeUnityRichText(active.NextStep));
+
+                PinnedCategory = $"QUEST ({done}/{active.Checkpoints.Count}) [J]";
+                PinnedTitle = active.Title;
+                PinnedDetail = active.NextStep;
+                if (_trackerHeaderText != null) _trackerHeaderText.text = PinnedCategory;
+                if (_trackerDetailText != null)
+                {
+                    _trackerDetailText.text = $"<b><color=#FFDF77>{MushProtocol.EscapeUnityRichText(active.Title)}</color></b>\n{sb}";
+                }
+                if (_trackerActionBtn != null)
+                {
+                    _trackerActionBtn.gameObject.SetActive(true);
+                    if (_trackerActionLbl != null)
+                    {
+                        if (active.CanFinishNow) _trackerActionLbl.text = "COMPLETE [?]";
+                        else if (active.CanCheckNow) _trackerActionLbl.text = "VERIFY STEP";
+                        else if (!string.IsNullOrEmpty(active.NextRoomEntry)) _trackerActionLbl.text = "WAYFINDER";
+                        else _trackerActionLbl.text = "OPEN DIALOG";
+                    }
+                }
+                return;
+            }
+
+            if (LatestPanel.Available.Count > 0)
+            {
+                var offer = LatestPanel.Available[0];
+                PinnedCategory = "QUEST AVAILABLE [!]";
+                PinnedTitle = offer.Title;
+                PinnedDetail = $"Speak with {offer.GiverName}";
+                if (_trackerHeaderText != null) _trackerHeaderText.text = PinnedCategory;
+                if (_trackerDetailText != null)
+                {
+                    _trackerDetailText.text = $"<b><color=#FFDD44>[!] {MushProtocol.EscapeUnityRichText(offer.Title)}</color></b>\n{MushProtocol.EscapeUnityRichText(offer.GiverName)} has an optional quest.";
+                }
+                if (_trackerActionBtn != null)
+                {
+                    _trackerActionBtn.gameObject.SetActive(true);
+                    if (_trackerActionLbl != null) _trackerActionLbl.text = "OPEN DIALOG";
+                }
+                return;
+            }
+
+            PinnedCategory = string.Empty;
+            PinnedTitle = string.Empty;
+            PinnedDetail = string.Empty;
+            if (_trackerActionBtn != null) _trackerActionBtn.gameObject.SetActive(false);
+        }
+
+        private void TriggerTrackerQuickAction()
+        {
+            if (LatestPanel == null) return;
+            var active = FindActiveByKey(TrackedQuestKey) ?? (LatestPanel.Active.Count > 0 ? LatestPanel.Active[0] : null);
+            if (active != null)
+            {
+                if (active.CanFinishNow && !string.IsNullOrEmpty(active.FinishCmd))
+                {
+                    OnCommandRequested?.Invoke(active.FinishCmd);
+                    return;
+                }
+                if (active.CanCheckNow && !string.IsNullOrEmpty(active.CheckCmd))
+                {
+                    OnCommandRequested?.Invoke(active.CheckCmd);
+                    return;
+                }
+                if (!string.IsNullOrEmpty(active.NextRoomEntry))
+                {
+                    OnWayfinderRoomRequested?.Invoke(active.NextRoomEntry);
+                    return;
+                }
+                OpenQuestDialogByKey(active.Key);
+                return;
+            }
+            if (LatestPanel.Available.Count > 0)
+                OpenNpcQuestDialog(LatestPanel.Available[0].GiverId);
+        }
+
+        public void TriggerDialogWayfinder()
+        {
+            var active = FindActiveByKey(DialogQuestKey);
+            if (active != null && !string.IsNullOrEmpty(active.NextRoomEntry))
+            {
+                OnWayfinderRoomRequested?.Invoke(active.NextRoomEntry);
+                CloseQuestDialog();
+                return;
+            }
+            var offer = FindAvailableByKey(DialogQuestKey);
+            if (offer != null && offer.Checkpoints.Count > 0 && !string.IsNullOrEmpty(offer.Checkpoints[0].RoomEntry))
+            {
+                OnWayfinderRoomRequested?.Invoke(offer.Checkpoints[0].RoomEntry);
+                CloseQuestDialog();
+            }
+        }
+
+        private void CycleNpcDialogQuest()
+        {
+            var keys = CollectNpcDialogKeys(DialogNpcId);
+            if (keys.Count <= 1) return;
+            int idx = keys.IndexOf(DialogQuestKey);
+            DialogQuestKey = keys[(idx + 1) % keys.Count];
+            _confirmAbandonKey = string.Empty;
+            RefreshQuestDialogUi();
+        }
+
+        private List<string> CollectNpcDialogKeys(string npcId)
+        {
+            var keys = new List<string>();
+            if (LatestPanel == null || string.IsNullOrEmpty(npcId)) return keys;
+            for (int i = 0; i < LatestPanel.Active.Count; i++)
+            {
+                var a = LatestPanel.Active[i];
+                if ((a.TurnInId == npcId || a.GiverId == npcId) && !keys.Contains(a.Key))
+                    keys.Add(a.Key);
+            }
+            for (int i = 0; i < LatestPanel.Available.Count; i++)
+            {
+                var av = LatestPanel.Available[i];
+                if (av.GiverId == npcId && !keys.Contains(av.Key))
+                    keys.Add(av.Key);
+            }
+            return keys;
+        }
+
+        private void RefreshQuestDialogUi()
+        {
+            if (LatestPanel == null) return;
+            var active = FindActiveByKey(DialogQuestKey);
+            var offer = active == null ? FindAvailableByKey(DialogQuestKey) : null;
+            var npcKeys = CollectNpcDialogKeys(DialogNpcId);
+
+            if (_dlgCycleBtn != null)
+            {
+                _dlgCycleBtn.gameObject.SetActive(npcKeys.Count > 1);
+                if (_dlgCycleLbl != null) _dlgCycleLbl.text = $"OTHER QUEST ({npcKeys.Count})";
+            }
+
+            if (offer != null)
+            {
+                if (_dlgCrestText != null) _dlgCrestText.text = "!";
+                if (_dlgCrestBg != null) _dlgCrestBg.color = new Color(0.96f, 0.74f, 0.18f, 1f);
+                if (_dlgTitleText != null) _dlgTitleText.text = offer.Title.ToUpperInvariant();
+                if (_dlgSubtitleText != null)
+                {
+                    string turnIn = offer.TurnInId != offer.GiverId ? $"  ·  Turn in to: {offer.TurnInName}" : string.Empty;
+                    _dlgSubtitleText.text = $"Offered by {offer.GiverName}{turnIn}";
+                }
+                if (_dlgBodyText != null)
+                {
+                    var sb = new StringBuilder(512);
+                    sb.Append(MushProtocol.EscapeUnityRichText(offer.Introduction)).Append("\n\n");
+                    sb.Append("<b><color=#FFDF77>REQUIREMENTS &amp; STEPS</color></b>\n");
+                    for (int i = 0; i < offer.Checkpoints.Count; i++)
+                    {
+                        var cp = offer.Checkpoints[i];
+                        sb.Append("• <b>").Append(MushProtocol.EscapeUnityRichText(cp.Title)).Append("</b>");
+                        if (!string.IsNullOrEmpty(cp.RoomName))
+                            sb.Append(" <color=#77DDFF>(").Append(MushProtocol.EscapeUnityRichText(cp.RoomName)).Append(")</color>");
+                        sb.Append('\n').Append("<color=#99B8CC>  ").Append(MushProtocol.EscapeUnityRichText(cp.Instructions)).Append("</color>\n");
+                    }
+                    _dlgBodyText.text = sb.ToString();
+                }
+                if (_dlgRewardText != null)
+                    _dlgRewardText.text = $"<b>REWARD:</b> {MushProtocol.EscapeUnityRichText(offer.RewardSummary)}";
+                if (_dlgPrimaryBtn != null) _dlgPrimaryBtn.gameObject.SetActive(true);
+                if (_dlgPrimaryLbl != null) _dlgPrimaryLbl.text = "ACCEPT QUEST";
+                if (_dlgWayfinderBtn != null) _dlgWayfinderBtn.gameObject.SetActive(offer.Checkpoints.Count > 0 && !string.IsNullOrEmpty(offer.Checkpoints[0].RoomEntry));
+                if (_dlgAbandonBtn != null) _dlgAbandonBtn.gameObject.SetActive(false);
+                return;
+            }
+
+            if (active != null)
+            {
+                bool goldenQ = active.CanFinishNow || active.ReadyToFinish || active.CanCheckNow;
+                if (_dlgCrestText != null) _dlgCrestText.text = "?";
+                if (_dlgCrestBg != null) _dlgCrestBg.color = goldenQ ? new Color(0.98f, 0.78f, 0.18f, 1f) : new Color(0.45f, 0.52f, 0.62f, 1f);
+                if (_dlgTitleText != null) _dlgTitleText.text = active.Title.ToUpperInvariant();
+                if (_dlgSubtitleText != null)
+                {
+                    string turnIn = active.TurnInId != active.GiverId ? $"  ·  Turn in to: {active.TurnInName}" : string.Empty;
+                    _dlgSubtitleText.text = $"Giver: {active.GiverName}{turnIn}";
+                }
+                if (_dlgBodyText != null)
+                {
+                    var sb = new StringBuilder(512);
+                    sb.Append(MushProtocol.EscapeUnityRichText(active.Introduction)).Append("\n\n");
+                    sb.Append("<b><color=#FFDF77>OBJECTIVES</color></b>\n");
+                    for (int i = 0; i < active.Checkpoints.Count; i++)
+                    {
+                        var cp = active.Checkpoints[i];
+                        string mark = cp.Checked ? "<color=#55EE99>[✓]</color>" : (cp.LiveReady ? "<color=#FFDD55>[◆]</color>" : "<color=#99BBCC>[ ]</color>");
+                        sb.Append(mark).Append(" <b>").Append(MushProtocol.EscapeUnityRichText(cp.Title)).Append("</b>");
+                        if (!string.IsNullOrEmpty(cp.RoomName))
+                            sb.Append(" <color=#77DDFF>(").Append(MushProtocol.EscapeUnityRichText(cp.RoomName)).Append(")</color>");
+                        sb.Append('\n');
+                        if (!string.IsNullOrEmpty(cp.DetailText))
+                            sb.Append("<color=#66EEAA>  ").Append(MushProtocol.EscapeUnityRichText(cp.DetailText)).Append("</color>\n");
+                        else
+                            sb.Append("<color=#99B8CC>  ").Append(MushProtocol.EscapeUnityRichText(cp.Instructions)).Append("</color>\n");
+                    }
+                    _dlgBodyText.text = sb.ToString();
+                }
+                if (_dlgRewardText != null)
+                    _dlgRewardText.text = $"<b>REWARD:</b> {MushProtocol.EscapeUnityRichText(active.RewardSummary)}";
+                if (_dlgPrimaryBtn != null) _dlgPrimaryBtn.gameObject.SetActive(true);
+                if (_dlgPrimaryLbl != null)
+                {
+                    if (active.CanFinishNow) _dlgPrimaryLbl.text = "COMPLETE QUEST";
+                    else if (active.CanCheckNow) _dlgPrimaryLbl.text = "VERIFY OBJECTIVE";
+                    else _dlgPrimaryLbl.text = "TRACK ON HUD";
+                }
+                if (_dlgWayfinderBtn != null) _dlgWayfinderBtn.gameObject.SetActive(!string.IsNullOrEmpty(active.NextRoomEntry));
+                if (_dlgAbandonBtn != null) _dlgAbandonBtn.gameObject.SetActive(true);
+                if (_dlgAbandonLbl != null)
+                    _dlgAbandonLbl.text = _confirmAbandonKey == active.Key ? "CONFIRM ABANDON" : "ABANDON QUEST";
+            }
+        }
+
+        private void CycleSelectedJournalQuest()
+        {
+            if (LatestPanel == null) return;
+            int count = ActiveQuestSubTab == "available"
+                ? LatestPanel.Available.Count
+                : ActiveQuestSubTab == "completed"
+                    ? LatestPanel.Completed.Count
+                    : LatestPanel.Active.Count;
+            if (count <= 1) return;
+            _selectedQuestIndex = (_selectedQuestIndex + 1) % count;
+            _confirmAbandonKey = string.Empty;
+            RefreshJournalBody();
+        }
+
+        private void TriggerJournalPrimaryAction()
+        {
+            if (LatestPanel == null) return;
+            if (ActiveQuestSubTab == "available" && LatestPanel.Available.Count > 0)
+            {
+                var offer = LatestPanel.Available[_selectedQuestIndex % LatestPanel.Available.Count];
+                if (!string.IsNullOrEmpty(offer.AcceptCmd))
+                {
+                    TrackedQuestKey = offer.Key;
+                    _manualPinActive = false;
+                    OnCommandRequested?.Invoke(offer.AcceptCmd);
+                }
+                return;
+            }
+            if (ActiveQuestSubTab == "active" && LatestPanel.Active.Count > 0)
+            {
+                var active = LatestPanel.Active[_selectedQuestIndex % LatestPanel.Active.Count];
+                if (active.CanFinishNow && !string.IsNullOrEmpty(active.FinishCmd))
+                    OnCommandRequested?.Invoke(active.FinishCmd);
+                else if (active.CanCheckNow && !string.IsNullOrEmpty(active.CheckCmd))
+                    OnCommandRequested?.Invoke(active.CheckCmd);
+                else
+                    TrackQuest(active.Key);
+            }
+        }
+
+        private void TriggerJournalWayfinder()
+        {
+            if (LatestPanel == null) return;
+            if (ActiveQuestSubTab == "active" && LatestPanel.Active.Count > 0)
+            {
+                var active = LatestPanel.Active[_selectedQuestIndex % LatestPanel.Active.Count];
+                if (!string.IsNullOrEmpty(active.NextRoomEntry))
+                {
+                    OnWayfinderRoomRequested?.Invoke(active.NextRoomEntry);
+                    SetOpen(false);
+                }
+            }
+            else if (ActiveQuestSubTab == "available" && LatestPanel.Available.Count > 0)
+            {
+                var offer = LatestPanel.Available[_selectedQuestIndex % LatestPanel.Available.Count];
+                if (offer.Checkpoints.Count > 0 && !string.IsNullOrEmpty(offer.Checkpoints[0].RoomEntry))
+                {
+                    OnWayfinderRoomRequested?.Invoke(offer.Checkpoints[0].RoomEntry);
+                    SetOpen(false);
+                }
+            }
+        }
+
+        private void TriggerJournalAbandon()
+        {
+            if (LatestPanel == null || ActiveQuestSubTab != "active" || LatestPanel.Active.Count == 0) return;
+            var active = LatestPanel.Active[_selectedQuestIndex % LatestPanel.Active.Count];
+            if (string.IsNullOrEmpty(active.AbandonCmd)) return;
+            if (_confirmAbandonKey != active.Key)
+            {
+                _confirmAbandonKey = active.Key;
+                RefreshJournalBody();
+                return;
+            }
+            _confirmAbandonKey = string.Empty;
+            OnCommandRequested?.Invoke(active.AbandonCmd);
+        }
+
+        private MushActiveQuest FindActiveByKey(string key)
+        {
+            if (LatestPanel == null || string.IsNullOrEmpty(key)) return null;
+            for (int i = 0; i < LatestPanel.Active.Count; i++)
+                if (LatestPanel.Active[i].Key == key) return LatestPanel.Active[i];
+            return null;
+        }
+
+        private MushAvailableQuest FindAvailableByKey(string key)
+        {
+            if (LatestPanel == null || string.IsNullOrEmpty(key)) return null;
+            for (int i = 0; i < LatestPanel.Available.Count; i++)
+                if (LatestPanel.Available[i].Key == key) return LatestPanel.Available[i];
+            return null;
+        }
+
         private void RefreshJournalBody()
         {
             int idx = (int)ActiveTab;
+            bool structuredQuests = ActiveTab == QuestJournalTab.Quests && LatestPanel != null;
+            if (_questSubBar != null) _questSubBar.SetActive(structuredQuests);
+            if (_questStructActions != null) _questStructActions.SetActive(structuredQuests);
+
+            if (structuredQuests)
+            {
+                if (_subActiveLbl != null) _subActiveLbl.text = $"ACTIVE ({LatestPanel.Active.Count})";
+                if (_subAvailLbl != null) _subAvailLbl.text = $"AVAILABLE HERE ({LatestPanel.Available.Count})";
+                if (_subDoneLbl != null) _subDoneLbl.text = $"COMPLETED ({LatestPanel.Completed.Count})";
+                if (_subActiveImg != null) _subActiveImg.color = ActiveQuestSubTab == "active" ? new Color(0.56f, 0.42f, 0.14f, 1f) : new Color(0.10f, 0.20f, 0.30f, 0.94f);
+                if (_subAvailImg != null) _subAvailImg.color = ActiveQuestSubTab == "available" ? new Color(0.56f, 0.42f, 0.14f, 1f) : new Color(0.10f, 0.20f, 0.30f, 0.94f);
+                if (_subDoneImg != null) _subDoneImg.color = ActiveQuestSubTab == "completed" ? new Color(0.14f, 0.46f, 0.32f, 1f) : new Color(0.10f, 0.20f, 0.30f, 0.94f);
+
+                if (_tabHintText != null)
+                    _tabHintText.text = $"Live Quest Log  ·  Room: {LatestPanel.RoomName}  ·  {LatestPanel.Active.Count} active / {LatestPanel.Completed.Count} completed";
+
+                var sb = new StringBuilder(512);
+                if (ActiveQuestSubTab == "active")
+                {
+                    if (LatestPanel.Active.Count == 0)
+                    {
+                        sb.Append("<color=#88AAC8>No active quests. Look for NPCs with a floating golden <b>!</b> marker (such as Maren Halvorsen in Port Watch Arrivals).</color>");
+                        if (_qPrimaryBtn != null) _qPrimaryBtn.gameObject.SetActive(false);
+                        if (_qWayfinderBtn != null) _qWayfinderBtn.gameObject.SetActive(false);
+                        if (_qAbandonBtn != null) _qAbandonBtn.gameObject.SetActive(false);
+                        if (_qNextBtn != null) _qNextBtn.gameObject.SetActive(false);
+                    }
+                    else
+                    {
+                        int sel = _selectedQuestIndex % LatestPanel.Active.Count;
+                        var q = LatestPanel.Active[sel];
+                        sb.Append($"<b><color=#FFDF77>[{sel + 1}/{LatestPanel.Active.Count}] {MushProtocol.EscapeUnityRichText(q.Title)}</color></b>\n");
+                        sb.Append($"<color=#77DDFF>Giver: {MushProtocol.EscapeUnityRichText(q.GiverName)}  ·  Turn in: {MushProtocol.EscapeUnityRichText(q.TurnInName)}</color>\n");
+                        sb.Append(MushProtocol.EscapeUnityRichText(q.Introduction)).Append("\n\n");
+                        for (int i = 0; i < q.Checkpoints.Count; i++)
+                        {
+                            var cp = q.Checkpoints[i];
+                            string mark = cp.Checked ? "<color=#55EE99>[✓]</color>" : (cp.LiveReady ? "<color=#FFDD55>[◆]</color>" : "<color=#99BBCC>[ ]</color>");
+                            sb.Append($"{mark} <b>{MushProtocol.EscapeUnityRichText(cp.Title)}</b>");
+                            if (!string.IsNullOrEmpty(cp.RoomName))
+                                sb.Append($" <color=#77DDFF>({MushProtocol.EscapeUnityRichText(cp.RoomName)})</color>");
+                            sb.Append('\n');
+                            if (!string.IsNullOrEmpty(cp.DetailText))
+                                sb.Append($"<color=#66EEAA>  {MushProtocol.EscapeUnityRichText(cp.DetailText)}</color>\n");
+                            else
+                                sb.Append($"<color=#99B8CC>  {MushProtocol.EscapeUnityRichText(cp.Instructions)}</color>\n");
+                        }
+                        sb.Append($"\n<color=#FFDF77><b>REWARD:</b> {MushProtocol.EscapeUnityRichText(q.RewardSummary)}</color>");
+                        if (_qNextBtn != null) _qNextBtn.gameObject.SetActive(LatestPanel.Active.Count > 1);
+                        if (_qPrimaryBtn != null) _qPrimaryBtn.gameObject.SetActive(true);
+                        if (_qPrimaryLbl != null)
+                        {
+                            if (q.CanFinishNow) _qPrimaryLbl.text = "COMPLETE QUEST";
+                            else if (q.CanCheckNow) _qPrimaryLbl.text = "VERIFY OBJECTIVE";
+                            else _qPrimaryLbl.text = "TRACK ON HUD";
+                        }
+                        if (_qWayfinderBtn != null) _qWayfinderBtn.gameObject.SetActive(!string.IsNullOrEmpty(q.NextRoomEntry));
+                        if (_qAbandonBtn != null) _qAbandonBtn.gameObject.SetActive(true);
+                        if (_qAbandonLbl != null) _qAbandonLbl.text = _confirmAbandonKey == q.Key ? "CONFIRM ABANDON" : "ABANDON QUEST";
+                    }
+                }
+                else if (ActiveQuestSubTab == "available")
+                {
+                    if (LatestPanel.Available.Count == 0)
+                    {
+                        sb.Append("<color=#88AAC8>No quests are offered in this room right now.</color>");
+                        if (_qPrimaryBtn != null) _qPrimaryBtn.gameObject.SetActive(false);
+                        if (_qWayfinderBtn != null) _qWayfinderBtn.gameObject.SetActive(false);
+                        if (_qAbandonBtn != null) _qAbandonBtn.gameObject.SetActive(false);
+                        if (_qNextBtn != null) _qNextBtn.gameObject.SetActive(false);
+                    }
+                    else
+                    {
+                        int sel = _selectedQuestIndex % LatestPanel.Available.Count;
+                        var q = LatestPanel.Available[sel];
+                        sb.Append($"<b><color=#FFDD44>[!] [{sel + 1}/{LatestPanel.Available.Count}] {MushProtocol.EscapeUnityRichText(q.Title)}</color></b>\n");
+                        sb.Append($"<color=#77DDFF>Offered by: {MushProtocol.EscapeUnityRichText(q.GiverName)}  ·  Turn in: {MushProtocol.EscapeUnityRichText(q.TurnInName)}</color>\n");
+                        sb.Append(MushProtocol.EscapeUnityRichText(q.Introduction)).Append("\n\n");
+                        for (int i = 0; i < q.Checkpoints.Count; i++)
+                        {
+                            var cp = q.Checkpoints[i];
+                            sb.Append($"• <b>{MushProtocol.EscapeUnityRichText(cp.Title)}</b> <color=#77DDFF>({MushProtocol.EscapeUnityRichText(cp.RoomName)})</color>\n");
+                            sb.Append($"<color=#99B8CC>  {MushProtocol.EscapeUnityRichText(cp.Instructions)}</color>\n");
+                        }
+                        sb.Append($"\n<color=#FFDF77><b>REWARD:</b> {MushProtocol.EscapeUnityRichText(q.RewardSummary)}</color>");
+                        if (_qNextBtn != null) _qNextBtn.gameObject.SetActive(LatestPanel.Available.Count > 1);
+                        if (_qPrimaryBtn != null) _qPrimaryBtn.gameObject.SetActive(true);
+                        if (_qPrimaryLbl != null) _qPrimaryLbl.text = "ACCEPT QUEST";
+                        if (_qWayfinderBtn != null) _qWayfinderBtn.gameObject.SetActive(q.Checkpoints.Count > 0 && !string.IsNullOrEmpty(q.Checkpoints[0].RoomEntry));
+                        if (_qAbandonBtn != null) _qAbandonBtn.gameObject.SetActive(false);
+                    }
+                }
+                else
+                {
+                    if (_qPrimaryBtn != null) _qPrimaryBtn.gameObject.SetActive(false);
+                    if (_qWayfinderBtn != null) _qWayfinderBtn.gameObject.SetActive(false);
+                    if (_qAbandonBtn != null) _qAbandonBtn.gameObject.SetActive(false);
+                    if (_qNextBtn != null) _qNextBtn.gameObject.SetActive(false);
+                    if (LatestPanel.Completed.Count == 0)
+                    {
+                        sb.Append("<color=#88AAC8>No completed quests recorded yet.</color>");
+                    }
+                    else
+                    {
+                        for (int i = 0; i < LatestPanel.Completed.Count; i++)
+                        {
+                            var c = LatestPanel.Completed[i];
+                            sb.Append($"<color=#55EE99>[✓]</color> <b>{MushProtocol.EscapeUnityRichText(c.Title)}</b> <color=#77DDFF>({MushProtocol.EscapeUnityRichText(c.TurnInName)})</color>\n");
+                            sb.Append($"<color=#99B8CC>  {MushProtocol.EscapeUnityRichText(c.Completion)}</color>\n");
+                        }
+                    }
+                }
+
+                if (_bodyText != null) _bodyText.text = sb.ToString();
+                return;
+            }
+
             if (_tabHintText != null)
                 _tabHintText.text = $"{TabTitles[idx]}  ·  Live command: {TabCommands[idx]}  ({(_tabLines[idx].Count)} lines captured)";
             if (_bodyText != null)
@@ -395,6 +1178,11 @@ namespace TacSim.UI
 
         private Button CreateButton(Transform parent, string label, Color bg, Action onClick)
         {
+            return CreateLabeledButton(parent, label, bg, onClick, out _);
+        }
+
+        private Button CreateLabeledButton(Transform parent, string label, Color bg, Action onClick, out Text labelTxt)
+        {
             var go = new GameObject("Btn_" + label, typeof(RectTransform), typeof(Image), typeof(Button));
             go.transform.SetParent(parent, false);
             var img = go.GetComponent<Image>();
@@ -403,8 +1191,8 @@ namespace TacSim.UI
             var btn = go.GetComponent<Button>();
             btn.targetGraphic = img;
             btn.onClick.AddListener(() => onClick?.Invoke());
-            var txt = CreateText(go.transform, label, 11, FontStyle.Bold, TextAnchor.MiddleCenter, Color.white);
-            SetRect(txt.rectTransform, Vector2.zero, Vector2.one, new Vector2(4f, 2f), new Vector2(-4f, -2f));
+            labelTxt = CreateText(go.transform, label, 11, FontStyle.Bold, TextAnchor.MiddleCenter, Color.white);
+            SetRect(labelTxt.rectTransform, Vector2.zero, Vector2.one, new Vector2(4f, 2f), new Vector2(-4f, -2f));
             return btn;
         }
 
@@ -419,16 +1207,16 @@ namespace TacSim.UI
             btn.targetGraphic = img;
             btn.onClick.AddListener(() => onClick?.Invoke());
             labelTxt = CreateText(go.transform, label, 10, FontStyle.Bold, TextAnchor.MiddleCenter, Color.white);
-            SetRect(labelTxt.rectTransform, Vector2.zero, Vector2.one, Vector2.zero, Vector2.zero);
+            SetRect(labelTxt.rectTransform, Vector2.zero, Vector2.one, new Vector2(2f, 1f), new Vector2(-2f, -1f));
             return btn;
         }
 
-        private static void SetRect(RectTransform rt, Vector2 anchorMin, Vector2 anchorMax, Vector2 offsetMin, Vector2 offsetMax)
+        private static void SetRect(RectTransform rt, Vector2 aMin, Vector2 aMax, Vector2 oMin, Vector2 oMax)
         {
-            rt.anchorMin = anchorMin;
-            rt.anchorMax = anchorMax;
-            rt.offsetMin = offsetMin;
-            rt.offsetMax = offsetMax;
+            rt.anchorMin = aMin;
+            rt.anchorMax = aMax;
+            rt.offsetMin = oMin;
+            rt.offsetMax = oMax;
         }
     }
 }

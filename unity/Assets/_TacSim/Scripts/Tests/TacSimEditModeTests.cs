@@ -10283,5 +10283,183 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void WowQuestSystem_MarkersDialogTrackerCompletionAndWayfinder_WorkAuthoritatively()
+        {
+            var rootGo = new UnityEngine.GameObject("WowQuestSystemTest");
+            try
+            {
+                // 1. Parse RoomView ambient.quest_markers and spawn 3D floating '!' marker over Maren Halvorsen
+                var roomJson = JsonNode.Parse(@"{
+                    ""room"": { ""id"": ""#10"", ""name"": ""Port Watch Arrivals"" },
+                    ""desc"": ""Arrivals gantry overlooking the dock ring."",
+                    ""contents"": [
+                        { ""id"": ""#42"", ""name"": ""Maren Halvorsen"" }
+                    ],
+                    ""exits"": [],
+                    ""ambient"": {
+                        ""atlas"": { ""pack"": ""neighborhood.ceres_freeport"", ""entry"": ""room.c03_arrivals"" },
+                        ""npc_ids"": [""#42""],
+                        ""quest_markers"": [
+                            {
+                                ""npc_id"": ""#42"",
+                                ""npc_name"": ""Maren Halvorsen"",
+                                ""marker"": ""available"",
+                                ""symbol"": ""!"",
+                                ""quest_key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                                ""quest_title"": ""First Berth: Enroll in the Belt Co-op"",
+                                ""category"": ""guided"",
+                                ""quest_count"": 1
+                            }
+                        ]
+                    }
+                }");
+                var rv = MushProtocol.ParseRoomView(roomJson);
+                Assert.IsNotNull(rv);
+                Assert.AreEqual(1, rv.QuestMarkers.Count);
+                Assert.AreEqual("available", rv.QuestMarkers[0].Marker);
+                Assert.AreEqual("!", rv.QuestMarkers[0].Symbol);
+
+                var stGo = new UnityEngine.GameObject("StationQuestMarkersTest");
+                stGo.transform.SetParent(rootGo.transform, false);
+                var station = stGo.AddComponent<TacSim.World.StationWorldController>();
+                station.BuildStation(null, "neighborhood.ceres_freeport");
+                station.ApplyRoomView(rv, selfActorId: "#1");
+
+                Assert.AreEqual(1, station.ActiveQuestMarkerCount, "NPC with available quest must display a 3D overhead '!' marker");
+                var liveMarker = station.GetNpcQuestMarker("#42");
+                Assert.IsNotNull(liveMarker);
+                Assert.AreEqual("!", liveMarker.Symbol);
+                var targetables = station.GetActiveRoomTargetables();
+                Assert.IsTrue(targetables.Exists(w => w.actorId == "#42" && w.promptTitle.Contains("[!]")),
+                    "NPC interaction prompt must reflect [!] Quest Available");
+
+                // 2. Hydrate `tacsim.quests` panel with available, active, and completed quests
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                var cmds = new List<string>();
+                string wayfinderRoom = null;
+                hud.QuestJournal.OnCommandRequested += cmds.Add;
+                hud.QuestJournal.OnWayfinderRoomRequested += r => wayfinderRoom = r;
+
+                var questsJson = JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#10"",
+                    ""room_name"": ""Port Watch Arrivals"",
+                    ""room_markers"": [
+                        { ""npc_id"": ""#42"", ""npc_name"": ""Maren Halvorsen"", ""marker"": ""available"", ""symbol"": ""!"", ""quest_key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""quest_title"": ""First Berth: Enroll in the Belt Co-op"", ""category"": ""guided"", ""quest_count"": 1 }
+                    ],
+                    ""available"": [
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                            ""title"": ""First Berth: Enroll in the Belt Co-op"",
+                            ""category"": ""guided"",
+                            ""introduction"": ""Head down to the Co-op Desk and enroll for your first Dray."",
+                            ""reward_summary"": ""Charter Dray hull + Co-op standing with Ilse"",
+                            ""giver_id"": ""#42"",
+                            ""giver_name"": ""Maren Halvorsen"",
+                            ""turn_in_id"": ""#55"",
+                            ""turn_in_name"": ""Ilse Oduya-Brandt"",
+                            ""allow_restart"": true,
+                            ""accept_cmd"": ""+quest/accept #42=signedtok123"",
+                            ""decline_cmd"": ""+quest/decline #42=signedtok123"",
+                            ""checkpoints"": [
+                                { ""id"": ""enroll"", ""title"": ""Enroll in Belt Co-op"", ""instructions"": ""Use +coop/enroll"", ""room_entry"": ""room.c05_registry"", ""room_name"": ""Co-op Registry"" }
+                            ]
+                        }
+                    ],
+                    ""active"": [
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"",
+                            ""title"": ""Provisions and Reaction Mass"",
+                            ""category"": ""guided"",
+                            ""introduction"": ""Stock provisions and propellant before your first burn."",
+                            ""reward_summary"": ""Fueled and provisioned for the Ceres-Phobos lane"",
+                            ""giver_id"": ""#55"",
+                            ""giver_name"": ""Ilse Oduya-Brandt"",
+                            ""turn_in_id"": ""#55"",
+                            ""turn_in_name"": ""Ilse Oduya-Brandt"",
+                            ""turn_in_here"": false,
+                            ""allow_restart"": true,
+                            ""ready_to_finish"": false,
+                            ""next_step"": ""Buy 10t provisions"",
+                            ""next_instructions"": ""Visit Co-op Chandlery and buy 10t provisions."",
+                            ""next_room_entry"": ""room.c08_chandlery"",
+                            ""next_room_name"": ""Co-op Chandlery"",
+                            ""next_objective_ready"": false,
+                            ""can_check_now"": false,
+                            ""can_finish_now"": false,
+                            ""check_cmd"": ""+quest/check #55=tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"",
+                            ""finish_cmd"": ""+quest/finish #55=tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"",
+                            ""abandon_cmd"": ""+quest/abandon #55=tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"",
+                            ""checkpoints"": [
+                                { ""id"": ""buy_provisions"", ""title"": ""Buy 10t provisions"", ""instructions"": ""Buy provisions"", ""room_entry"": ""room.c08_chandlery"", ""room_name"": ""Co-op Chandlery"", ""checked"": false, ""live_ready"": false },
+                                { ""id"": ""buy_propellant"", ""title"": ""Buy 5t propellant"", ""instructions"": ""Buy propellant"", ""room_entry"": ""room.c07_exchange"", ""room_name"": ""Ceres Exchange"", ""checked"": true, ""live_ready"": true, ""detail_text"": ""Bought 5t propellant."" }
+                            ]
+                        }
+                    ],
+                    ""completed"": [
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_00_done"",
+                            ""title"": ""Arrived at Ceres Freeport"",
+                            ""category"": ""guided"",
+                            ""giver_name"": ""Maren Halvorsen"",
+                            ""turn_in_name"": ""Maren Halvorsen"",
+                            ""completion"": ""Cleared docking watch."",
+                            ""reward_summary"": ""Port clearance recorded"",
+                            ""completed_at_utc"": 1700000000
+                        }
+                    ]
+                }");
+                var panel = MushProtocol.ParseQuestsPanel(questsJson);
+                Assert.IsNotNull(panel);
+                Assert.AreEqual(1, panel.Available.Count);
+                Assert.AreEqual(1, panel.Active.Count);
+                Assert.AreEqual(1, panel.Completed.Count);
+
+                hud.QuestJournal.ApplyQuestsPanel(panel);
+                Assert.AreEqual(1, hud.QuestJournal.ActiveQuestCount);
+                Assert.AreEqual(1, hud.QuestJournal.AvailableQuestCount);
+                Assert.AreEqual(1, hud.QuestJournal.CompletedQuestCount);
+                Assert.IsTrue(hud.QuestJournal.HasPinnedObjective, "Active server quest must auto-populate the HUD Quest Tracker");
+                StringAssert.Contains("Provisions and Reaction Mass", hud.QuestJournal.PinnedTitle);
+                Assert.IsTrue(hud.QuestJournal.HasQuestForNpc("#42"));
+
+                // 3. Open WoW NPC Quest Dialog for Maren (#42) and 1-click Accept sends signed `+quest/accept`
+                Assert.IsTrue(hud.QuestJournal.OpenNpcQuestDialog("#42"));
+                Assert.IsTrue(hud.QuestJournal.IsQuestDialogOpen);
+                Assert.IsTrue(hud.IsModalOpen);
+                hud.QuestJournal.TriggerPrimaryDialogAction();
+                Assert.AreEqual(1, cmds.Count);
+                Assert.AreEqual("+quest/accept #42=signedtok123", cmds[0]);
+                Assert.IsFalse(hud.QuestJournal.IsQuestDialogOpen, "Accepting an offer closes the NPC quest dialog");
+
+                // 4. Open Quest Dialog for active quest: 2-click Abandon confirmation + ESC close + Wayfinder
+                Assert.IsTrue(hud.QuestJournal.OpenQuestDialogByKey("tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"));
+                Assert.IsTrue(hud.QuestJournal.IsQuestDialogOpen);
+                hud.QuestJournal.TriggerDialogWayfinder();
+                Assert.AreEqual("room.c08_chandlery", wayfinderRoom);
+
+                hud.QuestJournal.AbandonDialogQuest(); // 1st click arms confirmation
+                Assert.AreEqual(1, cmds.Count, "First abandon click must require confirmation");
+                hud.QuestJournal.AbandonDialogQuest(); // 2nd click submits server-verified `+quest/abandon`
+                Assert.AreEqual(2, cmds.Count);
+                Assert.AreEqual("+quest/abandon #55=tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel", cmds[1]);
+
+                // 5. ESC closes Quest Dialog cleanly via HUD TryCloseTopmostModal
+                Assert.IsTrue(hud.QuestJournal.OpenNpcQuestDialog("#42"));
+                Assert.IsTrue(hud.TryCloseTopmostModal());
+                Assert.IsFalse(hud.QuestJournal.IsQuestDialogOpen);
+
+                // 6. Clearing markers removes 3D overhead marker cleanly
+                station.ApplyQuestMarkers(System.Array.Empty<MushNpcQuestMarker>());
+                Assert.AreEqual(0, station.ActiveQuestMarkerCount);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

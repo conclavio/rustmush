@@ -112,6 +112,97 @@ namespace TacSim.Net
         public MushObjRef CurrentActor;
     }
 
+    public sealed class MushNpcQuestMarker
+    {
+        public string NpcId = string.Empty;
+        public string NpcName = string.Empty;
+        public string Marker = string.Empty; // "turn_in" | "available" | "in_progress"
+        public string Symbol = string.Empty; // "!" | "?"
+        public string QuestKey = string.Empty;
+        public string QuestTitle = string.Empty;
+        public string Category = string.Empty;
+        public int QuestCount = 1;
+    }
+
+    public sealed class MushQuestCheckpoint
+    {
+        public string Id = string.Empty;
+        public string Title = string.Empty;
+        public string Instructions = string.Empty;
+        public string RoomEntry = string.Empty;
+        public string RoomName = string.Empty;
+        public bool Checked;
+        public bool LiveReady;
+        public string DetailText = string.Empty;
+    }
+
+    public sealed class MushActiveQuest
+    {
+        public string Key = string.Empty;
+        public string Title = string.Empty;
+        public string Category = string.Empty;
+        public string Introduction = string.Empty;
+        public string RewardSummary = string.Empty;
+        public string GiverId = string.Empty;
+        public string GiverName = string.Empty;
+        public string TurnInId = string.Empty;
+        public string TurnInName = string.Empty;
+        public bool TurnInHere;
+        public bool AllowRestart;
+        public bool ReadyToFinish;
+        public string NextStep = string.Empty;
+        public string NextInstructions = string.Empty;
+        public string NextRoomEntry = string.Empty;
+        public string NextRoomName = string.Empty;
+        public bool NextObjectiveReady;
+        public bool CanCheckNow;
+        public bool CanFinishNow;
+        public string CheckCmd = string.Empty;
+        public string FinishCmd = string.Empty;
+        public string AbandonCmd = string.Empty;
+        public List<MushQuestCheckpoint> Checkpoints = new List<MushQuestCheckpoint>();
+    }
+
+    public sealed class MushAvailableQuest
+    {
+        public string Key = string.Empty;
+        public string Title = string.Empty;
+        public string Category = string.Empty;
+        public string Introduction = string.Empty;
+        public string RewardSummary = string.Empty;
+        public string GiverId = string.Empty;
+        public string GiverName = string.Empty;
+        public string TurnInId = string.Empty;
+        public string TurnInName = string.Empty;
+        public bool AllowRestart;
+        public string AcceptCmd = string.Empty;
+        public string DeclineCmd = string.Empty;
+        public List<MushQuestCheckpoint> Checkpoints = new List<MushQuestCheckpoint>();
+    }
+
+    public sealed class MushCompletedQuest
+    {
+        public string Key = string.Empty;
+        public string Title = string.Empty;
+        public string Category = string.Empty;
+        public string GiverName = string.Empty;
+        public string TurnInName = string.Empty;
+        public string Completion = string.Empty;
+        public string RewardSummary = string.Empty;
+        public long CompletedAtUtc;
+    }
+
+    public sealed class MushQuestsPanel
+    {
+        public int Schema = 1;
+        public string RoomId = string.Empty;
+        public string RoomName = string.Empty;
+        public List<MushNpcQuestMarker> RoomMarkers = new List<MushNpcQuestMarker>();
+        public List<MushActiveQuest> Active = new List<MushActiveQuest>();
+        public List<MushAvailableQuest> Available = new List<MushAvailableQuest>();
+        public List<MushCompletedQuest> Completed = new List<MushCompletedQuest>();
+    }
+
     public sealed class MushRoomView
     {
         public string Id;
@@ -125,6 +216,7 @@ namespace TacSim.Net
         public TacSimRoomAmbient TacSim;
         public IcTimeAmbient IcTime;
         public MushSceneAmbient Scene;
+        public List<MushNpcQuestMarker> QuestMarkers = new List<MushNpcQuestMarker>();
         public HashSet<string> NpcIds = new HashSet<string>(StringComparer.Ordinal);
         public HashSet<string> DormantNpcIds = new HashSet<string>(StringComparer.Ordinal);
         public HashSet<string> PlayerIds = new HashSet<string>(StringComparer.Ordinal);
@@ -731,9 +823,167 @@ namespace TacSim.Net
                         CurrentActor = ParseObjRef(sc["current_actor"])
                     };
                 }
+
+                rv.QuestMarkers = ParseQuestMarkers(amb["quest_markers"]);
             }
 
             return rv;
+        }
+
+        public static List<MushNpcQuestMarker> ParseQuestMarkers(JsonNode arrNode)
+        {
+            var outList = new List<MushNpcQuestMarker>();
+            var arr = arrNode.AsArray();
+            if (arr == null) return outList;
+            for (int i = 0; i < arr.Count; i++)
+            {
+                var o = arr[i];
+                if (!o.IsObject) continue;
+                string npcId = o.Str("npc_id", string.Empty);
+                string npcName = o.Str("npc_name", string.Empty);
+                string marker = o.Str("marker", string.Empty);
+                if (string.IsNullOrEmpty(npcId) || string.IsNullOrEmpty(marker)) continue;
+                if (marker != "turn_in" && marker != "available" && marker != "in_progress") continue;
+                outList.Add(new MushNpcQuestMarker
+                {
+                    NpcId = npcId,
+                    NpcName = npcName,
+                    Marker = marker,
+                    Symbol = marker == "available" ? "!" : "?",
+                    QuestKey = o.Str("quest_key", string.Empty),
+                    QuestTitle = o.Str("quest_title", string.Empty),
+                    Category = o.Str("category", "optional"),
+                    QuestCount = Math.Max(1, o.Int("quest_count", 1))
+                });
+            }
+            return outList;
+        }
+
+        private static List<MushQuestCheckpoint> ParseQuestCheckpoints(JsonNode arrNode)
+        {
+            var outList = new List<MushQuestCheckpoint>();
+            var arr = arrNode.AsArray();
+            if (arr == null) return outList;
+            for (int i = 0; i < arr.Count; i++)
+            {
+                var o = arr[i];
+                if (!o.IsObject) continue;
+                outList.Add(new MushQuestCheckpoint
+                {
+                    Id = o.Str("id", string.Empty),
+                    Title = o.Str("title", string.Empty),
+                    Instructions = o.Str("instructions", string.Empty),
+                    RoomEntry = o.Str("room_entry", string.Empty),
+                    RoomName = o.Str("room_name", string.Empty),
+                    Checked = o.Bool("checked", false),
+                    LiveReady = o.Bool("live_ready", false),
+                    DetailText = o.Str("detail_text", string.Empty)
+                });
+            }
+            return outList;
+        }
+
+        public static MushQuestsPanel ParseQuestsPanel(JsonNode d)
+        {
+            if (d == null || !d.IsObject) return null;
+            var panel = new MushQuestsPanel
+            {
+                Schema = d.Int("schema", 1),
+                RoomId = d.Str("room_id", string.Empty),
+                RoomName = d.Str("room_name", string.Empty),
+                RoomMarkers = ParseQuestMarkers(d["room_markers"])
+            };
+
+            var actArr = d["active"].AsArray();
+            if (actArr != null)
+            {
+                for (int i = 0; i < actArr.Count; i++)
+                {
+                    var o = actArr[i];
+                    if (!o.IsObject) continue;
+                    string key = o.Str("key", string.Empty);
+                    if (string.IsNullOrEmpty(key)) continue;
+                    panel.Active.Add(new MushActiveQuest
+                    {
+                        Key = key,
+                        Title = o.Str("title", key),
+                        Category = o.Str("category", "optional"),
+                        Introduction = o.Str("introduction", string.Empty),
+                        RewardSummary = o.Str("reward_summary", string.Empty),
+                        GiverId = o.Str("giver_id", string.Empty),
+                        GiverName = o.Str("giver_name", string.Empty),
+                        TurnInId = o.Str("turn_in_id", string.Empty),
+                        TurnInName = o.Str("turn_in_name", string.Empty),
+                        TurnInHere = o.Bool("turn_in_here", false),
+                        AllowRestart = o.Bool("allow_restart", false),
+                        ReadyToFinish = o.Bool("ready_to_finish", false),
+                        NextStep = o.Str("next_step", string.Empty),
+                        NextInstructions = o.Str("next_instructions", string.Empty),
+                        NextRoomEntry = o.Str("next_room_entry", string.Empty),
+                        NextRoomName = o.Str("next_room_name", string.Empty),
+                        NextObjectiveReady = o.Bool("next_objective_ready", false),
+                        CanCheckNow = o.Bool("can_check_now", false),
+                        CanFinishNow = o.Bool("can_finish_now", false),
+                        CheckCmd = o.Str("check_cmd", string.Empty),
+                        FinishCmd = o.Str("finish_cmd", string.Empty),
+                        AbandonCmd = o.Str("abandon_cmd", string.Empty),
+                        Checkpoints = ParseQuestCheckpoints(o["checkpoints"])
+                    });
+                }
+            }
+
+            var avArr = d["available"].AsArray();
+            if (avArr != null)
+            {
+                for (int i = 0; i < avArr.Count; i++)
+                {
+                    var o = avArr[i];
+                    if (!o.IsObject) continue;
+                    string key = o.Str("key", string.Empty);
+                    if (string.IsNullOrEmpty(key)) continue;
+                    panel.Available.Add(new MushAvailableQuest
+                    {
+                        Key = key,
+                        Title = o.Str("title", key),
+                        Category = o.Str("category", "optional"),
+                        Introduction = o.Str("introduction", string.Empty),
+                        RewardSummary = o.Str("reward_summary", string.Empty),
+                        GiverId = o.Str("giver_id", string.Empty),
+                        GiverName = o.Str("giver_name", string.Empty),
+                        TurnInId = o.Str("turn_in_id", string.Empty),
+                        TurnInName = o.Str("turn_in_name", string.Empty),
+                        AllowRestart = o.Bool("allow_restart", false),
+                        AcceptCmd = o.Str("accept_cmd", string.Empty),
+                        DeclineCmd = o.Str("decline_cmd", string.Empty),
+                        Checkpoints = ParseQuestCheckpoints(o["checkpoints"])
+                    });
+                }
+            }
+
+            var compArr = d["completed"].AsArray();
+            if (compArr != null)
+            {
+                for (int i = 0; i < compArr.Count; i++)
+                {
+                    var o = compArr[i];
+                    if (!o.IsObject) continue;
+                    string key = o.Str("key", string.Empty);
+                    if (string.IsNullOrEmpty(key)) continue;
+                    panel.Completed.Add(new MushCompletedQuest
+                    {
+                        Key = key,
+                        Title = o.Str("title", key),
+                        Category = o.Str("category", "optional"),
+                        GiverName = o.Str("giver_name", string.Empty),
+                        TurnInName = o.Str("turn_in_name", string.Empty),
+                        Completion = o.Str("completion", string.Empty),
+                        RewardSummary = o.Str("reward_summary", string.Empty),
+                        CompletedAtUtc = o.Long("completed_at_utc", 0)
+                    });
+                }
+            }
+
+            return panel;
         }
 
         private static void ReadIdSet(JsonNode node, HashSet<string> dest)

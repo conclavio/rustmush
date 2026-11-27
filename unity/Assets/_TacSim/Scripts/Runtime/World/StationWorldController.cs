@@ -33,9 +33,19 @@ namespace TacSim.World
         private readonly Dictionary<string, string> _actorDisplayNames = new Dictionary<string, string>(StringComparer.Ordinal);
         private readonly Dictionary<string, Vector3> _actorTargetPositions = new Dictionary<string, Vector3>(StringComparer.Ordinal);
         private readonly Dictionary<string, WorldBillboard> _actorBillboards = new Dictionary<string, WorldBillboard>(StringComparer.Ordinal);
+        private readonly Dictionary<string, TextMeshPro> _actorQuestMarkers = new Dictionary<string, TextMeshPro>(StringComparer.Ordinal);
+        private readonly Dictionary<string, MushNpcQuestMarker> _actorQuestMarkerStates = new Dictionary<string, MushNpcQuestMarker>(StringComparer.Ordinal);
         private readonly List<TacSimDockedHullRef> _lastBerthTradeHulls = new List<TacSimDockedHullRef>();
         private bool _hasAuthoritativeBerthHulls;
         private string _spawnedActorsRoomEntry;
+
+        public int ActiveQuestMarkerCount => _actorQuestMarkers.Count;
+
+        public MushNpcQuestMarker GetNpcQuestMarker(string npcId)
+        {
+            if (string.IsNullOrEmpty(npcId)) return null;
+            return _actorQuestMarkerStates.TryGetValue(npcId, out var m) ? m : null;
+        }
 
         private sealed class ExteriorPortShuttle
         {
@@ -1651,6 +1661,20 @@ namespace TacSim.World
                     spawner?.UpdateLocomotion(0f, false, false, dt);
                 }
             }
+
+            if (_actorQuestMarkers.Count > 0)
+            {
+                int idx = 0;
+                foreach (var kv in _actorQuestMarkers)
+                {
+                    if (kv.Value != null)
+                    {
+                        float bob = Mathf.Sin(Time.time * 3.0f + idx * 0.9f) * 0.08f;
+                        kv.Value.transform.localPosition = new Vector3(0f, 0.78f + bob, 0f);
+                    }
+                    idx++;
+                }
+            }
         }
 
         public static GameObject BuildSculptedDrayExterior(Transform parent, Vector3 pos, Material hullMat, Material trimMat, string name)
@@ -1763,6 +1787,99 @@ namespace TacSim.World
 
             // Sync visible NPCs & remote players in the room `rv` actually describes (filtering out disabled/dormant placeholders)
             SyncRoomOccupants(rv, selfActorId, matched ? resolvedEntry : ActiveRoomEntryId);
+            ApplyQuestMarkers(rv.QuestMarkers);
+        }
+
+        /// <summary>
+        /// Renders or clears floating WoW-style 3D overhead quest markers above live NPCs:
+        /// Gold '!' (available), Gold '?' (ready for turn-in), Silver '?' (in progress).
+        /// Also updates the NPC's `[E]` interaction banner prompt so players immediately see quest actions.
+        /// </summary>
+        public void ApplyQuestMarkers(IReadOnlyList<MushNpcQuestMarker> markers)
+        {
+            var incoming = new Dictionary<string, MushNpcQuestMarker>(StringComparer.Ordinal);
+            if (markers != null)
+            {
+                for (int i = 0; i < markers.Count; i++)
+                {
+                    var m = markers[i];
+                    if (m != null && !string.IsNullOrEmpty(m.NpcId))
+                        incoming[m.NpcId] = m;
+                }
+            }
+
+            foreach (var kv in _spawnedActors)
+            {
+                string actorId = kv.Key;
+                GameObject actorGo = kv.Value;
+                if (actorGo == null) continue;
+
+                incoming.TryGetValue(actorId, out var marker);
+                if (marker == null && markers != null && _actorDisplayNames.TryGetValue(actorId, out string dispName) && !string.IsNullOrEmpty(dispName))
+                {
+                    for (int i = 0; i < markers.Count; i++)
+                    {
+                        if (markers[i] != null && string.Equals(markers[i].NpcName, dispName, StringComparison.OrdinalIgnoreCase))
+                        {
+                            marker = markers[i];
+                            break;
+                        }
+                    }
+                }
+
+                var wi = actorGo.GetComponent<WorldInteractable>();
+                string rawActorName = _actorDisplayNames.TryGetValue(actorId, out string n) ? n : string.Empty;
+                string safeActorName = MushProtocol.EscapeUnityRichText(rawActorName);
+
+                if (marker != null && !string.IsNullOrEmpty(marker.Symbol))
+                {
+                    _actorQuestMarkerStates[actorId] = marker;
+                    if (_actorBillboards.TryGetValue(actorId, out var bb) && bb != null)
+                    {
+                        if (!_actorQuestMarkers.TryGetValue(actorId, out var tmp) || tmp == null)
+                        {
+                            tmp = CreateTmp3D(bb.transform, "QuestMarker", new Vector3(0f, 0.78f, 0f), marker.Symbol, 3.2f, Color.yellow, allowRichText: false);
+                            tmp.fontStyle = FontStyles.Bold;
+                            tmp.rectTransform.sizeDelta = new Vector2(1.4f, 1.4f);
+                            _actorQuestMarkers[actorId] = tmp;
+                        }
+                        bool isGold = string.Equals(marker.Marker, "available", StringComparison.OrdinalIgnoreCase) ||
+                                      string.Equals(marker.Marker, "turn_in", StringComparison.OrdinalIgnoreCase);
+                        tmp.text = marker.Symbol;
+                        tmp.color = isGold ? new Color(1.0f, 0.84f, 0.16f, 1f) : new Color(0.74f, 0.82f, 0.90f, 1f);
+                        tmp.gameObject.SetActive(true);
+                    }
+
+                    if (wi != null)
+                    {
+                        string roleTag = string.Equals(marker.Marker, "turn_in", StringComparison.OrdinalIgnoreCase)
+                            ? "Turn In Quest"
+                            : string.Equals(marker.Marker, "available", StringComparison.OrdinalIgnoreCase)
+                                ? "Quest Available"
+                                : "Quest In Progress";
+                        wi.promptTitle = $"[{marker.Symbol}] {safeActorName} — {roleTag}";
+                        if (!string.IsNullOrEmpty(marker.QuestTitle))
+                            wi.promptSubtitle = MushProtocol.EscapeUnityRichText(marker.QuestTitle);
+                    }
+                }
+                else
+                {
+                    bool hadMarker = _actorQuestMarkerStates.Remove(actorId);
+                    if (_actorQuestMarkers.TryGetValue(actorId, out var oldTmp))
+                    {
+                        if (oldTmp != null)
+                        {
+                            if (Application.isPlaying) Destroy(oldTmp.gameObject);
+                            else DestroyImmediate(oldTmp.gameObject);
+                        }
+                        _actorQuestMarkers.Remove(actorId);
+                    }
+                    if (hadMarker && wi != null && !string.IsNullOrEmpty(safeActorName))
+                    {
+                        wi.promptTitle = $"Talk to {safeActorName}";
+                    }
+                }
+            }
         }
 
         public void ResetSessionState()
@@ -1944,6 +2061,8 @@ namespace TacSim.World
             _actorDisplayNames.Clear();
             _actorTargetPositions.Clear();
             _actorBillboards.Clear();
+            _actorQuestMarkers.Clear();
+            _actorQuestMarkerStates.Clear();
         }
 
         private void SyncRoomOccupants(MushRoomView rv, string selfActorId, string targetRoomEntry)
@@ -2152,6 +2271,8 @@ namespace TacSim.World
                     _actorDisplayNames.Remove(depId);
                     _actorTargetPositions.Remove(depId);
                     _actorBillboards.Remove(depId);
+                    _actorQuestMarkers.Remove(depId);
+                    _actorQuestMarkerStates.Remove(depId);
                 }
             }
 

@@ -6,6 +6,8 @@ use std::collections::BTreeSet;
 
 pub const SCHEMA: u16 = 1;
 pub const MAX_CHECKPOINTS: usize = 8;
+pub const MAX_RESTARTS: u32 = 32;
+pub const MAX_REVISION: u64 = (MAX_CHECKPOINTS as u64 + 2) * (MAX_RESTARTS as u64 + 1);
 pub const MAX_DETAIL_BYTES: usize = 2048;
 pub const MAX_DEFINITION_BYTES: usize = 12 * 1024;
 pub const MAX_RECORD_BYTES: usize = 24 * 1024;
@@ -13,6 +15,11 @@ pub const MAX_INDEX_BYTES: usize = 32 * 1024;
 pub const MAX_QUESTS: usize = 128;
 pub const MAX_QUESTS_PER_NPC: usize = 8;
 pub const MAX_QUEST_CATALOG_BYTES: usize = 64 * 1024;
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
+}
 
 fn text(value: &str, maximum: usize) -> bool {
     !value.trim().is_empty() && value.len() <= maximum && !value.contains('\0')
@@ -43,6 +50,16 @@ pub struct QuestDef {
     pub prerequisite: Prerequisite,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub choice: Option<QuestChoice>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reward_summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_in_npc: Option<ObjId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_in_destination: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_restart: bool,
     pub checkpoints: Vec<Checkpoint>,
     pub completion: String,
 }
@@ -77,6 +94,23 @@ pub enum Objective {
     Trade {
         origin: String,
         destination: String,
+        commodity: String,
+        quantity: u64,
+    },
+    MarketPurchase {
+        market: String,
+        commodity: String,
+        quantity: u64,
+    },
+    MarketSale {
+        market: String,
+        commodity: String,
+        quantity: u64,
+    },
+    ShipRefit {
+        unit: String,
+    },
+    SurfaceMine {
         commodity: String,
         quantity: u64,
     },
@@ -115,6 +149,26 @@ impl Objective {
                     && *quantity > 0
                     && *quantity <= i64::MAX as u64
             }
+            Self::MarketPurchase {
+                market,
+                commodity,
+                quantity,
+            }
+            | Self::MarketSale {
+                market,
+                commodity,
+                quantity,
+            } => {
+                canonical(market, 64)
+                    && canonical(commodity, 64)
+                    && *quantity > 0
+                    && *quantity <= i64::MAX as u64
+            }
+            Self::ShipRefit { unit } => canonical(unit, 128),
+            Self::SurfaceMine {
+                commodity,
+                quantity,
+            } => canonical(commodity, 64) && *quantity > 0 && *quantity <= i64::MAX as u64,
             Self::Passenger { npc } | Self::Contact { npc } => npc.0 != 0,
             Self::PaidPassage {
                 npc,
@@ -166,6 +220,16 @@ impl Checkpoint {
     }
 }
 impl QuestDef {
+    pub fn is_guided(&self) -> bool {
+        self.category.as_deref() == Some("guided")
+    }
+
+    pub fn effective_turn_in_destination(&self) -> &str {
+        self.turn_in_destination
+            .as_deref()
+            .unwrap_or(&self.destination)
+    }
+
     pub fn check(&self) -> Result<(), String> {
         if self.schema != SCHEMA
             || !source(&self.key)
@@ -177,6 +241,26 @@ impl QuestDef {
             || !text(&self.completion, 512)
         {
             return Err("invalid quest definition".into());
+        }
+        if let Some(category) = &self.category
+            && !canonical(category, 64)
+        {
+            return Err("invalid quest category".into());
+        }
+        if let Some(reward) = &self.reward_summary
+            && !text(reward, 512)
+        {
+            return Err("invalid quest reward summary".into());
+        }
+        if let Some(turn_in) = self.turn_in_npc
+            && turn_in.0 == 0
+        {
+            return Err("invalid quest turn-in NPC".into());
+        }
+        if let Some(turn_in_dest) = &self.turn_in_destination
+            && (self.turn_in_npc.is_none() || !canonical(turn_in_dest, 64))
+        {
+            return Err("invalid quest turn-in destination".into());
         }
         if let Prerequisite::Completed { quest } = &self.prerequisite
             && (!source(quest) || quest == &self.key)
@@ -388,10 +472,26 @@ pub struct QuestRecord {
     pub completed: Option<Stamp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed: Option<ClosedQuest>,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub restart_count: u32,
 }
 impl QuestRecord {
     pub fn is_active(&self) -> bool {
         self.completed.is_none() && self.closed.is_none()
+    }
+
+    pub fn turn_in_npc(&self) -> ObjId {
+        self.definition.turn_in_npc.unwrap_or(self.npc)
+    }
+
+    pub fn is_restartable_abandoned(&self) -> bool {
+        self.definition.allow_restart
+            && self.restart_count < MAX_RESTARTS
+            && self.completed.is_none()
+            && self
+                .closed
+                .as_ref()
+                .is_some_and(|closed| closed.kind == ClosureKind::Abandoned)
     }
 
     pub fn check(&self) -> Result<(), String> {
@@ -441,14 +541,23 @@ impl QuestRecord {
             .closed
             .as_ref()
             .is_some_and(|closed| closed.kind == ClosureKind::Abandoned);
+        let min_revision =
+            1 + self.checks.len() as u64 + u64::from(self.completed.is_some() || abandoned);
+        let revision_ok = if self.restart_count == 0 {
+            self.revision == min_revision
+        } else {
+            self.definition.allow_restart
+                && self.restart_count <= MAX_RESTARTS
+                && self.revision >= min_revision + u64::from(self.restart_count)
+                && self.revision <= MAX_REVISION
+        };
         if self.schema != SCHEMA
             || self.actor.0 == 0
             || self.npc.0 == 0
             || self.actor == self.npc
             || self.key.source != self.definition.key
             || self.checks.len() > self.definition.checkpoints.len()
-            || self.revision
-                != 1 + self.checks.len() as u64 + u64::from(self.completed.is_some() || abandoned)
+            || !revision_ok
             || (self.completed.is_some() && self.checks.len() != self.definition.checkpoints.len())
             || (self.completed.is_some() && self.closed.is_some())
         {
@@ -485,6 +594,7 @@ impl QuestRecord {
             && (!closed.at.follows(previous)
                 || (closed.kind == ClosureKind::Declined
                     && (self.revision != 1
+                        || self.restart_count != 0
                         || !self.checks.is_empty()
                         || closed.at != self.accepted)))
         {
@@ -623,6 +733,11 @@ pub(super) mod tests {
                 destination: "ceres".into(),
                 prerequisite: Prerequisite::PaidPassage,
                 choice: None,
+                category: None,
+                reward_summary: None,
+                turn_in_npc: None,
+                turn_in_destination: None,
+                allow_restart: false,
                 checkpoints: vec![Checkpoint {
                     id: "bench".into(),
                     title: "Check bench".into(),
@@ -642,6 +757,7 @@ pub(super) mod tests {
             checks: Vec::new(),
             completed: None,
             closed: None,
+            restart_count: 0,
         }
     }
     #[test]

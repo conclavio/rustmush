@@ -191,8 +191,8 @@ async fn content_studio_ipc_roundtrip_over_split_gateway_link() {
     );
     assert_eq!(
         npcs.len(),
-        59,
-        "expected 59 total seeded NPCs (doc 50 cut OP.1: Isidis's two)"
+        60,
+        "expected 60 total seeded NPCs (doc 50 cut OP.1: Isidis's two; guided onboarding: Maren Halvorsen)"
     );
     // Doc 36 cut GC.7: sixteen with the four munitions goods; doc 39 cut IN.1: twenty-nine
     // with the thirteen parts; doc 39 cut IN.9: thirty-four with the five hull kits; doc 41 cut

@@ -847,6 +847,11 @@ namespace TacSim.Core
             if (Hud.QuestJournal != null)
             {
                 Hud.QuestJournal.OnCommandRequested += ExecutePlayerCommand;
+                Hud.QuestJournal.OnWayfinderRoomRequested += targetRoom =>
+                {
+                    if (!string.IsNullOrEmpty(targetRoom))
+                        PlotStationWayfinderRoute(targetRoom, autoWalk: false);
+                };
             }
 
             if (Hud.SceneIntelModal != null)
@@ -889,6 +894,8 @@ namespace TacSim.Core
                     _ws.SendMailListQuery();
                 if (_ws.HasAdvertisedPanel("comsys") || _ws.HasAdvertisedPanel("comsys.state"))
                     _ws.SendPanelSubscribe("comsys");
+                if (_ws.HasAdvertisedPanel("tacsim.quests"))
+                    _ws.SendPanelSubscribe("tacsim.quests");
                 Hud?.CharacterSheet?.ResetVitalsWatermarks();
                 RequestLiveSheetHydration();
                 RequestLiveVitalsAndUnitHydration();
@@ -2005,8 +2012,26 @@ namespace TacSim.Core
                     break;
 
                 case InteractableKind.NpcActor:
-                    OpenNpcConversationModal(wi);
+                {
+                    var qMarker = !string.IsNullOrEmpty(wi.actorId)
+                        ? StationWorld?.GetNpcQuestMarker(wi.actorId)
+                        : null;
+                    bool directQuestDialog = qMarker != null &&
+                        (string.Equals(qMarker.Marker, "turn_in", StringComparison.OrdinalIgnoreCase) ||
+                         string.Equals(qMarker.Marker, "available", StringComparison.OrdinalIgnoreCase)) &&
+                        Hud?.QuestJournal != null &&
+                        Hud.QuestJournal.HasQuestForNpc(wi.actorId);
+                    if (directQuestDialog)
+                    {
+                        Audio?.PlayUiClick();
+                        Hud.QuestJournal.OpenNpcQuestDialog(wi.actorId);
+                    }
+                    else
+                    {
+                        OpenNpcConversationModal(wi);
+                    }
                     break;
+                }
 
                 case InteractableKind.StationServiceDesk:
                     OpenServiceDeskModal(wi.commandOrKey);
@@ -2057,6 +2082,17 @@ namespace TacSim.Core
                 : string.Empty;
 
             var topics = new List<(string, Action)>();
+            if (!string.IsNullOrEmpty(wi.actorId) && Hud?.QuestJournal != null && Hud.QuestJournal.HasQuestForNpc(wi.actorId))
+            {
+                var qMarker = StationWorld?.GetNpcQuestMarker(wi.actorId);
+                string sym = qMarker != null && !string.IsNullOrEmpty(qMarker.Symbol) ? qMarker.Symbol : "!";
+                string npcIdCapture = wi.actorId;
+                topics.Add(($"[{sym}] Open Quest Dialog", () =>
+                {
+                    Hud.CloseDetailModal(cancelServerRequest: false);
+                    Hud.QuestJournal.OpenNpcQuestDialog(npcIdCapture);
+                }));
+            }
             if (hasValidName)
             {
                 if (name.IndexOf("Ilse", StringComparison.OrdinalIgnoreCase) >= 0)
@@ -2931,6 +2967,9 @@ namespace TacSim.Core
 
             _stageDirector?.SyncFrame(_isAboardShip, Hud != null && Hud.IsTextInputFocused);
 
+            if (_ws != null && _ws.IsConnected && _ws.HasAdvertisedPanel("tacsim.quests"))
+                _ws.SendPanelSubscribe("tacsim.quests");
+
             if (!string.IsNullOrWhiteSpace(rv.Name))
             {
                 string safeRoomName = MushProtocol.EscapeUnityRichText(rv.Name);
@@ -3258,6 +3297,16 @@ namespace TacSim.Core
                 case "tactics.contacts":
                     Hud?.SceneIntelModal?.ApplySignalContactsPanel(data);
                     break;
+                case "tacsim.quests":
+                {
+                    var qp = MushProtocol.ParseQuestsPanel(data);
+                    if (qp != null)
+                    {
+                        Hud?.QuestJournal?.ApplyQuestsPanel(qp);
+                        StationWorld?.ApplyQuestMarkers(qp.RoomMarkers);
+                    }
+                    break;
+                }
                 case "port.trade":
                 {
                     bool append = _awaitingAppendedTradePage;

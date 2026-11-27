@@ -208,6 +208,12 @@ fn shipped_docs() -> Vec<DocSpec> {
             family: "quest",
             bytes: crate::quest::packs::SURVEY_WORK_JSON,
         },
+        DocSpec {
+            id: crate::quest::packs::GUIDED_ONBOARDING_PACK,
+            repo_path: "quests/guided_onboarding.json",
+            family: "quest",
+            bytes: crate::quest::packs::GUIDED_ONBOARDING_JSON,
+        },
         // Components & Rules Definitions
         DocSpec {
             id: "tacsim.pack.cannon_105",
@@ -2700,8 +2706,9 @@ mod tests {
             catalog
                 .get("npcs")
                 .and_then(Value::as_array)
-                // Doc 50 cut OP.1: fifty-nine with the Isidis Concession's two.
-                .is_some_and(|a| a.len() == 59)
+                // Doc 50 cut OP.1: fifty-nine with the Isidis Concession's two;
+                // sixty with Maren Halvorsen in `tacsim.quests.guided_onboarding`.
+                .is_some_and(|a| a.len() == 60)
         );
         check!(
             catalog
@@ -2721,6 +2728,7 @@ mod tests {
             "neighborhood.ceres_freeport",
             "tacsim.cast.ceres_freeport",
             "tacsim.crew.ceres",
+            "tacsim.quests.guided_onboarding",
             "market/goods.json",
             "tacsim.pack.cannon_105",
         ] {

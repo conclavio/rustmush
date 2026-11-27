@@ -51,6 +51,34 @@ impl SurveyReceipt {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MineReceipt {
+    pub actor: ObjId,
+    pub tv: ObjId,
+    pub ordinal: u32,
+    pub site: CanonicalId,
+    pub commodity: String,
+    pub quantity: u64,
+    pub due_ic: i64,
+    pub at_utc: i64,
+}
+impl MineReceipt {
+    fn check(&self) -> Result<(), String> {
+        if self.actor.0 == 0
+            || self.tv.0 == 0
+            || self.ordinal == 0
+            || self.quantity == 0
+            || self.site.as_str().len() > 128
+            || self.commodity.len() > 128
+            || CanonicalId::new(&self.commodity).is_err()
+        {
+            return Err("invalid completed mining receipt".into());
+        }
+        Ok(())
+    }
+}
+
 /// Separate slots preserve a completed scan when a later sounding completes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -59,10 +87,13 @@ pub struct SurveyEvidenceBook {
     pub actor: ObjId,
     pub scan: Option<SurveyReceipt>,
     pub sound: Option<SurveyReceipt>,
+    /// Latest completed surface mining cycle per commodity (bounded to 16 commodities).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mined: Vec<MineReceipt>,
 }
 impl SurveyEvidenceBook {
     pub fn check(&self) -> Result<(), String> {
-        if self.schema != 1 || self.actor.0 == 0 {
+        if self.schema != 1 || self.actor.0 == 0 || self.mined.len() > 16 {
             return Err("invalid survey evidence book".into());
         }
         for (mode, receipt) in [("scan", &self.scan), ("sound", &self.sound)] {
@@ -73,14 +104,24 @@ impl SurveyEvidenceBook {
                 }
             }
         }
+        let mut commodities = BTreeSet::new();
+        for receipt in &self.mined {
+            receipt.check()?;
+            if receipt.actor != self.actor || !commodities.insert(receipt.commodity.as_str()) {
+                return Err("mining evidence identity mismatch".into());
+            }
+        }
         Ok(())
     }
-    fn get(&self, mode: &str) -> Option<&SurveyReceipt> {
+    pub(crate) fn get(&self, mode: &str) -> Option<&SurveyReceipt> {
         match mode {
             "scan" => self.scan.as_ref(),
             "sound" => self.sound.as_ref(),
             _ => None,
         }
+    }
+    pub(crate) fn mined(&self, commodity: &str) -> Option<&MineReceipt> {
+        self.mined.iter().find(|r| r.commodity == commodity)
     }
 }
 
@@ -129,6 +170,20 @@ pub enum ObjectiveProof {
     Trade {
         purchase: TradeReceipt,
         sale: TradeReceipt,
+    },
+    MarketPurchase {
+        purchase: TradeReceipt,
+    },
+    MarketSale {
+        sale: TradeReceipt,
+    },
+    ShipRefit {
+        actor: ObjId,
+        hull: ObjId,
+        unit: String,
+    },
+    SurfaceMine {
+        receipt: MineReceipt,
     },
     Passenger {
         actor: ObjId,
@@ -187,6 +242,51 @@ impl ObjectiveProof {
                     && purchase.quantity >= *quantity
                     && sale.quantity >= *quantity
                     && purchase.settled_at <= sale.accepted_at
+            }
+            (
+                Self::MarketPurchase { purchase },
+                Objective::MarketPurchase {
+                    market,
+                    commodity,
+                    quantity,
+                },
+            ) => {
+                purchase.check()?;
+                purchase.purchase
+                    && purchase.market == *market
+                    && purchase.commodity == *commodity
+                    && purchase.quantity >= *quantity
+            }
+            (
+                Self::MarketSale { sale },
+                Objective::MarketSale {
+                    market,
+                    commodity,
+                    quantity,
+                },
+            ) => {
+                sale.check()?;
+                !sale.purchase
+                    && sale.market == *market
+                    && sale.commodity == *commodity
+                    && sale.quantity >= *quantity
+            }
+            (Self::ShipRefit { actor, hull, unit }, Objective::ShipRefit { unit: expected }) => {
+                actor.0 != 0
+                    && hull.0 != 0
+                    && unit == expected
+                    && unit.len() <= 128
+                    && CanonicalId::new(unit).is_ok()
+            }
+            (
+                Self::SurfaceMine { receipt },
+                Objective::SurfaceMine {
+                    commodity,
+                    quantity,
+                },
+            ) => {
+                receipt.check()?;
+                receipt.commodity == *commodity && receipt.quantity >= *quantity
             }
             (
                 Self::Passenger {
@@ -276,12 +376,30 @@ impl ObjectiveProof {
             && checked.at_ic >= accepted.at_ic
             && match self {
                 Self::CoopEnrolment { actor: who, .. }
+                | Self::ShipRefit { actor: who, .. }
                 | Self::Passenger { actor: who, .. }
                 | Self::Contact { actor: who, .. } => *who == actor,
                 Self::Trade { purchase, sale } => {
                     purchase.actor == actor
                         && purchase.accepted_at >= accepted.at_utc
                         && sale.settled_at <= checked.at_utc
+                }
+                Self::MarketPurchase { purchase } => {
+                    purchase.actor == actor
+                        && purchase.accepted_at >= accepted.at_utc
+                        && purchase.settled_at <= checked.at_utc
+                }
+                Self::MarketSale { sale } => {
+                    sale.actor == actor
+                        && sale.accepted_at >= accepted.at_utc
+                        && sale.settled_at <= checked.at_utc
+                }
+                Self::SurfaceMine { receipt } => {
+                    receipt.actor == actor
+                        && receipt.due_ic > accepted.at_ic
+                        && receipt.due_ic <= checked.at_ic
+                        && receipt.at_utc >= accepted.at_utc
+                        && receipt.at_utc <= checked.at_utc
                 }
                 Self::SurveyCommission {
                     commission,
@@ -377,6 +495,7 @@ pub(crate) fn log_survey(
         actor: act.operator,
         scan: None,
         sound: None,
+        mined: Vec::new(),
     });
     book.check().map_err(|_| error())?;
     if book.actor != act.operator {
@@ -414,6 +533,82 @@ pub(crate) fn log_survey(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn log_mine(
+    txn: &mut ActionTxn<'_>,
+    family: &StateFamilyHandle<ObjId, SurveyEvidenceBook>,
+    actor: ObjId,
+    tv: ObjId,
+    ordinal: u32,
+    site: &CanonicalId,
+    commodity: &CanonicalId,
+    quantity: u64,
+    due_ic: i64,
+    at_utc: i64,
+) -> Result<(), ActionError> {
+    if quantity == 0 {
+        return Ok(());
+    }
+    let error = || {
+        crate::port_tick::port_error(
+            ActionErrorCode::Integrity,
+            "quest mining evidence is unreadable",
+        )
+    };
+    let existing = txn.get(family, &actor).map_err(|_| error())?.cloned();
+    let mut book = existing.clone().unwrap_or(SurveyEvidenceBook {
+        schema: 1,
+        actor,
+        scan: None,
+        sound: None,
+        mined: Vec::new(),
+    });
+    book.check().map_err(|_| error())?;
+    if book.actor != actor {
+        return Err(error());
+    }
+    let receipt = MineReceipt {
+        actor,
+        tv,
+        ordinal,
+        site: site.clone(),
+        commodity: commodity.as_str().into(),
+        quantity,
+        due_ic,
+        at_utc,
+    };
+    receipt.check().map_err(|_| error())?;
+    if let Some(slot) = book
+        .mined
+        .iter_mut()
+        .find(|old| old.commodity == receipt.commodity)
+    {
+        if (slot.due_ic, slot.at_utc) <= (receipt.due_ic, receipt.at_utc) {
+            *slot = receipt;
+        }
+    } else {
+        if book.mined.len() >= 16
+            && let Some((oldest, _)) = book
+                .mined
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, r)| (r.due_ic, r.at_utc))
+        {
+            book.mined.remove(oldest);
+        }
+        book.mined.push(receipt);
+        book.mined.sort_by(|a, b| a.commodity.cmp(&b.commodity));
+    }
+    book.check().map_err(|_| error())?;
+    if existing.is_some() {
+        txn.replace(family, &actor, book)
+    } else {
+        txn.insert(family, &actor, book)
+    }
+    .map_err(|_| error())?;
+    Ok(())
+}
+
 /// Used by the quest provider's real typed read at offer, guard and prepare.
 pub fn proof_current(
     book: Option<&SurveyEvidenceBook>,
@@ -424,8 +619,20 @@ pub fn proof_current(
         ObjectiveProof::Survey { receipt } => book.is_some_and(|book| {
             book.check().is_ok() && book.actor == actor && book.get(&receipt.mode) == Some(receipt)
         }),
+        ObjectiveProof::SurfaceMine { receipt } => book.is_some_and(|book| {
+            book.check().is_ok()
+                && book.actor == actor
+                && book.mined(&receipt.commodity) == Some(receipt)
+        }),
         _ => true,
     }
+}
+
+fn is_market_objective(objective: &Objective) -> bool {
+    matches!(
+        objective,
+        Objective::Trade { .. } | Objective::MarketPurchase { .. } | Objective::MarketSale { .. }
+    )
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -444,6 +651,14 @@ struct TradeWatch {
     sale: Option<TradeReceipt>,
 }
 impl TradeWatch {
+    fn is_satisfied(&self) -> bool {
+        match &self.objective {
+            Objective::Trade { .. } => self.purchase.is_some() && self.sale.is_some(),
+            Objective::MarketPurchase { .. } => self.purchase.is_some(),
+            Objective::MarketSale { .. } => self.sale.is_some(),
+            _ => false,
+        }
+    }
     fn matches_purchase(&self, receipt: &TradeReceipt) -> bool {
         let Objective::Trade {
             origin,
@@ -524,7 +739,8 @@ impl TradeWatch {
         true
     }
     fn migrate_unmatched(&mut self) -> bool {
-        if self.sale.is_none()
+        if matches!(self.objective, Objective::Trade { .. })
+            && self.sale.is_none()
             && let Some(purchase) = self.purchase.take()
         {
             self.remember_purchase(purchase);
@@ -553,7 +769,7 @@ impl TradeBook {
         for watch in &self.watches {
             watch.key.check()?;
             watch.objective.check()?;
-            if !matches!(watch.objective, Objective::Trade { .. })
+            if !is_market_objective(&watch.objective)
                 || watch.candidates.len() > MAX_PURCHASE_HOLDS
                 || watch.checkpoint.len() > 64
                 || CanonicalId::new(&watch.checkpoint).is_err()
@@ -561,33 +777,68 @@ impl TradeBook {
             {
                 return Err("invalid quest trade watch".into());
             }
-            let mut holds = BTreeSet::new();
-            for candidate in &watch.candidates {
-                candidate.check()?;
-                if candidate.actor != self.actor
-                    || !watch.matches_purchase(candidate)
-                    || !holds.insert(candidate.hold)
-                    || watch.sale.is_some()
-                {
-                    return Err("invalid unmatched quest purchase".into());
+            match &watch.objective {
+                Objective::Trade { .. } => {
+                    let mut holds = BTreeSet::new();
+                    for candidate in &watch.candidates {
+                        candidate.check()?;
+                        if candidate.actor != self.actor
+                            || !watch.matches_purchase(candidate)
+                            || !holds.insert(candidate.hold)
+                            || watch.sale.is_some()
+                        {
+                            return Err("invalid unmatched quest purchase".into());
+                        }
+                    }
+                    if let Some(purchase) = &watch.purchase {
+                        purchase.check()?;
+                        if purchase.actor != self.actor
+                            || !purchase.purchase
+                            || purchase.accepted_at < watch.accepted.at_utc
+                        {
+                            return Err("invalid quest purchase".into());
+                        }
+                    }
+                    if let Some(sale) = &watch.sale {
+                        let purchase = watch.purchase.clone().ok_or("sale without purchase")?;
+                        ObjectiveProof::Trade {
+                            purchase,
+                            sale: sale.clone(),
+                        }
+                        .check(&watch.objective)?;
+                    }
                 }
-            }
-            if let Some(purchase) = &watch.purchase {
-                purchase.check()?;
-                if purchase.actor != self.actor
-                    || !purchase.purchase
-                    || purchase.accepted_at < watch.accepted.at_utc
-                {
-                    return Err("invalid quest purchase".into());
+                Objective::MarketPurchase { .. } => {
+                    if !watch.candidates.is_empty() || watch.sale.is_some() {
+                        return Err("invalid market purchase watch".into());
+                    }
+                    if let Some(purchase) = &watch.purchase {
+                        purchase.check()?;
+                        if purchase.actor != self.actor
+                            || purchase.accepted_at < watch.accepted.at_utc
+                        {
+                            return Err("invalid quest purchase".into());
+                        }
+                        ObjectiveProof::MarketPurchase {
+                            purchase: purchase.clone(),
+                        }
+                        .check(&watch.objective)?;
+                    }
                 }
-            }
-            if let Some(sale) = &watch.sale {
-                let purchase = watch.purchase.clone().ok_or("sale without purchase")?;
-                ObjectiveProof::Trade {
-                    purchase,
-                    sale: sale.clone(),
+                Objective::MarketSale { .. } => {
+                    if !watch.candidates.is_empty() || watch.purchase.is_some() {
+                        return Err("invalid market sale watch".into());
+                    }
+                    if let Some(sale) = &watch.sale {
+                        sale.check()?;
+                        if sale.actor != self.actor || sale.accepted_at < watch.accepted.at_utc {
+                            return Err("invalid quest sale".into());
+                        }
+                        ObjectiveProof::MarketSale { sale: sale.clone() }
+                            .check(&watch.objective)?;
+                    }
                 }
-                .check(&watch.objective)?;
+                _ => return Err("invalid quest trade watch".into()),
             }
         }
         Ok(())
@@ -621,7 +872,7 @@ pub(crate) fn boot(ctx: &mut ModuleCtx<'_>, data: &ModuleBootData) -> Result<(),
             .filter(|book| book.actor == actor && book.check().is_ok());
         if let Some(book) = book {
             if !book.watches.is_empty() {
-                if book.watches.iter().any(|w| w.sale.is_none()) {
+                if book.watches.iter().any(|w| !w.is_satisfied()) {
                     loaded.needs_backfill.insert(actor);
                 }
                 loaded.books.insert(actor, book);
@@ -705,7 +956,7 @@ pub(crate) fn watch(ctx: &mut Ctx<'_>, row: &QuestRecord) -> Result<(), String> 
             .definition
             .checkpoints
             .iter()
-            .any(|c| matches!(c.objective, Objective::Trade { .. }))
+            .any(|c| is_market_objective(&c.objective))
     {
         return Ok(());
     }
@@ -721,7 +972,7 @@ pub(crate) fn watch(ctx: &mut Ctx<'_>, row: &QuestRecord) -> Result<(), String> 
         row.definition
             .checkpoints
             .iter()
-            .filter(|c| matches!(c.objective, Objective::Trade { .. }))
+            .filter(|c| is_market_objective(&c.objective))
             .all(|cp| {
                 book.watches.iter().any(|w| {
                     w.key == row.key
@@ -744,7 +995,7 @@ pub(crate) fn watch(ctx: &mut Ctx<'_>, row: &QuestRecord) -> Result<(), String> 
     });
     let mut changed = false;
     for checkpoint in &row.definition.checkpoints {
-        if !matches!(checkpoint.objective, Objective::Trade { .. }) {
+        if !is_market_objective(&checkpoint.objective) {
             continue;
         }
         let fresh = TradeWatch {
@@ -800,7 +1051,7 @@ impl TradeEvidenceStore {
                     .definition
                     .checkpoints
                     .iter()
-                    .any(|c| matches!(c.objective, Objective::Trade { .. }))
+                    .any(|c| is_market_objective(&c.objective))
                 {
                     active_trade_keys
                         .entry(row.actor)
@@ -964,36 +1215,60 @@ fn apply_receipt_in_place(
         if watch.migrate_unmatched() {
             changed = true;
         }
-        let Objective::Trade {
-            destination,
-            commodity,
-            quantity,
-            ..
-        } = &watch.objective
-        else {
-            continue;
-        };
-        if watch.sale.is_some()
-            || receipt.accepted_at < watch.accepted.at_utc
-            || receipt.quantity < *quantity
-            || receipt.commodity != *commodity
-        {
+        if watch.is_satisfied() || receipt.accepted_at < watch.accepted.at_utc {
             continue;
         }
-        if receipt.purchase {
-            if watch.remember_purchase(receipt.clone()) {
+        match &watch.objective {
+            Objective::Trade {
+                destination,
+                commodity,
+                quantity,
+                ..
+            } => {
+                if receipt.quantity < *quantity || receipt.commodity != *commodity {
+                    continue;
+                }
+                if receipt.purchase {
+                    if watch.remember_purchase(receipt.clone()) {
+                        changed = true;
+                    }
+                } else if receipt.market == *destination
+                    && watch.select_pair(receipt, |purchase| {
+                        paid_purchases.contains(&(
+                            purchase.contract,
+                            purchase.transaction,
+                            purchase.settled_at,
+                        ))
+                    })
+                {
+                    changed = true;
+                }
+            }
+            Objective::MarketPurchase {
+                market,
+                commodity,
+                quantity,
+            } if receipt.purchase
+                && receipt.market == *market
+                && receipt.commodity == *commodity
+                && receipt.quantity >= *quantity =>
+            {
+                watch.purchase = Some(receipt.clone());
                 changed = true;
             }
-        } else if receipt.market == *destination
-            && watch.select_pair(receipt, |purchase| {
-                paid_purchases.contains(&(
-                    purchase.contract,
-                    purchase.transaction,
-                    purchase.settled_at,
-                ))
-            })
-        {
-            changed = true;
+            Objective::MarketSale {
+                market,
+                commodity,
+                quantity,
+            } if !receipt.purchase
+                && receipt.market == *market
+                && receipt.commodity == *commodity
+                && receipt.quantity >= *quantity =>
+            {
+                watch.sale = Some(receipt.clone());
+                changed = true;
+            }
+            _ => {}
         }
     }
     changed
@@ -1001,7 +1276,7 @@ fn apply_receipt_in_place(
 fn precheck_paid_candidates(w: &World, book: &TradeBook) -> BTreeSet<(u64, u64, i64)> {
     let mut paid = BTreeSet::new();
     for watch in &book.watches {
-        if watch.sale.is_some() {
+        if watch.is_satisfied() {
             continue;
         }
         for candidate in watch.candidates.iter().chain(watch.purchase.iter()) {
@@ -1029,7 +1304,7 @@ fn record_quote(ctx: &mut Ctx<'_>, q: &Quote) {
         .w
         .module_state::<TradeEvidenceStore>()
         .and_then(|s| (!s.unreadable.contains(&actor)).then(|| s.books.get(&actor))?)
-        .is_some_and(|book| book.watches.iter().any(|w| w.sale.is_none()));
+        .is_some_and(|book| book.watches.iter().any(|w| !w.is_satisfied()));
     if !has_unmatched {
         return;
     }
@@ -1091,7 +1366,10 @@ pub(crate) fn reconcile(ctx: &mut Ctx<'_>) {
             }
             let mut needs_repair = false;
             for watch in &book.watches {
-                if watch.sale.is_none() && watch.purchase.is_some() {
+                if matches!(watch.objective, Objective::Trade { .. })
+                    && watch.sale.is_none()
+                    && watch.purchase.is_some()
+                {
                     needs_repair = true;
                 }
                 for receipt in [&watch.purchase, &watch.sale]
@@ -1176,7 +1454,7 @@ pub(crate) fn reconcile(ctx: &mut Ctx<'_>) {
         for (&actor, book) in &store.books {
             if ctx.w.is_connected(actor)
                 && !store.unreadable.contains(&actor)
-                && book.watches.iter().any(|w| w.sale.is_none())
+                && book.watches.iter().any(|w| !w.is_satisfied())
             {
                 unmatched.insert(actor);
             }
@@ -1555,6 +1833,199 @@ fn trade_proof(w: &World, row: &QuestRecord, checkpoint: &Checkpoint) -> Option<
     Some(ObjectiveProof::Trade { purchase, sale })
 }
 
+fn market_purchase_proof(
+    w: &World,
+    row: &QuestRecord,
+    checkpoint: &Checkpoint,
+) -> Option<ObjectiveProof> {
+    let Objective::MarketPurchase {
+        market,
+        commodity,
+        quantity,
+    } = &checkpoint.objective
+    else {
+        return None;
+    };
+    if let Some(store) = w.module_state::<TradeEvidenceStore>()
+        && !store.unreadable.contains(&row.actor)
+        && let Some(book) = store.books.get(&row.actor)
+        && book.check().is_ok()
+        && let Some(watch) = book.watches.iter().find(|watch| {
+            watch.key == row.key
+                && watch.checkpoint == checkpoint.id
+                && watch.accepted == row.accepted
+                && watch.objective == checkpoint.objective
+        })
+        && let Some(purchase) = watch.purchase.clone()
+        && paid_transaction(
+            w,
+            purchase.contract,
+            purchase.transaction,
+            purchase.settled_at,
+        )
+    {
+        return Some(ObjectiveProof::MarketPurchase { purchase });
+    }
+    let market_store = w.module_state::<MarketStore>()?;
+    for q in market_store.quotes() {
+        let Some(receipt) = from_quote(w, q) else {
+            continue;
+        };
+        if receipt.actor == row.actor
+            && receipt.purchase
+            && receipt.market == *market
+            && receipt.commodity == *commodity
+            && receipt.quantity >= *quantity
+            && receipt.accepted_at >= row.accepted.at_utc
+        {
+            return Some(ObjectiveProof::MarketPurchase { purchase: receipt });
+        }
+    }
+    None
+}
+
+fn market_sale_proof(
+    w: &World,
+    row: &QuestRecord,
+    checkpoint: &Checkpoint,
+) -> Option<ObjectiveProof> {
+    let Objective::MarketSale {
+        market,
+        commodity,
+        quantity,
+    } = &checkpoint.objective
+    else {
+        return None;
+    };
+    if let Some(store) = w.module_state::<TradeEvidenceStore>()
+        && !store.unreadable.contains(&row.actor)
+        && let Some(book) = store.books.get(&row.actor)
+        && book.check().is_ok()
+        && let Some(watch) = book.watches.iter().find(|watch| {
+            watch.key == row.key
+                && watch.checkpoint == checkpoint.id
+                && watch.accepted == row.accepted
+                && watch.objective == checkpoint.objective
+        })
+        && let Some(sale) = watch.sale.clone()
+        && paid_transaction(w, sale.contract, sale.transaction, sale.settled_at)
+    {
+        return Some(ObjectiveProof::MarketSale { sale });
+    }
+    let market_store = w.module_state::<MarketStore>()?;
+    for q in market_store.quotes() {
+        let Some(receipt) = from_quote(w, q) else {
+            continue;
+        };
+        if receipt.actor == row.actor
+            && !receipt.purchase
+            && receipt.market == *market
+            && receipt.commodity == *commodity
+            && receipt.quantity >= *quantity
+            && receipt.accepted_at >= row.accepted.at_utc
+        {
+            return Some(ObjectiveProof::MarketSale { sale: receipt });
+        }
+    }
+    None
+}
+
+fn ship_refit_proof(w: &World, actor: ObjId, expected_unit: &str) -> Option<ObjectiveProof> {
+    let mut candidates = Vec::new();
+    if let Some(charter) = coop::live_charter(w, actor) {
+        candidates.push(charter.hull);
+    }
+    if let Some(helm) = coop::helm_of(w, actor) {
+        candidates.push(helm.hull);
+    }
+    candidates.extend(coop::trade_hulls(w, actor));
+    for hull in candidates {
+        if let Some(view) = crate::port::ship::hull_view(w, hull)
+            && view.unit.as_str() == expected_unit
+        {
+            return Some(ObjectiveProof::ShipRefit {
+                actor,
+                hull,
+                unit: view.unit.as_str().into(),
+            });
+        }
+    }
+    None
+}
+
+pub(crate) fn checkpoint_live_ready(
+    w: &World,
+    row: &QuestRecord,
+    checkpoint: &Checkpoint,
+    survey_book: Option<&SurveyEvidenceBook>,
+    bookings: &[crate::port::passenger::store::Booking],
+    commissions: &[SurveyRecord],
+) -> bool {
+    let now = Stamp::now(w);
+    match &checkpoint.objective {
+        Objective::Observation => {
+            w.get(row.actor).and_then(|p| p.location) == Some(checkpoint.room)
+                && super::detail(w, checkpoint).is_some()
+        }
+        Objective::CoopEnrolment => coop_proof(w, row.actor).is_some(),
+        Objective::Passenger { npc } => passenger_proof(w, row.actor, *npc, checkpoint).is_some(),
+        Objective::Contact { npc } => contact_proof(w, row.actor, *npc, checkpoint).is_some(),
+        Objective::Trade { .. } => trade_proof(w, row, checkpoint).is_some(),
+        Objective::MarketPurchase { .. } => market_purchase_proof(w, row, checkpoint).is_some(),
+        Objective::MarketSale { .. } => market_sale_proof(w, row, checkpoint).is_some(),
+        Objective::ShipRefit { unit } => ship_refit_proof(w, row.actor, unit).is_some(),
+        Objective::Survey { mode } => survey_book.is_some_and(|book| {
+            book.check().is_ok()
+                && book.actor == row.actor
+                && book.get(mode).is_some_and(|receipt| {
+                    ObjectiveProof::Survey {
+                        receipt: receipt.clone(),
+                    }
+                    .check_for(&checkpoint.objective, row.actor, &row.accepted, &now)
+                    .is_ok()
+                })
+        }),
+        Objective::SurfaceMine { commodity, .. } => survey_book.is_some_and(|book| {
+            book.check().is_ok()
+                && book.actor == row.actor
+                && book.mined(commodity).is_some_and(|receipt| {
+                    ObjectiveProof::SurfaceMine {
+                        receipt: receipt.clone(),
+                    }
+                    .check_for(&checkpoint.objective, row.actor, &row.accepted, &now)
+                    .is_ok()
+                })
+        }),
+        Objective::PaidPassage { npc, .. } => bookings.iter().any(|booking| {
+            booking.npc == *npc
+                && passage_settlement(w, booking).is_some_and(|(transaction, settled_at)| {
+                    ObjectiveProof::PaidPassage {
+                        booking: Box::new(booking.clone()),
+                        transaction,
+                        settled_at,
+                    }
+                    .check_for(&checkpoint.objective, row.actor, &row.accepted, &now)
+                    .is_ok()
+                })
+        }),
+        Objective::SurveyCommission => commissions.iter().any(|commission| {
+            crate::port::survey::settlement(w, commission).is_some_and(
+                |(transaction, settled_at)| {
+                    let proof = ObjectiveProof::SurveyCommission {
+                        commission: Box::new(commission.clone()),
+                        transaction,
+                        settled_at,
+                    };
+                    proof
+                        .check_for(&Objective::SurveyCommission, row.actor, &row.accepted, &now)
+                        .is_ok()
+                        && commission_current(w, &proof)
+                },
+            )
+        }),
+    }
+}
+
 pub(crate) fn capture(
     ctx: &Ctx<'_>,
     row: &QuestRecord,
@@ -1591,6 +2062,27 @@ pub(crate) fn capture(
         Objective::Trade { .. } => Some(trade_proof(ctx.w, row, checkpoint).ok_or(
             "Complete the paid purchase and later delivery sale after accepting this lesson.",
         )?),
+        Objective::MarketPurchase {
+            market,
+            commodity,
+            quantity,
+        } => Some(market_purchase_proof(ctx.w, row, checkpoint).ok_or_else(|| {
+            format!(
+                "Buy at least {quantity} {commodity} at {market} after accepting this quest and wait for payment to settle."
+            )
+        })?),
+        Objective::MarketSale {
+            market,
+            commodity,
+            quantity,
+        } => Some(market_sale_proof(ctx.w, row, checkpoint).ok_or_else(|| {
+            format!(
+                "Sell at least {quantity} {commodity} at {market} after accepting this quest and wait for payment to settle."
+            )
+        })?),
+        Objective::ShipRefit { unit } => Some(ship_refit_proof(ctx.w, row.actor, unit).ok_or(
+            "Refit your Dray into a Dray-P prospector at the Co-op Registry (+coop/refit prospector) first.",
+        )?),
         Objective::Survey { mode } => {
             let handles = ctx
                 .w
@@ -1609,6 +2101,34 @@ pub(crate) fn capture(
                     .get(mode)
                     .cloned()
                     .ok_or("Complete the requested survey after accepting this lesson.")?,
+            })
+        }
+        Objective::SurfaceMine {
+            commodity,
+            quantity,
+        } => {
+            let handles = ctx
+                .w
+                .module_state::<PortHandles>()
+                .ok_or("mining evidence unavailable")?;
+            let book = ctx
+                .action_state(&handles.families.quest_survey_evidence, &row.actor)
+                .map_err(|_| "mining evidence unreadable")?
+                .ok_or_else(|| {
+                    format!(
+                        "Mine at least {quantity} tonne of {commodity} at a surface landing site after accepting this quest."
+                    )
+                })?;
+            book.check()?;
+            if book.actor != row.actor {
+                return Err("mining evidence actor mismatch".into());
+            }
+            Some(ObjectiveProof::SurfaceMine {
+                receipt: book.mined(commodity).cloned().ok_or_else(|| {
+                    format!(
+                        "Mine at least {quantity} tonne of {commodity} at a surface landing site after accepting this quest."
+                    )
+                })?,
             })
         }
     };
@@ -1637,9 +2157,24 @@ pub(crate) fn capture(
             "Paid purchase of {} {} at {}, followed by a paid delivery sale of {} at {} from the same hold.",
             purchase.quantity, purchase.commodity, purchase.market, sale.quantity, sale.market
         ),
+        Some(ObjectiveProof::MarketPurchase { purchase }) => format!(
+            "Paid purchase of {} {} at {} settled.",
+            purchase.quantity, purchase.commodity, purchase.market
+        ),
+        Some(ObjectiveProof::MarketSale { sale }) => format!(
+            "Paid sale of {} {} at {} settled.",
+            sale.quantity, sale.commodity, sale.market
+        ),
+        Some(ObjectiveProof::ShipRefit { unit, .. }) => {
+            format!("Your active ship is refitted to {unit}.")
+        }
         Some(ObjectiveProof::Survey { receipt }) => format!(
             "Your rig completed a {} at {} after this lesson was accepted.",
             receipt.mode, receipt.site
+        ),
+        Some(ObjectiveProof::SurfaceMine { receipt }) => format!(
+            "Your rig mined {} tonne of {} at {} after this quest was accepted.",
+            receipt.quantity, receipt.commodity, receipt.site
         ),
         Some(ObjectiveProof::Contact { name, .. }) => {
             format!("You acknowledged meeting {name} in person at the named place.")
@@ -1693,6 +2228,9 @@ pub(crate) fn guard(w: &World, row: &QuestRecord, evidence: &CheckEvidence) -> b
     }
     match proof {
         ObjectiveProof::CoopEnrolment { .. } => coop_proof(w, row.actor).as_ref() == Some(proof),
+        ObjectiveProof::ShipRefit { unit, .. } => {
+            ship_refit_proof(w, row.actor, unit).as_ref() == Some(proof)
+        }
         ObjectiveProof::Passenger { npc, .. } => {
             passenger_proof(w, row.actor, *npc, checkpoint).as_ref() == Some(proof)
         }
@@ -1702,9 +2240,15 @@ pub(crate) fn guard(w: &World, row: &QuestRecord, evidence: &CheckEvidence) -> b
         ObjectiveProof::PaidPassage { .. } => paid_passage_current(w, proof),
         ObjectiveProof::SurveyCommission { .. } => commission_current(w, proof),
         ObjectiveProof::Trade { .. } => trade_proof(w, row, checkpoint).as_ref() == Some(proof),
-        // The provider additionally rereads the exact typed survey slot at all
+        ObjectiveProof::MarketPurchase { .. } => {
+            market_purchase_proof(w, row, checkpoint).as_ref() == Some(proof)
+        }
+        ObjectiveProof::MarketSale { .. } => {
+            market_sale_proof(w, row, checkpoint).as_ref() == Some(proof)
+        }
+        // The provider additionally rereads the exact typed survey/mining slot at all
         // three action boundaries; World alone cannot manufacture that read.
-        ObjectiveProof::Survey { .. } => true,
+        ObjectiveProof::Survey { .. } | ObjectiveProof::SurfaceMine { .. } => true,
     }
 }
 
@@ -1722,6 +2266,15 @@ pub(crate) fn completion_ready(w: &World, row: &QuestRecord) -> bool {
                 purchase.transaction,
                 purchase.settled_at,
             ) && paid_transaction(w, sale.contract, sale.transaction, sale.settled_at)
+        }
+        Some(ObjectiveProof::MarketPurchase { purchase }) => paid_transaction(
+            w,
+            purchase.contract,
+            purchase.transaction,
+            purchase.settled_at,
+        ),
+        Some(ObjectiveProof::MarketSale { sale }) => {
+            paid_transaction(w, sale.contract, sale.transaction, sale.settled_at)
         }
         _ => true,
     })
@@ -1981,6 +2534,11 @@ mod tests {
                 destination: "ceres".into(),
                 prerequisite: Prerequisite::Open,
                 choice: None,
+                category: None,
+                reward_summary: None,
+                turn_in_npc: None,
+                turn_in_destination: None,
+                allow_restart: false,
                 checkpoints: vec![checkpoint],
                 completion: "The captain met the contact in person.".into(),
             },
@@ -1991,6 +2549,7 @@ mod tests {
             checks: Vec::new(),
             completed: None,
             closed: None,
+            restart_count: 0,
         };
         let detail_text =
             "You acknowledged meeting Contact in person at the named place.".to_owned();
@@ -2299,6 +2858,7 @@ mod tests {
             actor: ObjId(7),
             scan: Some(scan.clone()),
             sound: Some(sound.clone()),
+            mined: Vec::new(),
         };
         assert!(book.check().is_ok());
         assert!(proof_current(

@@ -136,7 +136,7 @@ namespace TacSim.UI
                        (CommandPalette != null && CommandPalette.IsOpen) ||
                        (KeybindHelp != null && KeybindHelp.IsOpen) ||
                        (SocialModal != null && SocialModal.IsOpen) ||
-                       (QuestJournal != null && QuestJournal.IsOpen) ||
+                       (QuestJournal != null && QuestJournal.HasAnyModalOpen) ||
                        (SceneIntelModal != null && SceneIntelModal.IsOpen) ||
                        (GroundChart != null && GroundChart.IsOpen) ||
                        (Overlays != null && Overlays.IsLobbyModalOpen) ||
@@ -1390,6 +1390,11 @@ namespace TacSim.UI
                 SocialModal.SetOpen(false);
                 return true;
             }
+            if (QuestJournal != null && QuestJournal.IsQuestDialogOpen)
+            {
+                QuestJournal.CloseQuestDialog();
+                return true;
+            }
             if (QuestJournal != null && QuestJournal.IsOpen)
             {
                 QuestJournal.SetOpen(false);
@@ -1567,7 +1572,7 @@ namespace TacSim.UI
                 (CommandPalette == null || !CommandPalette.IsOpen) &&
                 (KeybindHelp == null || !KeybindHelp.IsOpen) &&
                 (SocialModal == null || !SocialModal.IsOpen) &&
-                (QuestJournal == null || !QuestJournal.IsOpen) &&
+                (QuestJournal == null || !QuestJournal.HasAnyModalOpen) &&
                 (SceneIntelModal == null || !SceneIntelModal.IsOpen) &&
                 (DisplayOptions == null || !DisplayOptions.IsOpen) &&
                 !(ResolveActiveMindTerminal()?.IsTerminalOpen ?? false) &&

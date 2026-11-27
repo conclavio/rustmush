@@ -1,7 +1,7 @@
 //! Authenticated quest commands commit exact ordered receipts through typed state.
 use super::evidence::SurveyEvidenceBook;
 use super::model::{
-    CheckEvidence, ClosedQuest, ClosureKind, MAX_CHECKPOINTS, MAX_QUESTS, Prerequisite, QuestIndex,
+    CheckEvidence, ClosedQuest, ClosureKind, MAX_QUESTS, MAX_REVISION, Prerequisite, QuestIndex,
     QuestIndexKey, QuestKey, QuestRecord, Stamp,
 };
 pub use super::model::{MAX_INDEX_BYTES, MAX_RECORD_BYTES};
@@ -120,6 +120,32 @@ pub fn refresh(ctx: &mut Ctx<'_>) -> Result<Vec<QuestRecord>, String> {
 /// Advisory conversation reads must distinguish an unreadable board from free slots.
 pub(crate) fn commission_rows_world(w: &World) -> Option<&[SurveyRecord]> {
     w.module_state::<Projection>()?.commissions.as_deref()
+}
+
+/// Whether `actor` currently holds an active quest with a `SurfaceMine` objective.
+/// Checked inside `SurfaceDoneProvider::project_offer` so ordinary non-quest mining
+/// cycles never perform an extra write to `tacsim.quest_survey_evidence`.
+pub(crate) fn actor_needs_surface_mine(engine: &Engine, actor: ObjId) -> bool {
+    let Some(handles) = engine.world.module_state::<PortHandles>() else {
+        return false;
+    };
+    let state = engine.action_state();
+    for scope in [QuestIndexKey::Legacy, QuestIndexKey::Actor(actor)] {
+        if let Ok(Some(index)) = state.get(&handles.families.quest_index, &scope) {
+            for key in &index.keys {
+                if let Ok(Some(row)) = state.get(&handles.families.quests, key)
+                    && row.actor == actor
+                    && row.is_active()
+                    && row.definition.checkpoints.iter().any(|cp| {
+                        matches!(cp.objective, super::model::Objective::SurfaceMine { .. })
+                    })
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 fn project_scope(
     projection: &mut Projection,
@@ -265,6 +291,7 @@ pub(crate) fn progress_valid(before: Option<&QuestRecord>, next: &QuestRecord) -
     }
     let Some(before) = before else {
         return next.revision == 1
+            && next.restart_count == 0
             && next.checks.is_empty()
             && next.completed.is_none()
             && next
@@ -272,10 +299,26 @@ pub(crate) fn progress_valid(before: Option<&QuestRecord>, next: &QuestRecord) -
                 .as_ref()
                 .is_none_or(|closed| closed.kind == ClosureKind::Declined);
     };
-    if before.check().is_err()
-        || !before.is_active()
-        || before.revision.checked_add(1) != Some(next.revision)
-    {
+    if before.check().is_err() || before.revision.checked_add(1) != Some(next.revision) {
+        return false;
+    }
+    if before.is_restartable_abandoned() && next.is_active() {
+        let mut fixed = next.clone();
+        fixed.revision = before.revision;
+        fixed.restart_count = before.restart_count;
+        fixed.accepted = before.accepted.clone();
+        fixed.checks.clone_from(&before.checks);
+        fixed.completed.clone_from(&before.completed);
+        fixed.closed.clone_from(&before.closed);
+        return fixed == *before
+            && next.restart_count == before.restart_count.saturating_add(1)
+            && next.checks.is_empty()
+            && next.completed.is_none()
+            && next.closed.is_none()
+            && next.accepted.at_utc >= before.accepted.at_utc
+            && next.accepted.at_ic >= before.accepted.at_ic;
+    }
+    if !before.is_active() {
         return false;
     }
     let mut fixed = next.clone();
@@ -643,6 +686,25 @@ pub fn stage_accept(ctx: &mut Ctx<'_>, mut row: QuestRecord) -> Result<(), Strin
     if !row.is_active() {
         return Err("quest acceptance must be active".into());
     }
+    if let Some(existing) = get(ctx, &row.key)? {
+        if existing.is_restartable_abandoned() {
+            let mut next = existing.clone();
+            next.revision = existing
+                .revision
+                .checked_add(1)
+                .ok_or("quest revision exhausted")?;
+            next.restart_count = existing
+                .restart_count
+                .checked_add(1)
+                .ok_or("quest restarts exhausted")?;
+            next.accepted = Stamp::now(ctx.w);
+            next.checks.clear();
+            next.completed = None;
+            next.closed = None;
+            return stage(ctx, &existing, next);
+        }
+        return Err("this quest already has a receipt".into());
+    }
     row.accepted = Stamp::now(ctx.w);
     stage_initial(ctx, row)
 }
@@ -801,7 +863,11 @@ fn needs_survey(order: &Order) -> bool {
             .checkpoints
             .get(before_len)
             .is_some_and(|checkpoint| {
-                matches!(checkpoint.objective, super::model::Objective::Survey { .. })
+                matches!(
+                    checkpoint.objective,
+                    super::model::Objective::Survey { .. }
+                        | super::model::Objective::SurfaceMine { .. }
+                )
             })
 }
 fn revisions(actor: ObjId, generation: u64) -> Result<RevisionSet, ActionError> {
@@ -968,7 +1034,7 @@ impl ActionProvider for Provider {
             || parameters
                 .get("revision")
                 .and_then(Value::as_u64)
-                .is_none_or(|revision| revision == 0 || revision > MAX_CHECKPOINTS as u64 + 2)
+                .is_none_or(|revision| revision == 0 || revision > MAX_REVISION)
             || parameters.as_object().is_none_or(|object| {
                 object.keys().any(|key| {
                     !matches!(
@@ -1135,7 +1201,7 @@ impl ActionProvider for Provider {
                     true,
                     ProjectedParameterKind::Integer {
                         minimum: 1,
-                        maximum: MAX_CHECKPOINTS as i64 + 2,
+                        maximum: MAX_REVISION as i64,
                     },
                 )?,
             ],
