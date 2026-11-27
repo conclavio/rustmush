@@ -50,8 +50,8 @@ use super::panels::{
 use super::pixel::{KeyUse, PictureKind, PixelView};
 use super::port_walk::{PORT_TRADE_FEED, PortWalkState, TACSIM_CONTENT_FEED};
 use super::quests::{
-    QUESTS_FEED, QuestOverlayAction, QuestOverlayState, QuestsSnapshot,
-    parse_frame as parse_quests_frame, parse_room_markers, render_quest_overlay,
+    QUESTS_FEED, QuestMilestoneKind, QuestMilestoneTracker, QuestOverlayAction, QuestOverlayState,
+    QuestsSnapshot, parse_frame as parse_quests_frame, parse_room_markers, render_quest_overlay,
     render_quest_tracker_lines,
 };
 use super::render::{
@@ -589,6 +589,7 @@ pub struct TuiApp {
     workshop: MindWorkshop,
     quests_overlay: QuestOverlayState,
     quests_snap: QuestsSnapshot,
+    quest_milestones: QuestMilestoneTracker,
     /// **The market desk** (17g cut C3b): the market screen's forms and its
     /// one pending typed request, and the legal-actions panel's typed submit
     /// with its per-offer attempts. Its ids start at `1 << 40`, never in the
@@ -1037,6 +1038,7 @@ impl TuiApp {
             workshop: MindWorkshop::default(),
             quests_overlay: QuestOverlayState::default(),
             quests_snap: QuestsSnapshot::default(),
+            quest_milestones: QuestMilestoneTracker::default(),
             market: MarketDesk::new(),
             requests: VecDeque::new(),
             answering: None,
@@ -2484,6 +2486,19 @@ impl TuiApp {
                             self.quests_snap.active_trade_need(tracked),
                             self.quests_snap.active_destination_port(tracked),
                         );
+                        let milestones = self.quest_milestones.observe(&self.quests_snap);
+                        for m in &milestones {
+                            self.push_local_line(&m.notice_text());
+                        }
+                        if let Some(last) = milestones.last() {
+                            let tone = match last.kind {
+                                QuestMilestoneKind::Completed => "drive_arrived",
+                                QuestMilestoneKind::Accepted | QuestMilestoneKind::Ready => {
+                                    "power_online"
+                                }
+                            };
+                            self.sounds.play(tone, Instant::now());
+                        }
                         if self.pixel.kind() == PictureKind::StationWalk {
                             self.pixel.invalidate_last_sent();
                         }
@@ -2824,6 +2839,7 @@ impl TuiApp {
             OutputEvent::Hello { panels, .. } => {
                 self.workshop.reset();
                 self.market.reset();
+                self.quest_milestones.reset();
                 self.manifest.panels.clone_from(panels);
                 // 16b cut Q.4: a world restarted without its arena takes the
                 // cockpit tab with it, and the player must not be left standing
@@ -5383,6 +5399,38 @@ impl TuiApp {
                 ),
                 Span::styled(
                     format!(" (l: {} wash)", qm.recommended_family),
+                    Style::default().fg(Color::Cyan),
+                ),
+            ]);
+            frame.render_widget(Paragraph::new(line), quest_bar);
+            rest
+        } else if self.active == CHART_SCREEN
+            && body_area.height >= 6
+            && let Some(dest) = self
+                .quests_snap
+                .active_destination_port(self.quests_overlay.tracked_key.as_deref())
+        {
+            let [quest_bar, rest] =
+                Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(body_area);
+            let line = Line::from(vec![
+                Span::styled(
+                    " [QUEST] ",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("Destination: {} ", dest.port_label),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("— {}  ", dest.quest_title),
+                    Style::default().fg(Color::Gray),
+                ),
+                Span::styled(
+                    format!("(+ship/plan {})", dest.port_id),
                     Style::default().fg(Color::Cyan),
                 ),
             ]);
@@ -12897,6 +12945,45 @@ mod tests {
                 && find_in(&qbuf, "Mine carbon_ore", 0).is_some(),
             "Quarry screen must display guided mining quest checklist bar:\n{}",
             dump(&qbuf)
+        );
+
+        // 9. Post-hydration quest transition emits [QUEST] scrollback notice + sound cue,
+        // and CHART_SCREEN displays the golden quest destination bar.
+        let _ = app.take_sound_bytes();
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "room_name": "Ceres Berth",
+                "active": [{
+                    "key": "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+                    "title": "Metals Down the Corridor",
+                    "checkpoints": [{
+                        "id": "sail_stickney",
+                        "title": "Deliver 5 metals to Stickney Yards",
+                        "instructions": "Run +ship/plan stickney and +ship/order depart stickney.",
+                        "checked": false,
+                        "live_ready": false
+                    }]
+                }]
+            }),
+        });
+        assert!(
+            app.scrollback.iter().any(|e| {
+                let s: String = e.body.iter().map(|sp| sp.content.as_ref()).collect();
+                s.contains("[QUEST] Accepted: Metals Down the Corridor")
+            }),
+            "post-hydration accepted quest must emit a [QUEST] scrollback notice"
+        );
+        app.active = CHART_SCREEN;
+        let cbuf = painted(&mut app, 130, 36);
+        assert!(
+            find_in(&cbuf, "[QUEST]", 0).is_some()
+                && find_in(&cbuf, "Stickney Yards", 0).is_some()
+                && find_in(&cbuf, "+ship/plan stickney", 0).is_some(),
+            "Sky Chart screen must display golden quest destination bar:\n{}",
+            dump(&cbuf)
         );
     }
 }

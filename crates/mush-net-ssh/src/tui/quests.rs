@@ -4,6 +4,8 @@
 //! Every mutation submits a server-signed `+quest/...` command after an explicit key
 //! inside the modal overlay (never from a bare nav key on the main screen).
 
+use std::collections::HashSet;
+
 use mush_proto::RoomView;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -140,6 +142,91 @@ pub struct QuestSurfaceMiningStatus {
     pub scan_done: bool,
     pub sound_done: bool,
     pub mine_done: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QuestMilestoneKind {
+    Accepted,
+    Ready,
+    Completed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuestMilestone {
+    pub kind: QuestMilestoneKind,
+    pub title: String,
+}
+
+impl QuestMilestone {
+    #[must_use]
+    pub fn notice_text(&self) -> String {
+        match self.kind {
+            QuestMilestoneKind::Accepted => format!("[QUEST] Accepted: {}", self.title),
+            QuestMilestoneKind::Ready => format!("[QUEST] Ready to turn in: {}", self.title),
+            QuestMilestoneKind::Completed => format!("[QUEST] Completed: {}", self.title),
+        }
+    }
+}
+
+/// Tracks genuine post-hydration quest state transitions (accepted, ready to turn in,
+/// completed) so initial login/reconnect keyframes never spam duplicate notices.
+#[derive(Clone, Debug, Default)]
+pub struct QuestMilestoneTracker {
+    hydrated: bool,
+    seen_active: HashSet<String>,
+    seen_ready: HashSet<String>,
+    seen_completed: HashSet<String>,
+}
+
+impl QuestMilestoneTracker {
+    pub fn reset(&mut self) {
+        self.hydrated = false;
+        self.seen_active.clear();
+        self.seen_ready.clear();
+        self.seen_completed.clear();
+    }
+
+    pub fn observe(&mut self, snap: &QuestsSnapshot) -> Vec<QuestMilestone> {
+        let mut out = Vec::new();
+        if self.hydrated {
+            for q in &snap.active {
+                if !self.seen_active.contains(&q.key) {
+                    out.push(QuestMilestone {
+                        kind: QuestMilestoneKind::Accepted,
+                        title: q.title.clone(),
+                    });
+                }
+                if (q.ready_to_finish || q.can_finish_now) && !self.seen_ready.contains(&q.key) {
+                    out.push(QuestMilestone {
+                        kind: QuestMilestoneKind::Ready,
+                        title: q.title.clone(),
+                    });
+                }
+            }
+            for c in &snap.completed {
+                if !self.seen_completed.contains(&c.key) {
+                    out.push(QuestMilestone {
+                        kind: QuestMilestoneKind::Completed,
+                        title: c.title.clone(),
+                    });
+                }
+            }
+        }
+        self.hydrated = true;
+        self.seen_active.clear();
+        self.seen_ready.clear();
+        for q in &snap.active {
+            self.seen_active.insert(q.key.clone());
+            if q.ready_to_finish || q.can_finish_now {
+                self.seen_ready.insert(q.key.clone());
+            }
+        }
+        self.seen_completed.clear();
+        for c in &snap.completed {
+            self.seen_completed.insert(c.key.clone());
+        }
+        out
+    }
 }
 
 const KNOWN_TRADE_COMMODITIES: [(&str, &[&str]); 10] = [
@@ -1448,5 +1535,69 @@ mod tests {
         assert!(mine.scan_done);
         assert!(!mine.sound_done);
         assert!(!mine.mine_done);
+    }
+
+    #[test]
+    fn milestone_tracker_suppresses_initial_hydration_and_emits_genuine_transitions() {
+        let mut tracker = QuestMilestoneTracker::default();
+        let initial = parse_frame(&json!({
+            "schema": 1,
+            "active": [{ "key": "q1", "title": "First Papers", "ready_to_finish": false }],
+            "completed": [{ "key": "q0", "title": "Arrival" }]
+        }));
+        assert!(
+            tracker.observe(&initial).is_empty(),
+            "initial login/reconnect hydration must not spam milestone notices"
+        );
+
+        let accepted_and_ready = parse_frame(&json!({
+            "schema": 1,
+            "active": [
+                { "key": "q1", "title": "First Papers", "ready_to_finish": true },
+                { "key": "q2", "title": "Stock the Locker", "ready_to_finish": false }
+            ],
+            "completed": [{ "key": "q0", "title": "Arrival" }]
+        }));
+        let m1 = tracker.observe(&accepted_and_ready);
+        assert_eq!(
+            m1,
+            vec![
+                QuestMilestone {
+                    kind: QuestMilestoneKind::Ready,
+                    title: "First Papers".into(),
+                },
+                QuestMilestone {
+                    kind: QuestMilestoneKind::Accepted,
+                    title: "Stock the Locker".into(),
+                },
+            ]
+        );
+        assert_eq!(
+            m1[0].notice_text(),
+            "[QUEST] Ready to turn in: First Papers"
+        );
+        assert_eq!(m1[1].notice_text(), "[QUEST] Accepted: Stock the Locker");
+
+        let completed = parse_frame(&json!({
+            "schema": 1,
+            "active": [{ "key": "q2", "title": "Stock the Locker", "ready_to_finish": false }],
+            "completed": [
+                { "key": "q0", "title": "Arrival" },
+                { "key": "q1", "title": "First Papers" }
+            ]
+        }));
+        let m2 = tracker.observe(&completed);
+        assert_eq!(
+            m2,
+            vec![QuestMilestone {
+                kind: QuestMilestoneKind::Completed,
+                title: "First Papers".into(),
+            }]
+        );
+        assert_eq!(m2[0].notice_text(), "[QUEST] Completed: First Papers");
+
+        // Resetting suppresses next hydration again
+        tracker.reset();
+        assert!(tracker.observe(&completed).is_empty());
     }
 }
