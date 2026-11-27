@@ -259,5 +259,42 @@ describe("Track 6 Doc 48 Economy, Jobs, Shipyards & Parts Market UI", () => {
     expect(screen.queryByRole("button", { name: /^scout$/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /missile_carrier/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /heavy_mech/i })).toBeNull();
+
+    // 6. Active Step 5 refit quest surfaces golden [QUEST] banner in both Co-op Desk & Works/Yard
+    app.quests.applyFrame({
+      schema: 1,
+      room_id: "#105",
+      room_name: "Registry & Co-op Desk",
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector",
+          title: "Refit the Dray for Surface Mining",
+          category: "guided",
+          next_step: "Run +coop/refit prospector",
+          checkpoints: [
+            {
+              id: "refit_dray_p",
+              title: "Refit your Dray into a Dray-P prospector",
+              instructions: "Run +coop/refit prospector.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+      available: [],
+      completed: [],
+    });
+    app.tacsim.openModal("coop");
+    await tick();
+    const refitBtn = screen.getByRole("button", { name: "Refit Dray-P Now" });
+    await fireEvent.click(refitBtn);
+    expect(socket.sent.some((raw) => raw.includes("+coop/refit prospector"))).toBe(true);
+
+    app.tacsim.openModal("trade");
+    await tick();
+    await fireEvent.click(screen.getByRole("button", { name: "Works & Yard" }));
+    await tick();
+    expect(screen.getByRole("status", { name: "active quest refit guidance" })).toBeTruthy();
   });
 });

@@ -82,6 +82,17 @@
   const st = $derived(trade.stowage);
   const questTradeNeed = $derived(app.quests.activeTradeNeed);
   const questDestPort = $derived(app.quests.activeDestinationPort);
+  const questCoopAction = $derived.by(() => {
+    const sug = app.quests?.suggestedAction;
+    if (!sug || !sug.command.startsWith("+coop/")) return null;
+    const isRefit = sug.command.startsWith("+coop/refit");
+    return {
+      kind: isRefit ? ("refit" as const) : ("enroll" as const),
+      label: sug.label,
+      command: sug.command,
+      questTitle: app.quests?.trackedQuest?.title ?? "Guided Quest",
+    };
+  });
   const bayHullTarget = $derived(
     app.tacsim.activeHullRef ||
       app.tacsim.ambient.ownHullName ||
@@ -597,6 +608,22 @@
 
         {:else if modal === "trade" && tradeSubView === "industry"}
           <div class="econ-pane">
+            {#if questCoopAction?.kind === "refit"}
+              <div class="quest-banner" role="status" aria-label="active quest refit guidance">
+                <div class="qb-text">
+                  <span class="qtag">[QUEST]</span>
+                  <strong>{questCoopAction.label.toUpperCase()}</strong>
+                  <span class="muted">— {questCoopAction.questTitle}</span>
+                </div>
+                <button
+                  type="button"
+                  class="qbtn-gold"
+                  onclick={() => onCmd(questCoopAction.command)}
+                >
+                  Run {questCoopAction.command}
+                </button>
+              </div>
+            {/if}
             <div class="act-row">
               <button type="button" class="ghost sm" onclick={() => onCmd("+works")}>Works Status (+works)</button>
               <button type="button" class="ghost sm" onclick={() => onCmd("+yard")}>Shipyard Status (+yard)</button>
@@ -771,6 +798,32 @@
           <h2>CO-OP FIRST CAPTAIN PROGRAMME DESK</h2>
           <button type="button" class="ghost" onclick={() => app.tacsim.closeModal()}>✕</button>
         </header>
+        {#if questCoopAction}
+          <div class="quest-banner" role="status" aria-label="active quest coop guidance">
+            <div class="qb-text">
+              <span class="qtag">[QUEST]</span>
+              <strong>{questCoopAction.label.toUpperCase()}</strong>
+              <span class="muted">— {questCoopAction.questTitle}</span>
+            </div>
+            {#if questCoopAction.kind === "refit"}
+              <button
+                type="button"
+                class="qbtn-gold"
+                onclick={() => onCmd(questCoopAction.command)}
+              >
+                Refit Dray-P Now
+              </button>
+            {:else}
+              <button
+                type="button"
+                class="qbtn-gold"
+                onclick={submitCoopEnroll}
+              >
+                Enroll Now
+              </button>
+            {/if}
+          </div>
+        {/if}
         <p class="prose">
           The Co-op stakes a Stickney-built Dray bulk hauler and your initial hold; it takes its lay
           from settled cargo sales until buyout. Choose a unique hull registry name:
@@ -789,7 +842,13 @@
         <div class="act-row">
           <button type="button" class="ghost" onclick={() => onCmd("+coop")}>Read Terms (+coop)</button>
           <button type="button" class="ghost" onclick={() => onCmd("+coop/statement")}>Statement (+coop/statement)</button>
-          <button type="button" class="ghost" onclick={() => onCmd("+coop/refit prospector")}>Refit Dray-P (+coop/refit prospector)</button>
+          <button
+            type="button"
+            class={questCoopAction?.kind === "refit" ? "qbtn-gold" : "ghost"}
+            onclick={() => onCmd("+coop/refit prospector")}
+          >
+            Refit Dray-P (+coop/refit prospector)
+          </button>
         </div>
 
       {:else if modal === "npc" && app.tacsim.focusedNpc}

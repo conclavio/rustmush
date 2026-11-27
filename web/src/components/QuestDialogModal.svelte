@@ -351,12 +351,14 @@
       </header>
 
       {#if tour}
-        <div class="tour-strip" aria-label="Guided tour progress">
+        <div class="tour-strip" class:all-done={tour.allDone} aria-label="Guided tour progress">
           <div class="tour-meta">
-            <span class="tour-label">Guided Tour</span>
+            <span class="tour-label">
+              {tour.allDone ? "Corridor Captain — Guided Tour Complete" : "Guided Tour"}
+            </span>
             <span class="tour-count">
               {tour.allDone
-                ? `Complete (${tour.completed}/${tour.total})`
+                ? `${tour.completed}/${tour.total} mastered`
                 : `${tour.completed}/${tour.total} complete${tour.currentStep ? ` · Step ${tour.currentStep}` : ""}`}
             </span>
           </div>
@@ -811,6 +813,12 @@
     padding: 0.55rem 1rem;
     border-bottom: 1px solid var(--border, #263447);
     background: rgba(212, 166, 74, 0.08);
+  }
+  .tour-strip.all-done {
+    background: linear-gradient(90deg, rgba(16, 185, 129, 0.16), rgba(212, 166, 74, 0.14));
+  }
+  .tour-strip.all-done .tour-label {
+    color: #6ee7b7;
   }
   .tour-meta {
     display: flex;
