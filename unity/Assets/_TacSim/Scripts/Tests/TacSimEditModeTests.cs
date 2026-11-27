@@ -9079,5 +9079,80 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ArenaCharacterSheetDossierAndOverviewLockBestIffCounts_AutoFocusesAndLocksHighestOdds()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave12PR2_CharacterSheetAndOverviewTest");
+            try
+            {
+                var catalog = TacSimAssetCatalog.LoadOrDefault();
+                var arenaGo = new UnityEngine.GameObject("ArenaDossierTest");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(catalog, TacSimTerrainDecoder.LoadStaticArena("proving_ground"));
+
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 160, ""seated"": true, ""t_ms"": 125000, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.biped_mk2"", ""mode"": ""hold"", ""power"": ""online"",
+                    ""x_cm"": 10000, ""y_cm"": 10000, ""heading_deg"": 90, ""speed_kph"": 24,
+                    ""sight_m"": 260, ""scope"": ""hostile"", ""posture"": ""guard"", ""ecm"": ""on"",
+                    ""receiver"": { ""budget"": 80, ""budget_max"": 100, ""reach_percent"": 80 },
+                    ""lock_designator"": ""B2"", ""lock_range_m"": 150, ""lock_percent"": 91,
+                    ""mind"": {
+                        ""name"": ""Standard Doctrine"", ""profiles"": [""Sniper"", ""Line""],
+                        ""active"": 1, ""class"": ""I"", ""core"": ""II"", ""channels"": [""helm"", ""sensors"", ""fire""], ""off"": false
+                    },
+                    ""weapons"": [
+                        { ""id"": ""cannon"", ""ready"": true, ""ready_in_ms"": 0, ""rounds"": 20, ""rounds_max"": 24, ""hit_percent"": 91, ""range_band"": 1, ""bands_cm"": [12000, 24000, 36000], ""dispersion_mrad"": 6 }
+                    ],
+                    ""contacts"": [
+                        { ""designator"": ""B1"", ""class"": ""line_tank"", ""party"": ""B"", ""friendly"": false, ""cell"": [130, 100], ""range_m"": 300, ""bearing_deg"": 90, ""facing"": ""front"", ""aspect"": ""front"", ""band"": ""far"", ""health"": ""intact"", ""odds"": [{ ""weapon"": ""cannon"", ""percent"": 42 }] },
+                        { ""designator"": ""B2"", ""class"": ""scout_mk1"", ""party"": ""B"", ""friendly"": false, ""cell"": [115, 100], ""range_m"": 150, ""bearing_deg"": 90, ""facing"": ""rear"", ""aspect"": ""rear"", ""band"": ""close"", ""health"": ""crippled"", ""odds"": [{ ""weapon"": ""cannon"", ""percent"": 91 }] },
+                        { ""designator"": ""R2"", ""class"": ""heavy_mk1"", ""party"": ""R"", ""friendly"": true, ""cell"": [90, 100], ""range_m"": 100, ""bearing_deg"": 270, ""facing"": ""front"", ""aspect"": ""front"", ""band"": ""close"", ""health"": ""intact"" }
+                    ]
+                }"));
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.CharacterSheet.BindSources(null, null, null, arena);
+                hud.TacticalOverview.BindControllers(null, null, arena);
+
+                // 1. Opening [C] Character Sheet during SimulatorArena auto-focuses GroundArena tab with full Combat Dossier
+                hud.CharacterSheet.SetPilotContext("Voss", "Proving Ground", "R1", TacSimActiveStage.SimulatorArena);
+                hud.CharacterSheet.SetOpen(true);
+                Assert.AreEqual(TacSim.UI.CharacterSheetTab.GroundArena, hud.CharacterSheet.ActiveTab,
+                    "Opening [C] during SimulatorArena must auto-focus Ground & Arena Rigs dossier tab");
+                StringAssert.Contains("MATCH #160", hud.CharacterSheet.ArenaRigDossierSnapshot);
+                StringAssert.Contains("2:05", hud.CharacterSheet.ArenaRigDossierSnapshot);
+                StringAssert.Contains("Standard Doctrine", hud.CharacterSheet.ArenaRigDossierSnapshot);
+                StringAssert.Contains("Line", hud.CharacterSheet.ArenaRigDossierSnapshot);
+                StringAssert.Contains("ECM POD: ACTIVE", hud.CharacterSheet.ArenaRigDossierSnapshot);
+                StringAssert.Contains("RCVR 80%", hud.CharacterSheet.ArenaRigDossierSnapshot);
+
+                var arenaActions = new List<string>();
+                hud.CharacterSheet.OnArenaActionRequested += arenaActions.Add;
+                Assert.IsTrue(hud.CharacterSheet.ClickArenaDossierActionForTests("scan"));
+                Assert.IsTrue(hud.CharacterSheet.ClickArenaDossierActionForTests("emcon"));
+                CollectionAssert.AreEqual(new[] { "scan", "emcon off" }, arenaActions);
+
+                // 2. Tactical Overview displays live IFF counts on tabs, health/band tags, and 1-click Lock Best hostile
+                hud.TacticalOverview.SyncOverview(TacSimActiveStage.SimulatorArena, hideForOverlay: false, forceImmediate: true);
+                Assert.AreEqual(3, hud.TacticalOverview.VisibleRowCount);
+                StringAssert.Contains("3", hud.TacticalOverview.GetFilterTabLabelForTests(0));
+                StringAssert.Contains("2", hud.TacticalOverview.GetFilterTabLabelForTests(1));
+                StringAssert.Contains("1", hud.TacticalOverview.GetFilterTabLabelForTests(2));
+
+                // Even when sorted by distance (R2=100m, B2=150m, B1=300m), LockBestArenaTarget locks B2 (91% highest odds hostile!)
+                string lockedBest = null;
+                hud.TacticalOverview.OnArenaContactLockClicked += d => lockedBest = d;
+                Assert.IsTrue(hud.TacticalOverview.LockBestArenaTarget());
+                Assert.AreEqual("B2", lockedBest, "LockBestArenaTarget must lock the highest-odds live hostile contact (B2 at 91%)");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

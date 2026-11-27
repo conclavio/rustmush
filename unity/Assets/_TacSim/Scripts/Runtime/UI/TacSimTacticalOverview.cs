@@ -91,6 +91,7 @@ namespace TacSim.UI
         private Text _headerText;
         private Text _collapseBtnLabel;
         private Text _sortBtnLabel;
+        private Button _lockBestBtn;
         private readonly Image[] _filterImages = new Image[3];
         private readonly Text[] _filterLabels = new Text[3];
         private readonly List<PooledRow> _rowPool = new List<PooledRow>(MaxVisibleRows);
@@ -135,7 +136,11 @@ namespace TacSim.UI
 
             var hdr = CreatePanel(_root.transform, "OverviewHeader", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -24f), Vector2.zero, new Color(0.06f, 0.13f, 0.21f, 0.96f));
             _headerText = CreateText(hdr.transform, "TACTICAL OVERVIEW [T]", 11, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.48f, 0.92f, 1f));
-            SetRect(_headerText.rectTransform, Vector2.zero, Vector2.one, new Vector2(8f, 0f), new Vector2(-76f, 0f));
+            SetRect(_headerText.rectTransform, Vector2.zero, Vector2.one, new Vector2(8f, 0f), new Vector2(-120f, 0f));
+
+            _lockBestBtn = CreateSmallButton(hdr.transform, "BEST", new Color(0.56f, 0.20f, 0.16f), () => LockBestArenaTarget(), out _);
+            SetRect(_lockBestBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-116f, 2f), new Vector2(-76f, -2f));
+            _lockBestBtn.gameObject.SetActive(false);
 
             var sortBtn = CreateSmallButton(hdr.transform, "DIST", new Color(0.14f, 0.28f, 0.42f), ToggleSortMode, out _sortBtnLabel);
             SetRect(sortBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-72f, 2f), new Vector2(-30f, -2f));
@@ -309,6 +314,32 @@ namespace TacSim.UI
             return true;
         }
 
+        public string GetFilterTabLabelForTests(int index) =>
+            (index >= 0 && index < _filterLabels.Length && _filterLabels[index] != null)
+                ? (_filterLabels[index].text ?? string.Empty)
+                : string.Empty;
+
+        public bool LockBestArenaTarget()
+        {
+            var st = _arena?.State;
+            if (st == null || st.Contacts == null || st.Contacts.Count == 0) return false;
+            ArenaContactState best = null;
+            for (int i = 0; i < st.Contacts.Count; i++)
+            {
+                var ct = st.Contacts[i];
+                if (ct == null || ct.IsWreck || ct.Friendly || string.IsNullOrEmpty(ct.Designator)) continue;
+                if (best == null ||
+                    ct.HitOddsPct > best.HitOddsPct ||
+                    (ct.HitOddsPct == best.HitOddsPct && ct.RangeM < best.RangeM))
+                {
+                    best = ct;
+                }
+            }
+            if (best == null) return false;
+            OnArenaContactLockClicked?.Invoke(best.Designator);
+            return true;
+        }
+
         private void RebuildEntriesForStage(TacSimActiveStage stage)
         {
             _entries.Clear();
@@ -387,13 +418,16 @@ namespace TacSim.UI
                         string aspectTag = !string.IsNullOrEmpty(ct.Aspect) && !string.Equals(ct.Aspect, "front", StringComparison.OrdinalIgnoreCase)
                             ? $" [{ct.Aspect.ToUpperInvariant()}]"
                             : string.Empty;
+                        string dmgTag = string.Equals(ct.HealthWord, "crippled", StringComparison.OrdinalIgnoreCase)
+                            ? " CRIT"
+                            : (string.Equals(ct.HealthWord, "scarred", StringComparison.OrdinalIgnoreCase) ? " SCAR" : string.Empty);
                         string moveDot = ct.Moving ? " •" : string.Empty;
                         float sortKey = _sortArenaByOdds
                             ? (ct.Friendly ? 10000f + ct.RangeM : (1000f - ct.HitOddsPct * 10f) + ct.RangeM * 0.001f)
                             : ct.RangeM;
                         _entries.Add(new OverviewRowEntry(
                             ct.Designator,
-                            $"{ct.Designator} {(string.IsNullOrEmpty(ct.ClassLabel) ? ct.Party : ct.ClassLabel)}{aspectTag}{moveDot}",
+                            $"{ct.Designator} {(string.IsNullOrEmpty(ct.ClassLabel) ? ct.Party : ct.ClassLabel)}{aspectTag}{dmgTag}{moveDot}",
                             $"{ct.RangeM:0}m",
                             sortKey,
                             isLocked ? "LOCK" : oddsTag,
@@ -409,19 +443,43 @@ namespace TacSim.UI
 
         private void RefreshStageFilterLabels(TacSimActiveStage stage)
         {
+            bool isArena = stage == TacSimActiveStage.SimulatorArena;
+            if (_lockBestBtn != null && _lockBestBtn.gameObject.activeSelf != isArena)
+                _lockBestBtn.gameObject.SetActive(isArena);
+
             if (_headerText != null)
             {
                 _headerText.text = stage == TacSimActiveStage.PlanetarySurface
                     ? $"ORE SCANNER ({_entries.Count}) [T]"
-                    : (stage == TacSimActiveStage.SimulatorArena
+                    : (isArena
                         ? $"ARENA TARGETS ({_entries.Count}) [T]"
                         : $"ORBITAL OVERVIEW ({_entries.Count}) [T]");
             }
-            if (_filterLabels[0] != null) _filterLabels[0].text = "ALL";
-            if (_filterLabels[1] != null)
-                _filterLabels[1].text = stage == TacSimActiveStage.PlanetarySurface ? "RICH" : (stage == TacSimActiveStage.SimulatorArena ? "HOSTILE" : "SHIPS");
-            if (_filterLabels[2] != null)
-                _filterLabels[2].text = stage == TacSimActiveStage.PlanetarySurface ? "STD" : (stage == TacSimActiveStage.SimulatorArena ? "ALLY" : "ROCKS");
+
+            if (isArena && _arena?.State?.Contacts != null)
+            {
+                int totalLive = 0, hostileLive = 0, allyLive = 0;
+                var contacts = _arena.State.Contacts;
+                for (int i = 0; i < contacts.Count; i++)
+                {
+                    var ct = contacts[i];
+                    if (ct == null || ct.IsWreck || string.IsNullOrEmpty(ct.Designator)) continue;
+                    totalLive++;
+                    if (ct.Friendly) allyLive++;
+                    else hostileLive++;
+                }
+                if (_filterLabels[0] != null) _filterLabels[0].text = $"ALL ({totalLive})";
+                if (_filterLabels[1] != null) _filterLabels[1].text = $"FOES ({hostileLive})";
+                if (_filterLabels[2] != null) _filterLabels[2].text = $"ALLY ({allyLive})";
+            }
+            else
+            {
+                if (_filterLabels[0] != null) _filterLabels[0].text = "ALL";
+                if (_filterLabels[1] != null)
+                    _filterLabels[1].text = stage == TacSimActiveStage.PlanetarySurface ? "RICH" : "SHIPS";
+                if (_filterLabels[2] != null)
+                    _filterLabels[2].text = stage == TacSimActiveStage.PlanetarySurface ? "STD" : "ROCKS";
+            }
         }
 
         private void RenderRows(TacSimActiveStage stage)

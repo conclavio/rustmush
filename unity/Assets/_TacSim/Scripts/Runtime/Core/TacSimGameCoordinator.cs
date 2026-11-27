@@ -621,6 +621,7 @@ namespace TacSim.Core
                     Hud.AppendLogLine($"<color=#66EEAA>[AVATAR]</color> Switched 3D avatar rig to <b>{preset}</b>.");
                 };
                 Hud.CharacterSheet.OnCommandRequested += ExecutePlayerCommand;
+                Hud.CharacterSheet.OnArenaActionRequested += HandleArenaCockpitVerb;
                 Hud.CharacterSheet.OnOpenTradeTerminalRequested += () =>
                     OpenVisualTradeTerminal("CERES PORT EXCHANGE & SHIP LOGISTICS", openSailingTab: false);
                 Hud.CharacterSheet.OnOpenSailingPlanRequested += () =>
