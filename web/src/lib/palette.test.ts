@@ -78,4 +78,33 @@ describe("paletteEntries", () => {
     };
     expect(paletteEntries("cmd", many).length).toBe(MAX_PALETTE_ENTRIES);
   });
+
+  it("includes live active and available quest dialog shortcuts when supplied", () => {
+    const entries = paletteEntries("quest", {
+      ...sources,
+      quests: [
+        {
+          kind: "active",
+          key: "q.metals",
+          title: "Metals Down the Corridor",
+          detail: "Buy 5t metals",
+          ready: false,
+        },
+        {
+          kind: "available",
+          key: "q.enroll",
+          npcId: "#42",
+          title: "First Papers at the Registry",
+          detail: "Offered by Maren Halvorsen",
+        },
+      ],
+    });
+    expect(entries.some((e) => e.label === "/quests")).toBe(true);
+    const activeRow = entries.find((e) => e.questAction?.key === "q.metals");
+    expect(activeRow?.label).toBe("quest Metals Down the Corridor");
+    expect(activeRow?.questAction?.kind).toBe("active");
+    const availRow = entries.find((e) => e.questAction?.key === "q.enroll");
+    expect(availRow?.label).toBe("[!] First Papers at the Registry");
+    expect(availRow?.questAction?.npcId).toBe("#42");
+  });
 });

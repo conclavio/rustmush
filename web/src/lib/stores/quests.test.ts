@@ -290,4 +290,73 @@ describe("QuestsStore", () => {
       nextStepText: "Sound a detected mineral pocket on the surface",
     });
   });
+
+  it("emits post-hydration quest milestones (accepted, ready, completed) without firing on initial load", () => {
+    const store = new QuestsStore();
+    // Initial hydration must never fire toasts
+    expect(
+      store.applyFrame({
+        schema: 1,
+        room_id: "#10",
+        room_name: "Arrivals",
+        room_markers: [],
+        available: [],
+        active: [],
+        completed: [],
+      }),
+    ).toEqual([]);
+
+    // Accepting fires "accepted"
+    expect(
+      store.applyFrame({
+        schema: 1,
+        room_id: "#10",
+        room_name: "Arrivals",
+        room_markers: [],
+        available: [],
+        active: [{ key: "q.enroll", title: "First Papers", ready_to_finish: false }],
+        completed: [],
+      }),
+    ).toEqual([{ kind: "accepted", key: "q.enroll", title: "First Papers" }]);
+
+    // Becoming ready fires "ready"
+    expect(
+      store.applyFrame({
+        schema: 1,
+        room_id: "#10",
+        room_name: "Registry",
+        room_markers: [],
+        available: [],
+        active: [{ key: "q.enroll", title: "First Papers", ready_to_finish: true }],
+        completed: [],
+      }),
+    ).toEqual([{ kind: "ready", key: "q.enroll", title: "First Papers" }]);
+
+    // Turning in fires "completed"
+    expect(
+      store.applyFrame({
+        schema: 1,
+        room_id: "#10",
+        room_name: "Registry",
+        room_markers: [],
+        available: [],
+        active: [],
+        completed: [{ key: "q.enroll", title: "First Papers" }],
+      }),
+    ).toEqual([{ kind: "completed", key: "q.enroll", title: "First Papers" }]);
+
+    // Reset clears hydration state cleanly
+    store.reset();
+    expect(
+      store.applyFrame({
+        schema: 1,
+        room_id: "#10",
+        room_name: "Registry",
+        room_markers: [],
+        available: [],
+        active: [],
+        completed: [{ key: "q.enroll", title: "First Papers" }],
+      }),
+    ).toEqual([]);
+  });
 });

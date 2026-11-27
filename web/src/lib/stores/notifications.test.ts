@@ -84,4 +84,17 @@ describe("NotificationStore", () => {
     s.clear();
     expect(s.list).toHaveLength(0);
   });
+
+  it("fromQuestMilestone produces distinct transient quest toasts with /quests prefill", () => {
+    const s = new NotificationStore();
+    const a = s.fromQuestMilestone("accepted", "First Papers", 100)!;
+    const r = s.fromQuestMilestone("ready", "First Papers", 200)!;
+    const c = s.fromQuestMilestone("completed", "First Papers", 300)!;
+    expect(a.category).toBe("quest");
+    expect(a.text[0]?.text).toBe("Quest Accepted: First Papers");
+    expect(r.text[0]?.text).toBe("Ready to Turn In [?]: First Papers");
+    expect(c.text[0]?.text).toBe("Quest Completed: First Papers");
+    expect(c.action).toEqual({ label: "Quests", prefill: "/quests" });
+    expect(s.toasts).toHaveLength(3);
+  });
 });

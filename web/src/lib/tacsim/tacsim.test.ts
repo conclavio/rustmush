@@ -2551,4 +2551,53 @@ describe("PR #693 Web review regressions (items 1-7, 9-11)", () => {
     await fireEvent.click(washBtn);
     expect(app.quarry.family).toBe("carbon");
   });
+
+  it("opens quest dialog directly from Ctrl+K command palette entries", () => {
+    const app = new GameApp({
+      url: "ws://test/ws",
+      webSocketFactory: (u) => new FakeSocket(u),
+      random: () => 1,
+    });
+    app.quests.applyFrame({
+      schema: 1,
+      room_id: "#10",
+      room_name: "Port Watch Arrivals",
+      room_markers: [
+        {
+          npc_id: "#42",
+          npc_name: "Maren Halvorsen",
+          marker: "available",
+          symbol: "!",
+          quest_key: "q.enroll",
+          quest_title: "First Papers at the Registry",
+          category: "guided",
+          quest_count: 1,
+        },
+      ],
+      available: [
+        {
+          key: "q.enroll",
+          title: "First Papers at the Registry",
+          giver_id: "#42",
+          giver_name: "Maren Halvorsen",
+          turn_in_id: "#55",
+          turn_in_name: "Ilse",
+          accept_cmd: "+quest/accept #42=tok",
+          checkpoints: [],
+        },
+      ],
+      active: [],
+      completed: [],
+    });
+
+    app.openPalette();
+    app.paletteQuery("First Papers");
+    const idx = app.paletteEntries.findIndex((e) => e.questAction?.key === "q.enroll");
+    expect(idx).toBeGreaterThanOrEqual(0);
+    app.paletteSelected = idx;
+    app.palettePick(false);
+    expect(app.screens.paletteOpen).toBe(false);
+    expect(app.quests.dialogOpen).toBe(true);
+    expect(app.quests.dialogNpcId).toBe("#42");
+  });
 });
