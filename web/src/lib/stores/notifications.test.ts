@@ -97,4 +97,15 @@ describe("NotificationStore", () => {
     expect(c.action).toEqual({ label: "Quests", prefill: "/quests" });
     expect(s.toasts).toHaveLength(3);
   });
+
+  it("fromQuestArrival emits objective and turn-in arrival toasts with /quests prefill", () => {
+    const s = new NotificationStore();
+    const obj = s.fromQuestArrival("Co-op Registry", false, 400)!;
+    const ti = s.fromQuestArrival("Port Watch Arrivals", true, 500)!;
+    expect(obj.category).toBe("quest");
+    expect(obj.text[0]?.text).toBe("Quest Objective: Co-op Registry");
+    expect(ti.text[0]?.text).toBe("Quest Turn-In Here: Port Watch Arrivals");
+    expect(ti.action).toEqual({ label: "Quests", prefill: "/quests" });
+    expect(s.toasts).toHaveLength(2);
+  });
 });

@@ -30,6 +30,22 @@
   const groundBlock = $derived(ground?.ground ?? null);
   const moving = $derived(block?.rigs.some((r) => r.leg !== null) ?? false);
   const questMining = $derived(app.quests?.surfaceMiningStatus ?? null);
+  const questNextRigCmd = $derived.by((): { label: string; verb: string } | null => {
+    if (!questMining) return null;
+    if (!questMining.scanDone) return { label: "Scan Site", verb: "scan go" };
+    if (!questMining.soundDone) return { label: "Sound Pocket", verb: "sound go" };
+    if (!questMining.mineDone) return { label: "Mine Ore", verb: "mine go" };
+    return null;
+  });
+
+  function matchesQuestOre(text: string): boolean {
+    if (!questMining || !text) return false;
+    const low = text.toLowerCase();
+    const slug = questMining.targetOreSlug.toLowerCase();
+    const spaced = slug.replace(/_/g, " ");
+    const fam = questMining.recommendedFamily.toLowerCase();
+    return low.includes(slug) || low.includes(spaced) || (fam.length > 0 && low.includes(fam));
+  }
 
   function selectQuestWash(): void {
     if (!questMining) return;
@@ -113,6 +129,15 @@
         <div class="qm-head">
           <span class="qm-tag">[QUEST]</span>
           <strong>{questMining.questTitle}</strong>
+          {#if questNextRigCmd}
+            <button
+              type="button"
+              class="qm-action"
+              onclick={() => prefill(rigPrefill(q.selectedRig, questNextRigCmd.verb))}
+            >
+              Next: {questNextRigCmd.label}
+            </button>
+          {/if}
           <button type="button" class="qm-wash" onclick={selectQuestWash}>
             {questMining.recommendedFamily.toUpperCase()} wash
           </button>
@@ -151,17 +176,21 @@
             {/each}
             {#each groundBlock.sites as s (s.letter)}
               {@const at = groundPoint(s, GW, GH)}
-              <circle cx={at.x} cy={at.y} r="4" fill={s.here ? "#ffffff" : "#9fc4d8"} />
+              {@const isQuestSite = matchesQuestOre(s.best_line)}
+              {#if isQuestSite}
+                <circle cx={at.x} cy={at.y} r="8" fill="none" stroke="#f2c94c" stroke-width="2" />
+              {/if}
+              <circle cx={at.x} cy={at.y} r="4" fill={s.here ? "#ffffff" : isQuestSite ? "#f2c94c" : "#9fc4d8"} />
               <text
                 x={at.x + 6}
                 y={at.y + 14}
-                fill="#9fc4d8"
+                fill={isQuestSite ? "#f2c94c" : "#9fc4d8"}
                 font-size="12"
                 role="button"
                 tabindex="0"
                 onclick={() => prefill(`+ship/plan ${s.venue}`)}
                 onkeydown={(e) => e.key === "Enter" && prefill(`+ship/plan ${s.venue}`)}
-              >{s.letter} {s.site}</text>
+              >{s.letter} {s.site}{isQuestSite ? " [!]" : ""}</text>
             {/each}
           </svg>
         {/if}
@@ -242,9 +271,15 @@
       {#if groundBlock}
         <ul>
           {#each groundBlock.sites as s (s.letter)}
+            {@const isQuestSite = matchesQuestOre(s.best_line)}
             <li>
-              <button type="button" class="row" onclick={() => prefill(`+ship/plan ${s.venue}`)}>
-                {s.letter} {s.site}{s.passage ? `: ${s.passage}` : ""}
+              <button
+                type="button"
+                class="row"
+                class:quest-match={isQuestSite}
+                onclick={() => prefill(`+ship/plan ${s.venue}`)}
+              >
+                {#if isQuestSite}<span class="qm-badge">[QUEST]</span>{" "}{/if}{s.letter} {s.site}{s.passage ? `: ${s.passage}` : ""}
               </button>
               <div class="sub">{s.best_line}</div>
             </li>
@@ -259,9 +294,19 @@
       {:else}
         <ul>
           {#each block.readings as r, i (i)}
+            {@const isQuestReading = Boolean(
+              questMining &&
+                (block.family.toLowerCase() === questMining.recommendedFamily.toLowerCase() ||
+                  matchesQuestOre(r.line)),
+            )}
             <li>
-              <button type="button" class="row" onclick={() => prefill(rigPrefill(q.selectedRig, `drive ${r.target}`))}>
-                {r.line}
+              <button
+                type="button"
+                class="row"
+                class:quest-match={isQuestReading}
+                onclick={() => prefill(rigPrefill(q.selectedRig, `drive ${r.target}`))}
+              >
+                {#if isQuestReading}<span class="qm-badge">[QUEST]</span>{" "}{/if}{r.line}
               </button>
             </li>
           {/each}
@@ -400,6 +445,33 @@
     font-size: 0.75rem;
     font-weight: 600;
     cursor: pointer;
+  }
+  .qm-action {
+    margin-left: auto;
+    padding: 0.15rem 0.55rem;
+    border-radius: 4px;
+    border: 1px solid #ffd84d;
+    background: #b88416;
+    color: #161103;
+    font: inherit;
+    font-size: 0.75rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .qm-action + .qm-wash {
+    margin-left: 0;
+  }
+  button.row.quest-match {
+    border-color: rgba(242, 201, 76, 0.75);
+    background: rgba(94, 70, 16, 0.45);
+    color: #fff2c4;
+    border-radius: 4px;
+  }
+  .qm-badge {
+    color: #ffd84d;
+    font-weight: 700;
+    font-family: var(--mono, monospace);
+    font-size: 0.74rem;
   }
   .qm-steps {
     display: flex;

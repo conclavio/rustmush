@@ -126,6 +126,20 @@ export class NotificationStore {
     });
   }
 
+  /** Surface arrival at a tracked quest's station objective or turn-in room in the unified toast tray. */
+  fromQuestArrival(roomName: string, isTurnIn: boolean, ts: number): Notification | null {
+    const label = roomName.trim() || "Objective Room";
+    const text = isTurnIn ? `Quest Turn-In Here: ${label}` : `Quest Objective: ${label}`;
+    return this.add({
+      serverId: this.#nextQuestNoticeId--,
+      severity: "info",
+      category: "quest",
+      text: [{ text, tag: null }],
+      action: { label: "Quests", prefill: "/quests" },
+      ts,
+    });
+  }
+
   /** The newest unseen notices, for transient toasts. */
   get toasts(): Notification[] {
     return this.list.filter((n) => !n.seen).slice(0, MAX_TOASTS);
