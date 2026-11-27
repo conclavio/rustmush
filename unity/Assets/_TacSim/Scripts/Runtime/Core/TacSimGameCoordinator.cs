@@ -1262,9 +1262,20 @@ namespace TacSim.Core
             switch (kind)
             {
                 case "completed":
+                {
                     Audio?.PlayMarketChime();
-                    Hud?.FloatingCallouts?.ShowCallout($"QUEST COMPLETED: {label}", new Color(0.35f, 1f, 0.68f, 1f), 3.0f);
+                    int tourDone = 0;
+                    int tourTotal = 7;
+                    bool tourAllDone = false;
+                    if (Hud?.QuestJournal != null)
+                        Hud.QuestJournal.TryGetGuidedTourProgress(out tourDone, out tourTotal, out _, out tourAllDone);
+                    string banner = TacSimFloatingCallouts.FormatQuestCompletionBanner(label, tourDone, tourTotal, tourAllDone);
+                    Color bannerCol = tourAllDone
+                        ? new Color(0.35f, 1f, 0.68f, 1f)
+                        : new Color(1f, 0.84f, 0.28f, 1f);
+                    Hud?.FloatingCallouts?.ShowMilestoneBanner(banner, bannerCol, tourAllDone ? 4.2f : 3.4f);
                     break;
+                }
                 case "ready":
                     Audio?.PlayMarketChime();
                     Hud?.FloatingCallouts?.ShowCallout($"READY TO TURN IN [?]: {label}", new Color(1f, 0.84f, 0.28f, 1f), 2.8f);
@@ -2230,19 +2241,26 @@ namespace TacSim.Core
         private void ShowCoopEnrolPrompt()
         {
             string suggested = SuggestUniqueHullName();
+            string questBanner = string.Empty;
+            if (Hud?.QuestJournal != null &&
+                Hud.QuestJournal.TryGetActiveCoopAction(out string qTitle, out string qLbl, out _))
+            {
+                questBanner = $"<color=#FFDD44><b>[QUEST] {MushProtocol.EscapeUnityRichText(qLbl.ToUpperInvariant())} — {MushProtocol.EscapeUnityRichText(qTitle)}</b></color>\n\n";
+            }
             Hud.ShowDetailModal(
-                "CO-OP FIRST CAPTAIN PROGRAMME DESK",
-                "The Co-op stakes the Dray hull and your first hold; it takes its lay from settled sales until buyout.\n\nEnter your hull's registry name below (must be unique on the server) and click <b>Enrol Charter Hull</b>:",
+                "CO-OP FIRST CAPTAIN DESK",
+                $"{questBanner}The Co-op stakes the Dray hull and your first hold; it takes its lay from settled sales until buyout.\n\nEnter your hull's registry name below (must be unique on the server) and click <b>Enroll Charter Hull</b>:",
                 new List<(string, Action)>
                 {
                     ("Read Terms (+coop)", () => ExecutePlayerCommand("+coop")),
-                    ("Enrol Charter Hull", () =>
+                    ("Enroll Charter Hull", () =>
                     {
                         string chosenName = Hud.GetModalInputValue();
                         if (string.IsNullOrWhiteSpace(chosenName))
                             chosenName = suggested;
                         ExecutePlayerCommand($"+coop/enroll {chosenName}");
                     }),
+                    ("Refit Dray-P (+coop/refit prospector)", () => ExecutePlayerCommand("+coop/refit prospector")),
                     ("Account Statement", () => ExecutePlayerCommand("+coop/statement"))
                 },
                 commandPrefix: "+coop/enroll",

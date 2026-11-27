@@ -11308,5 +11308,76 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestCoopRefitAction_CorridorCaptainMastery_AndCompletionBanner_WorkEndToEnd()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestCoopMasteryBannerTestRoot");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                // 1. Active Step 5 exposes TryGetActiveCoopAction -> +coop/refit prospector
+                var step5Json = JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#12"",
+                    ""room_name"": ""Registry & Co-op Desk"",
+                    ""room_markers"": [],
+                    ""available"": [],
+                    ""completed"": [],
+                    ""active"": [
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"",
+                            ""title"": ""Refit the Dray for Surface Mining"",
+                            ""category"": ""guided"",
+                            ""checkpoints"": [
+                                { ""id"": ""refit_dray_p"", ""title"": ""Refit your Dray"", ""instructions"": ""Run +coop/refit prospector."", ""checked"": false, ""live_ready"": false }
+                            ]
+                        }
+                    ]
+                }");
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(step5Json));
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveCoopAction(out string qTitle, out string qLbl, out string qCmd));
+                Assert.AreEqual("Refit the Dray for Surface Mining", qTitle);
+                Assert.AreEqual("Refit Dray-P", qLbl);
+                Assert.AreEqual("+coop/refit prospector", qCmd);
+
+                // 2. Completing all 7 guided quests switches Tour snapshot to CORRIDOR CAPTAIN [#######] 7/7
+                var masteredJson = JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#22"",
+                    ""room_name"": ""Service Counter"",
+                    ""room_markers"": [],
+                    ""available"": [],
+                    ""active"": [],
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""S1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""S2"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""S3"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_04_return_haul"", ""title"": ""S4"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"", ""title"": ""S5"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"", ""title"": ""S6"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore"", ""title"": ""S7"" }
+                    ]
+                }");
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(masteredJson));
+                Assert.AreEqual("CORRIDOR CAPTAIN [#######] 7/7", hud.QuestJournal.GuidedTourProgressSnapshot);
+
+                // 3. Milestone completion banner formats standard & 7/7 Corridor Captain celebration cleanly
+                Assert.AreEqual(
+                    "QUEST COMPLETED: FIRST PAPERS",
+                    TacSim.UI.TacSimFloatingCallouts.FormatQuestCompletionBanner("First Papers", 1, 7, false));
+                string tourBanner = TacSim.UI.TacSimFloatingCallouts.FormatQuestCompletionBanner("Sell Mined Ore", 7, 7, true);
+                Assert.AreEqual("CORRIDOR CAPTAIN — GUIDED TOUR COMPLETE (7/7)", tourBanner);
+                hud.FloatingCallouts.ShowMilestoneBanner(tourBanner, UnityEngine.Color.green, 3.0f);
+                Assert.IsTrue(hud.FloatingCallouts.IsMilestoneBannerVisible);
+                Assert.AreEqual(tourBanner, hud.FloatingCallouts.ActiveMilestoneBannerText);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

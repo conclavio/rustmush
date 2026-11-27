@@ -67,6 +67,14 @@ namespace TacSim.UI
             return $"UNSTOPPABLE ({matchKills} KILLS) — {tgt}!";
         }
 
+        public static string FormatQuestCompletionBanner(string questTitle, int tourDone, int tourTotal, bool tourAllDone)
+        {
+            if (tourAllDone && tourTotal > 0)
+                return $"CORRIDOR CAPTAIN — GUIDED TOUR COMPLETE ({tourDone}/{tourTotal})";
+            string title = string.IsNullOrWhiteSpace(questTitle) ? "QUEST" : questTitle.Trim().ToUpperInvariant();
+            return $"QUEST COMPLETED: {title}";
+        }
+
         public void BuildLayer(Transform hudRoot, Font sharedFont)
         {
             _font = sharedFont != null ? sharedFont : Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
