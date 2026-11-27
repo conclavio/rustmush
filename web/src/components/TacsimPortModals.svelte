@@ -743,6 +743,11 @@
 
       {:else if modal === "npc" && app.tacsim.focusedNpc}
         {@const npc = app.tacsim.focusedNpc}
+        {@const npcQuestMarker = app.quests.roomMarkers.find((m) => m.npcId === npc.id) ?? null}
+        {@const npcHasQuest =
+          npcQuestMarker !== null ||
+          app.quests.available.some((q) => q.giverId === npc.id) ||
+          app.quests.active.some((q) => q.giverId === npc.id || q.turnInId === npc.id)}
         <header class="mhead">
           <div>
             <h2>{npc.name.toUpperCase()}</h2>
@@ -750,6 +755,26 @@
           </div>
           <button type="button" class="ghost" onclick={() => app.tacsim.closeModal()}>✕</button>
         </header>
+        {#if npcHasQuest}
+          <div class="act-row">
+            <button
+              type="button"
+              class={npcQuestMarker?.marker === "in_progress" ? "ghost" : "sellbtn"}
+              onclick={() => {
+                app.tacsim.closeModal();
+                app.quests.openNpcDialog(npc.id);
+              }}
+            >
+              {#if npcQuestMarker?.marker === "available"}
+                [!] Open Quest Dialog{npcQuestMarker.questTitle ? `: ${npcQuestMarker.questTitle}` : ""}
+              {:else if npcQuestMarker?.marker === "turn_in"}
+                [?] Turn In Quest{npcQuestMarker.questTitle ? `: ${npcQuestMarker.questTitle}` : ""}
+              {:else}
+                [?] Open Quest Dialog
+              {/if}
+            </button>
+          </div>
+        {/if}
         <div class="topic-list">
           {#each buildNpcTopics(npc.name) as t (t.label)}
             <button type="button" class="topic-btn" onclick={() => onCmd(t.command)}>

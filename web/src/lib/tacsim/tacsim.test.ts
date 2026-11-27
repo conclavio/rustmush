@@ -61,7 +61,7 @@ import {
   formatMountMeta,
   formatMountStateLabel,
 } from "./space-fire";
-import { TacsimStage3D } from "./stage3d";
+import { formatActorInteractPrompt, TacsimStage3D } from "./stage3d";
 
 const REPO_ROOT = resolve(__dirname, "../../../..");
 
@@ -2220,5 +2220,211 @@ describe("PR #693 Web review regressions (items 1-7, 9-11)", () => {
     expect(sent).toEqual(["goto s"]);
 
     stage.dispose();
+  });
+
+  it("renders 3D NPC quest markers, enriches [E] prompts, and hands off available/turn-in NPCs to Quest Dialog", async () => {
+    // 1. Pure prompt formatting across all 4 marker states
+    expect(
+      formatActorInteractPrompt("Maren Halvorsen", true, "Steward", {
+        npcId: "#42",
+        marker: "available",
+        symbol: "!",
+        questTitle: "First Papers at the Registry",
+      }),
+    ).toEqual({
+      title: "[!] Maren Halvorsen — Quest Available",
+      subtitle: "Offer: First Papers at the Registry",
+    });
+    expect(
+      formatActorInteractPrompt("Ilse Oduya-Brandt", true, "Clerk", {
+        npcId: "#55",
+        marker: "turn_in",
+        symbol: "?",
+        questTitle: "First Papers at the Registry",
+      }),
+    ).toEqual({
+      title: "[?] Ilse Oduya-Brandt — Turn In Quest",
+      subtitle: "Complete: First Papers at the Registry",
+    });
+    expect(
+      formatActorInteractPrompt("Ilse Oduya-Brandt", true, "Clerk", {
+        npcId: "#55",
+        marker: "in_progress",
+        symbol: "?",
+        questTitle: "Stock the Locker and Tanks",
+      }),
+    ).toEqual({
+      title: "[?] Talk to Ilse Oduya-Brandt",
+      subtitle: "Active quest: Stock the Locker and Tanks",
+    });
+    expect(formatActorInteractPrompt("Maren Halvorsen", true, "Steward", null)).toEqual({
+      title: "Talk to Maren Halvorsen",
+      subtitle: "Steward",
+    });
+
+    // 2. Stage3D syncs live roomMarkers onto spawned NPCs and updates [E] prompt live
+    const ceres = parseNeighborhoodPack(
+      readRepoContent("atlas/neighborhood.ceres_freeport.json"),
+      "neighborhood.ceres_freeport",
+    );
+    const dray = parseShipUnitJson(readRepoContent("units/dray.json"), "tacsim.unit.dray");
+    const canvas = document.createElement("canvas");
+    const prompts: Array<{ title: string; subtitle: string } | null> = [];
+    const stage = new TacsimStage3D(canvas, {
+      onSendCommand: () => {},
+      onPhysicalLocationChanged: () => {},
+      onFocusedPromptChanged: (p) => prompts.push(p),
+      onInteractableTriggered: () => {},
+      isUiBlockingInput: () => false,
+    });
+    const marenActor = {
+      id: "#42",
+      name: "Maren Halvorsen",
+      isNpc: true,
+      isMale: false,
+      shortDesc: "Port Watch Orientation Steward",
+    };
+
+    stage.syncWorldState({
+      stationPack: ceres,
+      shipTemplate: dray,
+      isAboardShip: false,
+      serverStationRoomEntry: "room.c03_arrivals",
+      serverShipCompartment: null,
+      roomRevision: 1,
+      ambient: decodeTacsimRoomAmbient(null),
+      visibleActors: [marenActor],
+      actorSpeech: {},
+      actorComposing: {},
+      roomMarkers: [
+        {
+          npcId: "#42",
+          npcName: "Maren Halvorsen",
+          marker: "available",
+          symbol: "!",
+          questKey: "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+          questTitle: "First Papers at the Registry",
+        },
+      ],
+      stowageCargoKg: 0,
+      holotankData: null,
+    });
+
+    expect(stage.getSpawnedActorQuestMarkerForTest("#42")?.marker).toBe("available");
+    expect(stage.getSpawnedActorInteractableForTest("#42")?.title).toBe(
+      "[!] Maren Halvorsen — Quest Available",
+    );
+    expect(stage.getSpawnedActorInteractableForTest("#42")?.npcMeta?.questMarker?.symbol).toBe("!");
+
+    // Transition marker to turn_in and verify prompt updates in-place
+    stage.syncWorldState({
+      stationPack: ceres,
+      shipTemplate: dray,
+      isAboardShip: false,
+      serverStationRoomEntry: "room.c03_arrivals",
+      serverShipCompartment: null,
+      roomRevision: 1,
+      ambient: decodeTacsimRoomAmbient(null),
+      visibleActors: [marenActor],
+      actorSpeech: {},
+      actorComposing: {},
+      roomMarkers: [
+        {
+          npcId: "#42",
+          npcName: "Maren Halvorsen",
+          marker: "turn_in",
+          symbol: "?",
+          questKey: "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+          questTitle: "First Papers at the Registry",
+        },
+      ],
+      stowageCargoKg: 0,
+      holotankData: null,
+    });
+    expect(stage.getSpawnedActorQuestMarkerForTest("#42")?.marker).toBe("turn_in");
+    expect(stage.getSpawnedActorInteractableForTest("#42")?.title).toBe(
+      "[?] Maren Halvorsen — Turn In Quest",
+    );
+
+    // Clearing markers reverts NPC prompt cleanly
+    stage.syncWorldState({
+      stationPack: ceres,
+      shipTemplate: dray,
+      isAboardShip: false,
+      serverStationRoomEntry: "room.c03_arrivals",
+      serverShipCompartment: null,
+      roomRevision: 1,
+      ambient: decodeTacsimRoomAmbient(null),
+      visibleActors: [marenActor],
+      actorSpeech: {},
+      actorComposing: {},
+      roomMarkers: [],
+      stowageCargoKg: 0,
+      holotankData: null,
+    });
+    expect(stage.getSpawnedActorQuestMarkerForTest("#42")).toBeNull();
+    expect(stage.getSpawnedActorInteractableForTest("#42")?.title).toBe("Talk to Maren Halvorsen");
+    stage.dispose();
+
+    // 3. Component check: TacsimPortModals NPC dialog exposes [?] Open Quest Dialog handoff for in-progress quest NPC
+    const app = new GameApp({
+      url: "ws://test/ws",
+      webSocketFactory: (u) => new FakeSocket(u),
+      random: () => 1,
+    });
+    app.tacsim.observeRoom({
+      id: "#10",
+      name: "Registry & Co-op Desk",
+      desc: [{ text: "Registry desk." }],
+      exits: [],
+      contents: [],
+      ambient: {
+        atlas: { pack: "neighborhood.ceres_freeport", entry: "room.c05_registry" },
+      },
+    } as RoomView);
+    app.quests.applyFrame({
+      room_id: "#10",
+      room_name: "Registry",
+      room_markers: [
+        {
+          npc_id: "#55",
+          npc_name: "Ilse Oduya-Brandt",
+          marker: "in_progress",
+          symbol: "?",
+          quest_key: "q.prov",
+          quest_title: "Stock the Locker and Tanks",
+          category: "guided",
+          quest_count: 1,
+        },
+      ],
+      active: [
+        {
+          key: "q.prov",
+          title: "Stock the Locker and Tanks",
+          giver_id: "#55",
+          giver_name: "Ilse Oduya-Brandt",
+          turn_in_id: "#55",
+          turn_in_name: "Ilse Oduya-Brandt",
+          checkpoints: [],
+        },
+      ],
+      available: [],
+      completed: [],
+    });
+    app.tacsim.openNpcModal({
+      id: "#55",
+      name: "Ilse Oduya-Brandt",
+      bio: "Registry Clerk",
+      isNpc: true,
+    });
+    render(TacsimSceneDeck, { props: { app, onCmd: vi.fn() } });
+    await tick();
+
+    const questBtn = screen.getByRole("button", { name: /\[\?\] Open Quest Dialog/i });
+    await fireEvent.click(questBtn);
+    await tick();
+    expect(app.tacsim.activeModal).toBeNull();
+    expect(app.quests.dialogOpen).toBe(true);
+    expect(app.quests.dialogNpcId).toBe("#55");
   });
 });

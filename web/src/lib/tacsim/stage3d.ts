@@ -57,6 +57,51 @@ export type InteractableKind3D =
   | "sim_pod"
   | "vehicle_rig";
 
+export interface StageQuestMarker {
+  npcId: string;
+  npcName?: string;
+  marker: "turn_in" | "available" | "in_progress";
+  symbol: "!" | "?";
+  questKey?: string;
+  questTitle?: string;
+}
+
+export function formatActorInteractPrompt(
+  name: string,
+  isNpc: boolean,
+  shortDesc: string,
+  questMarker: StageQuestMarker | null,
+): { title: string; subtitle: string } {
+  if (questMarker) {
+    if (questMarker.marker === "turn_in") {
+      return {
+        title: `[?] ${name} — Turn In Quest`,
+        subtitle: questMarker.questTitle
+          ? `Complete: ${questMarker.questTitle}`
+          : "Ready to turn in quest",
+      };
+    }
+    if (questMarker.marker === "available") {
+      return {
+        title: `[!] ${name} — Quest Available`,
+        subtitle: questMarker.questTitle
+          ? `Offer: ${questMarker.questTitle}`
+          : "Optional quest available",
+      };
+    }
+    return {
+      title: `[?] Talk to ${name}`,
+      subtitle: questMarker.questTitle
+        ? `Active quest: ${questMarker.questTitle}`
+        : shortDesc || "Speak with station cast",
+    };
+  }
+  return {
+    title: isNpc ? `Talk to ${name}` : `Greet ${name}`,
+    subtitle: isNpc ? shortDesc || "Speak with station cast" : "Greet pilot",
+  };
+}
+
 export interface WorldInteractable3D {
   id: string;
   kind: InteractableKind3D;
@@ -64,7 +109,13 @@ export interface WorldInteractable3D {
   subtitle: string;
   actionOrKey: string;
   detailBody?: string;
-  npcMeta?: { id: string; name: string; bio: string; isNpc: boolean };
+  npcMeta?: {
+    id: string;
+    name: string;
+    bio: string;
+    isNpc: boolean;
+    questMarker?: StageQuestMarker;
+  };
   worldPos: THREE.Vector3;
   maxDistance: number;
   meshTargets: THREE.Object3D[];
@@ -101,6 +152,7 @@ interface SpawnedActorRecord {
   lastRenderedLabel: string;
   speechExpiresAt: number;
   lastIsTyping: boolean;
+  questMarker: StageQuestMarker | null;
   interactable: WorldInteractable3D;
   safeBounds: { minX: number; maxX: number; minZ: number; maxZ: number; margin: number };
 }
@@ -619,6 +671,7 @@ export class TacsimStage3D {
     visibleActors: VisibleRoomActor[];
     actorSpeech: Record<string, { text: string; expiresAt: number }>;
     actorComposing: Record<string, boolean>;
+    roomMarkers?: ReadonlyArray<StageQuestMarker>;
     stowageCargoKg: number;
     holotankData: unknown;
   }): void {
@@ -636,6 +689,7 @@ export class TacsimStage3D {
       visibleActors,
       actorSpeech,
       actorComposing,
+      roomMarkers,
       stowageCargoKg,
       holotankData,
     } = params;
@@ -829,7 +883,17 @@ export class TacsimStage3D {
     const scopeKey = isAboardShip
       ? `ship:${shipTemplate.unitId}:${serverShipCompartment ?? "airlock"}`
       : `station:${stationPack.packId}:${serverStationRoomEntry ?? this.activeStationRoomEntry}`;
-    this.syncOccupants(scopeKey, visibleActors, actorSpeech, actorComposing);
+    this.syncOccupants(scopeKey, visibleActors, actorSpeech, actorComposing, roomMarkers ?? []);
+  }
+
+  /** Read-only test inspection helper for a spawned actor's active quest marker. */
+  getSpawnedActorQuestMarkerForTest(actorId: string): StageQuestMarker | null {
+    return this.spawnedActors.get(actorId)?.questMarker ?? null;
+  }
+
+  /** Read-only test inspection helper for a spawned actor's interactable prompt. */
+  getSpawnedActorInteractableForTest(actorId: string): WorldInteractable3D | null {
+    return this.spawnedActors.get(actorId)?.interactable ?? null;
   }
 
   // -- Avatar & Occupants ---------------------------------------------------
@@ -933,10 +997,18 @@ export class TacsimStage3D {
     actors: VisibleRoomActor[],
     actorSpeech: Record<string, { text: string; expiresAt: number }>,
     actorComposing: Record<string, boolean>,
+    roomMarkers: ReadonlyArray<StageQuestMarker>,
   ): void {
     if (scopeKey !== this.spawnedActorsScopeKey) {
       this.clearAllActors();
       this.spawnedActorsScopeKey = scopeKey;
+    }
+
+    const markerById = new Map<string, StageQuestMarker>();
+    const markerByName = new Map<string, StageQuestMarker>();
+    for (const m of roomMarkers) {
+      if (m.npcId) markerById.set(m.npcId, m);
+      if (m.npcName) markerByName.set(m.npcName.toLowerCase(), m);
     }
 
     const seenIds = new Set<string>();
@@ -946,12 +1018,30 @@ export class TacsimStage3D {
       seenIds.add(act.id);
       const spot = this.computeActorStandSpot(idx);
       const safeBounds = this.computeCurrentRoomSafeBounds();
+      const qMarker =
+        markerById.get(act.id) ?? markerByName.get(act.name.toLowerCase()) ?? null;
+      const prompt = formatActorInteractPrompt(act.name, act.isNpc, act.shortDesc, qMarker);
 
       const existing = this.spawnedActors.get(act.id);
       if (existing) {
         existing.actor = act;
         existing.targetPos.copy(spot);
         existing.safeBounds = safeBounds;
+        existing.questMarker = qMarker;
+        const promptChanged =
+          existing.interactable.title !== prompt.title ||
+          existing.interactable.subtitle !== prompt.subtitle;
+        existing.interactable.title = prompt.title;
+        existing.interactable.subtitle = prompt.subtitle;
+        if (existing.interactable.npcMeta) {
+          existing.interactable.npcMeta.questMarker = qMarker ?? undefined;
+        }
+        if (promptChanged && this.focusedInteractable?.id === existing.interactable.id) {
+          this.cb.onFocusedPromptChanged({
+            title: `[E] ${existing.interactable.title}`,
+            subtitle: existing.interactable.subtitle,
+          });
+        }
         this.refreshActorBillboard(existing, act, actorSpeech, actorComposing, now);
         return;
       }
@@ -969,13 +1059,13 @@ export class TacsimStage3D {
 
       const canvas = document.createElement("canvas");
       canvas.width = 384;
-      canvas.height = 192;
+      canvas.height = 224;
       const tex = new THREE.CanvasTexture(canvas);
       tex.colorSpace = THREE.SRGBColorSpace;
       const spriteMat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: true });
       const sprite = new THREE.Sprite(spriteMat);
-      sprite.scale.set(2.9, 1.45, 1);
-      sprite.position.set(spot.x, spot.y + 2.35, spot.z);
+      sprite.scale.set(2.9, 1.69, 1);
+      sprite.position.set(spot.x, spot.y + 2.45, spot.z);
 
       // Add `suit.root` directly to `actorsRoot` so `actorsRoot.remove(rec.group)` always removes it cleanly (`W3D-C1`).
       this.actorsRoot.add(suit.root);
@@ -985,10 +1075,16 @@ export class TacsimStage3D {
       const actorWi: WorldInteractable3D = {
         id: `actor:${act.id}`,
         kind: "npc",
-        title: `Talk to ${act.name}`,
-        subtitle: act.isNpc ? (act.shortDesc || "Speak with station cast") : "Greet pilot",
+        title: prompt.title,
+        subtitle: prompt.subtitle,
         actionOrKey: act.name,
-        npcMeta: { id: act.id, name: act.name, bio: act.shortDesc, isNpc: act.isNpc },
+        npcMeta: {
+          id: act.id,
+          name: act.name,
+          bio: act.shortDesc,
+          isNpc: act.isNpc,
+          questMarker: qMarker ?? undefined,
+        },
         worldPos: spot.clone(),
         maxDistance: 4.2,
         meshTargets: [suit.root],
@@ -1014,6 +1110,7 @@ export class TacsimStage3D {
         lastRenderedLabel: "",
         speechExpiresAt: 0,
         lastIsTyping: false,
+        questMarker: qMarker,
         interactable: actorWi,
         safeBounds,
       };
@@ -1059,7 +1156,9 @@ export class TacsimStage3D {
     isTyping: boolean,
   ): void {
     const bubble = activeSpeech || (isTyping ? "..." : "");
-    const sig = `${act.name}|${act.isNpc ? "N" : "P"}|${bubble}`;
+    const qm = rec.questMarker;
+    const qSig = qm ? `${qm.marker}:${qm.symbol}` : "";
+    const sig = `${act.name}|${act.isNpc ? "N" : "P"}|${qSig}|${bubble}`;
     if (sig === rec.lastRenderedLabel) return;
     rec.lastRenderedLabel = sig;
     if (this.headlessDom) return;
@@ -1070,13 +1169,46 @@ export class TacsimStage3D {
     const H = rec.billboardCanvas.height;
     ctx.clearRect(0, 0, W, H);
 
+    // WoW-style overhead glowing Quest Marker emblem (`!` gold, `?` gold turn-in, `?` silver in-progress)
+    if (qm) {
+      const gold = qm.marker === "available" || qm.marker === "turn_in";
+      const cx = bubble ? W - 36 : W * 0.5;
+      const cy = bubble ? 30 : 72;
+      const rad = bubble ? 22 : 30;
+
+      // Soft outer halo
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, rad + 10, 0, Math.PI * 2);
+      ctx.fillStyle = gold ? "rgba(255, 214, 48, 0.30)" : "rgba(160, 186, 212, 0.22)";
+      ctx.fill();
+
+      // Core crest disc
+      ctx.beginPath();
+      ctx.arc(cx, cy, rad, 0, Math.PI * 2);
+      ctx.fillStyle = gold ? "#ffd633" : "#8fa2b8";
+      ctx.fill();
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = gold ? "#fff5bd" : "#d8e4f0";
+      ctx.stroke();
+
+      // Bold `!` or `?` symbol
+      ctx.fillStyle = gold ? "#2b1900" : "#121a24";
+      ctx.font = `900 ${bubble ? 28 : 40}px ui-sans-serif, system-ui, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(qm.symbol, cx, cy + 2);
+      ctx.restore();
+    }
+
     if (bubble) {
       const clipped = bubble.length > 92 ? `${bubble.slice(0, 89)}…` : bubble;
+      const rightPad = qm ? 68 : 14;
       ctx.fillStyle = "rgba(10, 18, 30, 0.88)";
       ctx.strokeStyle = "rgba(255, 226, 130, 0.75)";
       ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.roundRect(14, 8, W - 28, 96, 10);
+      ctx.roundRect(14, 38, W - 14 - rightPad, 96, 10);
       ctx.fill();
       ctx.stroke();
 
@@ -1088,7 +1220,7 @@ export class TacsimStage3D {
       let cur = "";
       for (const w of words) {
         const test = cur ? `${cur} ${w}` : w;
-        if (test.length > 34 && cur) {
+        if (test.length > 32 && cur) {
           lines.push(cur);
           cur = w;
         } else {
@@ -1096,25 +1228,46 @@ export class TacsimStage3D {
         }
       }
       if (cur) lines.push(cur);
+      const bx = 14 + (W - 14 - rightPad) * 0.5;
       lines.slice(0, 3).forEach((ln, idx) => {
-        ctx.fillText(ln, W * 0.5, 36 + idx * 22);
+        ctx.fillText(ln, bx, 66 + idx * 22);
       });
     }
 
     // Nameplate pill at bottom
-    ctx.fillStyle = "rgba(8, 14, 24, 0.82)";
+    ctx.fillStyle = "rgba(8, 14, 24, 0.84)";
     ctx.beginPath();
-    ctx.roundRect(48, 118, W - 96, 58, 8);
+    ctx.roundRect(44, 150, W - 88, 58, 8);
     ctx.fill();
+    if (qm && (qm.marker === "available" || qm.marker === "turn_in")) {
+      ctx.strokeStyle = "rgba(255, 214, 64, 0.82)";
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
 
     ctx.fillStyle = "#ffffff";
     ctx.font = "bold 20px ui-sans-serif, system-ui, sans-serif";
     ctx.textAlign = "center";
-    ctx.fillText(act.name, W * 0.5, 144);
+    ctx.fillText(act.name, W * 0.5, 176);
 
-    ctx.fillStyle = act.isNpc ? "#88ccff" : "#66eeaa";
+    ctx.fillStyle = qm
+      ? qm.marker === "in_progress"
+        ? "#b8cde0"
+        : "#ffdd55"
+      : act.isNpc
+        ? "#88ccff"
+        : "#66eeaa";
     ctx.font = "bold 14px ui-monospace, monospace";
-    ctx.fillText(act.isNpc ? "[NPC]" : "[CREW / PILOT]", W * 0.5, 166);
+    const subTag = qm
+      ? qm.marker === "turn_in"
+        ? "[?] TURN IN QUEST"
+        : qm.marker === "available"
+          ? "[!] QUEST AVAILABLE"
+          : "[?] QUEST IN PROGRESS"
+      : act.isNpc
+        ? "[NPC]"
+        : "[CREW / PILOT]";
+    ctx.fillText(subTag, W * 0.5, 198);
 
     rec.billboardTex.needsUpdate = true;
   }
@@ -2599,7 +2752,11 @@ export class TacsimStage3D {
       const maxZ = sb.maxZ - sb.margin;
       const bx = minX < maxX ? Math.max(minX, Math.min(maxX, cur.x)) : (sb.minX + sb.maxX) * 0.5;
       const bz = minZ < maxZ ? Math.max(minZ, Math.min(maxZ, cur.z)) : (sb.minZ + sb.maxZ) * 0.5;
-      rec.billboardSprite.position.set(bx, cur.y + 2.35, bz);
+      const questBob =
+        rec.questMarker && rec.questMarker.marker !== "in_progress"
+          ? Math.sin(nowWallMs * 0.0045) * 0.08
+          : 0;
+      rec.billboardSprite.position.set(bx, cur.y + 2.45 + questBob, bz);
     }
   }
 
