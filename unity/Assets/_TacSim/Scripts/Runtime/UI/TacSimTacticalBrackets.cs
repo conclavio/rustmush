@@ -129,6 +129,10 @@ namespace TacSim.UI
 
         // Space Center Flight Reticle (subtle center pip when seated at helm)
         private GameObject _spaceReticleWidget;
+        private GameObject _spaceQuestBannerWidget;
+        private Text _spaceQuestBannerText;
+        private string _spaceQuestPortId = string.Empty;
+        private string _spaceQuestPortLabel = string.Empty;
 
         // 6-DOF Bow Docking Alignment Crosshair HUD Reticle (active during IsDockingActive)
         private GameObject _dockingReticleWidget;
@@ -156,7 +160,29 @@ namespace TacSim.UI
         public bool ArenaCompassWaypointPipVisible => _compassWaypointPip != null && _compassWaypointPip.gameObject.activeSelf;
         public bool ArenaCompassOrderBugVisible => _compassOrderBugPip != null && _compassOrderBugPip.gameObject.activeSelf;
         public bool IsSurfaceCompassVisible => _surfaceCompassWidget != null && _surfaceCompassWidget.activeSelf;
+        public bool IsSpaceQuestBannerVisible => _spaceQuestBannerWidget != null && _spaceQuestBannerWidget.activeSelf;
+        public string SpaceQuestBannerSnapshot => _spaceQuestBannerText != null ? _spaceQuestBannerText.text : string.Empty;
         public bool IsDockingReticleVisible => _dockingReticleWidget != null && _dockingReticleWidget.activeSelf;
+
+        public void SetSpaceQuestDestination(string portId, string portLabel)
+        {
+            _spaceQuestPortId = (portId ?? string.Empty).Trim();
+            _spaceQuestPortLabel = (portLabel ?? string.Empty).Trim();
+            if (_spaceQuestBannerText != null)
+            {
+                if (!string.IsNullOrEmpty(_spaceQuestPortId))
+                {
+                    string lbl = string.IsNullOrEmpty(_spaceQuestPortLabel) ? _spaceQuestPortId : _spaceQuestPortLabel;
+                    _spaceQuestBannerText.text = $"[QUEST] DEST: {lbl.ToUpperInvariant()} (+ship/plan {_spaceQuestPortId})";
+                }
+                else
+                {
+                    _spaceQuestBannerText.text = string.Empty;
+                }
+            }
+            if (_spaceQuestBannerWidget != null && string.IsNullOrEmpty(_spaceQuestPortId))
+                _spaceQuestBannerWidget.SetActive(false);
+        }
         public Vector2 DockingLateralPipPos => _dockLateralPip != null ? _dockLateralPip.anchoredPosition : Vector2.zero;
         public float DockingRollBarAngleDeg { get; private set; }
         public bool DockingReticleAllGreen { get; private set; }
@@ -369,6 +395,10 @@ namespace TacSim.UI
         {
             HideAllBrackets();
             if (_spaceReticleWidget != null) _spaceReticleWidget.SetActive(false);
+            if (_spaceQuestBannerWidget != null) _spaceQuestBannerWidget.SetActive(false);
+            _spaceQuestPortId = string.Empty;
+            _spaceQuestPortLabel = string.Empty;
+            if (_spaceQuestBannerText != null) _spaceQuestBannerText.text = string.Empty;
             if (_dockingReticleWidget != null) _dockingReticleWidget.SetActive(false);
             if (_surfaceCompassWidget != null) _surfaceCompassWidget.SetActive(false);
             if (_arenaArmorWidget != null) _arenaArmorWidget.SetActive(false);
@@ -487,6 +517,7 @@ namespace TacSim.UI
             {
                 HideAllBrackets();
                 if (_spaceReticleWidget != null) _spaceReticleWidget.SetActive(false);
+                if (_spaceQuestBannerWidget != null) _spaceQuestBannerWidget.SetActive(false);
                 if (_dockingReticleWidget != null) _dockingReticleWidget.SetActive(false);
                 if (_surfaceCompassWidget != null) _surfaceCompassWidget.SetActive(false);
                 if (_arenaArmorWidget != null) _arenaArmorWidget.SetActive(false);
@@ -508,6 +539,8 @@ namespace TacSim.UI
 
             if (_spaceReticleWidget != null)
                 _spaceReticleWidget.SetActive(stage == TacSimActiveStage.ShipHelmSeated && !dockingActive);
+            if (_spaceQuestBannerWidget != null)
+                _spaceQuestBannerWidget.SetActive(stage == TacSimActiveStage.ShipHelmSeated && !string.IsNullOrEmpty(_spaceQuestPortId));
             if (_dockingReticleWidget != null)
                 _dockingReticleWidget.SetActive(dockingActive);
             if (_surfaceCompassWidget != null)
@@ -1044,6 +1077,19 @@ namespace TacSim.UI
             CreateStroke(_spaceReticleWidget.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-1f, 7f), new Vector2(1f, 20f), pip);
             CreateStroke(_spaceReticleWidget.transform, new Vector2(0.5f, 0.5f), new Vector2(0.5f, 0.5f), new Vector2(-1f, -20f), new Vector2(1f, -7f), pip);
             _spaceReticleWidget.SetActive(false);
+
+            // Top-center golden in-flight Quest Destination HUD strip (active during ShipHelmSeated when a destination quest is tracked)
+            _spaceQuestBannerWidget = new GameObject("SpaceQuestDestinationBanner", typeof(RectTransform), typeof(Image));
+            _spaceQuestBannerWidget.transform.SetParent(parent, false);
+            var qrt = _spaceQuestBannerWidget.GetComponent<RectTransform>();
+            SetRect(qrt, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(-240f, -86f), new Vector2(240f, -58f));
+            var qbg = _spaceQuestBannerWidget.GetComponent<Image>();
+            qbg.color = new Color(0.11f, 0.08f, 0.02f, 0.88f);
+            qbg.raycastTarget = false;
+            CreateStroke(_spaceQuestBannerWidget.transform, new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(0f, 0f), new Vector2(0f, 2f), new Color(1f, 0.82f, 0.24f, 0.92f));
+            _spaceQuestBannerText = CreateText(_spaceQuestBannerWidget.transform, string.Empty, 12, FontStyle.Bold, TextAnchor.MiddleCenter, new Color(1f, 0.90f, 0.45f, 1f));
+            SetRect(_spaceQuestBannerText.rectTransform, Vector2.zero, Vector2.one, new Vector2(8f, 2f), new Vector2(-8f, -2f));
+            _spaceQuestBannerWidget.SetActive(false);
         }
 
         private void BuildDockingAlignmentReticle(Transform parent)

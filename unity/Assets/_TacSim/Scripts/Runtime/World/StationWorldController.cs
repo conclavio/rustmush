@@ -151,6 +151,38 @@ namespace TacSim.World
             return Pack.FindExitPath(fromRoomEntry, toRoomEntry);
         }
 
+        public bool TryGetNextQuestExitBreadcrumb(
+            string fromRoomEntry,
+            string targetRoomEntry,
+            out string nextRoomEntry,
+            out string nextRoomName,
+            out string nextCommand,
+            out int hopCount)
+        {
+            nextRoomEntry = string.Empty;
+            nextRoomName = string.Empty;
+            nextCommand = string.Empty;
+            hopCount = 0;
+
+            if (Pack == null || string.IsNullOrEmpty(fromRoomEntry) || string.IsNullOrEmpty(targetRoomEntry))
+                return false;
+            if (string.Equals(fromRoomEntry, targetRoomEntry, StringComparison.Ordinal))
+                return false;
+
+            var path = Pack.FindExitPath(fromRoomEntry, targetRoomEntry);
+            if (path == null || path.Count == 0)
+                return false;
+
+            nextCommand = path[0].command ?? string.Empty;
+            nextRoomEntry = path[0].targetRoom ?? string.Empty;
+            hopCount = path.Count;
+            if (Pack.Rooms.TryGetValue(nextRoomEntry, out var nextRoom) && !string.IsNullOrEmpty(nextRoom.Name))
+                nextRoomName = nextRoom.Name;
+            else
+                nextRoomName = nextRoomEntry;
+            return !string.IsNullOrEmpty(nextCommand);
+        }
+
         public bool AreRoomsConnectedWithinHops(string roomA, string roomB, int maxHops = 3)
         {
             if (string.IsNullOrEmpty(roomA) || string.IsNullOrEmpty(roomB)) return false;
