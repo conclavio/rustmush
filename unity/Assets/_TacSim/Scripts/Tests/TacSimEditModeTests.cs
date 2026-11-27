@@ -9254,5 +9254,109 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ArenaTacticalSettingsVfxShakeAndSimLobbyHotbar_ScalesShakeTogglesVfxAndDispatchesVerbs()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave13PR2_ArenaSettingsAndLobbyHotbarTest");
+            try
+            {
+                var camGo = new UnityEngine.GameObject("ShakeCam", typeof(UnityEngine.Camera));
+                camGo.transform.SetParent(rootGo.transform, false);
+                var camRig = camGo.AddComponent<TacSim.Character.TacSimCameraRig>();
+                camRig.ControlledCamera = camGo.GetComponent<UnityEngine.Camera>();
+
+                var arenaGo = new UnityEngine.GameObject("ArenaVfxPrefTest");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(TacSimAssetCatalog.LoadOrDefault(), TacSimTerrainDecoder.LoadStaticArena("proving_ground"));
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.DisplayOptions.BindSubsystems(null, camRig);
+                hud.DisplayOptions.OnArenaVfxPreferencesChanged += () => arena.SyncArenaTacticalVisuals();
+
+                // 1. Camera shake scaling: 100% -> 50% -> OFF cleanly scales & suppresses CurrentShakeOffset
+                camRig.SetCameraShakeScalePct(100, savePrefs: false);
+                camRig.TriggerCameraShake(1.0f, 0.30f);
+                camRig.StepCameraShake(0.05f);
+                float magFull = camRig.CurrentShakeOffset.magnitude;
+                Assert.Greater(magFull, 0.05f, "100% shake scale must produce active shake displacement");
+
+                hud.DisplayOptions.CycleCameraShakePreset(save: false); // 100 -> 50
+                Assert.AreEqual(50, camRig.CameraShakeScalePct);
+                StringAssert.Contains("50%", hud.DisplayOptions.ArenaShakeButtonSnapshot);
+                // Reset active impulse and trigger fresh impulse at 50%
+                camRig.StepCameraShake(1.0f);
+                camRig.TriggerCameraShake(1.0f, 0.30f);
+                camRig.StepCameraShake(0.05f);
+                float magHalf = camRig.CurrentShakeOffset.magnitude;
+                Assert.AreEqual(magFull * 0.5f, magHalf, 0.005f, "50% shake scale must halve impulse amplitude cleanly");
+
+                hud.DisplayOptions.CycleCameraShakePreset(save: false); // 50 -> 0 (OFF)
+                Assert.AreEqual(0, camRig.CameraShakeScalePct);
+                StringAssert.Contains("OFF", hud.DisplayOptions.ArenaShakeButtonSnapshot);
+                camRig.TriggerCameraShake(1.5f, 0.40f);
+                camRig.StepCameraShake(0.05f);
+                Assert.AreEqual(0f, camRig.CurrentShakeOffset.magnitude, 0.0001f, "OFF shake preset must fully suppress camera shake");
+
+                // 2. 3D Tactical Rings & 3D Combat Popups toggles hide rings & suppress popups live
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""match"": 180, ""seated"": true, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""power"": ""online"",
+                    ""x_cm"": 10000, ""y_cm"": 10000, ""sight_m"": 240, ""ecm"": ""on"",
+                    ""weapons"": [{ ""id"": ""cannon"", ""ready"": true, ""rounds"": 20, ""rounds_max"": 24, ""bands_cm"": [12000, 32000] }]
+                }"));
+                Assert.IsTrue(arena.IsArenaRangeRingVisible);
+                Assert.IsTrue(arena.IsWeaponEnvelopeRingVisible);
+                Assert.IsTrue(arena.IsEcmJammerRingVisible);
+
+                hud.DisplayOptions.SetShowArenaTacticalRings(false, save: false);
+                StringAssert.Contains("OFF", hud.DisplayOptions.ArenaRingsButtonSnapshot);
+                Assert.IsFalse(arena.IsArenaRangeRingVisible, "Disabling 3D Rings must hide sensor range ring");
+                Assert.IsFalse(arena.IsWeaponEnvelopeRingVisible, "Disabling 3D Rings must hide weapon envelope ring");
+                Assert.IsFalse(arena.IsEcmJammerRingVisible, "Disabling 3D Rings must hide ECM jammer ring");
+
+                hud.DisplayOptions.SetShowArenaCombatPopups(false, save: false);
+                StringAssert.Contains("OFF", hud.DisplayOptions.ArenaPopupsButtonSnapshot);
+                arena.SpawnWorldCombatPopup(UnityEngine.Vector3.zero, "SUPPRESSED", UnityEngine.Color.yellow);
+                Assert.AreEqual(0, arena.ActiveWorldPopupCount, "Disabling 3D Popups must suppress floating world combat popups");
+
+                // Reset restores Camera Shake 100%, 3D Rings ON, and 3D Popups ON
+                hud.DisplayOptions.ResetCameraAndHudDefaults(save: false);
+                Assert.AreEqual(100, camRig.CameraShakeScalePct);
+                Assert.IsTrue(TacSim.Arena.OocArenaController.ShowArenaTacticalRings);
+                Assert.IsTrue(TacSim.Arena.OocArenaController.ShowArenaCombatPopups);
+                Assert.IsTrue(arena.IsArenaRangeRingVisible);
+                arena.SpawnWorldCombatPopup(UnityEngine.Vector3.zero, "RESTORED", UnityEngine.Color.green);
+                Assert.AreEqual(1, arena.ActiveWorldPopupCount);
+
+                // 3. Simulator Lobby & Sim Pod Bay contextual 1-9 quick-action hotbar emits verified registered verbs
+                var cmds = new List<string>();
+                hud.OnCommandSubmitted += cmds.Add;
+                hud.RefreshContextualQuickActions("room.simulator_lobby", isSeatedAtHelm: false);
+                Assert.AreEqual(7, hud.QuickActionSlotCount);
+                StringAssert.Contains("Match History", hud.GetQuickActionLabelForTests(4));
+                StringAssert.Contains("Start Match", hud.GetQuickActionLabelForTests(5));
+                Assert.IsTrue(hud.TriggerQuickActionSlot(3)); // sim status
+                Assert.IsTrue(hud.TriggerQuickActionSlot(4)); // sim history
+                Assert.IsTrue(hud.TriggerQuickActionSlot(5)); // sim start
+                CollectionAssert.AreEqual(new[] { "sim status", "sim history", "sim start" }, cmds);
+
+                cmds.Clear();
+                hud.RefreshContextualQuickActions("room.sim_red", isSeatedAtHelm: false);
+                Assert.AreEqual(6, hud.QuickActionSlotCount);
+                Assert.IsTrue(hud.TriggerQuickActionSlot(0)); // board
+                Assert.IsTrue(hud.TriggerQuickActionSlot(3)); // sim history
+                Assert.IsTrue(hud.TriggerQuickActionSlot(4)); // lobby
+                CollectionAssert.AreEqual(new[] { "board", "sim history", "lobby" }, cmds);
+            }
+            finally
+            {
+                TacSim.Arena.OocArenaController.ShowArenaTacticalRings = true;
+                TacSim.Arena.OocArenaController.ShowArenaCombatPopups = true;
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

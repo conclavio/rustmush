@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using TacSim.Arena;
 using TacSim.Character;
 using TacSim.Core;
 using UnityEngine;
@@ -66,6 +67,8 @@ namespace TacSim.UI
         private const string PrefUiScalePct = "TacSim_UiScalePct";
         private const string PrefQuality = "TacSim_QualityLevel";
         private const string PrefHudDensity = "TacSim_HudDensityPreset";
+        private const string PrefArenaRings = "TacSim_ArenaShowRings";
+        private const string PrefArenaPopups = "TacSim_ArenaShowPopups";
 
         private static readonly int[] UiScalePresetsPct = { 85, 100, 125, 150, 175, 200 };
         private static readonly int[] VolumeStepPresets = { 0, 25, 50, 75, 100 };
@@ -76,9 +79,13 @@ namespace TacSim.UI
         public static TacSimHudDensityPreset CurrentHudDensity { get; private set; } = TacSimHudDensityPreset.Standard;
 
         public event Action<TacSimHudDensityPreset> OnHudDensityChanged;
+        public event Action OnArenaVfxPreferencesChanged;
 
         public bool IsOpen => _modalOverlay != null && _modalOverlay.activeSelf;
         public TacSimOptionsTab ActiveTab { get; private set; } = TacSimOptionsTab.Display;
+        public string ArenaShakeButtonSnapshot => _arenaShakeBtnLabel != null ? _arenaShakeBtnLabel.text : string.Empty;
+        public string ArenaRingsButtonSnapshot => _arenaRingsBtnLabel != null ? _arenaRingsBtnLabel.text : string.Empty;
+        public string ArenaPopupsButtonSnapshot => _arenaPopupsBtnLabel != null ? _arenaPopupsBtnLabel.text : string.Empty;
 
         private Font _uiFont;
         private TacSimAudioSynthesizer _audio;
@@ -111,6 +118,12 @@ namespace TacSim.UI
         private Text _zoomValueLabel;
         private Text _invertYBtnLabel;
         private Image _invertYBtnImage;
+        private Text _arenaShakeBtnLabel;
+        private Image _arenaShakeBtnImage;
+        private Text _arenaRingsBtnLabel;
+        private Image _arenaRingsBtnImage;
+        private Text _arenaPopupsBtnLabel;
+        private Image _arenaPopupsBtnImage;
         private readonly List<Image> _sensPills = new List<Image>();
         private readonly List<Image> _zoomPills = new List<Image>();
         private readonly List<Image> _fovPills = new List<Image>();
@@ -297,8 +310,8 @@ namespace TacSim.UI
                 "DisplayOptionsCard",
                 new Vector2(0.5f, 0.5f),
                 new Vector2(0.5f, 0.5f),
-                new Vector2(-360f, -278f),
-                new Vector2(360f, 278f),
+                new Vector2(-360f, -312f),
+                new Vector2(360f, 312f),
                 new Color(0.06f, 0.10f, 0.16f, 0.985f));
 
             CreatePanel(card.transform, "TopAccent", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -3f), Vector2.zero, new Color(0.32f, 0.88f, 1f, 0.95f));
@@ -594,13 +607,76 @@ namespace TacSim.UI
                 _hudDensityPills.Add(b.GetComponent<Image>());
             }
 
-            var resetCamBtn = CreateButton(body, "RESET CAMERA & HUD DEFAULTS", new Color(0.24f, 0.28f, 0.38f), () =>
+            // 5. Arena Combat VFX & Camera Shake Comfort Controls
+            var vfxLbl = CreateText(body, "ARENA COMBAT VFX & CAMERA SHAKE COMFORT", 12, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.72f, 0.86f, 0.96f));
+            SetRect(vfxLbl.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(22f, -318f), new Vector2(-22f, -296f));
+
+            var vfxRow = CreatePanel(body, "ArenaVfxRow", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(22f, -360f), new Vector2(-22f, -322f), Color.clear);
+            var vHlg = vfxRow.AddComponent<HorizontalLayoutGroup>();
+            vHlg.spacing = 8f; vHlg.childControlWidth = true; vHlg.childControlHeight = true; vHlg.childForceExpandWidth = true;
+
+            var shakeBtn = CreateButton(vfxRow.transform, "CAM SHAKE: 100%", new Color(0.20f, 0.50f, 0.72f), () => CycleCameraShakePreset());
+            _arenaShakeBtnLabel = shakeBtn.GetComponentInChildren<Text>();
+            _arenaShakeBtnImage = shakeBtn.GetComponent<Image>();
+
+            var ringsBtn = CreateButton(vfxRow.transform, "3D RINGS: ON", new Color(0.16f, 0.48f, 0.36f), () => SetShowArenaTacticalRings(!OocArenaController.ShowArenaTacticalRings));
+            _arenaRingsBtnLabel = ringsBtn.GetComponentInChildren<Text>();
+            _arenaRingsBtnImage = ringsBtn.GetComponent<Image>();
+
+            var popupsBtn = CreateButton(vfxRow.transform, "3D POPUPS: ON", new Color(0.16f, 0.48f, 0.36f), () => SetShowArenaCombatPopups(!OocArenaController.ShowArenaCombatPopups));
+            _arenaPopupsBtnLabel = popupsBtn.GetComponentInChildren<Text>();
+            _arenaPopupsBtnImage = popupsBtn.GetComponent<Image>();
+
+            var resetCamBtn = CreateButton(body, "RESET CAMERA & HUD DEFAULTS", new Color(0.24f, 0.28f, 0.38f), () => ResetCameraAndHudDefaults());
+            SetRect(resetCamBtn.GetComponent<RectTransform>(), new Vector2(0.25f, 1f), new Vector2(0.75f, 1f), new Vector2(0f, -412f), new Vector2(0f, -376f));
+        }
+
+        public int CycleCameraShakePreset(bool save = true)
+        {
+            int cur = _cameraRig != null ? _cameraRig.CameraShakeScalePct : 100;
+            int next = cur >= 75 ? 50 : (cur >= 25 ? 0 : 100);
+            SetCameraShakeScalePct(next, save);
+            return next;
+        }
+
+        public void SetCameraShakeScalePct(int pct, bool save = true)
+        {
+            _cameraRig?.SetCameraShakeScalePct(pct, savePrefs: save);
+            RefreshVisualState();
+        }
+
+        public void SetShowArenaTacticalRings(bool show, bool save = true)
+        {
+            OocArenaController.ShowArenaTacticalRings = show;
+            if (save && Application.isPlaying)
             {
-                _cameraRig?.ApplyCameraPreferences(100, 100, false, 62);
-                SetHudDensityPreset(TacSimHudDensityPreset.Standard);
-                RefreshVisualState();
-            });
-            SetRect(resetCamBtn.GetComponent<RectTransform>(), new Vector2(0.25f, 1f), new Vector2(0.75f, 1f), new Vector2(0f, -340f), new Vector2(0f, -304f));
+                PlayerPrefs.SetInt(PrefArenaRings, show ? 1 : 0);
+                PlayerPrefs.Save();
+            }
+            OnArenaVfxPreferencesChanged?.Invoke();
+            RefreshVisualState();
+        }
+
+        public void SetShowArenaCombatPopups(bool show, bool save = true)
+        {
+            OocArenaController.ShowArenaCombatPopups = show;
+            if (save && Application.isPlaying)
+            {
+                PlayerPrefs.SetInt(PrefArenaPopups, show ? 1 : 0);
+                PlayerPrefs.Save();
+            }
+            OnArenaVfxPreferencesChanged?.Invoke();
+            RefreshVisualState();
+        }
+
+        public void ResetCameraAndHudDefaults(bool save = true)
+        {
+            _cameraRig?.ApplyCameraPreferences(100, 100, false, 62, savePrefs: save);
+            _cameraRig?.SetCameraShakeScalePct(100, savePrefs: save);
+            SetHudDensityPreset(TacSimHudDensityPreset.Standard, save: save);
+            SetShowArenaTacticalRings(true, save: save);
+            SetShowArenaCombatPopups(true, save: save);
+            RefreshVisualState();
         }
 
         public void SelectTab(TacSimOptionsTab tab)
@@ -665,6 +741,9 @@ namespace TacSim.UI
             int savedDensity = PlayerPrefs.GetInt(PrefHudDensity, (int)TacSimHudDensityPreset.Standard);
             if (savedDensity >= 0 && savedDensity <= 2)
                 SetHudDensityPreset((TacSimHudDensityPreset)savedDensity, save: false);
+
+            SetShowArenaTacticalRings(PlayerPrefs.GetInt(PrefArenaRings, 1) != 0, save: false);
+            SetShowArenaCombatPopups(PlayerPrefs.GetInt(PrefArenaPopups, 1) != 0, save: false);
 
             bool hasSaved = PlayerPrefs.GetInt(PrefSaved, 0) == 1;
             if (hasSaved)
@@ -943,6 +1022,26 @@ namespace TacSim.UI
                 if (_hudDensityPills[i] != null)
                     _hudDensityPills[i].color = (i == (int)CurrentHudDensity) ? activeCol : idleCol;
             }
+
+            int shakePct = _cameraRig != null ? _cameraRig.CameraShakeScalePct : 100;
+            bool showRings = OocArenaController.ShowArenaTacticalRings;
+            bool showPopups = OocArenaController.ShowArenaCombatPopups;
+            Color onGreen = new Color(0.16f, 0.50f, 0.38f, 1f);
+
+            if (_arenaShakeBtnLabel != null)
+                _arenaShakeBtnLabel.text = shakePct <= 0 ? "CAM SHAKE: OFF" : $"CAM SHAKE: {shakePct}%";
+            if (_arenaShakeBtnImage != null)
+                _arenaShakeBtnImage.color = shakePct <= 0 ? idleCol : (shakePct >= 75 ? activeCol : new Color(0.24f, 0.44f, 0.62f, 1f));
+
+            if (_arenaRingsBtnLabel != null)
+                _arenaRingsBtnLabel.text = showRings ? "3D RINGS: ON" : "3D RINGS: OFF";
+            if (_arenaRingsBtnImage != null)
+                _arenaRingsBtnImage.color = showRings ? onGreen : idleCol;
+
+            if (_arenaPopupsBtnLabel != null)
+                _arenaPopupsBtnLabel.text = showPopups ? "3D POPUPS: ON" : "3D POPUPS: OFF";
+            if (_arenaPopupsBtnImage != null)
+                _arenaPopupsBtnImage.color = showPopups ? onGreen : idleCol;
         }
 
         private static void HighlightIntPills(List<Image> pills, int[] presets, int currentVal, Color activeCol, Color idleCol)

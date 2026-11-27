@@ -40,6 +40,7 @@ namespace TacSim.Character
         public const string PrefCamZoomPct = "TacSim.CamZoomPct";
         public const string PrefCamInvertY = "TacSim.CamInvertY";
         public const string PrefCamFovDeg = "TacSim.CamFovDeg";
+        public const string PrefCamShakePct = "TacSim.CamShakePct";
 
         [Header("3rd Person Orbit")]
         public Vector3 shoulderOffset = new Vector3(0.42f, 1.58f, 0f);
@@ -56,6 +57,7 @@ namespace TacSim.Character
         public int ZoomSpeedPct { get; private set; } = 100;
         public bool InvertY { get; private set; }
         public int FieldOfViewDeg { get; private set; } = 62;
+        public int CameraShakeScalePct { get; private set; } = 100;
         public CameraRigMode Mode { get; private set; } = CameraRigMode.ThirdPersonWalk;
         public bool OrbitInputEnabled { get; set; } = true;
         public Vector3 CurrentShakeOffset { get; private set; }
@@ -84,9 +86,29 @@ namespace TacSim.Character
         private bool _pivotInitialized;
         private bool _rmbOrbitDragging;
 
+        public void SetCameraShakeScalePct(int pct, bool savePrefs = true)
+        {
+            CameraShakeScalePct = Mathf.Clamp(pct, 0, 100);
+            if (CameraShakeScalePct <= 0)
+            {
+                _shakeIntensity = 0f;
+                _shakeDurationSec = 0f;
+                _shakeRemainingSec = 0f;
+                CurrentShakeOffset = Vector3.zero;
+            }
+            if (savePrefs && Application.isPlaying)
+            {
+                PlayerPrefs.SetInt(PrefCamShakePct, CameraShakeScalePct);
+                PlayerPrefs.Save();
+            }
+        }
+
         public void TriggerCameraShake(float intensity, float durationSec = 0.28f)
         {
-            float clampedIntensity = Mathf.Clamp(intensity, 0.02f, 3.5f);
+            if (CameraShakeScalePct <= 0)
+                return;
+            float scaledIntensity = intensity * (CameraShakeScalePct / 100f);
+            float clampedIntensity = Mathf.Clamp(scaledIntensity, 0.01f, 3.5f);
             float clampedDur = Mathf.Clamp(durationSec, 0.04f, 1.5f);
             _shakeIntensity = Mathf.Max(_shakeIntensity, clampedIntensity);
             _shakeDurationSec = Mathf.Max(_shakeDurationSec, clampedDur);
@@ -100,6 +122,7 @@ namespace TacSim.Character
                 _shakeRemainingSec = 0f;
                 _shakeDurationSec = 0f;
                 _shakeIntensity = 0f;
+                _shakePhase = 0f;
                 CurrentShakeOffset = Vector3.zero;
                 return;
             }
@@ -110,6 +133,7 @@ namespace TacSim.Character
             {
                 _shakeDurationSec = 0f;
                 _shakeIntensity = 0f;
+                _shakePhase = 0f;
                 CurrentShakeOffset = Vector3.zero;
                 return;
             }
@@ -150,7 +174,9 @@ namespace TacSim.Character
             int zoom = Application.isPlaying ? PlayerPrefs.GetInt(PrefCamZoomPct, 100) : 100;
             bool invY = Application.isPlaying && PlayerPrefs.GetInt(PrefCamInvertY, 0) == 1;
             int fov = Application.isPlaying ? PlayerPrefs.GetInt(PrefCamFovDeg, 62) : 62;
+            int shake = Application.isPlaying ? PlayerPrefs.GetInt(PrefCamShakePct, 100) : 100;
             ApplyCameraPreferences(sens, zoom, invY, fov, savePrefs: false);
+            SetCameraShakeScalePct(shake, savePrefs: false);
         }
 
         private float ComputeTargetFov()
