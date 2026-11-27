@@ -11156,5 +11156,78 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestSurfaceOreBeacon_AndTacticalBrackets_HighlightMatchingPocketInGold()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestSurfaceOreBeaconTestRoot");
+            try
+            {
+                var surfGo = new UnityEngine.GameObject("SurfaceQuestOreTest");
+                surfGo.transform.SetParent(rootGo.transform, false);
+                var surf = surfGo.AddComponent<TacSim.Surface.SurfaceMiningController>();
+                surf.BuildSurfaceStage(null, "occator_rim");
+                surf.EnterSurfaceMode();
+
+                surf.ApplySiteMapFrame(JsonNode.Parse(@"{
+                    ""width"": 8,
+                    ""height"": 8,
+                    ""site"": {
+                        ""site"": ""Occator Rim"",
+                        ""family"": ""volatiles"",
+                        ""grid"": { ""x0"": 0, ""y0"": 0, ""span"": 1, ""cell_cm"": 1000 },
+                        ""rigs"": [{ ""slot"": 1, ""cell"": [1, 1] }],
+                        ""readings"": [
+                            { ""cell"": [3, 3], ""text"": ""B1: rich carbon_ore pocket"" },
+                            { ""cell"": [5, 5], ""text"": ""C2: trace silicates"" }
+                        ]
+                    },
+                    ""rows"": [""........"",""........"",""........"",""........"",""........"",""........"",""........"",""........""],
+                    ""you"": [1, 1]
+                }"));
+
+                Assert.AreEqual(2, surf.OreBeacons.Count);
+                Assert.AreEqual(2, surf.ActiveBeaconHaloCount);
+                Assert.AreEqual(0, surf.QuestMatchedBeaconCount);
+                Assert.IsFalse(surf.OreBeacons[0].IsQuestTarget);
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.TacticalBrackets.BindControllers(null, surf, null);
+                hud.TacticalBrackets.ScreenProjectionOverrideForTests = _ => new UnityEngine.Vector3(960f, 540f, 15f);
+
+                // Activating surface mining quest target highlights matching carbon_ore pocket in gold
+                surf.SetQuestMiningTarget("carbon_ore", "carbon");
+                Assert.AreEqual(1, surf.QuestMatchedBeaconCount, "Exactly the matching carbon_ore reading must flag as quest beacon");
+                Assert.AreEqual(2, surf.ActiveBeaconHaloCount, "Beacon count must remain invariant");
+                Assert.IsTrue(surf.OreBeacons[0].IsQuestTarget);
+                Assert.IsFalse(surf.OreBeacons[1].IsQuestTarget);
+
+                hud.TacticalBrackets.SyncBrackets(TacSimActiveStage.PlanetarySurface, null, hideForOverlay: false);
+                Assert.AreEqual(1, hud.TacticalBrackets.QuestOreBracketCount);
+                bool foundQuestOreTag = false;
+                for (int bi = 0; bi < hud.TacticalBrackets.ActiveBracketCount; bi++)
+                {
+                    if (hud.TacticalBrackets.GetActiveBracketTagSnapshot(bi).Contains("[QUEST] ORE", System.StringComparison.Ordinal))
+                    {
+                        foundQuestOreTag = true;
+                        break;
+                    }
+                }
+                Assert.IsTrue(foundQuestOreTag, "Active surface tactical brackets must include a [QUEST] ORE tag");
+                StringAssert.Contains("QUEST: CARBON ORE", hud.TacticalBrackets.SurfaceCompassSnapshot);
+
+                // Clearing quest mining target restores standard ore brackets and compass strip
+                surf.SetQuestMiningTarget(string.Empty, string.Empty);
+                Assert.AreEqual(0, surf.QuestMatchedBeaconCount);
+                hud.TacticalBrackets.SyncBrackets(TacSimActiveStage.PlanetarySurface, null, hideForOverlay: false);
+                Assert.AreEqual(0, hud.TacticalBrackets.QuestOreBracketCount);
+                StringAssert.DoesNotContain("QUEST:", hud.TacticalBrackets.SurfaceCompassSnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
