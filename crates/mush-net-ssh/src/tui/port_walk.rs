@@ -25,7 +25,7 @@ use serde_json::{Value, json};
 
 use super::backend::sanitize_control_sequences as sanitize;
 use super::keys::{Arrow, Key};
-use super::quests::{QuestMarker, parse_room_markers};
+use super::quests::{QuestDestinationHint, QuestMarker, QuestTradeNeed, parse_room_markers};
 
 /// Panel/query name for port trade & stowage telemetry.
 pub const PORT_TRADE_FEED: &str = "port.trade";
@@ -430,6 +430,8 @@ pub struct PortWalkState {
 
     actors: Vec<ActorEntry>,
     quest_markers: Vec<QuestMarker>,
+    quest_trade_need: Option<QuestTradeNeed>,
+    quest_dest_port: Option<QuestDestinationHint>,
     speech_bubbles: HashMap<String, (String, Instant)>,
     interactables: Vec<InteractableTarget>,
     focus_idx: usize,
@@ -457,6 +459,7 @@ pub struct PortWalkState {
     trade_subtab: usize, // 0 = Buy Asks, 1 = Sell Bids
     cursor_row: usize,
     qty_preset_idx: usize,
+    custom_trade_qty: Option<i64>,
     corridor_idx: usize,
     queue_depart: bool,
     hull_suggestion_idx: usize,
@@ -530,6 +533,8 @@ impl PortWalkState {
             last_self_name: None,
             actors: Vec::new(),
             quest_markers: Vec::new(),
+            quest_trade_need: None,
+            quest_dest_port: None,
             speech_bubbles: HashMap::new(),
             interactables: Vec::new(),
             focus_idx: 0,
@@ -553,6 +558,7 @@ impl PortWalkState {
             trade_subtab: 0,
             cursor_row: 0,
             qty_preset_idx: 1, // default 5 units
+            custom_trade_qty: None,
             corridor_idx: 0,
             queue_depart: true,
             hull_suggestion_idx: 0,
@@ -813,6 +819,75 @@ impl PortWalkState {
         self.quest_markers = markers.to_vec();
         self.refresh_npc_quest_labels();
         self.bump_scene();
+    }
+
+    /// Sync active quest trade & corridor destination hints for the Port Trade and Sailing drawers.
+    pub fn observe_quest_guidance(
+        &mut self,
+        trade_need: Option<QuestTradeNeed>,
+        dest_port: Option<QuestDestinationHint>,
+    ) {
+        self.quest_trade_need = trade_need;
+        self.quest_dest_port = dest_port;
+    }
+
+    fn active_trade_qty_setting(&self) -> i64 {
+        self.custom_trade_qty
+            .unwrap_or_else(|| QTY_PRESETS.get(self.qty_preset_idx).copied().unwrap_or(1))
+    }
+
+    fn apply_quest_trade_jump(&mut self) -> bool {
+        let Some(need) = self.quest_trade_need.clone() else {
+            return false;
+        };
+        let target_qty = need.target_quantity.max(1);
+        if let Some(pidx) = QTY_PRESETS.iter().position(|&p| p == target_qty) {
+            self.qty_preset_idx = pidx;
+            self.custom_trade_qty = None;
+        } else {
+            self.custom_trade_qty = Some(target_qty);
+        }
+        if need.wants_buy
+            && let Some(idx) = self
+                .asks
+                .iter()
+                .position(|a| need.matches_listing(&a.good_id, &a.good_name, false))
+        {
+            self.trade_subtab = 0;
+            self.cursor_row = idx;
+        } else if need.wants_sell
+            && let Some(idx) = self
+                .bids
+                .iter()
+                .position(|b| need.matches_listing(&b.good_id, &b.good_name, true))
+        {
+            self.trade_subtab = 1;
+            self.cursor_row = idx;
+        }
+        self.push_drawer_log(format!(
+            "[QUEST] Target {} x {target_qty} ({})",
+            need.commodity_slug.replace('_', " "),
+            need.quest_title
+        ));
+        true
+    }
+
+    fn apply_quest_destination_jump(&mut self) -> bool {
+        let Some(hint) = self.quest_dest_port.clone() else {
+            return false;
+        };
+        if let Some(idx) = CORRIDORS
+            .iter()
+            .position(|(id, _, _)| id.eq_ignore_ascii_case(&hint.port_id))
+        {
+            self.corridor_idx = idx;
+            self.push_drawer_log(format!(
+                "[QUEST] Selected corridor destination: {} ({})",
+                hint.port_label, hint.quest_title
+            ));
+            return true;
+        }
+        false
     }
 
     fn find_quest_marker(&self, npc_id: &str, npc_name: &str) -> Option<&QuestMarker> {
@@ -2785,10 +2860,15 @@ impl PortWalkState {
                         }
                     }
                     Key::Char('[') => {
+                        self.custom_trade_qty = None;
                         self.qty_preset_idx = self.qty_preset_idx.saturating_sub(1);
                     }
                     Key::Char(']') => {
+                        self.custom_trade_qty = None;
                         self.qty_preset_idx = (self.qty_preset_idx + 1).min(QTY_PRESETS.len() - 1);
+                    }
+                    Key::Char('g' | 'G') => {
+                        self.apply_quest_trade_jump();
                     }
                     Key::Char('r') => {
                         self.trade_asked_at = None;
@@ -2873,6 +2953,9 @@ impl PortWalkState {
                 }
                 Key::Char('r') => {
                     self.queue_depart = !self.queue_depart;
+                }
+                Key::Char('g' | 'G') => {
+                    self.apply_quest_destination_jump();
                 }
                 Key::Char('u') => {
                     if let Some((dest_id, _, _)) = CORRIDORS.get(self.corridor_idx) {
@@ -3005,7 +3088,7 @@ impl PortWalkState {
             self.push_drawer_log(format!("[BUY] #{} has no available stock.", ask.listing_id));
             return;
         }
-        let preset = QTY_PRESETS.get(self.qty_preset_idx).copied().unwrap_or(1);
+        let preset = self.active_trade_qty_setting();
         let want_qty = if preset == 0 {
             if !self.stowage_loaded {
                 self.push_drawer_log(
@@ -3078,7 +3161,7 @@ impl PortWalkState {
             self.push_drawer_log(format!("[SELL] Hold carries 0 units of {}.", bid.good_name));
             return;
         }
-        let preset = QTY_PRESETS.get(self.qty_preset_idx).copied().unwrap_or(1);
+        let preset = self.active_trade_qty_setting();
         let sell_qty = if preset == 0 {
             held.min(bid.quantity_wanted)
         } else {
@@ -4154,7 +4237,7 @@ impl PortWalkState {
                 for g in self.stowage_gauge_lines(utf8).into_iter().take(gauge_count) {
                     lines.push(g);
                 }
-                let preset = QTY_PRESETS.get(self.qty_preset_idx).copied().unwrap_or(1);
+                let preset = self.active_trade_qty_setting();
                 let qty_word = if preset == 0 {
                     "Max".to_string()
                 } else {
@@ -4204,6 +4287,27 @@ impl PortWalkState {
                     ),
                 ]));
 
+                if let Some(ref need) = self.quest_trade_need {
+                    let side_tag = if need.wants_buy && need.wants_sell {
+                        "BUY/SELL"
+                    } else if need.wants_sell {
+                        "SELL"
+                    } else {
+                        "BUY"
+                    };
+                    let qline = format!(
+                        "[QUEST] {side_tag} {} x {} (g:jump+qty)",
+                        need.target_quantity,
+                        need.commodity_slug.replace('_', " ")
+                    );
+                    lines.push(Line::from(Span::styled(
+                        truncate_str(&qline, inner_w),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                }
+
                 let list_rows = main_budget.saturating_sub(lines.len()).max(1);
                 if self.trade_subtab == 0 {
                     if self.asks.is_empty() {
@@ -4215,21 +4319,31 @@ impl PortWalkState {
                         for idx in visible_window(self.asks.len(), self.cursor_row, list_rows) {
                             if let Some(ask) = self.asks.get(idx) {
                                 let sel = idx == self.cursor_row;
+                                let q_match = self.quest_trade_need.as_ref().is_some_and(|n| {
+                                    n.matches_listing(&ask.good_id, &ask.good_name, false)
+                                });
                                 let fit_text = if self.stowage_loaded {
                                     self.max_fit_for_ask(ask).to_string()
                                 } else {
                                     "--".to_string()
                                 };
                                 let mark = if sel { "> " } else { "  " };
-                                let st = if sel {
+                                let qtag = if q_match { "[Q] " } else { "" };
+                                let st = if sel && q_match {
+                                    Style::default()
+                                        .fg(Color::Yellow)
+                                        .add_modifier(Modifier::BOLD)
+                                } else if sel {
                                     Style::default()
                                         .fg(Color::White)
                                         .add_modifier(Modifier::BOLD)
+                                } else if q_match {
+                                    Style::default().fg(Color::Yellow)
                                 } else {
                                     Style::default().fg(Color::Gray)
                                 };
                                 let row = format!(
-                                    "{mark}#{:<4} {:<16} {:>5} {:>10} fit:{fit_text}",
+                                    "{mark}{qtag}#{:<4} {:<16} {:>5} {:>10} fit:{fit_text}",
                                     ask.listing_id,
                                     truncate_str(&ask.good_name, 16),
                                     ask.quantity,
@@ -4251,6 +4365,9 @@ impl PortWalkState {
                     for idx in visible_window(self.bids.len(), self.cursor_row, list_rows) {
                         if let Some(bid) = self.bids.get(idx) {
                             let sel = idx == self.cursor_row;
+                            let q_match = self.quest_trade_need.as_ref().is_some_and(|n| {
+                                n.matches_listing(&bid.good_id, &bid.good_name, true)
+                            });
                             let hold_text = if self.stowage_loaded {
                                 self.cargo_lots
                                     .iter()
@@ -4262,15 +4379,22 @@ impl PortWalkState {
                                 "--".to_string()
                             };
                             let mark = if sel { "> " } else { "  " };
-                            let st = if sel {
+                            let qtag = if q_match { "[Q] " } else { "" };
+                            let st = if sel && q_match {
+                                Style::default()
+                                    .fg(Color::Yellow)
+                                    .add_modifier(Modifier::BOLD)
+                            } else if sel {
                                 Style::default()
                                     .fg(Color::White)
                                     .add_modifier(Modifier::BOLD)
+                            } else if q_match {
+                                Style::default().fg(Color::Yellow)
                             } else {
                                 Style::default().fg(Color::Gray)
                             };
                             let row = format!(
-                                "{mark}#{:<4} {:<16} {:>5} {:>10} hold:{hold_text}",
+                                "{mark}{qtag}#{:<4} {:<16} {:>5} {:>10} hold:{hold_text}",
                                 bid.listing_id,
                                 truncate_str(&bid.good_name, 16),
                                 bid.quantity_wanted,
@@ -4344,20 +4468,40 @@ impl PortWalkState {
                     truncate_str("u: +ship/undock   d: +helm/dock (aboard)", inner_w),
                     Style::default().fg(Color::DarkGray),
                 )));
+                if let Some(ref hint) = self.quest_dest_port {
+                    let qline = format!("[QUEST] Dest: {} (g:select)", hint.port_label);
+                    lines.push(Line::from(Span::styled(
+                        truncate_str(&qline, inner_w),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                }
                 let list_rows = main_budget.saturating_sub(lines.len()).max(1);
                 let cur = self.cursor_idx_clamped(CORRIDORS.len());
                 for idx in visible_window(CORRIDORS.len(), cur, list_rows) {
-                    if let Some(&(_, name, desc)) = CORRIDORS.get(idx) {
+                    if let Some(&(code, name, desc)) = CORRIDORS.get(idx) {
                         let sel = idx == cur;
+                        let q_match = self
+                            .quest_dest_port
+                            .as_ref()
+                            .is_some_and(|h| h.port_id.eq_ignore_ascii_case(code));
                         let mark = if sel { "> " } else { "  " };
-                        let st = if sel {
+                        let qtag = if q_match { "[Q] " } else { "" };
+                        let st = if sel && q_match {
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD)
+                        } else if sel {
                             Style::default()
                                 .fg(Color::Green)
                                 .add_modifier(Modifier::BOLD)
+                        } else if q_match {
+                            Style::default().fg(Color::Yellow)
                         } else {
                             Style::default().fg(Color::Gray)
                         };
-                        let row = format!("{mark}{name:<19} {desc}");
+                        let row = format!("{mark}{qtag}{name:<19} {desc}");
                         lines.push(Line::from(Span::styled(truncate_str(&row, inner_w), st)));
                     }
                 }
@@ -7682,5 +7826,106 @@ mod tests {
         let out2 = st.handle_key(Key::Char('e'), false, false, &[], now);
         assert!(out2.open_quest_for_npc.is_none());
         assert!(st.drawer_open());
+    }
+
+    #[test]
+    fn quest_guidance_highlights_trade_and_sailing_drawers_and_jumps_to_exact_qty() {
+        let mut st = PortWalkState::new();
+        let now = Instant::now();
+        let mut trade_fixture = live_port_trade_fixture();
+        trade_fixture["listings"]
+            .as_array_mut()
+            .expect("listings array")
+            .push(json!({
+                "id": 55,
+                "side": "ask",
+                "good": "industrial_parts",
+                "good_label": "industrial parts",
+                "vendor_name": "Freeport Yard",
+                "is_personal": false,
+                "funded": true,
+                "unit_price_minor": 12_000,
+                "price_text": "120.00cr",
+                "available_qty": 10
+            }));
+        st.observe_port_trade(&trade_fixture, now);
+        st.observe_quest_guidance(
+            Some(QuestTradeNeed {
+                quest_title: "Refit the Dray".into(),
+                checkpoint_title: "Buy 2 industrial parts".into(),
+                commodity_slug: "industrial_parts".into(),
+                target_quantity: 2,
+                wants_buy: true,
+                wants_sell: false,
+            }),
+            Some(QuestDestinationHint {
+                quest_title: "Deliver Metals to Stickney".into(),
+                port_id: "stickney".into(),
+                port_label: "Stickney Yards".into(),
+            }),
+        );
+
+        let mut queries = Vec::new();
+        st.open_drawer(PortDrawerKind::Trade, &[], &mut queries, now);
+
+        // Render Trade drawer and confirm [QUEST] banner & [Q] row highlight
+        let backend = ratatui::backend::TestBackend::new(84, 24);
+        let mut term = ratatui::Terminal::new(backend).expect("test terminal");
+        term.draw(|f| st.draw_drawer_box(f, f.area(), true))
+            .expect("draw trade drawer");
+        let rendered_trade = term
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(
+            rendered_trade.contains("[QUEST] BUY 2 x industrial parts (g:jump+qty)"),
+            "expected quest trade banner in Trade drawer: {rendered_trade}"
+        );
+        assert!(
+            rendered_trade.contains("[Q] #55"),
+            "expected [Q] tag on matching industrial_parts listing: {rendered_trade}"
+        );
+
+        // Press 'g' to jump to listing #55 and arm exact non-preset qty = 2
+        let jump_out = st.handle_key(Key::Char('g'), false, false, &[], now);
+        assert!(jump_out.consumed);
+        assert_eq!(st.trade_subtab, 0);
+        assert_eq!(st.asks[st.cursor_row].listing_id, 55);
+        assert_eq!(st.active_trade_qty_setting(), 2);
+
+        // Press Enter to submit +market/quote 55=2
+        let buy_out = st.handle_key(Key::Enter, false, false, &[], now);
+        assert!(
+            buy_out.commands.iter().any(|c| c == "+market/quote 55=2"),
+            "expected exact quest qty quote '+market/quote 55=2', got {:?}",
+            buy_out.commands
+        );
+
+        // Switch to Sailing drawer and verify [QUEST] destination banner + 'g' corridor select
+        st.open_drawer(PortDrawerKind::Sailing, &[], &mut queries, now);
+        term.draw(|f| st.draw_drawer_box(f, f.area(), true))
+            .expect("draw sailing drawer");
+        let rendered_sail = term
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(
+            rendered_sail.contains("[QUEST] Dest: Stickney Yards (g:select)"),
+            "expected quest destination banner in Sailing drawer: {rendered_sail}"
+        );
+        assert!(
+            rendered_sail.contains("[Q] Stickney Yards"),
+            "expected [Q] tag on Stickney Yards corridor row: {rendered_sail}"
+        );
+
+        let dest_jump = st.handle_key(Key::Char('g'), false, false, &[], now);
+        assert!(dest_jump.consumed);
+        assert_eq!(CORRIDORS[st.corridor_idx].0, "stickney");
     }
 }
