@@ -30,6 +30,7 @@ namespace TacSim.UI
     {
         public event Action<PlayerAvatarPreset> OnAvatarPresetSelected;
         public event Action<string> OnCommandRequested;
+        public event Action<string> OnArenaActionRequested;
         public event Action OnOpenTradeTerminalRequested;
         public event Action OnOpenSailingPlanRequested;
         public event Action OnOpenSolarChartRequested;
@@ -67,6 +68,8 @@ namespace TacSim.UI
         // Ground & Arena tab
         private Text _surfaceRigText;
         private Text _arenaRigText;
+        private GameObject _standardGroundActionsRow;
+        private GameObject _arenaRigActionsRow;
 
         // Ruleset Sheet, Vitals & Tactical Unit Chassis tab (`*.sheet`, `*.vitals`, `*.unit`)
         private Text _rulesetSheetText;
@@ -92,6 +95,7 @@ namespace TacSim.UI
         public PlayerAvatarPreset SelectedAvatar => _selectedAvatar;
         public string PilotSummarySnapshot => _pilotSummaryText != null ? _pilotSummaryText.text : string.Empty;
         public string SpaceMountsSnapshot => _spaceMountsText != null ? _spaceMountsText.text : string.Empty;
+        public string ArenaRigDossierSnapshot => _arenaRigText != null ? _arenaRigText.text : string.Empty;
         public string RulesetSheetSnapshot => _rulesetSheetText != null ? _rulesetSheetText.text : string.Empty;
         public string UnitChassisSnapshot => _unitChassisText != null ? _unitChassisText.text : string.Empty;
 
@@ -294,21 +298,60 @@ namespace TacSim.UI
             _arenaRigText.supportRichText = true;
             SetRect(_arenaRigText.rectTransform, Vector2.zero, Vector2.one, new Vector2(12f, 10f), new Vector2(-12f, -10f));
 
-            var actRow = CreatePanel(body.transform, "GroundArenaActions", new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(12f, 14f), new Vector2(-12f, 56f), Color.clear);
-            var hlg = actRow.AddComponent<HorizontalLayoutGroup>();
+            _standardGroundActionsRow = CreatePanel(body.transform, "GroundArenaActions", new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(12f, 14f), new Vector2(-12f, 56f), Color.clear);
+            var hlg = _standardGroundActionsRow.AddComponent<HorizontalLayoutGroup>();
             hlg.spacing = 8f;
             hlg.childControlWidth = true;
             hlg.childControlHeight = true;
             hlg.childForceExpandWidth = true;
 
-            CreateButton(actRow.transform, "ROVER STATUS (+tv)", new Color(0.44f, 0.34f, 0.14f), () =>
+            CreateButton(_standardGroundActionsRow.transform, "ROVER STATUS (+tv)", new Color(0.44f, 0.34f, 0.14f), () =>
             {
                 int slot = _surface != null ? Mathf.Max(1, _surface.AddressedRigSlot) : 1;
                 OnCommandRequested?.Invoke($"+tv/{slot} status");
             });
-            CreateButton(actRow.transform, "ROVER SCAN", new Color(0.16f, 0.44f, 0.52f), () => OnCommandRequested?.Invoke("surface:scan"));
-            CreateButton(actRow.transform, "ARENA STATUS", new Color(0.46f, 0.20f, 0.24f), () => OnCommandRequested?.Invoke("status"));
-            CreateButton(actRow.transform, "SIM LOBBY", new Color(0.24f, 0.34f, 0.52f), () => OnCommandRequested?.Invoke("sim status"));
+            CreateButton(_standardGroundActionsRow.transform, "ROVER SCAN", new Color(0.16f, 0.44f, 0.52f), () => OnCommandRequested?.Invoke("surface:scan"));
+            CreateButton(_standardGroundActionsRow.transform, "ARENA STATUS", new Color(0.46f, 0.20f, 0.24f), () => OnCommandRequested?.Invoke("status"));
+            CreateButton(_standardGroundActionsRow.transform, "SIM LOBBY", new Color(0.24f, 0.34f, 0.52f), () => OnCommandRequested?.Invoke("sim status"));
+
+            _arenaRigActionsRow = CreatePanel(body.transform, "ArenaRigActions", new Vector2(0f, 0f), new Vector2(1f, 0f), new Vector2(12f, 14f), new Vector2(-12f, 56f), Color.clear);
+            var ahlg = _arenaRigActionsRow.AddComponent<HorizontalLayoutGroup>();
+            ahlg.spacing = 8f;
+            ahlg.childControlWidth = true;
+            ahlg.childControlHeight = true;
+            ahlg.childForceExpandWidth = true;
+
+            CreateButton(_arenaRigActionsRow.transform, "SCAN SECTOR", new Color(0.14f, 0.44f, 0.52f), () => DispatchArenaDossierAction("scan"));
+            CreateButton(_arenaRigActionsRow.transform, "EMCON TOGGLE", new Color(0.32f, 0.24f, 0.50f), () => DispatchArenaDossierAction("emcon"));
+            CreateButton(_arenaRigActionsRow.transform, "MIND CARD", new Color(0.16f, 0.42f, 0.36f), () => DispatchArenaDossierAction("mind_card"));
+            CreateButton(_arenaRigActionsRow.transform, "STATUS", new Color(0.46f, 0.22f, 0.22f), () => DispatchArenaDossierAction("status"));
+            CreateButton(_arenaRigActionsRow.transform, "MATCH HISTORY", new Color(0.24f, 0.34f, 0.48f), () => OnCommandRequested?.Invoke("sim history"));
+            _arenaRigActionsRow.SetActive(false);
+        }
+
+        public bool ClickArenaDossierActionForTests(string actionKey) => DispatchArenaDossierAction(actionKey);
+
+        private bool DispatchArenaDossierAction(string actionKey)
+        {
+            string k = (actionKey ?? string.Empty).Trim().ToLowerInvariant();
+            switch (k)
+            {
+                case "scan":
+                    OnArenaActionRequested?.Invoke("scan");
+                    return true;
+                case "emcon":
+                    bool silent = _arena?.State != null && _arena.State.EmconSilent;
+                    OnArenaActionRequested?.Invoke(silent ? "emcon on" : "emcon off");
+                    return true;
+                case "mind_card":
+                    OnArenaActionRequested?.Invoke("MIND CARD");
+                    return true;
+                case "status":
+                    OnArenaActionRequested?.Invoke("status");
+                    return true;
+                default:
+                    return false;
+            }
         }
 
         private void BuildRulesetAndUnitTab(Transform parent)
@@ -418,7 +461,15 @@ namespace TacSim.UI
             if (_modalRoot == null) return;
             _modalRoot.SetActive(open);
             if (open)
+            {
+                if (ActiveTab == CharacterSheetTab.Pilot &&
+                    (_activeStage == TacSimActiveStage.SimulatorArena || _activeStage == TacSimActiveStage.PlanetarySurface))
+                {
+                    SelectTab(CharacterSheetTab.GroundArena);
+                    return;
+                }
                 RefreshContents();
+            }
         }
 
         public void ToggleOpen() => SetOpen(!IsOpen);
@@ -669,38 +720,85 @@ namespace TacSim.UI
                 _surfaceRigText.text = sb.ToString();
             }
 
+            bool arenaLive = _arena != null && _arena.IsArenaActive && _arena.State != null;
+            if (_standardGroundActionsRow != null) _standardGroundActionsRow.SetActive(!arenaLive);
+            if (_arenaRigActionsRow != null) _arenaRigActionsRow.SetActive(arenaLive);
+
             if (_arenaRigText != null)
             {
-                var sb = new StringBuilder(384);
+                var sb = new StringBuilder(640);
                 sb.AppendLine("<color=#FF7766><b>OOC SIMULATOR COMBAT RIG</b></color>");
                 if (_arena != null && _arena.State != null)
                 {
                     var st = _arena.State;
-                    sb.AppendFormat("Callsign: <b>{0}</b> ({1})  |  Unit: <b>{2}</b>\n",
+                    var ti = _arena.CurrentTerrainIntel;
+                    string clockTxt = st.ArenaClockMs > 0 ? $" · {TacSimArenaReplayModel.FormatClockText(st.ArenaClockMs)}" : string.Empty;
+                    string matchTag = st.MatchId > 0 ? $"MATCH #{st.MatchId}{clockTxt}  |  " : string.Empty;
+                    sb.AppendFormat("{0}Callsign: <b>{1}</b> ({2})  |  Unit: <b>{3}</b>\n",
+                        matchTag,
                         MushProtocol.EscapeUnityRichText(st.Callsign),
                         MushProtocol.EscapeUnityRichText(st.Party),
-                        MushProtocol.EscapeUnityRichText(st.UnitType));
-                    sb.AppendFormat("Active: <b>{0}</b>  |  Power: <b>{1}</b>  |  Heat: <b>{2}/{3}</b>\n",
-                        _arena.IsArenaActive ? "LIVE MATCH" : "LOBBY / STANDBY",
-                        MushProtocol.EscapeUnityRichText(st.Power.ToUpperInvariant()),
+                        MushProtocol.EscapeUnityRichText((st.UnitType ?? string.Empty).Replace("tacsim.unit.", string.Empty)));
+
+                    int shots = st.MatchHits + st.MatchMisses;
+                    int accPct = shots > 0 ? Mathf.RoundToInt((st.MatchHits * 100f) / shots) : 0;
+                    sb.AppendFormat("Mode: <b>{0}</b> (RED {1} vs BLUE {2})  |  Posture: <b>{3}</b>\n",
+                        MushProtocol.EscapeUnityRichText((st.Mode ?? "skirmish").ToUpperInvariant()),
+                        st.RedAliveCount,
+                        st.BlueAliveCount,
+                        MushProtocol.EscapeUnityRichText((st.Posture ?? "return").ToUpperInvariant()));
+                    sb.AppendFormat("Power: <b>{0}</b>  |  Heat: <b>{1}/{2}</b>  |  Score: <b>{3}K</b> {4}/{5}H ({6}%)\n",
+                        MushProtocol.EscapeUnityRichText((st.Power ?? "online").ToUpperInvariant()),
                         st.Heat,
-                        st.HeatMax);
+                        st.HeatMax,
+                        st.MatchKills,
+                        st.MatchHits,
+                        shots,
+                        accPct);
+
+                    string ecmTxt = !st.HasEcm
+                        ? "NO ECM"
+                        : (st.EmconSilent ? "ECM POD: SILENT" : $"ECM POD: ACTIVE ({st.EcmRadiusMeters:0}m)");
+                    string rcvrTxt = st.HasReceiver ? $"  |  RCVR {st.ReceiverReachPercent}%" : string.Empty;
+                    string coverTxt = !string.IsNullOrEmpty(ti.CoverLabel) ? ti.CoverLabel : "OPEN";
+                    string losTxt = ti.HasTargetSample
+                        ? (ti.IsLineOfSightObstructed ? $" · {ti.LineOfSightStatus} LOS" : " · CLEAR LOS")
+                        : string.Empty;
+                    sb.AppendFormat("Sensors: <b>{0:0}m</b> ({1})  |  {2}{3}\n",
+                        st.SightMeters,
+                        MushProtocol.EscapeUnityRichText((st.Scope ?? "clear").ToUpperInvariant()),
+                        ecmTxt,
+                        rcvrTxt);
+                    sb.AppendFormat("Terrain: <b>{0}</b>{1}\n",
+                        MushProtocol.EscapeUnityRichText(coverTxt),
+                        MushProtocol.EscapeUnityRichText(losTxt));
                     sb.AppendFormat("Armor: <b>F {0}%</b> | <b>L {1}%</b> | <b>R {2}%</b> | <b>B {3}%</b> | <b>INT {4}%</b>\n",
                         st.ArmorFrontPct, st.ArmorLeftPct, st.ArmorRightPct, st.ArmorRearPct, st.InternalsPct);
                     if (!string.IsNullOrEmpty(st.LockedDesignator))
                         sb.AppendFormat("Locked Target: <color=#FFCC55><b>{0}</b></color> ({1:0} m, {2}% hit)\n",
                             MushProtocol.EscapeUnityRichText(st.LockedDesignator), st.LockRangeM, st.LockHitPercent);
 
+                    if (st.Mind != null)
+                    {
+                        string mindTitle = string.IsNullOrWhiteSpace(st.Mind.Name) ? "OWN MIND" : st.Mind.Name;
+                        string prof = string.IsNullOrWhiteSpace(st.Mind.ActiveProfileName) ? "DEFAULT" : st.Mind.ActiveProfileName;
+                        sb.AppendFormat("Mind: <b>{0}</b> [Profile: <b>{1}</b> · Rules: {2}]\n",
+                            MushProtocol.EscapeUnityRichText(mindTitle),
+                            MushProtocol.EscapeUnityRichText(prof),
+                            st.Rules.Count);
+                    }
+
                     if (st.Weapons.Count > 0)
                     {
                         sb.AppendLine("\n<color=#88DDFF><b>WEAPONS:</b></color>");
-                        int count = Mathf.Min(st.Weapons.Count, 5);
+                        int count = Mathf.Min(st.Weapons.Count, 4);
                         for (int i = 0; i < count; i++)
                         {
                             var w = st.Weapons[i];
                             string rdy = w.Ready ? "RDY" : $"{w.ReadyInMs / 1000f:0.1}s";
-                            sb.AppendFormat("• {0}: {1} | Ammo {2}/{3} | Hit {4}%\n",
-                                MushProtocol.EscapeUnityRichText(w.Id ?? $"W{i + 1}"), rdy, w.Rounds, w.RoundsMax, w.HitPercent);
+                            string bandInfo = w.MaxRangeM > 1f ? $" · {w.MaxRangeM:0}m" : string.Empty;
+                            sb.AppendFormat("• {0}: {1} | Ammo {2}/{3} | Hit {4}%{5}\n",
+                                MushProtocol.EscapeUnityRichText(w.Id ?? $"W{i + 1}"), rdy, w.Rounds, w.RoundsMax, w.HitPercent, bandInfo);
                         }
                     }
                 }
