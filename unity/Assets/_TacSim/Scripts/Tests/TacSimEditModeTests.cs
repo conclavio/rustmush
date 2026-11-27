@@ -10058,5 +10058,91 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ArenaCockpitContactAspectBadgesLockBestAndSectionBreakdown_SortFormatAndDispatch()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave18PR2_CockpitAspectBadgesAndSectionsTest");
+            try
+            {
+                var arenaGo = new UnityEngine.GameObject("ArenaHudBadgesCtrl");
+                arenaGo.transform.SetParent(rootGo.transform, false);
+                var arena = arenaGo.AddComponent<TacSim.Arena.OocArenaController>();
+                arena.BuildArenaTerrain(TacSimAssetCatalog.LoadOrDefault(), TacSimTerrainDecoder.LoadStaticArena("proving_ground"));
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.Overlays.BindControllers(null, arena, null);
+
+                var verbs = new List<string>();
+                hud.Overlays.OnArenaCockpitVerbRequested += verbs.Add;
+
+                // 1. Live cockpit with multi-section armor & mixed contacts (B2 has higher hit odds + rear aspect than B1)
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""seated"": true, ""match"": 412, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""power"": ""online"",
+                    ""x_cm"": 12000, ""y_cm"": 12000, ""heading_deg"": 90,
+                    ""sections"": [
+                        { ""id"": ""hull"", ""condition"": ""intact"", ""internals"": 100, ""internals_max"": 100, ""facets"": [{ ""id"": ""front"", ""armor"": 400, ""armor_max"": 400 }] },
+                        { ""id"": ""turret"", ""condition"": ""scarred"", ""internals"": 74, ""internals_max"": 100, ""facets"": [] },
+                        { ""id"": ""drive"", ""condition"": ""crippled"", ""internals"": 40, ""internals_max"": 100, ""facets"": [] }
+                    ],
+                    ""contacts"": [
+                        { ""designator"": ""R2"", ""class"": ""line_tank"", ""party"": ""R"", ""friendly"": true, ""cell"": [13, 12], ""range_m"": 80, ""aspect"": ""front"", ""health"": ""intact"" },
+                        { ""designator"": ""B1"", ""class"": ""heavy_mk1"", ""party"": ""B"", ""friendly"": false, ""cell"": [20, 12], ""range_m"": 160, ""aspect"": ""left"", ""band"": ""medium"", ""odds"": [{ ""weapon"": ""cannon"", ""percent"": 48 }], ""health"": ""scarred"" },
+                        { ""designator"": ""B2"", ""class"": ""scout_mk1"", ""party"": ""B"", ""friendly"": false, ""cell"": [24, 14], ""range_m"": 210, ""aspect"": ""rear"", ""band"": ""close"", ""moving"": true, ""odds"": [{ ""weapon"": ""cannon"", ""percent"": 86 }], ""health"": ""intact"" },
+                        { ""designator"": ""B3"", ""class"": ""line_tank"", ""party"": ""B"", ""friendly"": false, ""cell"": [18, 16], ""range_m"": 110, ""aspect"": ""front"", ""health"": ""wreck"", ""reads_dead"": true }
+                    ]
+                }"));
+                hud.Overlays.RefreshArenaHud();
+
+                // Highest hit-odds hostile B2 sorts ahead of B1, followed by friendly R2 and wreck B3
+                string row0 = hud.Overlays.GetArenaContactRowLabelForTests(0);
+                string row1 = hud.Overlays.GetArenaContactRowLabelForTests(1);
+                string row2 = hud.Overlays.GetArenaContactRowLabelForTests(2);
+                string row3 = hud.Overlays.GetArenaContactRowLabelForTests(3);
+                StringAssert.Contains("B2", row0);
+                StringAssert.Contains("REAR", row0);
+                StringAssert.Contains("CLOSE", row0);
+                StringAssert.Contains("86%", row0);
+                StringAssert.Contains("▶", row0);
+                StringAssert.Contains("B1", row1);
+                StringAssert.Contains("LEFT", row1);
+                StringAssert.Contains("MED", row1);
+                StringAssert.Contains("48%", row1);
+                StringAssert.Contains("R2", row2);
+                StringAssert.Contains("B3", row3);
+
+                // 1-click LOCK BEST button targets B2 and dispatches verified `lock B2` verb
+                Assert.IsTrue(hud.Overlays.IsLockBestHostileInteractable);
+                StringAssert.Contains("B2", hud.Overlays.LockBestHostileButtonSnapshot);
+                StringAssert.Contains("86%", hud.Overlays.LockBestHostileButtonSnapshot);
+                Assert.IsTrue(hud.Overlays.ClickLockBestHostileForTests());
+                CollectionAssert.AreEqual(new[] { "lock B2" }, verbs);
+
+                // Own-platform card renders per-section internal integrity breakdown
+                StringAssert.Contains("SECTIONS:", hud.Overlays.ArenaOwnArmorSnapshot);
+                StringAssert.Contains("HULL 100%", hud.Overlays.ArenaOwnArmorSnapshot);
+                StringAssert.Contains("TURRET 74%", hud.Overlays.ArenaOwnArmorSnapshot);
+                StringAssert.Contains("DRIVE 40%", hud.Overlays.ArenaOwnArmorSnapshot);
+
+                // 2. When no live hostiles remain, LOCK BEST becomes non-interactable cleanly
+                arena.ApplyLiveCockpitFrame(JsonNode.Parse(@"{
+                    ""seated"": true, ""match"": 412, ""callsign"": ""R1"", ""party"": ""R"",
+                    ""unit_type"": ""tacsim.unit.line_tank"", ""power"": ""online"",
+                    ""x_cm"": 12000, ""y_cm"": 12000, ""heading_deg"": 90,
+                    ""contacts"": [
+                        { ""designator"": ""R2"", ""class"": ""line_tank"", ""party"": ""R"", ""friendly"": true, ""cell"": [13, 12], ""range_m"": 80, ""health"": ""intact"" }
+                    ]
+                }"));
+                hud.Overlays.RefreshArenaHud();
+                Assert.IsFalse(hud.Overlays.IsLockBestHostileInteractable);
+                StringAssert.Contains("NO HOSTILES", hud.Overlays.LockBestHostileButtonSnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

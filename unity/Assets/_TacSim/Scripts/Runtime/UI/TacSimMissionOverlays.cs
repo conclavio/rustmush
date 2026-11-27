@@ -141,6 +141,21 @@ namespace TacSim.UI
 
         private const int MaxPooledContactRows = 8;
         private readonly List<PooledContactRow> _contactRowPool = new List<PooledContactRow>(MaxPooledContactRows);
+        private readonly List<ArenaContactState> _sortedContactsScratch = new List<ArenaContactState>(24);
+        private Button _lockBestHostileBtn;
+        private Text _lockBestHostileBtnLabel;
+        private string _bestHostileDesignator = string.Empty;
+
+        public string ArenaOwnArmorSnapshot => _arenaOwnArmorText != null ? _arenaOwnArmorText.text : string.Empty;
+        public string LockBestHostileButtonSnapshot => _lockBestHostileBtnLabel != null ? _lockBestHostileBtnLabel.text : string.Empty;
+        public bool IsLockBestHostileInteractable => _lockBestHostileBtn != null && _lockBestHostileBtn.interactable;
+        public bool ClickLockBestHostileForTests() => HandleLockBestHostileClick();
+        public string GetArenaContactRowLabelForTests(int index)
+        {
+            if (index < 0 || index >= _contactRowPool.Count || _contactRowPool[index].Root == null || !_contactRowPool[index].Root.activeSelf)
+                return string.Empty;
+            return _contactRowPool[index].Label != null ? (_contactRowPool[index].Label.text ?? string.Empty) : string.Empty;
+        }
 
         // OOC Arena Standing Auto-Lock / Auto-Fire Rules & Pooled Per-Weapon Fire Deck
         private Button _autoLockRuleBtn;
@@ -1234,8 +1249,14 @@ namespace TacSim.UI
             SetRect(_arenaBannerText.rectTransform, new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(-420f, -206f), new Vector2(420f, -166f));
 
             var tacCard = CreatePanel(_arenaBattleHudRoot.transform, "ArenaContactsPanel", new Vector2(1f, 1f), new Vector2(1f, 1f), new Vector2(-390f, -422f), new Vector2(-16f, -74f), new Color(0.03f, 0.07f, 0.12f, 0.90f));
-            var cHdr = CreateTxt(tacCard.transform, "SENSORS & CLICK-TO-LOCK CONTACTS", 13, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.55f, 0.90f, 1f));
-            SetRect(cHdr.rectTransform, new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(10f, -28f), new Vector2(-10f, -4f));
+            var cHdr = CreateTxt(tacCard.transform, "SENSORS & CONTACTS", 13, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(0.55f, 0.90f, 1f));
+            SetRect(cHdr.rectTransform, new Vector2(0f, 1f), new Vector2(0.56f, 1f), new Vector2(10f, -28f), new Vector2(-4f, -4f));
+
+            _lockBestHostileBtn = CreateBtn(tacCard.transform, "NO HOSTILES", new Color(0.58f, 0.22f, 0.16f), () => HandleLockBestHostileClick());
+            SetRect(_lockBestHostileBtn.GetComponent<RectTransform>(), new Vector2(0.57f, 1f), new Vector2(1f, 1f), new Vector2(2f, -28f), new Vector2(-8f, -4f));
+            _lockBestHostileBtnLabel = _lockBestHostileBtn.GetComponentInChildren<Text>();
+            if (_lockBestHostileBtnLabel != null) _lockBestHostileBtnLabel.fontSize = 10;
+            _lockBestHostileBtn.interactable = false;
 
             var spotsBar = CreatePanel(tacCard.transform, "KeySpotsDriveBar", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(8f, -62f), new Vector2(-8f, -32f), Color.clear);
             var spHlg = spotsBar.AddComponent<HorizontalLayoutGroup>();
@@ -1265,6 +1286,13 @@ namespace TacSim.UI
                 pooled.Button = btn;
                 pooled.Background = btn.GetComponent<Image>();
                 pooled.Label = btn.GetComponentInChildren<Text>();
+                if (pooled.Label != null)
+                {
+                    pooled.Label.fontSize = 10;
+                    pooled.Label.supportRichText = true;
+                    pooled.Label.alignment = TextAnchor.MiddleLeft;
+                    SetRect(pooled.Label.rectTransform, Vector2.zero, Vector2.one, new Vector2(6f, 0f), new Vector2(-6f, 0f));
+                }
                 pooled.Root.SetActive(false);
                 _contactRowPool.Add(pooled);
             }
@@ -1589,11 +1617,34 @@ namespace TacSim.UI
             string safeCallsign = MushProtocol.EscapeUnityRichText(s.Callsign ?? string.Empty);
             string safeUnit = MushProtocol.EscapeUnityRichText((s.UnitType ?? string.Empty).Replace("tacsim.unit.", ""));
             string safePower = MushProtocol.EscapeUnityRichText((s.Power ?? string.Empty).ToUpperInvariant());
+            string sectionsLine = string.Empty;
+            if (s.Sections.Count > 0)
+            {
+                var secSb = new StringBuilder(128);
+                secSb.Append("\nSECTIONS: ");
+                int secCap = Mathf.Min(s.Sections.Count, 4);
+                for (int si = 0; si < secCap; si++)
+                {
+                    if (si > 0) secSb.Append(" | ");
+                    var sec = s.Sections[si];
+                    int pct = sec.InternalsMax > 0 ? Mathf.Clamp(Mathf.RoundToInt(sec.Internals * 100f / sec.InternalsMax), 0, 100) : 0;
+                    string sCol = pct <= 0 || string.Equals(sec.Condition, "destroyed", StringComparison.OrdinalIgnoreCase)
+                        ? "#888894"
+                        : (pct < 45 || string.Equals(sec.Condition, "crippled", StringComparison.OrdinalIgnoreCase)
+                            ? "#FF5544"
+                            : (pct < 80 || string.Equals(sec.Condition, "scarred", StringComparison.OrdinalIgnoreCase) ? "#FFCC55" : "#55FF99"));
+                    string sName = MushProtocol.EscapeUnityRichText((sec.Id ?? "SEC").Replace("_", " ").ToUpperInvariant());
+                    if (sName.Length > 7) sName = sName.Substring(0, 7);
+                    secSb.Append($"<color={sCol}><b>{sName} {pct}%</b></color>");
+                }
+                sectionsLine = secSb.ToString();
+            }
+            _arenaOwnArmorText.fontSize = s.Sections.Count > 0 ? 10 : 11;
             _arenaOwnArmorText.text =
                 $"<color={pCol}><b>{safeCallsign}</b></color> [{safeUnit}]   PWR: <color={pwrCol}><b>{safePower}</b></color>  {gateTag}\n" +
                 $"SPD: <b>{s.SpeedKph:0} kph</b> <color=#99CCEE>(SET {setKph:0})</color>   HDG: <b>{s.HeadingDeg:000}°</b>   HEAT: <b>{s.Heat}/{s.HeatMax}</b>\n" +
                 $"ARMOR — F: <b>{s.ArmorFrontPct}%</b> | L: <b>{s.ArmorLeftPct}%</b> | R: <b>{s.ArmorRightPct}%</b> | AFT: <b>{s.ArmorRearPct}%</b>\n" +
-                $"INTERNAL STRUCTURE: <b>{s.InternalsPct}%</b>{(s.IsWreck ? "  <color=#FF4444>[WRECKED]</color>" : "")}";
+                $"INTERNAL STRUCTURE: <b>{s.InternalsPct}%</b>{(s.IsWreck ? "  <color=#FF4444>[WRECKED]</color>" : "")}{sectionsLine}";
 
             if (s.Weapons.Count > 0)
             {
@@ -2413,36 +2464,105 @@ namespace TacSim.UI
             UpdateAdvanceButtonVisual();
         }
 
+        private bool HandleLockBestHostileClick()
+        {
+            if (!MushProtocol.TryValidateSafeCommandToken(_bestHostileDesignator, out string safeDesig))
+                return false;
+            OnArenaCockpitVerbRequested?.Invoke($"lock {safeDesig}");
+            return true;
+        }
+
         private void UpdatePooledContactRows(ArenaCockpitState s)
         {
             if (_contactRowPool.Count == 0) return;
 
-            int shown = 0;
-            for (int pass = 0; pass < 2 && shown < _contactRowPool.Count; pass++)
+            _sortedContactsScratch.Clear();
+            if (s?.Contacts != null)
             {
-                for (int i = 0; i < s.Contacts.Count && shown < _contactRowPool.Count; i++)
+                for (int i = 0; i < s.Contacts.Count; i++)
                 {
-                    var c = s.Contacts[i];
-                    if (pass == 0 && (c.Friendly || c.IsWreck)) continue;
-                    if (pass == 1 && (!c.Friendly && !c.IsWreck)) continue;
-
-                    bool isLocked = string.Equals(s.LockedDesignator, c.Designator, StringComparison.OrdinalIgnoreCase);
-                    Color rowBg = c.IsWreck ? new Color(0.18f, 0.16f, 0.16f, 0.85f)
-                                : isLocked ? new Color(0.62f, 0.38f, 0.10f, 0.96f)
-                                : c.Friendly ? new Color(0.10f, 0.24f, 0.36f, 0.90f)
-                                : new Color(0.42f, 0.14f, 0.16f, 0.92f);
-
-                    string odds = (!c.Friendly && !c.IsWreck) ? $" | {c.HitOddsPct}%" : string.Empty;
-                    string label = $"{(isLocked ? ">> " : "")}{c.Designator} [{c.ClassLabel}] {(int)c.RangeM}m {c.HealthWord.ToUpperInvariant()}{odds}";
-
-                    var slot = _contactRowPool[shown];
-                    slot.BoundDesignator = c.Designator;
-                    slot.CanLock = !c.Friendly && !c.IsWreck;
-                    if (slot.Background != null) slot.Background.color = rowBg;
-                    if (slot.Label != null) slot.Label.text = label;
-                    if (slot.Root != null && !slot.Root.activeSelf) slot.Root.SetActive(true);
-                    shown++;
+                    if (s.Contacts[i] != null)
+                        _sortedContactsScratch.Add(s.Contacts[i]);
                 }
+            }
+
+            _sortedContactsScratch.Sort((a, b) =>
+            {
+                int ba = a.IsWreck ? 2 : (a.Friendly ? 1 : 0);
+                int bb = b.IsWreck ? 2 : (b.Friendly ? 1 : 0);
+                int cmp = ba.CompareTo(bb);
+                if (cmp != 0) return cmp;
+                if (ba == 0)
+                {
+                    int oddsCmp = b.HitOddsPct.CompareTo(a.HitOddsPct);
+                    if (oddsCmp != 0) return oddsCmp;
+                }
+                return a.RangeM.CompareTo(b.RangeM);
+            });
+
+            ArenaContactState bestHostile = null;
+            for (int i = 0; i < _sortedContactsScratch.Count; i++)
+            {
+                var c = _sortedContactsScratch[i];
+                if (!c.Friendly && !c.IsWreck)
+                {
+                    bestHostile = c;
+                    break;
+                }
+            }
+
+            _bestHostileDesignator = bestHostile != null ? (bestHostile.Designator ?? string.Empty) : string.Empty;
+            if (_lockBestHostileBtn != null)
+                _lockBestHostileBtn.interactable = bestHostile != null && !s.IsWreck;
+            if (_lockBestHostileBtnLabel != null)
+            {
+                _lockBestHostileBtnLabel.text = bestHostile != null
+                    ? (bestHostile.HitOddsPct > 0 ? $"BEST: {bestHostile.Designator} ({bestHostile.HitOddsPct}%)" : $"BEST: {bestHostile.Designator}")
+                    : "NO HOSTILES";
+            }
+
+            int shown = Mathf.Min(_sortedContactsScratch.Count, _contactRowPool.Count);
+            for (int i = 0; i < shown; i++)
+            {
+                var c = _sortedContactsScratch[i];
+                bool isLocked = string.Equals(s.LockedDesignator, c.Designator, StringComparison.OrdinalIgnoreCase);
+                Color rowBg = c.IsWreck ? new Color(0.18f, 0.16f, 0.16f, 0.85f)
+                            : isLocked ? new Color(0.62f, 0.38f, 0.10f, 0.96f)
+                            : c.Friendly ? new Color(0.10f, 0.24f, 0.36f, 0.90f)
+                            : new Color(0.42f, 0.14f, 0.16f, 0.92f);
+
+                string safeDesig = MushProtocol.EscapeUnityRichText(c.Designator ?? string.Empty);
+                string safeClass = MushProtocol.EscapeUnityRichText(c.ClassLabel ?? "unit");
+                string safeHealth = MushProtocol.EscapeUnityRichText((c.HealthWord ?? (c.IsWreck ? "wreck" : "intact")).ToUpperInvariant());
+                string moveMark = (!c.IsWreck && c.Moving) ? " ▶" : string.Empty;
+
+                string aspectBadge = string.Empty;
+                if (!c.Friendly && !c.IsWreck && !string.IsNullOrEmpty(c.Aspect))
+                {
+                    string aspUp = c.Aspect.Trim().ToUpperInvariant();
+                    if (aspUp == "REAR")
+                        aspectBadge = " <color=#FFEE55><b>REAR</b></color>";
+                    else if (aspUp == "LEFT" || aspUp == "RIGHT" || aspUp == "FLANK")
+                        aspectBadge = $" <color=#FFAA44><b>{aspUp}</b></color>";
+                }
+
+                string bandBadge = string.Empty;
+                if (!c.IsWreck && !string.IsNullOrEmpty(c.Band))
+                {
+                    string bLow = c.Band.Trim().ToLowerInvariant();
+                    string bShort = bLow == "medium" ? "MED" : bLow.ToUpperInvariant();
+                    bandBadge = $" <color=#88CCEE>{MushProtocol.EscapeUnityRichText(bShort)}</color>";
+                }
+
+                string odds = (!c.Friendly && !c.IsWreck) ? $" | <color=#88FFAA><b>{c.HitOddsPct}%</b></color>" : string.Empty;
+                string label = $"{(isLocked ? "<color=#FFEE55>>> </color>" : "")}<b>{safeDesig}</b>{moveMark} [{safeClass}] {(int)c.RangeM}m{bandBadge}{aspectBadge} {safeHealth}{odds}";
+
+                var slot = _contactRowPool[i];
+                slot.BoundDesignator = c.Designator;
+                slot.CanLock = !c.Friendly && !c.IsWreck;
+                if (slot.Background != null) slot.Background.color = rowBg;
+                if (slot.Label != null) slot.Label.text = label;
+                if (slot.Root != null && !slot.Root.activeSelf) slot.Root.SetActive(true);
             }
 
             for (int r = shown; r < _contactRowPool.Count; r++)
