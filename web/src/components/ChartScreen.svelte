@@ -24,6 +24,7 @@
     scaleCaption,
     windowLines,
     type ChartPoint,
+    type ChartRoute,
   } from "$lib/chart";
   import { expandRows } from "$lib/stores/map.svelte";
 
@@ -31,6 +32,7 @@
 
   const frame = $derived(app.chart.frame);
   const chart = $derived(frame?.chart ?? null);
+  const questDest = $derived(app.quests?.activeDestinationPort ?? null);
 
   /** The picture's size in its own units; it scales to the pane. */
   const SIZE = 640;
@@ -47,6 +49,7 @@
 
   const RING = "#3a3f4a";
   const ROUTE = "#c2a86b";
+  const QUEST_GOLD = "#ffd84d";
   const HERE = "#f2c94c";
   const BODY = "#9fc4d8";
   const MOON = "#6b7a88";
@@ -55,6 +58,38 @@
   const rings = $derived(
     chart ? LAG_RING_MINUTES.map((minutes) => ({ minutes, points: lagRing(chart, minutes, SIZE) })) : [],
   );
+
+  function isQuestRoute(r: ChartRoute | undefined): boolean {
+    if (!r || !questDest) return false;
+    const pid = questDest.portId.toLowerCase();
+    return r.to.toLowerCase() === pid || r.venue.toLowerCase() === pid;
+  }
+
+  const questBodyIds = $derived.by(() => {
+    const out = new Set<string>();
+    if (!chart || !questDest) return out;
+    const pid = questDest.portId.toLowerCase();
+    out.add(pid);
+    for (const r of chart.routes) {
+      if (r.to.toLowerCase() === pid || r.venue.toLowerCase() === pid) {
+        out.add(r.body.toLowerCase());
+      }
+    }
+    for (const b of chart.bodies) {
+      if (out.has(b.id.toLowerCase()) && b.parent) {
+        out.add(b.parent.toLowerCase());
+      }
+    }
+    return out;
+  });
+
+  function prefillQuestPlan(): void {
+    if (!questDest) return;
+    if (app.tacsim) {
+      app.tacsim.selectedDestination = questDest.portId;
+    }
+    app.focusComposer?.(`+ship/plan ${questDest.portId}`);
+  }
 </script>
 
 <div class="chart">
@@ -64,6 +99,16 @@
     </p>
   {:else}
     <h2>{heading}</h2>
+    {#if questDest}
+      <div class="quest-dest-banner" role="status" aria-label="active quest destination">
+        <span class="qbadge">[QUEST]</span>
+        <strong>Destination: {questDest.portLabel}</strong>
+        <span class="muted">— {questDest.questTitle}</span>
+        <button type="button" class="qplan-btn" onclick={prefillQuestPlan}>
+          Plan +ship/plan {questDest.portId}
+        </button>
+      </div>
+    {/if}
     <div class="row">
       <div class="picture">
         {#if flat}
@@ -91,27 +136,38 @@
             {/each}
             {#each chart.routes as r (r.to)}
               {@const line = routePolyline(r, points)}
+              {@const qRoute = isQuestRoute(r)}
               {#if line.length > 1}
                 <polyline
                   points={line.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ")}
                   fill="none"
-                  stroke={ROUTE}
-                  stroke-width="1.5"
-                  stroke-dasharray="4 3"
+                  stroke={qRoute ? QUEST_GOLD : ROUTE}
+                  stroke-width={qRoute ? "2.5" : "1.5"}
+                  stroke-dasharray={qRoute ? undefined : "4 3"}
+                  data-quest-route={qRoute ? r.to : undefined}
                 />
               {/if}
             {/each}
             <circle cx={SIZE / 2} cy={SIZE / 2} r="5" fill="#f5d36b" />
             {#each chart.bodies as b (b.id)}
               {@const p = pointOf.get(b.id)}
+              {@const qBody = questBodyIds.has(b.id.toLowerCase())}
               {#if p && b.parent === null}
                 <circle cx={p.x} cy={p.y} r={b.here ? 6 : 4} fill={b.here ? HERE : BODY} />
                 {#if b.here}
                   <circle cx={p.x} cy={p.y} r="11" fill="none" stroke={HERE} stroke-width="1.5" />
                 {/if}
-                <text x={p.x + 8} y={p.y - 6} fill={b.here ? HERE : BODY} font-size="13">{b.label}</text>
+                {#if qBody}
+                  <circle cx={p.x} cy={p.y} r="13.5" fill="none" stroke={QUEST_GOLD} stroke-width="2" data-quest-body={b.id} />
+                  <circle cx={p.x} cy={p.y} r="16.5" fill="none" stroke="#fef08a" stroke-width="1" opacity="0.7" />
+                {/if}
+                <text x={p.x + 8} y={p.y - 6} fill={qBody ? QUEST_GOLD : b.here ? HERE : BODY} font-size="13">
+                  {qBody ? `[!] ${b.label}` : b.label}
+                </text>
               {:else if p}
-                <text x={p.x + 8} y={p.y + 12} fill={MOON} font-size="10">{b.label}</text>
+                <text x={p.x + 8} y={p.y + 12} fill={qBody ? QUEST_GOLD : MOON} font-size="10">
+                  {qBody ? `[!] ${b.label}` : b.label}
+                </text>
               {/if}
             {/each}
           </svg>
@@ -129,7 +185,10 @@
           <h3>passages now</h3>
           <ul>
             {#each routes as line, i (i)}
-              <li>{line}</li>
+              {@const qRow = isQuestRoute(chart.routes[i])}
+              <li class:quest-row={qRow}>
+                {#if qRow}<span class="qbadge">[QUEST]</span> {/if}{line}
+              </li>
             {/each}
           </ul>
         {/if}
@@ -152,6 +211,44 @@
     overflow: auto;
     height: 100%;
     box-sizing: border-box;
+  }
+  .quest-dest-banner {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0.65rem;
+    margin: 0 0 0.6rem;
+    border-radius: 6px;
+    border: 1px solid #d4a64a;
+    background: rgba(212, 166, 74, 0.14);
+    color: #fef3c7;
+    font-size: 0.84rem;
+  }
+  .qbadge {
+    color: #ffd84d;
+    font-weight: 700;
+    font-family: var(--font-mono, monospace);
+    font-size: 0.78rem;
+  }
+  .qplan-btn {
+    margin-left: auto;
+    border: 1px solid #d4a64a;
+    border-radius: 4px;
+    background: rgba(212, 166, 74, 0.24);
+    color: #fef3c7;
+    font: inherit;
+    font-size: 0.78rem;
+    font-weight: 600;
+    padding: 0.15rem 0.55rem;
+    cursor: pointer;
+  }
+  .qplan-btn:hover {
+    background: rgba(212, 166, 74, 0.38);
+  }
+  .tables li.quest-row {
+    color: #fde68a;
+    font-weight: 600;
   }
   h2 {
     font-size: 1rem;
