@@ -1,0 +1,336 @@
+{
+  "manifest": {
+    "id": "tacsim.quests.guided_onboarding",
+    "version": 1,
+    "kind": "campaign_seed",
+    "digest": "12d9bd4653ee9defad6aeca917e3dcc8f4e55f5283fa1a41819aa50328572be9",
+    "requires": [
+      { "id": "neighborhood.ceres_freeport", "version": 4 },
+      { "id": "neighborhood.stickney_yards", "version": 4 }
+    ]
+  },
+  "brief": {
+    "prose": "An optional seven-part guided onboarding chain beginning at Port Watch Arrivals on Ceres Freeport. Maren Halvorsen welcomes new arrivals and walks them step by step through Co-op enrollment, provisioning and fueling a Dray, trading metals down the corridor to Stickney Yards, hauling fittings back to Ceres, refitting for surface mining, scanning and mining carbon ore at a landing site, and delivering that mined ore to Stickney Yards. Every activity remains open without taking these quests, and any guided quest can be abandoned and accepted again later."
+  },
+  "entries": {
+    "npc.maren_halvorsen": {
+      "kind": "npc",
+      "def": {
+        "name": "Maren Halvorsen",
+        "room_pack": "neighborhood.ceres_freeport",
+        "room": "room.c03_arrivals",
+        "tier": "minor",
+        "profile": {
+          "persona": "Port Watch Orientation Steward at Ceres Freeport Arrivals. Keeps a laminated corridor handbook clipped to her belt and welcomes newly arrived pilots with brisk, warm clarity. Explains how the Freeport works without ever pressuring anyone into a contract.",
+          "background": "Twenty years on the Ceres berth deck and Registry intake desk before taking the arrivals welcome watch. Knows every merchant, harbor clerk, and mining surveyor on the station by first name.",
+          "speech_style": "Clear, encouraging, and practical. Names exact rooms and commands without jargon. Reminds newcomers that every job in the corridor is optional.",
+          "goals": [
+            "Welcome newly arrived pilots in Port Watch Arrivals and point them toward the optional guided orientation quest line.",
+            "Use quest.status and quest.offer to show accurate quest availability and commands; never claim someone has enrolled or accepted a quest from dialogue alone."
+          ],
+          "knows": [
+            "Port Watch Arrivals connects directly into Ceres Freeport Concourse, with the Registry & Co-op Desk nearby for First Captain enrollment.",
+            "New pilots can enroll with the Belt Co-op at the Registry & Co-op Desk (+coop, +coop/enroll <ship name>) to charter a Dray bulk hauler.",
+            "Every guided quest is optional and can be abandoned and restarted at any time."
+          ],
+          "does_not_know": [
+            "A pilot's private credit balance, cargo manifest, or quest progress until the service checks it.",
+            "Live market prices at distant ports without checking the boards."
+          ],
+          "interfaces": ["quest", "help", "atlas"],
+          "command_refs": ["+quest", "+coop", "+atlas"],
+          "fallback": [
+            "Welcome to Ceres Freeport! I run the orientation desk here in Arrivals. Open my quest dialog or type +quest/offer Maren if you want a step-by-step tour of the corridor.",
+            "Head over to the Registry & Co-op Desk when you are ready to look over the First Captain charter terms (+coop). Everything here is optional."
+          ]
+        },
+        "lore": [
+          {
+            "tier": "public",
+            "subject": "Freeport orientation",
+            "fact": "Maren Halvorsen staffs the orientation desk at Port Watch Arrivals to help new pilots find the Registry, the Chandlery, the Exchange Hall, and the corridor trade lanes.",
+            "source": "Port Watch Arrivals noticeboard."
+          }
+        ],
+        "tags": ["corridor_trade", "port_ceres"]
+      }
+    },
+    "quest.guide_01_coop_enroll": {
+      "kind": "quest",
+      "def": {
+        "npc": "npc.maren_halvorsen",
+        "turn_in_npc": "npc.oduya",
+        "turn_in_npc_pack": "neighborhood.ceres_freeport",
+        "turn_in_destination": "ceres",
+        "prerequisite": "open",
+        "category": "guided",
+        "allow_restart": true,
+        "reward_summary": "Guided Tour Step 1/7 + Co-op Registry introduction (+10 trust, +5 disposition with Ilse Oduya-Brandt)",
+        "title": "First Papers at the Registry",
+        "introduction": "Welcome to Ceres Freeport! If you would like a guided walkthrough of the corridor, start by visiting Ilse Oduya-Brandt at the Registry & Co-op Desk to review the First Captain program and enroll for your own Dray-class hauler. Every step is optional and you can abandon and restart at any time.",
+        "destination": "ceres",
+        "checkpoints": [
+          {
+            "id": "enroll_coop",
+            "title": "Enroll in the Belt Co-op at the Registry & Co-op Desk",
+            "room_pack": "neighborhood.ceres_freeport",
+            "room_entry": "room.c05_registry",
+            "instructions": "Travel to the Registry & Co-op Desk (room.c05_registry). Type +coop to read the charter terms, then +coop/enroll <ship name> to receive your Dray. Once enrolled, verify this step with +quest/check Ilse and turn in to Ilse Oduya-Brandt with +quest/finish Ilse.",
+            "objective": { "kind": "coop_enrolment" }
+          }
+        ],
+        "completion": "Your Co-op charter is active and your Dray is berthed in the Freeport gallery. Ilse has your next assignment ready whenever you want to stock your lockers and fuel tanks."
+      }
+    },
+    "quest.guide_02_provisions_fuel": {
+      "kind": "quest",
+      "def": {
+        "npc": "npc.oduya",
+        "npc_pack": "neighborhood.ceres_freeport",
+        "prerequisite": {
+          "completed": {
+            "quest": "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"
+          }
+        },
+        "category": "guided",
+        "allow_restart": true,
+        "reward_summary": "Guided Tour Step 2/7 + Corridor readiness (+10 trust, +5 disposition with Ilse Oduya-Brandt)",
+        "title": "Stock the Locker and Tanks",
+        "introduction": "A Dray cannot leave berth without crew provisions in the locker and propellant in the tanks. Visit the Co-op Chandlery to buy at least 10 days of provisions, then stop by the Exchange Hall to load at least 5 tonnes of propellant into your ship's tanks.",
+        "destination": "ceres",
+        "checkpoints": [
+          {
+            "id": "buy_provisions",
+            "title": "Buy at least 10 provisions at Ceres Co-op Chandlery",
+            "room_pack": "neighborhood.ceres_freeport",
+            "room_entry": "room.c08_chandlery",
+            "instructions": "Go to the Co-op Chandlery (room.c08_chandlery). Run +market/list to find provisions, request a quote with +market/quote <listing>=10, and confirm with +market/accept. Then verify with +quest/check Ilse.",
+            "objective": {
+              "kind": "market_purchase",
+              "market": "ceres",
+              "commodity": "provisions",
+              "quantity": 10
+            }
+          },
+          {
+            "id": "buy_propellant",
+            "title": "Buy at least 5 tonnes of propellant at Ceres Exchange Hall",
+            "room_pack": "neighborhood.ceres_freeport",
+            "room_entry": "room.c07_exchange",
+            "instructions": "Go to the Exchange Hall (room.c07_exchange). Run +market/list to find propellant, request a quote with +market/quote <listing>=5, and confirm with +market/accept. Verify with +quest/check Ilse, then return to Ilse at the Registry & Co-op Desk for +quest/finish Ilse.",
+            "objective": {
+              "kind": "market_purchase",
+              "market": "ceres",
+              "commodity": "propellant",
+              "quantity": 5
+            }
+          }
+        ],
+        "completion": "Provisions are stowed and your reaction mass tanks are topped off. Your Dray is ready for its first commercial run down the corridor."
+      }
+    },
+    "quest.guide_03_metals_delivery": {
+      "kind": "quest",
+      "def": {
+        "npc": "npc.oduya",
+        "npc_pack": "neighborhood.ceres_freeport",
+        "turn_in_npc": "npc.achterberg",
+        "turn_in_npc_pack": "neighborhood.stickney_yards",
+        "turn_in_destination": "stickney",
+        "prerequisite": {
+          "completed": {
+            "quest": "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"
+          }
+        },
+        "category": "guided",
+        "allow_restart": true,
+        "reward_summary": "Guided Tour Step 3/7 + Stickney trade contact (+10 trust, +5 disposition with Jonas Achterberg-Nkemelu)",
+        "title": "Metals Down the Corridor",
+        "introduction": "Time to fly your first freight haul. Buy at least 5 tonnes of metals at Ceres Exchange Hall, check your burn plan with +ship/plan stickney, fly to Stickney Yards at Phobos, and sell those metals to Kasei's bid at the Receiving Counter. Report to Jonas Achterberg-Nkemelu there when the sale settles.",
+        "destination": "ceres",
+        "checkpoints": [
+          {
+            "id": "deliver_metals",
+            "title": "Buy 5 tonnes of metals at Ceres and deliver them to Stickney Yards",
+            "room_pack": "neighborhood.stickney_yards",
+            "room_entry": "room.p07_receiving",
+            "instructions": "At Ceres Exchange Hall, buy at least 5 tonnes of metals (+market/list, +market/quote, +market/accept). Check +ship/plan stickney to confirm fuel and provisions, board your ship at the Berth Gallery, and launch with +ship/depart stickney. After docking at Stickney Yards, go to the Receiving Counter (room.p07_receiving), sell at least 5 tonnes of metals (+market/sell), verify with +quest/check Jonas, and turn in with +quest/finish Jonas.",
+            "objective": {
+              "kind": "trade",
+              "origin": "ceres",
+              "destination": "stickney",
+              "commodity": "metals",
+              "quantity": 5
+            }
+          }
+        ],
+        "completion": "Jonas signs off on your metals delivery at Kasei Receiving. You have completed your first interplanetary freight leg—and Stickney has return cargo waiting for Ceres."
+      }
+    },
+    "quest.guide_04_return_haul": {
+      "kind": "quest",
+      "def": {
+        "npc": "npc.achterberg",
+        "npc_pack": "neighborhood.stickney_yards",
+        "turn_in_npc": "npc.oduya",
+        "turn_in_npc_pack": "neighborhood.ceres_freeport",
+        "turn_in_destination": "ceres",
+        "prerequisite": {
+          "completed": {
+            "quest": "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"
+          }
+        },
+        "category": "guided",
+        "allow_restart": true,
+        "reward_summary": "Guided Tour Step 4/7 + Round-trip hauling endorsement (+10 trust, +5 disposition with Ilse Oduya-Brandt)",
+        "title": "A Return Load for Ceres",
+        "introduction": "Never fly home with an empty hold if the numbers work. Stickney Yards sells crated industrial parts that the Co-op Chandlery back on Ceres always bids on. Buy at least 2 tonnes of industrial_parts here at Stickney, haul them back to Ceres Freeport, sell them at the Co-op Chandlery, and check in with Ilse Oduya-Brandt.",
+        "destination": "stickney",
+        "checkpoints": [
+          {
+            "id": "return_industrial_parts",
+            "title": "Haul 2 tonnes of industrial parts from Stickney back to Ceres",
+            "room_pack": "neighborhood.ceres_freeport",
+            "room_entry": "room.c08_chandlery",
+            "instructions": "At Stickney's Service Counter or Materials Exchange, buy at least 2 tonnes of industrial_parts (+market/list, +market/quote, +market/accept). Check +ship/plan ceres and top up provisions or propellant if needed, then depart with +ship/depart ceres. Back at Ceres Freeport, sell at least 2 tonnes of industrial_parts at the Co-op Chandlery (room.c08_chandlery), verify with +quest/check Ilse, and turn in to Ilse at the Registry & Co-op Desk (+quest/finish Ilse).",
+            "objective": {
+              "kind": "trade",
+              "origin": "stickney",
+              "destination": "ceres",
+              "commodity": "industrial_parts",
+              "quantity": 2
+            }
+          }
+        ],
+        "completion": "A clean two-way corridor loop—metals outbound, crated fittings home. Now that you know freight and markets, Ilse can walk you through refitting your Dray for surface prospecting."
+      }
+    },
+    "quest.guide_05_refit_prospector": {
+      "kind": "quest",
+      "def": {
+        "npc": "npc.oduya",
+        "npc_pack": "neighborhood.ceres_freeport",
+        "turn_in_npc": "npc.qureshi",
+        "turn_in_npc_pack": "neighborhood.ceres_freeport",
+        "turn_in_destination": "ceres",
+        "prerequisite": {
+          "completed": {
+            "quest": "tacsim.quests.guided_onboarding/quest.guide_04_return_haul"
+          }
+        },
+        "category": "guided",
+        "allow_restart": true,
+        "reward_summary": "Guided Tour Step 5/7 + Surface operations introduction (+10 trust, +5 disposition with Rosalind Qureshi-Mbeki)",
+        "title": "Refit the Dray for Surface Mining",
+        "introduction": "Freight pays the bills, but the Belt's real wealth sits in the rock below. The Co-op yard can re-dress your standard Dray in place as a Dray-P prospector with a two-rig surface vehicle bay. Clear your cargo and provisions hold (propellant may stay in the tank), run +coop/refit prospector here at the Registry & Co-op Desk, then introduce yourself to Rosalind Qureshi-Mbeki in the Exchange Hall.",
+        "destination": "ceres",
+        "checkpoints": [
+          {
+            "id": "refit_dray_p",
+            "title": "Refit your Dray into a Dray-P prospector",
+            "room_pack": "neighborhood.ceres_freeport",
+            "room_entry": "room.c05_registry",
+            "instructions": "With your Dray docked at Ceres and its cargo/provisions hold empty (propellant may remain in the tank), stand at the Registry & Co-op Desk (room.c05_registry) and run +coop/refit prospector. Verify with +quest/check Rosalind, then meet Rosalind Qureshi-Mbeki in the Exchange Hall (room.c07_exchange) and turn in with +quest/finish Rosalind.",
+            "objective": {
+              "kind": "ship_refit",
+              "unit": "tacsim.unit.dray_p"
+            }
+          }
+        ],
+        "completion": "Rosalind inspects your Dray-P bay papers and nods. Your ship is now equipped to carry surface prospecting rigs onto Ceres landing sites."
+      }
+    },
+    "quest.guide_06_surface_mining": {
+      "kind": "quest",
+      "def": {
+        "npc": "npc.qureshi",
+        "npc_pack": "neighborhood.ceres_freeport",
+        "prerequisite": {
+          "completed": {
+            "quest": "tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"
+          }
+        },
+        "category": "guided",
+        "allow_restart": true,
+        "reward_summary": "Guided Tour Step 6/7 + Surface prospecting sign-off (+10 trust, +5 disposition with Rosalind Qureshi-Mbeki)",
+        "title": "Scan, Sound, and Mine a Landing Site",
+        "introduction": "Time to put a rig on the regolith. Pick up a prospecting license (+license), lease a surface rig into your Dray-P bay (+tv/lease), choose an open Ceres landing site with +chart/ground (such as Freeport Commons or Ahuna Flank), fly down, scan the ground for mineral pockets, sound a carbon_ore pocket to confirm its grade, and mine at least 1 tonne of carbon_ore into your hopper and hold.",
+        "destination": "ceres",
+        "checkpoints": [
+          {
+            "id": "scan_landing_site",
+            "title": "Complete a surface scan at a Ceres landing site",
+            "room_pack": "neighborhood.ceres_freeport",
+            "room_entry": "room.c07_exchange",
+            "instructions": "Ensure you hold a prospecting license and a leased rig (+help mining). Use +chart/ground to pick a landing site, fly there (+ship/plan and +ship/depart), and run +tv/1 scan then +tv/1 scan go to map nearby mineral readings. Return to Ceres Exchange Hall (or check at Qureshi's desk) with +quest/check Rosalind.",
+            "objective": {
+              "kind": "survey",
+              "mode": "scan"
+            }
+          },
+          {
+            "id": "sound_mineral_pocket",
+            "title": "Sound a detected mineral pocket on the surface",
+            "room_pack": "neighborhood.ceres_freeport",
+            "room_entry": "room.c07_exchange",
+            "instructions": "Drive your rig near a scanned contact (+tv/1 drive) and run +tv/1 sound followed by +tv/1 sound go to confirm the ore type and tonnage. Verify with +quest/check Rosalind.",
+            "objective": {
+              "kind": "survey",
+              "mode": "sound"
+            }
+          },
+          {
+            "id": "mine_carbon_ore",
+            "title": "Mine at least 1 tonne of carbon ore on the surface",
+            "room_pack": "neighborhood.ceres_freeport",
+            "room_entry": "room.c07_exchange",
+            "instructions": "Locate a carbon_ore pocket, run +tv/1 mine then +tv/1 mine go to extract at least 1 tonne of carbon_ore, recover your rig (+tv/1 recover go), and unload the ore into your Dray-P hold. Verify with +quest/check Rosalind and turn in at the Exchange Hall with +quest/finish Rosalind.",
+            "objective": {
+              "kind": "surface_mine",
+              "commodity": "carbon_ore",
+              "quantity": 1
+            }
+          }
+        ],
+        "completion": "Fresh Ceres carbon ore pulled from the surface by your own rig. Rosalind marks your prospecting work complete—now take that ore where buyers pay top credit."
+      }
+    },
+    "quest.guide_07_sell_mined_ore": {
+      "kind": "quest",
+      "def": {
+        "npc": "npc.qureshi",
+        "npc_pack": "neighborhood.ceres_freeport",
+        "turn_in_npc": "npc.castillo_haugen",
+        "turn_in_npc_pack": "neighborhood.stickney_yards",
+        "turn_in_destination": "stickney",
+        "prerequisite": {
+          "completed": {
+            "quest": "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"
+          }
+        },
+        "category": "guided",
+        "allow_restart": true,
+        "reward_summary": "Guided Tour Complete (7/7) + Full Corridor Captain recognition (+10 trust, +5 disposition with Wren Castillo-Haugen)",
+        "title": "Deliver Your Mined Ore to Market",
+        "introduction": "Stickney Yards runs its ammunition and fabrication mills on carbon ore and pays a stronger bid than the local Exchange here on Ceres. Make sure your mined carbon_ore is unloaded into your Dray-P hold, restock provisions and propellant for the crossing, fly to Stickney Yards, and sell at least 1 tonne of carbon_ore to Wren Castillo-Haugen at the Service Counter.",
+        "destination": "ceres",
+        "checkpoints": [
+          {
+            "id": "sell_carbon_ore",
+            "title": "Sell at least 1 tonne of carbon ore at Stickney Yards",
+            "room_pack": "neighborhood.stickney_yards",
+            "room_entry": "room.p11_service",
+            "instructions": "Confirm your carbon_ore is in your ship's cargo hold (+ship), check +ship/plan stickney, stock provisions and propellant, and fly to Stickney Yards. At the Service Counter (room.p11_service) or Materials Exchange, run +market/list and sell at least 1 tonne of carbon_ore (+market/sell). Verify with +quest/check Wren and finish the guided tour with +quest/finish Wren.",
+            "objective": {
+              "kind": "market_sale",
+              "market": "stickney",
+              "commodity": "carbon_ore",
+              "quantity": 1
+            }
+          }
+        ],
+        "completion": "Wren stamps your assay ticket at Stickney's Service Counter. You have mastered Co-op charters, ship logistics, two-way corridor freight, Dray-P refits, surface scanning, sounding, mining, and off-world ore delivery. The entire solar corridor is now yours to chart."
+      }
+    }
+  }
+}

@@ -76,6 +76,17 @@
         {band.scene.title}{#if band.scene.round !== null}<span class="muted"> r{band.scene.round}{#if band.scene.turn !== null}·t{band.scene.turn}{/if}</span>{/if}
       </span>
     {/if}
+    {#each app.quests?.roomMarkers ?? [] as qm (qm.npcId)}
+      <button
+        type="button"
+        class="qmarker"
+        data-marker={qm.marker}
+        title="{qm.npcName} — {qm.questTitle}"
+        onclick={() => app.quests?.openNpcDialog(qm.npcId)}
+      >
+        <span class="qsym" aria-hidden="true">{qm.symbol}</span>{qm.npcName}
+      </button>
+    {/each}
     <span class="grow"></span>
     {#each app.presence.thinking as t (t.name)}
       <span class="pill thinking" title="the NPC is thinking">{t.name}…</span>
@@ -164,6 +175,56 @@
   .pill.typing {
     border-color: var(--c-player);
     color: var(--c-player);
+  }
+
+  .qmarker {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    border-radius: 999px;
+    padding: 0.08rem 0.55rem 0.08rem 0.35rem;
+    font: inherit;
+    font-size: 0.76rem;
+    font-weight: 600;
+    cursor: pointer;
+    border: 1px solid #d4a64a;
+    background: rgba(212, 166, 74, 0.14);
+    color: #fde68a;
+  }
+
+  .qmarker[data-marker="turn_in"] {
+    border-color: #fbbf24;
+    background: rgba(251, 191, 36, 0.22);
+    color: #fef3c7;
+    box-shadow: 0 0 8px rgba(251, 191, 36, 0.35);
+  }
+
+  .qmarker[data-marker="in_progress"] {
+    border-color: #64748b;
+    background: rgba(100, 116, 139, 0.18);
+    color: #cbd5e1;
+  }
+
+  .qmarker:hover {
+    filter: brightness(1.12);
+  }
+
+  .qsym {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.05rem;
+    height: 1.05rem;
+    border-radius: 999px;
+    font-weight: 800;
+    font-size: 0.72rem;
+    background: #fbbf24;
+    color: #161103;
+  }
+
+  .qmarker[data-marker="in_progress"] .qsym {
+    background: #475569;
+    color: #e2e8f0;
   }
 
   .exits {

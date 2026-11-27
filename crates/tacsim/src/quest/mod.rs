@@ -6,6 +6,7 @@ pub mod content;
 pub(crate) mod evidence;
 pub(crate) mod model;
 pub mod packs;
+pub(crate) mod panel;
 pub(crate) mod registration;
 pub(crate) mod store;
 
@@ -166,6 +167,27 @@ pub(crate) fn transition_allowed(
                 && available(w, &next.definition)
         }
         Some(old) => {
+            if old.is_restartable_abandoned() && next.is_active() {
+                return old.revision.checked_add(1) == Some(next.revision)
+                    && old.restart_count.checked_add(1) == Some(next.restart_count)
+                    && old.key == next.key
+                    && old.actor == next.actor
+                    && old.npc == next.npc
+                    && old.passage == next.passage
+                    && old.prerequisite_receipt == next.prerequisite_receipt
+                    && old.definition == next.definition
+                    && next.checks.is_empty()
+                    && next.completed.is_none()
+                    && next.closed.is_none()
+                    && definitions(w, next.npc).contains(&next.definition)
+                    && close_world(w, next.npc, next.actor)
+                    && crate::port::passenger::at_station(
+                        w,
+                        next.npc,
+                        &next.definition.destination,
+                    )
+                    && available(w, &next.definition);
+            }
             if !old.is_active()
                 || old.revision.checked_add(1) != Some(next.revision)
                 || old.key != next.key
@@ -175,18 +197,20 @@ pub(crate) fn transition_allowed(
                 || old.prerequisite_receipt != next.prerequisite_receipt
                 || old.definition != next.definition
                 || old.accepted != next.accepted
+                || old.restart_count != next.restart_count
             {
                 return false;
             }
             if next.completed.is_some() {
+                let turn_in = next.turn_in_npc();
                 return next.checks == old.checks
                     && old.checks.len() == old.definition.checkpoints.len()
                     && evidence::completion_ready(w, old)
-                    && close_world(w, next.npc, next.actor)
+                    && close_world(w, turn_in, next.actor)
                     && crate::port::passenger::at_station(
                         w,
-                        next.npc,
-                        &next.definition.destination,
+                        turn_in,
+                        next.definition.effective_turn_in_destination(),
                     );
             }
             if next.checks.len() != old.checks.len() + 1 || !next.checks.starts_with(&old.checks) {
@@ -204,9 +228,18 @@ pub(crate) fn transition_allowed(
                 return false;
             }
             if !matches!(checkpoint.objective, Objective::Observation) {
-                return w.get(next.actor).is_some_and(|p| {
+                let at_checkpoint = w.get(next.actor).is_some_and(|p| {
                     p.location == Some(checkpoint.room) && !p.flags.contains(Flags::GOING)
-                }) && !mush_sim::deployed::is_custodied(w, next.actor)
+                });
+                let guided_remote_proof_ok = old.definition.is_guided()
+                    && !matches!(
+                        checkpoint.objective,
+                        Objective::Passenger { .. } | Objective::Contact { .. }
+                    )
+                    && (close_world(w, old.turn_in_npc(), next.actor)
+                        || close_world(w, old.npc, next.actor));
+                return (at_checkpoint || guided_remote_proof_ok)
+                    && !mush_sim::deployed::is_custodied(w, next.actor)
                     && evidence::guard(w, old, evidence);
             }
             w.get(next.actor).is_some_and(|p| {
@@ -248,9 +281,10 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
             continue;
         };
         let cause = format!("quest:{}", hash.to_hex());
+        let credit_npc = row.turn_in_npc();
         if let Ok(newly_recorded) = mush_npc::record_completed_work_experience(
             ctx,
-            row.npc,
+            credit_npc,
             row.actor,
             &cause,
             &row.definition.completion,
@@ -259,10 +293,11 @@ pub(crate) fn tick(ctx: &mut Ctx<'_>) {
             if newly_recorded {
                 mush_npc::notify_role_event(
                     ctx,
-                    row.npc,
+                    credit_npc,
                     "A completed favor has been recorded in your own experience. Use quest.status for this asker's verified progress; do not reveal another person's private journal.",
                 );
             }
         }
     }
+    panel::push_connected_if_changed(ctx);
 }

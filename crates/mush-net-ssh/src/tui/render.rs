@@ -484,6 +484,9 @@ fn render_room(w: &mut EntryAcc<'_>, view: &RoomView) {
                 w.plain(", ");
             }
             w.plain(&flat(&obj.name));
+            if let Some((badge, style)) = super::quests::marker_badge_for_npc(view, &obj.id) {
+                w.write(badge, style);
+            }
         }
         w.end_line();
     }
@@ -6315,9 +6318,12 @@ mod tests {
 
         // ASCII terminals get the fallback glyphs, never a UTF-8 byte.
         let ascii = RenderCtx { utf8: false, ..ctx };
-        let all = texts(&render_unit_sections_rows(&data, &ascii)).join("\n")
-            + &texts(&render_unit_plant_rows(&data, &ascii)).join("\n")
-            + &texts(&render_unit_components_rows(&data, &ascii)).join("\n");
+        let all = [
+            texts(&render_unit_sections_rows(&data, &ascii)).join("\n"),
+            texts(&render_unit_plant_rows(&data, &ascii)).join("\n"),
+            texts(&render_unit_components_rows(&data, &ascii)).join("\n"),
+        ]
+        .join("\n");
         assert!(all.is_ascii(), "{all:?}");
         assert!(all.contains("! center_torso") && all.contains("+ heat #"));
     }

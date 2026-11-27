@@ -31,6 +31,7 @@ mod mind_workshop;
 pub mod panels;
 pub mod pixel;
 pub mod port_walk;
+pub mod quests;
 pub mod render;
 pub mod replay;
 pub mod screen;

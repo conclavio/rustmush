@@ -484,12 +484,8 @@ fn survey_path_uses_fresh_real_readings_and_keeps_qureshis_starter_independent()
     no_refused_writes(&rig.tw);
 }
 
-#[test]
-fn independent_quests_on_one_giver_require_explicit_selection() {
-    let mut rig = stocked();
-    let actor = pilot(&mut rig, "TwoFavors", 833);
-    let npc = giver(&rig.tw, "quest.oduya_first_hull");
-    let first = rig
+fn definition_of(rig: &Rig, npc: ObjId, entry: &str) -> Value {
+    let raw = rig
         .tw
         .world()
         .attr(npc, "quest:definition")
@@ -497,6 +493,25 @@ fn independent_quests_on_one_giver_require_explicit_selection() {
         .as_json()
         .unwrap()
         .clone();
+    match raw {
+        Value::Array(items) => items
+            .into_iter()
+            .find(|item| {
+                item["key"]
+                    .as_str()
+                    .is_some_and(|key| key.ends_with(&format!("/{entry}")))
+            })
+            .unwrap(),
+        other => other,
+    }
+}
+
+#[test]
+fn independent_quests_on_one_giver_require_explicit_selection() {
+    let mut rig = stocked();
+    let actor = pilot(&mut rig, "TwoFavors", 833);
+    let npc = giver(&rig.tw, "quest.oduya_first_hull");
+    let first = definition_of(&rig, npc, "quest.oduya_first_hull");
     let first_key = first["key"].as_str().unwrap().to_owned();
     let mut second = first.clone();
     let second_key = "test.quests/another_hull_review";
@@ -697,14 +712,7 @@ fn large_npc_quest_catalog_returns_complete_private_commands_and_exact_selectors
     let mut rig = stocked();
     let actor = pilot(&mut rig, "ManyInvitations", 835);
     let npc = giver(&rig.tw, "quest.oduya_first_hull");
-    let original = rig
-        .tw
-        .world()
-        .attr(npc, "quest:definition")
-        .unwrap()
-        .as_json()
-        .unwrap()
-        .clone();
+    let original = definition_of(&rig, npc, "quest.oduya_first_hull");
     let sources: Vec<_> = (0..8)
         .map(|n| format!("test.quests/catalog_favor_{n}"))
         .collect();
@@ -843,5 +851,154 @@ fn large_npc_quest_catalog_returns_complete_private_commands_and_exact_selectors
     assert!(single.text.contains("Registry favor 0"));
     assert!(!single.text.contains("Registry favor 1"));
     assert_eq!(effects(&rig, npc, actor), (0, 0, 0));
+    no_refused_writes(&rig.tw);
+}
+
+#[test]
+fn guided_onboarding_chain_booted_world_markers_panel_and_restart() {
+    const STEP1: &str = "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll";
+    const STEP2: &str = "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel";
+
+    let mut rig = stocked();
+    let actor = pilot(&mut rig, "FreshCaptain", 836);
+    let maren = mush_atlas::travel::latched_object(
+        rig.tw.world(),
+        &mush_atlas::RecordKey::new(
+            cid("tacsim.quests.guided_onboarding"),
+            cid("npc.maren_halvorsen"),
+        ),
+    )
+    .expect("Maren Halvorsen must be seeded by tacsim.quests.guided_onboarding");
+    let ilse = giver(&rig.tw, "quest.oduya_first_hull");
+    let arrivals = station_room(&rig.tw, "ceres_port", "room.c03_arrivals");
+    assert_eq!(
+        rig.tw.world().get(maren).and_then(|o| o.location),
+        Some(arrivals),
+        "Maren Halvorsen must stand in Port Watch Arrivals where new players spawn"
+    );
+
+    // 1. Entering Port Watch Arrivals emits live `ambient.quest_markers` (`!` available on Maren)
+    teleport(&mut rig.tw, actor, arrivals);
+    pump(&mut rig);
+    let look_events = rig.tw.run(actor, "look");
+    let room_markers = look_events
+        .iter()
+        .find_map(|(_, ev)| match ev {
+            mush_proto::OutputEvent::Room(rv) => rv.ambient.get("quest_markers").cloned(),
+            _ => None,
+        })
+        .expect("RoomView in Port Watch Arrivals must include ambient.quest_markers");
+    assert_eq!(room_markers[0]["npc_name"], "Maren Halvorsen");
+    assert_eq!(room_markers[0]["marker"], "available");
+    assert_eq!(room_markers[0]["symbol"], "!");
+    assert_eq!(room_markers[0]["quest_key"], STEP1);
+
+    // 2. Querying `tacsim.quests` returns the signed `accept_cmd` for Maren's guided quest
+    let query_quests = |rig: &Rig| -> Value {
+        let (_, handler) = rig
+            .tw
+            .engine()
+            .registry
+            .query_handler("tacsim.quests")
+            .expect("tacsim.quests query handler registered");
+        match handler
+            .query(rig.tw.world(), actor, &json!({}))
+            .expect("tacsim.quests query succeeds")
+        {
+            mush_proto::OutputEvent::Panel { data, .. } => data,
+            other => panic!("expected Panel event, got {other:?}"),
+        }
+    };
+    let snap1 = query_quests(&rig);
+    let accept_cmd = snap1["available"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|q| q["key"] == STEP1)
+        .expect("Step 1 offer must appear in tacsim.quests available list")["accept_cmd"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (out, queued) = command(&mut rig, actor, &accept_cmd);
+    assert_eq!(
+        queued.len(),
+        1,
+        "signed accept_cmd must accept cleanly: {out}"
+    );
+    land_all(&mut rig, &queued);
+    pump(&mut rig);
+
+    // 3. Maren's marker flips to `in_progress` (`?`), and abandoning a guided quest lets the player restart it!
+    let snap_active = query_quests(&rig);
+    assert_eq!(snap_active["room_markers"][0]["marker"], "in_progress");
+    assert_eq!(snap_active["room_markers"][0]["symbol"], "?");
+    assert_eq!(snap_active["active"].as_array().unwrap().len(), 1);
+    let abandon_cmd = snap_active["active"][0]["abandon_cmd"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (out, queued) = command(&mut rig, actor, &abandon_cmd);
+    assert_eq!(queued.len(), 1, "abandon_cmd must abandon cleanly: {out}");
+    land_all(&mut rig, &queued);
+    pump(&mut rig);
+
+    let snap_reoffer = query_quests(&rig);
+    assert_eq!(snap_reoffer["room_markers"][0]["marker"], "available");
+    assert_eq!(snap_reoffer["active"].as_array().unwrap().len(), 0);
+    let restart_cmd = snap_reoffer["available"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|q| q["key"] == STEP1)
+        .expect("abandoned guided quest must immediately be restartable")["accept_cmd"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let (out, queued) = command(&mut rig, actor, &restart_cmd);
+    assert_eq!(
+        queued.len(),
+        1,
+        "restarting guided quest must succeed: {out}"
+    );
+    land_all(&mut rig, &queued);
+    pump(&mut rig);
+
+    // 4. Enroll at Co-op Desk -> Ilse shows `turn_in` (`?`) -> verify & finish Step 1 -> Step 2 unlocks (`!`) on Ilse!
+    visit(&mut rig, actor, ilse);
+    let enroll_out = run(&mut rig.tw, actor, "+coop/enroll Guide Runner");
+    assert!(enroll_out.contains("now the Guide Runner"), "{enroll_out}");
+    pump(&mut rig);
+
+    let snap_ready = query_quests(&rig);
+    let ilse_marker = snap_ready["room_markers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["npc_name"] == "Ilse Oduya-Brandt")
+        .expect("Ilse must show turn_in marker once enrolled");
+    assert_eq!(ilse_marker["marker"], "turn_in");
+    assert_eq!(ilse_marker["symbol"], "?");
+
+    step(&mut rig, actor, ilse, STEP1, "check");
+    step(&mut rig, actor, ilse, STEP1, "finish");
+    pump(&mut rig);
+
+    let snap_done = query_quests(&rig);
+    assert!(
+        snap_done["completed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| c["key"] == STEP1),
+        "Step 1 must appear in completed quests: {snap_done}"
+    );
+    assert!(
+        snap_done["available"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|q| q["key"] == STEP2),
+        "Finishing Step 1 must unlock Step 2 (provisions & fuel) on Ilse: {snap_done}"
+    );
     no_refused_writes(&rig.tw);
 }

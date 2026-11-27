@@ -3340,7 +3340,17 @@ impl ActionProvider for SurfaceDoneProvider {
         }
         // Doc 20 cut SM.7 (the brief's 3.7): a run's cycle finishes on its own path.
         if let Some(k) = cycle_param(parameters)? {
-            return self.finish_cycle(invocation, txn, (actor, tv, ordinal, k, now), rig, context);
+            let wall = parameters
+                .get("wall")
+                .and_then(Value::as_i64)
+                .unwrap_or(now);
+            return self.finish_cycle(
+                invocation,
+                txn,
+                (actor, tv, ordinal, k, now, wall),
+                rig,
+                context,
+            );
         }
         // 1. The act in flight, this one, this operator's, and due.
         let Some(mut record) = read_record(txn, &self.excursions, tv)? else {
@@ -4217,7 +4227,7 @@ impl SurfaceDoneProvider {
         &self,
         invocation: &ActionInvocation,
         txn: &mut ActionTxn<'_>,
-        (actor, tv, ordinal, k, now): (ObjId, ObjId, u32, u8, i64),
+        (actor, tv, ordinal, k, now, wall): (ObjId, ObjId, u32, u8, i64, i64),
         rig: &DoneRig,
         context: &mut mush_core::PrepareCtx<'_>,
     ) -> Result<AuthoritativeActionOutput, ActionError> {
@@ -4423,6 +4433,27 @@ impl SurfaceDoneProvider {
                 tally.tonnes = tally.tonnes.saturating_add(tonnes);
                 tally.cycles = tally.cycles.saturating_add(1);
             });
+            if tonnes > 0
+                && let Err(error) = crate::quest::evidence::log_mine(
+                    txn,
+                    &self.quest_survey_evidence,
+                    actor,
+                    tv,
+                    ordinal,
+                    &run.site,
+                    &run.good,
+                    u64::from(tonnes),
+                    at_ic,
+                    wall,
+                )
+            {
+                // Optional quest evidence must never block a successful mining cycle.
+                tracing::warn!(
+                    operator = actor.0,
+                    ?error,
+                    "quest mining evidence unavailable"
+                );
+            }
         }
         record.run = match end {
             Some(_) => None,

@@ -14,6 +14,9 @@ pub const SAFE_PASSAGE_PACK: &str = "tacsim.quests.safe_passage";
 pub const SAFE_PASSAGE_JSON: &str = include_str!("../../content/quests/safe_passage.json");
 pub const SURVEY_WORK_PACK: &str = "tacsim.quests.survey_work";
 pub const SURVEY_WORK_JSON: &str = include_str!("../../content/quests/survey_work.json");
+pub const GUIDED_ONBOARDING_PACK: &str = "tacsim.quests.guided_onboarding";
+pub const GUIDED_ONBOARDING_JSON: &str =
+    include_str!("../../content/quests/guided_onboarding.json");
 
 /// Dependency order: the real traveller exists before a quest refers to her.
 pub fn packs() -> Result<Vec<Pack>, String> {
@@ -30,6 +33,16 @@ pub fn packs() -> Result<Vec<Pack>, String> {
         mush_content::load_pack(json).map_err(|error| format!("starter quest pack: {error}"))
     })
     .collect()
+}
+
+/// Optional guided onboarding quest line starting at Ceres Freeport Arrivals.
+pub fn guided_packs() -> Result<Vec<Pack>, String> {
+    [GUIDED_ONBOARDING_JSON]
+        .into_iter()
+        .map(|json| {
+            mush_content::load_pack(json).map_err(|error| format!("guided quest pack: {error}"))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -308,5 +321,49 @@ mod tests {
             checkpoints[0]["objective"],
             serde_json::json!({"kind": "survey_commission"})
         );
+    }
+
+    #[test]
+    fn guided_onboarding_pack_validates_and_chains_all_seven_steps() {
+        let packs = guided_packs().unwrap();
+        assert_eq!(packs.len(), 1);
+        let pack = &packs[0];
+        assert_eq!(pack.manifest().id().as_str(), GUIDED_ONBOARDING_PACK);
+        assert_eq!(pack.manifest().version(), 1);
+        assert_eq!(pack.entries().len(), 8);
+        let maren = pack
+            .entry(&CanonicalId::new("npc.maren_halvorsen").unwrap())
+            .unwrap();
+        assert_eq!(maren.kind().as_str(), "npc");
+        assert_eq!(maren.def_value()["room"], "room.c03_arrivals");
+        let expected_chain = [
+            "quest.guide_01_coop_enroll",
+            "quest.guide_02_provisions_fuel",
+            "quest.guide_03_metals_delivery",
+            "quest.guide_04_return_haul",
+            "quest.guide_05_refit_prospector",
+            "quest.guide_06_surface_mining",
+            "quest.guide_07_sell_mined_ore",
+        ];
+        for (idx, id) in expected_chain.iter().enumerate() {
+            let entry = pack.entry(&CanonicalId::new(*id).unwrap()).unwrap();
+            assert_eq!(entry.kind().as_str(), "quest");
+            let def = entry.def_value();
+            assert_eq!(def["category"], "guided");
+            assert_eq!(def["allow_restart"], true);
+            assert!(
+                def["reward_summary"]
+                    .as_str()
+                    .is_some_and(|s| !s.is_empty())
+            );
+            if idx == 0 {
+                assert_eq!(def["prerequisite"], "open");
+            } else {
+                assert_eq!(
+                    def["prerequisite"]["completed"]["quest"],
+                    format!("{GUIDED_ONBOARDING_PACK}/{}", expected_chain[idx - 1])
+                );
+            }
+        }
     }
 }

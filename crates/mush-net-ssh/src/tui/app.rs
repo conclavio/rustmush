@@ -36,7 +36,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use serde_json::Value;
 
 use super::cockpit_text;
@@ -49,6 +49,11 @@ use super::panels::{
 };
 use super::pixel::{KeyUse, PictureKind, PixelView};
 use super::port_walk::{PORT_TRADE_FEED, PortWalkState, TACSIM_CONTENT_FEED};
+use super::quests::{
+    QUESTS_FEED, QuestOverlayAction, QuestOverlayState, QuestsSnapshot,
+    parse_frame as parse_quests_frame, parse_room_markers, render_quest_overlay,
+    render_quest_tracker_lines,
+};
 use super::render::{
     BODY_GROUND_FEED, CHART_FEED, Entry, GUTTER_W, PaneRows, RenderCtx, SITE_MAP_FEED,
     TV_STATUS_FEED, dim_span_owned, floor_line, legend_line, render_backlog_rows,
@@ -448,7 +453,11 @@ struct PaneUi {
 
 /// A client-local command (`/clear`, `/help`, `/history`, `/notui`) the
 /// palette lists.
-const LOCAL_COMMANDS: [(&str, &str); 5] = [
+const LOCAL_COMMANDS: [(&str, &str); 6] = [
+    (
+        "/quests",
+        "quest dialog, active tracker and completed log (F11)",
+    ),
     ("/minds", "owned mind cards, rules and source reader (F10)"),
     ("/clear", "empty the scrollback"),
     ("/help", "the key help"),
@@ -578,6 +587,8 @@ pub struct TuiApp {
     palette: Option<Palette>,
     help: bool,
     workshop: MindWorkshop,
+    quests_overlay: QuestOverlayState,
+    quests_snap: QuestsSnapshot,
     /// **The market desk** (17g cut C3b): the market screen's forms and its
     /// one pending typed request, and the legal-actions panel's typed submit
     /// with its per-offer attempts. Its ids start at `1 << 40`, never in the
@@ -1024,6 +1035,8 @@ impl TuiApp {
             palette: None,
             help: false,
             workshop: MindWorkshop::default(),
+            quests_overlay: QuestOverlayState::default(),
+            quests_snap: QuestsSnapshot::default(),
             market: MarketDesk::new(),
             requests: VecDeque::new(),
             answering: None,
@@ -1586,6 +1599,9 @@ impl TuiApp {
         // `scenes` above do.
         if self.manifest.panels.is_empty() || manifest_has(&self.manifest, COCKPIT_FEED) {
             q.push((COCKPIT_FEED.to_string(), empty()));
+        }
+        if manifest_has(&self.manifest, QUESTS_FEED) {
+            q.push((QUESTS_FEED.to_string(), empty()));
         }
         q.extend(self.screen_queries());
         q
@@ -2441,6 +2457,14 @@ impl TuiApp {
             OutputEvent::Room(view) => {
                 self.room = Some(view.clone());
                 self.exit_keys = exit_keys(&view.exits);
+                self.quests_snap.room_name = view.name.clone();
+                self.quests_snap.room_markers = parse_room_markers(view);
+                if manifest_has(&self.manifest, QUESTS_FEED) {
+                    queries.push((
+                        QUESTS_FEED.to_string(),
+                        Value::Object(serde_json::Map::new()),
+                    ));
+                }
                 self.port_walk
                     .observe_room(view, self.manifest.character.as_deref());
                 queries.extend(self.port_walk.drain_pack_queries(&self.manifest.panels));
@@ -2449,6 +2473,13 @@ impl TuiApp {
                 }
             }
             OutputEvent::Panel { feed, kind, data } => {
+                if feed.as_str() == QUESTS_FEED {
+                    if *kind == PanelFrameKind::Keyframe {
+                        self.quests_snap = parse_quests_frame(data);
+                        self.quests_overlay.clamp_selection(&self.quests_snap);
+                    }
+                    return queries;
+                }
                 if feed.as_str() == TACSIM_CONTENT_FEED {
                     if *kind == PanelFrameKind::Keyframe {
                         queries.extend(self.port_walk.observe_tacsim_content(data));
@@ -3506,8 +3537,27 @@ impl TuiApp {
             self.request_key(key, r);
             return;
         }
+        if self.quests_overlay.open
+            && self.answering.is_none()
+            && self.input_mode == InputMode::Normal
+        {
+            match self.quests_overlay.handle_key(key, &self.quests_snap) {
+                QuestOverlayAction::None | QuestOverlayAction::Close => {}
+                QuestOverlayAction::Submit(cmd) => {
+                    r.push_submit(cmd);
+                    if self.manifest.panels.iter().any(|p| p == QUESTS_FEED) {
+                        r.push_query((QUESTS_FEED.to_string(), Value::Null));
+                    }
+                }
+            }
+            return;
+        }
         if key == Key::F(10) && self.answering.is_none() && self.input_mode == InputMode::Normal {
             self.open_workshop(r);
+            return;
+        }
+        if key == Key::F(11) && self.answering.is_none() && self.input_mode == InputMode::Normal {
+            self.open_quests(r);
             return;
         }
         if self.help {
@@ -3786,6 +3836,15 @@ impl TuiApp {
         self.help = false;
         self.workshop.show();
         r.extend_invokes(self.workshop.take_invokes());
+    }
+
+    fn open_quests(&mut self, r: &mut InputResult) {
+        self.palette = None;
+        self.help = false;
+        self.quests_overlay.open_for(&self.quests_snap);
+        if self.manifest.panels.iter().any(|p| p == QUESTS_FEED) {
+            r.push_query((QUESTS_FEED.to_string(), Value::Null));
+        }
     }
 
     fn draw_workshop(&self, frame: &mut Frame<'_>, area: Rect) {
@@ -4434,6 +4493,7 @@ impl TuiApp {
                 "clear" => self.local_action(LocalAction::ClearScrollback, r),
                 "help" => self.help = true,
                 "minds" => self.open_workshop(r),
+                "quests" => self.open_quests(r),
                 "history" => {
                     self.request_backlog(r);
                     // `submit_line` pinned the view to the tail above, and
@@ -5246,6 +5306,12 @@ impl TuiApp {
             self.draw_help(frame, area);
         }
         self.draw_workshop(frame, area);
+        if self.quests_overlay.open
+            && self.answering.is_none()
+            && self.input_mode == InputMode::Normal
+        {
+            render_quest_overlay(frame, area, &self.quests_overlay, &self.quests_snap);
+        }
         // An ask the engine has already expired is never painted: it would
         // stand in front of every live one behind it (I10).
         self.evict_expired_requests(now);
@@ -5657,6 +5723,12 @@ impl TuiApp {
             self.draw_help(frame, area);
         }
         self.draw_workshop(frame, area);
+        if self.quests_overlay.open
+            && self.answering.is_none()
+            && self.input_mode == InputMode::Normal
+        {
+            render_quest_overlay(frame, area, &self.quests_overlay, &self.quests_snap);
+        }
         self.evict_expired_requests(now);
         if self.answering.is_none() && !self.requests.is_empty() {
             self.draw_request(frame, area);
@@ -5898,7 +5970,30 @@ impl TuiApp {
                 } else {
                     render_who_rail(&self.who, &self.theme, self.caps.color, self.caps.utf8)
                 };
-                frame.render_widget(Paragraph::new(Text::from(lines)), inner);
+                let tracker_lines = render_quest_tracker_lines(
+                    &self.quests_snap,
+                    self.quests_overlay.tracked_key.as_deref(),
+                );
+                if !tracker_lines.is_empty() && inner.height >= 5 {
+                    let max_tracker = inner.height.saturating_sub(2);
+                    let tracker_h = (tracker_lines.len() as u16 + 1).min(max_tracker).max(3);
+                    let [who_rect, tracker_rect] =
+                        Layout::vertical([Constraint::Min(2), Constraint::Length(tracker_h)])
+                            .areas(inner);
+                    frame.render_widget(Paragraph::new(Text::from(lines)), who_rect);
+                    let q_block = Block::default()
+                        .borders(Borders::TOP)
+                        .border_style(Style::default().fg(Color::Yellow))
+                        .title(" Quests [F11] ");
+                    frame.render_widget(
+                        Paragraph::new(Text::from(tracker_lines))
+                            .block(q_block)
+                            .wrap(Wrap { trim: true }),
+                        tracker_rect,
+                    );
+                } else {
+                    frame.render_widget(Paragraph::new(Text::from(lines)), inner);
+                }
             }
             _ => {
                 // 16b cut Q.4: the one place a pane is told how big it is.
@@ -12485,5 +12580,184 @@ mod tests {
             added_short, MAX_TUI_BURST_OPS,
             "short /local burst must be bounded by MAX_TUI_BURST_OPS"
         );
+    }
+
+    #[test]
+    fn quest_markers_tracker_dialog_and_abandon_work_end_to_end() {
+        let mut app = app();
+        app.manifest.panels.push(QUESTS_FEED.into());
+
+        // 1. RoomView with `ambient.quest_markers` decorates NPC name with `[!]`
+        let mut ambient = std::collections::BTreeMap::new();
+        ambient.insert(
+            "quest_markers".into(),
+            serde_json::json!([
+                {
+                    "npc_id": "#42",
+                    "npc_name": "Maren Halvorsen",
+                    "marker": "available",
+                    "symbol": "!",
+                    "quest_key": "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+                    "quest_title": "First Berth: Enroll in the Belt Co-op",
+                    "category": "guided"
+                }
+            ]),
+        );
+        app.apply_event(&OutputEvent::Room(RoomView {
+            id: "#10".into(),
+            name: "Port Watch Arrivals".into(),
+            desc: RichText::plain("Arrivals gantry."),
+            contents: vec![mush_proto::ObjRef {
+                id: "#42".into(),
+                name: "Maren Halvorsen".into(),
+            }],
+            exits: Vec::new(),
+            zone: None,
+            ambient,
+        }));
+        let room_buf = painted(&mut app, 130, 36);
+        let dump = |b: &ratatui::buffer::Buffer| -> String {
+            (0..b.area.height)
+                .map(|y| {
+                    (0..b.area.width)
+                        .map(|x| b[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        assert!(
+            find_in(&room_buf, "Maren Halvorsen [!]", 0).is_some(),
+            "room view must render [!] quest marker next to Maren:\n{}",
+            dump(&room_buf)
+        );
+
+        // 2. Receiving `tacsim.quests` panel populates tracker and dialog overlay
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "room_id": "#10",
+                "room_name": "Port Watch Arrivals",
+                "room_markers": [
+                    {
+                        "npc_id": "#42",
+                        "npc_name": "Maren Halvorsen",
+                        "marker": "available",
+                        "symbol": "!",
+                        "quest_key": "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+                        "quest_title": "First Berth: Enroll in the Belt Co-op",
+                        "category": "guided"
+                    }
+                ],
+                "available": [
+                    {
+                        "key": "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+                        "title": "First Berth: Enroll in the Belt Co-op",
+                        "category": "guided",
+                        "introduction": "Enroll for a Co-op Dray at the Co-op Registry.",
+                        "reward_summary": "Charter Dray hull",
+                        "giver_id": "#42",
+                        "giver_name": "Maren Halvorsen",
+                        "turn_in_id": "#55",
+                        "turn_in_name": "Ilse Oduya-Brandt",
+                        "allow_restart": true,
+                        "accept_cmd": "+quest/accept #42=tok123",
+                        "decline_cmd": "+quest/decline #42=tok123",
+                        "checkpoints": [
+                            { "id": "enroll", "title": "Enroll in Belt Co-op", "instructions": "Run +coop/enroll", "room_name": "Co-op Registry" }
+                        ]
+                    }
+                ],
+                "active": [
+                    {
+                        "key": "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel",
+                        "title": "Provisions and Reaction Mass",
+                        "category": "guided",
+                        "introduction": "Buy provisions and fuel.",
+                        "reward_summary": "Fueled for Stickney",
+                        "giver_id": "#55",
+                        "giver_name": "Ilse Oduya-Brandt",
+                        "turn_in_id": "#55",
+                        "turn_in_name": "Ilse Oduya-Brandt",
+                        "allow_restart": true,
+                        "ready_to_finish": false,
+                        "next_step": "Buy 10t provisions",
+                        "next_room_name": "Co-op Chandlery",
+                        "can_check_now": false,
+                        "can_finish_now": false,
+                        "check_cmd": "+quest/check #55=tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel",
+                        "finish_cmd": "+quest/finish #55=tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel",
+                        "abandon_cmd": "+quest/abandon #55=tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel",
+                        "checkpoints": [
+                            { "id": "prov", "title": "Buy 10t provisions", "instructions": "Buy provisions", "room_name": "Co-op Chandlery", "checked": false, "live_ready": false }
+                        ]
+                    }
+                ],
+                "completed": [
+                    {
+                        "key": "tacsim.quests.guided_onboarding/quest.guide_00",
+                        "title": "Cleared Arrivals",
+                        "category": "guided",
+                        "giver_name": "Maren Halvorsen",
+                        "turn_in_name": "Maren Halvorsen",
+                        "completion": "Arrivals cleared.",
+                        "reward_summary": "Clearance logged"
+                    }
+                ]
+            }),
+        });
+        let tracker_buf = painted(&mut app, 130, 36);
+        assert!(
+            find_in(&tracker_buf, "Quests [F11]", 0).is_some()
+                && find_in(&tracker_buf, "Provisions", 0).is_some(),
+            "WHO rail must display compact quest tracker:\n{}",
+            dump(&tracker_buf)
+        );
+
+        // 3. F11 opens the Quest Dialog overlay on Active (since an active quest exists)
+        let r = app.feed_input(b"\x1b[23~");
+        assert!(app.quests_overlay.open);
+        assert!(r.queries.iter().any(|(q, _)| q == QUESTS_FEED));
+        let active_buf = painted(&mut app, 130, 36);
+        assert!(
+            find_in(&active_buf, "Provisions and Reaction Mass", 0).is_some()
+                && find_in(&active_buf, "Fueled for Stickney", 0).is_some(),
+            "active quest tab must render title and rewards:\n{}",
+            dump(&active_buf)
+        );
+
+        // 4. Double-pressing 'x' on Active arms then submits `+quest/abandon`
+        let r_arm = app.feed_input(b"x");
+        assert!(
+            r_arm.submit.is_empty(),
+            "first x must arm abandon confirmation"
+        );
+        let r_ab = app.feed_input(b"x");
+        assert_eq!(
+            r_ab.submit,
+            vec![
+                "+quest/abandon #55=tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"
+            ]
+        );
+
+        // 5. Switch to Available Here (Tab) and press 'a' to accept with signed command
+        app.feed_input(b"\t");
+        let avail_buf = painted(&mut app, 130, 36);
+        assert!(
+            find_in(&avail_buf, "First Berth", 0).is_some()
+                && find_in(&avail_buf, "Charter Dray hull", 0).is_some(),
+            "available tab must render offer title and rewards:\n{}",
+            dump(&avail_buf)
+        );
+        let r_acc = app.feed_input(b"a");
+        assert_eq!(r_acc.submit, vec!["+quest/accept #42=tok123"]);
+
+        // 6. Esc closes the overlay cleanly, and /quests reopens it
+        app.feed_input(b"\x1b");
+        assert!(!app.quests_overlay.open);
+        app.feed_input(b"/quests\r");
+        assert!(app.quests_overlay.open);
     }
 }

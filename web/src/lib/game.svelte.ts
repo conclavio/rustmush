@@ -105,6 +105,7 @@ import { WsClient, type EnvelopeOf, type WebSocketLike } from "./ws";
 import { parseResolutionOutcome } from "./view";
 import { TacsimPortStore } from "./stores/tacsim.svelte";
 import { PORT_TRADE_FEED, TACSIM_CONTENT_FEED } from "./tacsim/trade";
+import { QUESTS_FEED, QuestsStore } from "./stores/quests.svelte";
 
 /** Doc 31 cut UD.3b: the pulled feed of published unit designs' looks. */
 export const UNIT_LOOKS_FEED = "unit.looks";
@@ -154,7 +155,8 @@ type PendingReq =
   | { kind: "mind.market"; gen: number }
   | { kind: "mind.holdings"; gen: number }
   | { kind: "port.trade" }
-  | { kind: "tacsim.content" };
+  | { kind: "tacsim.content" }
+  | { kind: "tacsim.quests" };
 
 const HELP_LINES = [
   "Client commands (handled locally, never sent to the game):",
@@ -163,6 +165,7 @@ const HELP_LINES = [
   "  /theme [dark|light|system] — switch theme (no argument: toggle)",
   "  /help           — this card",
   "  /minds          — open the mind workshop (also F10)",
+  "  /quests         — open the quest log",
   "Keys while nothing has focus: 1-9 and 0 screens, Enter opens the box,",
   '  " : ; \\ + / open it with that character typed, ? the key help,',
   "  a letter runs the screen's own command (the chips at the bottom),",
@@ -248,6 +251,9 @@ export function hydrationQueries(
   if (session.hasPanel(SKY_CHART_FEED)) {
     out.push({ pending: { kind: "chart" }, q: { t: "panel_subscribe", d: { feed: SKY_CHART_FEED } } });
   }
+  if (session.hasPanel(QUESTS_FEED)) {
+    out.push({ pending: { kind: "tacsim.quests" }, q: { t: "panel_subscribe", d: { feed: QUESTS_FEED } } });
+  }
   return out;
 }
 
@@ -323,6 +329,8 @@ export class GameApp {
     sendCommand: (line) => this.submit(line),
     selfCharacterId: () => this.session.character?.id ?? null,
   });
+  /** WoW-style NPC quest markers, dialog, tracker, and completion log (`tacsim.quests`). */
+  quests = new QuestsStore();
 
   screen = $state<Screen>("login");
   /** The latest `scenes` keyframe (the scene screen's glance rides in
@@ -595,6 +603,7 @@ export class GameApp {
     this.notifications.clear();
     this.presence.clear();
     this.tacsim.clear();
+    this.quests.reset();
     this.sceneFrame = null;
     this.paletteEntries = [];
     this.paletteSelected = 0;
@@ -896,6 +905,10 @@ export class GameApp {
     this.screens.exits = exitKeys(view);
     this.scrollback.push("ev-room", roomLines(view), ts);
     this.tacsim.observeRoom(view);
+    this.quests.observeRoom(view);
+    if (this.session.hasPanel(QUESTS_FEED)) {
+      this.refreshQuests();
+    }
   }
 
   #routeReply(event: OutputEvent, pending: PendingReq | null, ts: number): void {
@@ -1012,7 +1025,11 @@ export class GameApp {
           // hello pass must not print a line for asking.
           return;
         }
-        if (pending?.kind === "port.trade" || pending?.kind === "tacsim.content") {
+        if (
+          pending?.kind === "port.trade" ||
+          pending?.kind === "tacsim.content" ||
+          pending?.kind === "tacsim.quests"
+        ) {
           return;
         }
         // The generic reply-error line, demoted like every other
@@ -1219,6 +1236,10 @@ export class GameApp {
     } else if (d.feed === TACSIM_CONTENT_FEED) {
       if (d.kind === "keyframe") {
         this.tacsim.observeContentFeed(d.data);
+      }
+    } else if (d.feed === QUESTS_FEED) {
+      if (d.kind === "keyframe") {
+        this.quests.applyFrame(d.data);
       }
     } else if (isViewFeed(d.feed)) {
       // A `<name>.view` generic view (I9): hold it and make sure a screen
@@ -2175,6 +2196,13 @@ export class GameApp {
     this.#req({ kind: "arena.mind" }, { t: "panel_subscribe", d: { feed: "arena.mind" } });
   }
 
+  refreshQuests(): void {
+    if (!this.session.hasPanel(QUESTS_FEED)) {
+      return;
+    }
+    this.#req({ kind: "tacsim.quests" }, { t: "panel_subscribe", d: { feed: QUESTS_FEED } });
+  }
+
   #localCommand(cmd: string): void {
     const [name, ...rest] = cmd.slice(1).split(/\s+/);
     const arg = rest.join(" ");
@@ -2184,6 +2212,10 @@ export class GameApp {
         return;
       case "minds":
         void this.minds.show();
+        return;
+      case "quests":
+        this.refreshQuests();
+        this.quests.openLog();
         return;
       case "history":
         // The same verb the TUI and line mode have had since I12 (LB-20).

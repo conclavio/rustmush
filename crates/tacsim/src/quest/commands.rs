@@ -23,6 +23,7 @@ const HELP: &str = "+quest [<giver>[=<quest-key>]] -- your private quest journal
 
 pub(crate) fn register(reg: &mut Registrar<'_>) -> Result<(), ModError> {
     reg.interface_provider("quest", Arc::new(QuestInterface))?;
+    super::panel::register(reg)?;
     reg.classify_commands(CommandCompatibility::Authoritative);
     reg.command(
         CommandSpec {
@@ -59,7 +60,7 @@ fn rows(ctx: &Ctx<'_>, read: Read) -> Result<Vec<QuestRecord>, String> {
 fn own_rows(ctx: &Ctx<'_>, npc: ObjId, read: Read) -> Result<Vec<QuestRecord>, String> {
     Ok(rows(ctx, read)?
         .into_iter()
-        .filter(|r| r.npc == npc && r.actor == ctx.actor)
+        .filter(|r| (r.npc == npc || r.turn_in_npc() == npc) && r.actor == ctx.actor)
         .collect())
 }
 
@@ -177,6 +178,7 @@ fn basis_for(
                 Some(booking) => r.key.booking == Some(booking.id),
                 None => r.key.actor == Some(ctx.actor),
             }
+            && !r.is_restartable_abandoned()
     }) {
         return Err("This favor is already in your journal. Use +quest to read it.".into());
     }
@@ -247,6 +249,25 @@ fn bases(
     }
 }
 
+pub(crate) fn compute_offer_token(
+    w: &World,
+    actor: ObjId,
+    def: &QuestDef,
+    passage: Option<&passengers::Booking>,
+    prerequisite_receipt: Option<&QuestKey>,
+) -> Result<String, String> {
+    let until = w.now().checked_add(OFFER_SECONDS).ok_or(UNAVAILABLE)?;
+    let hash = mush_core::CanonicalHash::for_canonical_value(
+        "tacsim.quest_offer.v1",
+        1,
+        &json!([def, passage, prerequisite_receipt, actor, until]),
+        32_768,
+    )
+    .map(|hash| hash.to_hex())
+    .map_err(|_| UNAVAILABLE.to_owned())?;
+    Ok(format!("{until}.{hash}"))
+}
+
 fn digest(basis: &Basis, actor: ObjId, until: i64) -> Result<String, String> {
     mush_core::CanonicalHash::for_canonical_value(
         "tacsim.quest_offer.v1",
@@ -275,8 +296,12 @@ fn offer_one(ctx: &Ctx<'_>, npc: ObjId, basis: &Basis) -> Result<String, String>
         .collect::<Vec<_>>()
         .join("\n");
     let choice = def.choice.as_ref().map(|choice| format!("\nPath: {}. Accepting records this choice and rules out the alternative path, even if you later abandon it. Declining this offer leaves the alternative available.", choice.path)).unwrap_or_default();
+    let reward_line = def.reward_summary.as_deref().map_or_else(
+        || "Return to me afterward to compare notes. Completion bonus: +10 trust and +5 disposition with me, once per quest; no credit payment.".to_owned(),
+        |summary| format!("Reward: {summary}."),
+    );
     Ok(format!(
-        "{}\n{}\n{}{}\nReturn to me afterward to compare notes. Completion bonus: +10 trust and +5 disposition with me, once per quest; no credit payment. All activities are available without accepting this optional quest.\nTo accept explicitly:\n+quest/accept #{}={until}.{hash}\nTo decline this quest permanently, without a penalty or reward:\n+quest/decline #{}={until}.{hash}",
+        "{}\n{}\n{}{}\n{reward_line} All activities are available without accepting this optional quest.\nTo accept explicitly:\n+quest/accept #{}={until}.{hash}\nTo decline this quest permanently, without a penalty or reward:\n+quest/decline #{}={until}.{hash}",
         def.title, def.introduction, steps, choice, npc.0, npc.0
     ))
 }
@@ -291,6 +316,8 @@ fn offer(ctx: &Ctx<'_>, npc: ObjId, selector: Option<&str>, read: Read) -> Resul
 
 fn journal(ctx: &Ctx<'_>, row: &QuestRecord) -> String {
     let giver = crate::port::coop::name_of(ctx.w, row.npc);
+    let turn_in_id = row.turn_in_npc();
+    let turn_in_name = crate::port::coop::name_of(ctx.w, turn_in_id);
     let path = row
         .definition
         .choice
@@ -307,8 +334,13 @@ fn journal(ctx: &Ctx<'_>, row: &QuestRecord) -> String {
         } else {
             String::new()
         };
+        let restart_note = if row.is_restartable_abandoned() {
+            format!("You can accept this guided quest again from {giver}.")
+        } else {
+            "This quest cannot be restarted.".to_owned()
+        };
         return format!(
-            "{} — {state}; closed without a quest reward or penalty. This quest cannot be restarted.{path}\nQuest key: {}",
+            "{} — {state}; closed without a quest reward or penalty. {restart_note}{path}\nQuest key: {}",
             row.definition.title, row.definition.key
         );
     }
@@ -324,7 +356,7 @@ fn journal(ctx: &Ctx<'_>, row: &QuestRecord) -> String {
         .collect::<String>();
     if row.completed.is_some() {
         return format!(
-            "{} — completed with {giver}.\n{giver}'s account: {}{path}{notes}\nQuest key: {}",
+            "{} — completed with {turn_in_name}.\n{turn_in_name}'s account: {}{path}{notes}\nQuest key: {}",
             row.definition.title, row.definition.completion, row.definition.key
         );
     }
@@ -334,13 +366,24 @@ fn journal(ctx: &Ctx<'_>, row: &QuestRecord) -> String {
             row.definition.title, c.title, c.instructions, row.npc.0, row.definition.key
         ),
         None => format!(
-            "{} — observations recorded. Return to {giver} and use +quest/finish #{}={} to compare notes.",
-            row.definition.title, row.npc.0, row.definition.key
+            "{} — objectives recorded. Speak with {turn_in_name} and use +quest/finish #{}={} to complete.",
+            row.definition.title, turn_in_id.0, row.definition.key
         ),
     };
+    let abandon_note = if row.definition.allow_restart {
+        format!(
+            "To abandon this guided quest (you can accept it again later): +quest/abandon #{}={}",
+            row.npc.0, row.definition.key
+        )
+    } else {
+        format!(
+            "To close this quest permanently without a reward or penalty: +quest/abandon #{}={}",
+            row.npc.0, row.definition.key
+        )
+    };
     format!(
-        "{progress}{path}{notes}\nTo close this quest permanently without a reward or penalty: +quest/abandon #{}={}\nQuest key: {}",
-        row.npc.0, row.definition.key, row.definition.key
+        "{progress}{path}{notes}\n{abandon_note}\nQuest key: {}",
+        row.definition.key
     )
 }
 
@@ -408,6 +451,7 @@ fn accept(ctx: &mut Ctx<'_>, npc: ObjId, token: &str, decline: bool) -> Result<S
         checks: Vec::new(),
         completed: None,
         closed: None,
+        restart_count: 0,
     };
     let title = row.definition.title.clone();
     if decline {
@@ -430,11 +474,17 @@ fn check(ctx: &mut Ctx<'_>, npc: ObjId, selector: Option<&str>) -> Result<String
         );
     }
     let checkpoint = row.definition.checkpoints.get(row.checks.len()).ok_or(
-        "Your observations are already recorded. Return to the giver and use +quest/finish.",
+        "Your objectives are already recorded. Speak with the quest contact and use +quest/finish.",
     )?;
-    if ctx.w.get(ctx.actor).and_then(|p| p.location) != Some(checkpoint.room)
-        || !ctx.can_perceive(ctx.actor, checkpoint.room)
-    {
+    let at_checkpoint = ctx.w.get(ctx.actor).and_then(|p| p.location) == Some(checkpoint.room)
+        && ctx.can_perceive(ctx.actor, checkpoint.room);
+    let guided_remote_ok = row.definition.is_guided()
+        && !matches!(
+            checkpoint.objective,
+            Objective::Observation | Objective::Passenger { .. } | Objective::Contact { .. }
+        )
+        && (close(ctx, row.turn_in_npc()) || close(ctx, row.npc));
+    if !at_checkpoint && !guided_remote_ok {
         return Err(format!(
             "Go to {} first. {}",
             checkpoint.title, checkpoint.instructions
@@ -466,19 +516,23 @@ fn check(ctx: &mut Ctx<'_>, npc: ObjId, selector: Option<&str>) -> Result<String
 }
 
 fn finish(ctx: &mut Ctx<'_>, npc: ObjId, selector: Option<&str>) -> Result<String, String> {
-    if !close(ctx, npc) {
-        return Err("Return to the giver to compare notes in person.".into());
-    }
     let row = selected(ctx, npc, selector, "finish")?;
+    let turn_in = row.turn_in_npc();
+    if npc != turn_in || !close(ctx, turn_in) {
+        let turn_in_name = crate::port::coop::name_of(ctx.w, turn_in);
+        return Err(format!(
+            "Speak with {turn_in_name} in person to turn in this quest."
+        ));
+    }
     if row.completed.is_some() {
         return Ok("You already completed this favor together.".into());
     }
     if row.closed.is_some() {
-        return Err("This favor is closed and cannot be finished or restarted.".into());
+        return Err("This favor is closed and cannot be finished.".into());
     }
     if row.checks.len() != row.definition.checkpoints.len() {
         return Err(
-            "There are still observations to make. Use +quest for the next objective.".into(),
+            "There are still objectives to complete. Use +quest for the next objective.".into(),
         );
     }
     if !super::evidence::completion_ready(ctx.w, &row) {
@@ -497,10 +551,17 @@ fn abandon(ctx: &mut Ctx<'_>, npc: ObjId, selector: Option<&str>) -> Result<Stri
         return Err("This favor is already complete or closed.".into());
     }
     store::stage_abandon(ctx, &row)?;
-    Ok(format!(
-        "Abandonment of {} submitted. This quest cannot be restarted and no quest reward or penalty will be given. Any chosen path remains recorded. Use +quest to read the committed journal.",
-        row.definition.title
-    ))
+    if row.definition.allow_restart {
+        Ok(format!(
+            "Abandonment of {} submitted. You can accept this guided quest again later without penalty. Use +quest to read the committed journal.",
+            row.definition.title
+        ))
+    } else {
+        Ok(format!(
+            "Abandonment of {} submitted. This quest cannot be restarted and no quest reward or penalty will be given. Any chosen path remains recorded. Use +quest to read the committed journal.",
+            row.definition.title
+        ))
+    }
 }
 
 fn resolve(ctx: &Ctx<'_>, name: &str) -> Result<ObjId, String> {
@@ -517,14 +578,17 @@ fn resolve(ctx: &Ctx<'_>, name: &str) -> Result<ObjId, String> {
     let mut candidates: Vec<_> = store::list(ctx)?
         .into_iter()
         .filter(|r| r.actor == ctx.actor)
-        .filter(|r| {
-            name == format!("#{}", r.npc.0)
+        .flat_map(|r| {
+            let turn_in = r.turn_in_npc();
+            [r.npc, turn_in]
+        })
+        .filter(|&target| {
+            name == format!("#{}", target.0)
                 || ctx
                     .w
-                    .get(r.npc)
+                    .get(target)
                     .is_some_and(|o| o.name.to_lowercase().starts_with(&name))
         })
-        .map(|r| r.npc)
         .collect();
     candidates.sort();
     candidates.dedup();

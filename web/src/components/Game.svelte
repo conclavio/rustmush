@@ -26,6 +26,7 @@
   import Composer from "./Composer.svelte";
   import GenericViewScreen from "./GenericViewScreen.svelte";
   import NotificationTray from "./NotificationTray.svelte";
+  import QuestDialogModal from "./QuestDialogModal.svelte";
   import RequestModal from "./RequestModal.svelte";
   import LlmPanel from "./LlmPanel.svelte";
   import MindWorkshop from "./MindWorkshop.svelte";
@@ -149,7 +150,7 @@
       if (app.minds.open) app.minds.open = false; else void app.minds.show();
       return;
     }
-    if (app.minds.open || app.mindReadoutOpen || app.tacsim.activeModal !== null) return;
+    if (app.minds.open || app.mindReadoutOpen || app.tacsim.activeModal !== null || app.quests?.hasOpenOverlay) return;
     // Only explicit shell modifiers may leave a focused control. Bare
     // Enter, Space, Tab, arrows and typing belong to that control.
     if (!ev.altKey && !ev.ctrlKey && !ev.metaKey && isInteractiveControl(ev.target)) return;
@@ -217,6 +218,16 @@
       <span class="dot" aria-hidden="true"></span>
       {statusLabel}
     </span>
+    {#if app.session.hasPanel("tacsim.quests") || app.quests.badgeCount > 0 || app.quests.completed.length > 0}
+      <button
+        type="button"
+        class="railbtn text"
+        title="Open quest log (/quests)"
+        onclick={() => app.quests.openLog()}
+      >
+        quests{#if app.quests.active.length > 0} ({app.quests.active.length}){:else if app.quests.available.length > 0} (!){/if}
+      </button>
+    {/if}
     {#if app.session.hasPanel("arena.mind")}<button type="button" class="railbtn text" title="Mind workshop (F10)" onclick={() => void app.minds.show()}>minds</button>{/if}
     <NotificationTray {app} />
     <button
@@ -328,6 +339,7 @@
     </section>
   </div>
 
+  <QuestDialogModal {app} onCmd={runCmd} />
   <RequestModal {app} />
 
   {#if app.screens.helpOpen}

@@ -722,6 +722,10 @@ pub fn atlas_module_builder(cfg: mush_atlas::AtlasConfig) -> mush_atlas::AtlasMo
         Ok(packs) => shelf.extend(packs),
         Err(error) => tracing::error!(%error, "starter quest shelf packs refused"),
     }
+    match crate::quest::packs::guided_packs() {
+        Ok(packs) => shelf.extend(packs),
+        Err(error) => tracing::error!(%error, "guided quest shelf packs refused"),
+    }
     mush_atlas::AtlasModule::with_config(cfg).with_shelf(shelf)
 }
 
@@ -745,6 +749,7 @@ pub fn boot_pack_list(
         packs.extend(crate::port::passenger::content::packs()?);
         packs.extend(crate::detachment::crew::content::packs()?);
         packs.extend(crate::quest::packs::packs()?);
+        packs.extend(crate::quest::packs::guided_packs()?);
     }
     Ok(packs)
 }
@@ -774,6 +779,9 @@ pub fn content_module_with(
             module = module.wait_for_dependency_upgrades(pack.manifest().id().clone());
         }
         for pack in crate::quest::packs::packs()? {
+            module = module.wait_for_dependency_upgrades(pack.manifest().id().clone());
+        }
+        for pack in crate::quest::packs::guided_packs()? {
             module = module.wait_for_dependency_upgrades(pack.manifest().id().clone());
         }
     }
