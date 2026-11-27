@@ -2477,6 +2477,11 @@ impl TuiApp {
                     if *kind == PanelFrameKind::Keyframe {
                         self.quests_snap = parse_quests_frame(data);
                         self.quests_overlay.clamp_selection(&self.quests_snap);
+                        self.port_walk
+                            .observe_quest_markers(&self.quests_snap.room_markers);
+                        if self.pixel.kind() == PictureKind::StationWalk {
+                            self.pixel.invalidate_last_sent();
+                        }
                     }
                     return queries;
                 }
@@ -3620,6 +3625,24 @@ impl TuiApp {
             budget.palette_dirty = false;
             return true;
         }
+        if self.quests_overlay.open
+            && self.answering.is_none()
+            && self.input_mode == InputMode::Normal
+        {
+            match self.quests_overlay.handle_key(key, &self.quests_snap) {
+                QuestOverlayAction::None | QuestOverlayAction::Close => {}
+                QuestOverlayAction::Submit(cmd) => {
+                    r.push_submit(cmd);
+                    if self.manifest.panels.iter().any(|p| p == QUESTS_FEED) {
+                        r.push_query((QUESTS_FEED.to_string(), Value::Null));
+                    }
+                }
+            }
+            if self.pixel.kind() == PictureKind::StationWalk {
+                self.pixel.invalidate_last_sent();
+            }
+            return true;
+        }
         if self.pixel.kind() == PictureKind::StationWalk && self.port_walk.drawer_open() {
             let out = self.port_walk.handle_key(
                 key,
@@ -3667,6 +3690,16 @@ impl TuiApp {
             r.extend_submits(out.commands);
             r.extend_submits(self.port_walk.take_orders());
             r.extend_queries(out.queries);
+            if let Some((npc_id, npc_name)) = out.open_quest_for_npc {
+                self.port_walk.stop_motion();
+                self.quests_overlay
+                    .open_for_npc(&self.quests_snap, &npc_id, &npc_name);
+                if self.manifest.panels.iter().any(|p| p == QUESTS_FEED) {
+                    r.push_query((QUESTS_FEED.to_string(), Value::Null));
+                }
+                self.pixel.invalidate_last_sent();
+                return true;
+            }
             if out.enter_helm_cockpit {
                 self.pixel.switch_kind_live(PictureKind::SpaceCockpit);
                 return true;
@@ -12759,5 +12792,16 @@ mod tests {
         assert!(!app.quests_overlay.open);
         app.feed_input(b"/quests\r");
         assert!(app.quests_overlay.open);
+
+        // 7. QuestOverlayState::open_for_npc targets Maren's Available offer directly
+        app.quests_overlay.close();
+        app.quests_overlay
+            .open_for_npc(&app.quests_snap, "#42", "Maren Halvorsen");
+        assert!(app.quests_overlay.open);
+        assert_eq!(
+            app.quests_overlay.tab,
+            crate::tui::quests::QuestTab::Available
+        );
+        assert_eq!(app.quests_overlay.selected, 0);
     }
 }
