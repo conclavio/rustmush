@@ -15,6 +15,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use serde_json::Value;
 
 use super::keys::Key;
+use super::port_walk::QuestExitBreadcrumb;
 use super::render::clean;
 
 /// Panel feed id carrying structured quest state and room NPC markers.
@@ -1196,12 +1197,46 @@ pub fn render_quest_tracker_lines(
     snap: &QuestsSnapshot,
     tracked_key: Option<&str>,
 ) -> Vec<Line<'static>> {
+    render_quest_tracker_lines_with_route(snap, tracked_key, None)
+}
+
+/// Build compact tracker lines for the Scene screen right rail, including the
+/// 7-step Guided Tour progress bar, next-hop station route breadcrumb, and
+/// contextual F11 action cue.
+#[must_use]
+pub fn render_quest_tracker_lines_with_route(
+    snap: &QuestsSnapshot,
+    tracked_key: Option<&str>,
+    route_hop: Option<&QuestExitBreadcrumb>,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
+    let tour = snap.guided_tour_progress();
     let tracked = tracked_key
         .and_then(|k| snap.active.iter().find(|q| q.key == k))
         .or_else(|| snap.active.first());
 
     if let Some(q) = tracked {
+        if let Some(ref t) = tour {
+            let text = if t.all_done {
+                format!(
+                    "Corridor Captain {} {}/{}",
+                    t.progress_bar(),
+                    t.completed,
+                    t.total
+                )
+            } else {
+                format!("Tour {} {}/{}", t.progress_bar(), t.completed, t.total)
+            };
+            let col = if t.all_done {
+                Color::Green
+            } else {
+                Color::Yellow
+            };
+            lines.push(Line::from(Span::styled(
+                text,
+                Style::default().fg(col).add_modifier(Modifier::BOLD),
+            )));
+        }
         let done = q.checkpoints.iter().filter(|c| c.checked).count();
         let sym = if q.can_finish_now || q.ready_to_finish {
             "[?]"
@@ -1239,17 +1274,62 @@ pub fn render_quest_tracker_lines(
                 Span::styled(cp.title.clone(), style),
             ]));
         }
+        if !q.can_finish_now
+            && !q.can_check_now
+            && let Some(hop) = route_hop
+        {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "Route: ",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("-> {} ({}h)", hop.next_room_name, hop.hops),
+                    Style::default().fg(Color::Yellow),
+                ),
+            ]));
+        }
         if !q.next_step.is_empty() {
             lines.push(Line::from(vec![
                 Span::styled("Next: ", Style::default().fg(Color::Cyan)),
                 Span::raw(q.next_step.clone()),
             ]));
         }
-        lines.push(Line::from(Span::styled(
-            "F11 or /quests for dialog",
-            Style::default().add_modifier(Modifier::DIM),
-        )));
+        let hint_line = if q.can_finish_now {
+            Line::from(Span::styled(
+                "F11 -> Enter: Complete [?]",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ))
+        } else if q.can_check_now {
+            Line::from(Span::styled(
+                "F11 -> Enter: Verify Step",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ))
+        } else if let Some(sug) = QuestsSnapshot::suggested_action_for(q) {
+            Line::from(Span::styled(
+                format!("F11 -> p: {}", sug.command),
+                Style::default().fg(Color::Cyan),
+            ))
+        } else {
+            Line::from(Span::styled(
+                "F11 or /quests for dialog",
+                Style::default().add_modifier(Modifier::DIM),
+            ))
+        };
+        lines.push(hint_line);
     } else if let Some(offer) = snap.available.first() {
+        if let Some(ref t) = tour {
+            lines.push(Line::from(Span::styled(
+                format!("Tour {} {}/{}", t.progress_bar(), t.completed, t.total),
+                Style::default().fg(Color::Yellow),
+            )));
+        }
         lines.push(Line::from(vec![
             Span::styled(
                 "[!] ",
@@ -1261,8 +1341,23 @@ pub fn render_quest_tracker_lines(
         ]));
         lines.push(Line::from(offer.title.clone()));
         lines.push(Line::from(Span::styled(
-            "Press F11 or /quests",
-            Style::default().add_modifier(Modifier::DIM),
+            "F11 -> a: Accept Quest",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )));
+    } else if let Some(t) = tour
+        && t.all_done
+    {
+        lines.push(Line::from(Span::styled(
+            format!("[*] Corridor Captain ({}/{})", t.completed, t.total),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(Span::styled(
+            "Guided Tour Complete",
+            Style::default().fg(Color::Green),
         )));
     }
     lines
@@ -1999,5 +2094,103 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(m_text.contains("Corridor Captain [#######] 7/7"));
+    }
+
+    #[test]
+    fn tracker_lines_show_tour_progress_route_hop_action_cues_and_mastery() {
+        let join = |lines: Vec<Line<'static>>| -> String {
+            lines
+                .iter()
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        // 1. Active guided quest with route hop + suggested command cue
+        let active_snap = parse_frame(&json!({
+            "schema": 1,
+            "completed": [{ "key": GUIDED_TOUR_KEYS[0], "title": "Step 1" }],
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[4],
+                "title": "Refit the Dray for Surface Mining",
+                "next_step": "Run +coop/refit prospector",
+                "checkpoints": [{
+                    "id": "refit_dray_p",
+                    "title": "Refit Dray-P",
+                    "instructions": "Run +coop/refit prospector.",
+                    "checked": false,
+                    "live_ready": false
+                }]
+            }]
+        }));
+        let hop = QuestExitBreadcrumb {
+            next_room_entry: "room.c02_pressure".into(),
+            next_room_name: "Pressure Lobby".into(),
+            next_exit_command: "goto n".into(),
+            target_room_name: "Registry & Co-op Desk".into(),
+            hops: 3,
+        };
+        let active_text = join(render_quest_tracker_lines_with_route(
+            &active_snap,
+            None,
+            Some(&hop),
+        ));
+        assert!(active_text.contains("Tour [#--->--] 1/7"), "{active_text}");
+        assert!(
+            active_text.contains("Route: -> Pressure Lobby (3h)"),
+            "{active_text}"
+        );
+        assert!(
+            active_text.contains("F11 -> p: +coop/refit prospector"),
+            "{active_text}"
+        );
+
+        // 2. Room offer without active quest shows quick-accept hint
+        let offer_snap = parse_frame(&json!({
+            "schema": 1,
+            "available": [{
+                "key": GUIDED_TOUR_KEYS[0],
+                "title": "First Papers",
+                "giver_name": "Maren Halvorsen",
+                "accept_cmd": "+quest/accept #99 tok"
+            }]
+        }));
+        let offer_text = join(render_quest_tracker_lines_with_route(
+            &offer_snap,
+            None,
+            None,
+        ));
+        assert!(offer_text.contains("Tour [>------] 0/7"), "{offer_text}");
+        assert!(
+            offer_text.contains("F11 -> a: Accept Quest"),
+            "{offer_text}"
+        );
+
+        // 3. 7/7 mastered tour with no active/available quest shows emerald completion crest
+        let mastered_snap = parse_frame(&json!({
+            "schema": 1,
+            "completed": GUIDED_TOUR_KEYS
+                .iter()
+                .map(|k| json!({ "key": k, "title": "Done" }))
+                .collect::<Vec<_>>()
+        }));
+        let mastered_text = join(render_quest_tracker_lines_with_route(
+            &mastered_snap,
+            None,
+            None,
+        ));
+        assert!(
+            mastered_text.contains("[*] Corridor Captain (7/7)"),
+            "{mastered_text}"
+        );
+        assert!(
+            mastered_text.contains("Guided Tour Complete"),
+            "{mastered_text}"
+        );
     }
 }
