@@ -38,6 +38,7 @@ namespace TacSim.Core
         public int SfxVolumePct { get; private set; } = 90;
         public float EffectiveAmbientVolume => IsMuted ? 0f : BaseAmbientGain * (MasterVolumePct / 100f) * (AmbientVolumePct / 100f);
         public float EffectiveSfxVolume => IsMuted ? 0f : BaseSfxGain * (MasterVolumePct / 100f) * (SfxVolumePct / 100f);
+        public float CurrentAmbientPitch => _ambientLoop != null ? _ambientLoop.pitch : 1f;
         public int AllocatedClipCount => CountAllocatedClips();
 
         private AudioSource _ambientLoop;
@@ -57,6 +58,8 @@ namespace TacSim.Core
         private AudioClip _railgunCrackClip;
         private AudioClip _torpedoLaunchClip;
         private AudioClip _redAlertKlaxonClip;
+        private AudioClip _targetLockToneClip;
+        private AudioClip _killConfirmChordClip;
 
         private static double MonotonicSeconds() =>
             Stopwatch.GetTimestamp() / (double)Stopwatch.Frequency;
@@ -94,6 +97,8 @@ namespace TacSim.Core
             DestroyClip(ref _railgunCrackClip);
             DestroyClip(ref _torpedoLaunchClip);
             DestroyClip(ref _redAlertKlaxonClip);
+            DestroyClip(ref _targetLockToneClip);
+            DestroyClip(ref _killConfirmChordClip);
         }
 
         private static void DestroyClip(ref AudioClip clip)
@@ -119,6 +124,8 @@ namespace TacSim.Core
             if (_railgunCrackClip != null) c++;
             if (_torpedoLaunchClip != null) c++;
             if (_redAlertKlaxonClip != null) c++;
+            if (_targetLockToneClip != null) c++;
+            if (_killConfirmChordClip != null) c++;
             return c;
         }
 
@@ -241,6 +248,7 @@ namespace TacSim.Core
         public void SetSoundscape(AmbientSoundscape mode)
         {
             if (_ambientLoop == null) return;
+            _ambientLoop.pitch = 1.0f;
             AudioClip desired = mode == AmbientSoundscape.ShipInterior ? _shipHumClip
                               : mode == AmbientSoundscape.OrbitalSpace ? _spaceHumClip
                               : _stationHumClip;
@@ -254,6 +262,18 @@ namespace TacSim.Core
                 _ambientLoop.Play();
             else if (shouldSilence && _ambientLoop.isPlaying)
                 _ambientLoop.Stop();
+        }
+
+        public void SetArenaEngineThrottle(float speedFrac)
+        {
+            if (_ambientLoop == null) return;
+            _ambientLoop.pitch = Mathf.Lerp(0.95f, 1.22f, Mathf.Clamp01(speedFrac));
+        }
+
+        public void ResetAmbientPitch()
+        {
+            if (_ambientLoop != null)
+                _ambientLoop.pitch = 1.0f;
         }
 
         public void PlayUiClick() => PlayOneShotIfUnmuted(_uiClickClip, 0.35f);
@@ -271,6 +291,20 @@ namespace TacSim.Core
             PlayOneShotIfUnmuted(_redAlertKlaxonClip, 0.78f);
         }
 
+        public void PlayTargetLockTone()
+        {
+            if (_targetLockToneClip == null)
+                _targetLockToneClip = BuildClipFromSamples("TargetLockTone", GenerateTargetLockToneSamples());
+            PlayOneShotIfUnmuted(_targetLockToneClip, 0.52f);
+        }
+
+        public void PlayKillConfirmChord()
+        {
+            if (_killConfirmChordClip == null)
+                _killConfirmChordClip = BuildClipFromSamples("KillConfirmChord", GenerateKillConfirmChordSamples());
+            PlayOneShotIfUnmuted(_killConfirmChordClip, 0.66f);
+        }
+
         /// <summary>
         /// Triggers matching tactical / market SFX for an outbound MUSH command line.
         /// </summary>
@@ -284,11 +318,16 @@ namespace TacSim.Core
                 PlayRailgunCrack();
             else if (low.StartsWith("+tac/torp", StringComparison.Ordinal))
                 PlayTorpedoLaunch();
+            else if (low.StartsWith("lock ", StringComparison.Ordinal))
+                PlayTargetLockTone();
             else if (low.StartsWith("+tac/scan", StringComparison.Ordinal) ||
                      low.StartsWith("+tac/lock", StringComparison.Ordinal) ||
                      low.StartsWith("+tv/scan", StringComparison.Ordinal) ||
-                     low == "scan" || low.StartsWith("scan ", StringComparison.Ordinal))
+                     low == "scan" || low.StartsWith("scan ", StringComparison.Ordinal) ||
+                     low == "emcon" || low.StartsWith("emcon ", StringComparison.Ordinal))
                 PlayRadarScanPing();
+            else if (low == "mind" || low.StartsWith("mind ", StringComparison.Ordinal))
+                PlayUiClick();
             else if (low.StartsWith("+market/accept", StringComparison.Ordinal) ||
                      low.StartsWith("+market/quote", StringComparison.Ordinal) ||
                      low.StartsWith("+market/sell", StringComparison.Ordinal) ||
@@ -531,6 +570,57 @@ namespace TacSim.Core
                 if (local >= len - ramp) env *= Math.Max(0, len - 1 - local) / (float)ramp;
                 float tone = Mathf.Sin(phase) * 0.42f + Mathf.Sin(phase * 2f) * 0.14f;
                 buf[i] = Mathf.Clamp(tone * env, -1f, 1f);
+            }
+            return buf;
+        }
+
+        public static float[] GenerateTargetLockToneSamples()
+        {
+            int samples = (int)(SampleRate * 0.18f);
+            float[] buf = new float[samples];
+            float phase = 0f;
+            int split = (int)(SampleRate * 0.075f);
+            int ramp = Math.Max(1, (int)(SampleRate * 0.003f));
+            for (int i = 0; i < samples; i++)
+            {
+                bool second = i >= split;
+                int local = second ? i - split : i;
+                int len = second ? samples - split : split;
+                float localT = local / (float)SampleRate;
+                float freq = second ? 1318.51f : 880.0f;
+                phase += (freq / SampleRate) * Mathf.PI * 2f;
+                float env = Mathf.Exp(-localT * (second ? 18f : 26f));
+                if (local < ramp) env *= local / (float)ramp;
+                if (local >= len - ramp) env *= Math.Max(0, len - 1 - local) / (float)ramp;
+                buf[i] = Mathf.Clamp(Mathf.Sin(phase) * env * 0.44f, -1f, 1f);
+            }
+            return buf;
+        }
+
+        public static float[] GenerateKillConfirmChordSamples()
+        {
+            int samples = (int)(SampleRate * 0.34f);
+            float[] buf = new float[samples];
+            float p1 = 0f, p2 = 0f, p3 = 0f;
+            int split = (int)(SampleRate * 0.08f);
+            int ramp = Math.Max(1, (int)(SampleRate * 0.004f));
+            for (int i = 0; i < samples; i++)
+            {
+                bool tail = i >= split;
+                int local = tail ? i - split : i;
+                int len = tail ? samples - split : split;
+                float localT = local / (float)SampleRate;
+                float f1 = tail ? 523.25f : 392.00f;
+                float f2 = tail ? 659.25f : 523.25f;
+                float f3 = tail ? 1046.50f : 783.99f;
+                p1 += (f1 / SampleRate) * Mathf.PI * 2f;
+                p2 += (f2 / SampleRate) * Mathf.PI * 2f;
+                p3 += (f3 / SampleRate) * Mathf.PI * 2f;
+                float env = Mathf.Exp(-localT * (tail ? 9.5f : 20f));
+                if (local < ramp) env *= local / (float)ramp;
+                if (local >= len - ramp) env *= Math.Max(0, len - 1 - local) / (float)ramp;
+                float sig = (Mathf.Sin(p1) * 0.28f + Mathf.Sin(p2) * 0.24f + Mathf.Sin(p3) * 0.16f) * env;
+                buf[i] = Mathf.Clamp(sig, -1f, 1f);
             }
             return buf;
         }

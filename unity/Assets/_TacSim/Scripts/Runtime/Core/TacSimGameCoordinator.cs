@@ -736,6 +736,7 @@ namespace TacSim.Core
                 };
                 Hud.OpsDirectory.OnPrefillChatRequested += prefix => Hud?.PrefillChatInput(prefix);
                 Hud.OpsDirectory.OnCommandRequested += ExecutePlayerCommand;
+                Hud.OpsDirectory.OnArenaActionRequested += HandleArenaCockpitVerb;
             }
 
             if (Hud.CommandPalette != null)
@@ -1262,6 +1263,20 @@ namespace TacSim.Core
                 bool cupolaView = CameraRig != null && CameraRig.Mode == CameraRigMode.GroundVehicleCupola;
                 Hud.TacticalBrackets.SyncBrackets(stage, activeCam, hideBrackets, opticsLevel, cupolaView);
                 Hud.TacticalOverview?.SyncOverview(stage, hideBrackets || TacSimDisplayOptions.CurrentHudDensity == TacSimHudDensityPreset.Compact);
+            }
+
+            if (Audio != null)
+            {
+                if (stage == TacSimActiveStage.SimulatorArena && ArenaStage?.State != null)
+                {
+                    float maxKph = ArenaStage.State.MaxSpeedKph > 1f ? ArenaStage.State.MaxSpeedKph : 54f;
+                    float speedFrac = Mathf.Clamp01(Mathf.Abs(ArenaStage.State.SpeedKph) / maxKph);
+                    Audio.SetArenaEngineThrottle(speedFrac);
+                }
+                else if (Mathf.Abs(Audio.CurrentAmbientPitch - 1.0f) > 0.001f)
+                {
+                    Audio.ResetAmbientPitch();
+                }
             }
 
             if (Hud.UnitFrames == null) return;
@@ -3507,16 +3522,22 @@ namespace TacSim.Core
                 case "kill":
                     Hud?.TacticalBrackets?.TriggerArenaHitmarker(ArenaHitmarkerKind.Kill);
                     CameraRig?.TriggerCameraShake(0.32f, 0.28f);
-                    Audio?.PlayMarketChime();
+                    Audio?.PlayKillConfirmChord();
                     Hud?.FloatingCallouts?.ShowCallout(
                         string.IsNullOrEmpty(safeDesig) ? "TARGET DESTROYED!" : $"TARGET DESTROYED: {safeDesig}!",
                         new Color(1.0f, 0.34f, 0.24f, 1f), 2.6f);
                     break;
                 case "target_section_lost":
                     Hud?.TacticalBrackets?.TriggerArenaHitmarker(ArenaHitmarkerKind.SectionCrit);
+                    Audio?.PlayUiClick();
                     Hud?.FloatingCallouts?.ShowCallout(
                         $"{safeDesig} {safeSec} DESTROYED!",
                         new Color(1.0f, 0.74f, 0.18f, 1f), 2.2f);
+                    break;
+                case "locked":
+                    Audio?.PlayTargetLockTone();
+                    if (!string.IsNullOrEmpty(safeDesig))
+                        Hud?.FloatingCallouts?.ShowCallout($"LOCK ACQUIRED: {safeDesig}", new Color(1.0f, 0.88f, 0.36f, 1f), 1.3f);
                     break;
                 case "hit":
                     Hud?.TacticalBrackets?.TriggerArenaHitmarker(ArenaHitmarkerKind.Hit);
