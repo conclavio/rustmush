@@ -36,6 +36,7 @@ pub struct QuestCheckpoint {
     pub id: String,
     pub title: String,
     pub instructions: String,
+    pub room_entry: String,
     pub room_name: String,
     pub checked: bool,
     pub live_ready: bool,
@@ -54,6 +55,7 @@ pub struct ActiveQuest {
     pub allow_restart: bool,
     pub ready_to_finish: bool,
     pub next_step: String,
+    pub next_room_entry: String,
     pub next_room_name: String,
     pub can_check_now: bool,
     pub can_finish_now: bool,
@@ -572,6 +574,22 @@ impl QuestsSnapshot {
         }
         None
     }
+
+    /// Returns `(room_entry, is_turn_in)` for the tracked active quest's next station room objective.
+    #[must_use]
+    pub fn active_objective_room(&self, tracked_key: Option<&str>) -> Option<(String, bool)> {
+        let q = self.ordered_active(tracked_key).into_iter().next()?;
+        let is_turn_in = q.ready_to_finish || q.can_finish_now;
+        if !q.next_room_entry.is_empty() {
+            return Some((q.next_room_entry.clone(), is_turn_in));
+        }
+        for cp in &q.checkpoints {
+            if !cp.checked && !cp.live_ready && !cp.room_entry.is_empty() {
+                return Some((cp.room_entry.clone(), is_turn_in));
+            }
+        }
+        None
+    }
 }
 
 fn str_field(v: &Value, key: &str) -> String {
@@ -627,6 +645,7 @@ fn parse_checkpoints(raw: Option<&Value>) -> Vec<QuestCheckpoint> {
             id: str_field(cp, "id"),
             title: str_field(cp, "title"),
             instructions: str_field(cp, "instructions"),
+            room_entry: str_field(cp, "room_entry"),
             room_name: str_field(cp, "room_name"),
             checked: bool_field(cp, "checked"),
             live_ready: bool_field(cp, "live_ready"),
@@ -693,6 +712,7 @@ pub fn parse_frame(data: &Value) -> QuestsSnapshot {
                         allow_restart: bool_field(item, "allow_restart"),
                         ready_to_finish: bool_field(item, "ready_to_finish"),
                         next_step: str_field(item, "next_step"),
+                        next_room_entry: str_field(item, "next_room_entry"),
                         next_room_name: str_field(item, "next_room_name"),
                         can_check_now: bool_field(item, "can_check_now"),
                         can_finish_now: bool_field(item, "can_finish_now"),
@@ -823,6 +843,14 @@ impl QuestOverlayState {
         } else {
             QuestTab::Completed
         };
+    }
+
+    /// Open the quest dialog directly on a specific tab and list index (used by Command Palette).
+    pub fn open_tab_index(&mut self, tab: QuestTab, index: usize) {
+        self.open = true;
+        self.confirm_abandon = false;
+        self.tab = tab;
+        self.selected = index;
     }
 
     /// Open the quest dialog focused directly on the quest offered by or turn-in ready at `npc_id` / `npc_name`.
@@ -1599,5 +1627,51 @@ mod tests {
         // Resetting suppresses next hydration again
         tracker.reset();
         assert!(tracker.observe(&completed).is_empty());
+    }
+
+    #[test]
+    fn active_objective_room_and_open_tab_index() {
+        let snap = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": "q1",
+                "title": "First Papers",
+                "ready_to_finish": false,
+                "next_room_entry": "room.c04_coop_registry",
+                "checkpoints": [
+                    { "id": "cp1", "title": "Enroll", "room_entry": "room.c04_coop_registry", "checked": false, "live_ready": false }
+                ]
+            }]
+        }));
+        assert_eq!(
+            snap.active_objective_room(None),
+            Some(("room.c04_coop_registry".to_string(), false))
+        );
+
+        let fallback = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": "q2",
+                "title": "Return Report",
+                "ready_to_finish": true,
+                "checkpoints": [
+                    { "id": "cp1", "title": "Report back", "room_entry": "room.c03_arrivals", "checked": false, "live_ready": false }
+                ]
+            }]
+        }));
+        assert_eq!(
+            fallback.active_objective_room(None),
+            Some(("room.c03_arrivals".to_string(), true))
+        );
+
+        let mut overlay = QuestOverlayState {
+            confirm_abandon: true,
+            ..Default::default()
+        };
+        overlay.open_tab_index(QuestTab::Available, 2);
+        assert!(overlay.open);
+        assert!(!overlay.confirm_abandon);
+        assert_eq!(overlay.tab, QuestTab::Available);
+        assert_eq!(overlay.selected, 2);
     }
 }
