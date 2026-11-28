@@ -12,7 +12,10 @@
     exitMatchesQuestBreadcrumb,
     normalizePortVenueTarget,
   } from "$lib/tacsim/spatial";
-  import { resolveQuestShipTargetCompartment } from "$lib/stores/quests.svelte";
+  import {
+    needsOriginPortProcurement,
+    resolveQuestShipTargetCompartment,
+  } from "$lib/stores/quests.svelte";
 
   let { app, onCmd }: { app: GameApp; onCmd: (cmd: string) => void } = $props();
 
@@ -51,7 +54,21 @@
       null;
     const currentEntry =
       (tacsim.view3dOpen ? tacsim.physicalLocationKey : null) ?? tacsim.serverStationRoomEntry;
-    return computeNextQuestExitBreadcrumb(tacsim.stationPack, currentEntry, targetEntry);
+    const liveStowage =
+      tacsim.ambient?.ownStowage ??
+      tacsim.ambient?.stowage ??
+      (tacsim.trade?.hullId ? tacsim.trade.stowage : null);
+    const needsOriginExchange = needsOriginPortProcurement(
+      quests.active,
+      quests.trackedKey,
+      liveStowage,
+    );
+    return computeNextQuestExitBreadcrumb(
+      tacsim.stationPack,
+      currentEntry,
+      targetEntry,
+      needsOriginExchange,
+    );
   });
 
   const WEATHER_ICONS: Record<string, string> = {
