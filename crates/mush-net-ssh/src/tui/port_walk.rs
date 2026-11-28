@@ -892,6 +892,9 @@ impl PortWalkState {
         self.cursor_row = 0;
         self.drawer_log_scroll = 0;
         self.editing_hull_name = false;
+        if kind == PortDrawerKind::Sailing {
+            self.apply_quest_destination_jump();
+        }
         self.ensure_queries(manifest_panels, queries, now);
     }
 
@@ -1138,6 +1141,35 @@ impl PortWalkState {
         } else {
             None
         }
+    }
+
+    /// Best-effort current port slug across trade venue, docked ship port, or active station pack.
+    #[must_use]
+    pub fn current_port_slug(&self) -> Option<&str> {
+        if let Some(v) = self.current_venue.as_deref().filter(|s| !s.is_empty()) {
+            return Some(v);
+        }
+        if let Some(d) = self.docked_port_slug() {
+            return Some(d);
+        }
+        if !self.aboard_ship {
+            if self.pack_id.contains("stickney") {
+                return Some("stickney");
+            }
+            if self.pack_id.contains("ceres") {
+                return Some("ceres");
+            }
+            if self.pack_id.contains("luna") || self.pack_id.contains("aitken") {
+                return Some("luna");
+            }
+            if self.pack_id.contains("deimos") || self.pack_id.contains("voltaire") {
+                return Some("deimos");
+            }
+            if self.pack_id.contains("titan") || self.pack_id.contains("ligeia") {
+                return Some("titan");
+            }
+        }
+        None
     }
 
     /// True while aboard a ship settled on a planetary surface landing pad (not docked at a station).
