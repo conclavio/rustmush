@@ -118,6 +118,11 @@
     };
   });
 
+  const questMiningHoldState = $derived.by((): "stowed" | "recover" | null => {
+    if (!questMining?.mineDone || questMiningHoldQty === null) return null;
+    return questMiningHoldQty > 0 ? "stowed" : "recover";
+  });
+
   function isQuestReadingMatch(
     r: { target: string; line: string },
     family: string,
@@ -267,51 +272,71 @@
         <div class="qm-head">
           <span class="qm-tag">[QUEST]{#if questMiningStep !== null} Step {questMiningStep}/7{/if}</span>
           <strong>{questMining.questTitle}</strong>
-          {#if questNextRigCmd}
+          {#if questMiningHoldState === "stowed" && questReturnDest}
             <button
               type="button"
               class="qm-action"
-              onclick={() => prefill(rigPrefill(q.selectedRig, questNextRigCmd.verb))}
-            >
-              Next: {questNextRigCmd.label}
-            </button>
-          {/if}
-          {#if firstQuestReading}
-            <button
-              type="button"
-              class="qm-plan"
-              title={`Prefill ${rigPrefill(q.selectedRig, `drive ${firstQuestReading.target}`)}`}
-              onclick={() => prefill(rigPrefill(q.selectedRig, `drive ${firstQuestReading.target}`))}
-            >
-              Drive: {firstQuestReading.target}
-            </button>
-          {/if}
-          {#if questReturnDest}
-            <button
-              type="button"
-              class="qm-return"
               title={`Prefill +ship/plan ${questReturnDest.portId}`}
               onclick={() => prefill(`+ship/plan ${questReturnDest.portId}`)}
             >
               Return: {questReturnDest.portLabel}
             </button>
-          {:else if recommendedQuestSite}
-            <button
-              type="button"
-              class="qm-plan"
-              title={`Prefill +ship/plan ${recommendedQuestSite.venue}`}
-              onclick={() => prefill(`+ship/plan ${recommendedQuestSite.venue}`)}
-            >
-              Plan: {recommendedQuestSite.site}
-            </button>
-          {:else if q.mode !== "ground" && !block}
-            <button
-              type="button"
-              class="qm-plan"
-              onclick={openQuestGroundChart}
-            >
-              View Ground
-            </button>
+            {#if questNextRigCmd}
+              <button
+                type="button"
+                class="qm-plan"
+                onclick={() => prefill(rigPrefill(q.selectedRig, questNextRigCmd.verb))}
+              >
+                {questNextRigCmd.label}
+              </button>
+            {/if}
+          {:else}
+            {#if questNextRigCmd}
+              <button
+                type="button"
+                class="qm-action"
+                onclick={() => prefill(rigPrefill(q.selectedRig, questNextRigCmd.verb))}
+              >
+                Next: {questMiningHoldState === "recover" ? "Recover Rig First" : questNextRigCmd.label}
+              </button>
+            {/if}
+            {#if firstQuestReading}
+              <button
+                type="button"
+                class="qm-plan"
+                title={`Prefill ${rigPrefill(q.selectedRig, `drive ${firstQuestReading.target}`)}`}
+                onclick={() => prefill(rigPrefill(q.selectedRig, `drive ${firstQuestReading.target}`))}
+              >
+                Drive: {firstQuestReading.target}
+              </button>
+            {/if}
+            {#if questReturnDest}
+              <button
+                type="button"
+                class="qm-return"
+                title={`Prefill +ship/plan ${questReturnDest.portId}`}
+                onclick={() => prefill(`+ship/plan ${questReturnDest.portId}`)}
+              >
+                Return: {questReturnDest.portLabel}
+              </button>
+            {:else if recommendedQuestSite}
+              <button
+                type="button"
+                class="qm-plan"
+                title={`Prefill +ship/plan ${recommendedQuestSite.venue}`}
+                onclick={() => prefill(`+ship/plan ${recommendedQuestSite.venue}`)}
+              >
+                Plan: {recommendedQuestSite.site}
+              </button>
+            {:else if q.mode !== "ground" && !block}
+              <button
+                type="button"
+                class="qm-plan"
+                onclick={openQuestGroundChart}
+              >
+                View Ground
+              </button>
+            {/if}
           {/if}
           <button type="button" class="qm-wash" onclick={selectQuestWash}>
             {questMining.recommendedFamily.toUpperCase()} wash
@@ -322,7 +347,14 @@
           <span class:done={questMining.soundDone}>{questMining.soundDone ? "[✓]" : "[ ]"} Sound Pocket</span>
           <span class:done={questMining.mineDone}>{questMining.mineDone ? "[✓]" : "[ ]"} Mine {questMining.targetOreSlug}</span>
           {#if questMiningHoldQty !== null}
-            <span class:done={questMiningHoldQty > 0}>· Hold: {questMiningHoldQty}t {questMining.targetOreSlug.replaceAll("_", " ")}</span>
+            <span class:done={questMiningHoldQty > 0}>
+              · Hold: {questMiningHoldQty}t {questMining.targetOreSlug.replaceAll("_", " ")}
+              {#if questMiningHoldState === "stowed"}
+                [ORE HOLD READY]
+              {:else if questMiningHoldState === "recover"}
+                [RECOVER RIG FIRST]
+              {/if}
+            </span>
           {/if}
         </div>
         {#if questMiningPrepActions.length > 0}
