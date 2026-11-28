@@ -1419,17 +1419,41 @@ describe("TacsimPortModals Dray-P Vehicle Bay and Co-op Refit quest guidance", (
       ],
     });
 
-    // 1. Mined ore still in rig hopper (hold 0t) -> prompts [RECOVER RIG FIRST]
+    // 1. Mined ore still in rig hopper (hold 0t) -> prompts [RECOVER RIG FIRST], suppresses premature Return and duplicate prep bar
     const onCmd1 = vi.fn();
     const hopperApp = makeApp(quests, "rig");
     const r1 = render(TacsimPortModals, { props: { app: hopperApp, onCmd: onCmd1 } });
     const b1 = screen.getByRole("status", { name: "active quest rig bay guidance" });
     expect(b1.textContent).toContain("[RECOVER RIG FIRST] Step 6/7");
+    expect(screen.queryByRole("button", { name: /Return → Ceres Freeport/i })).toBeNull();
+    expect(screen.queryByLabelText("rig bay prospecting prep actions")).toBeNull();
     await fireEvent.click(screen.getByRole("button", { name: /Recover Rig First \(\+tv\/1 recover go\)/i }));
     expect(onCmd1).toHaveBeenCalledWith("+tv/1 recover go");
     r1.unmount();
 
-    // 2. Ore transferred to ship hold & ready to finish aboard ship -> [ORE HOLD READY] + Step Ashore + Open Quest Dialog
+    // 2. Ore transferred to ship hold (before ready_to_finish) -> [ORE HOLD READY] + Return -> Ceres Freeport, hides redundant Recover Rig buttons & prep bar
+    const onCmdMid = vi.fn();
+    const stowedPreFinishApp = makeApp(quests, "rig", {
+      cargoKg: 1000,
+      cargoMaxKg: 100_000,
+      cargoL: 1000,
+      cargoMaxL: 120_000,
+      propellantKg: 8000,
+      propellantMaxKg: 80_000,
+      provisionsCrewDays: 10,
+      provisionsMaxCrewDays: 120,
+      cargoLines: [{ good: "tacsim:carbon_ore", label: "Carbon Ore", qty: 1, unit: "t", massKg: 1000 }],
+    });
+    const rMid = render(TacsimPortModals, { props: { app: stowedPreFinishApp, onCmd: onCmdMid } });
+    const bMid = screen.getByRole("status", { name: "active quest rig bay guidance" });
+    expect(bMid.textContent).toContain("[ORE HOLD READY] Step 6/7");
+    expect(screen.queryByRole("button", { name: /Recover Rig/i })).toBeNull();
+    expect(screen.queryByLabelText("rig bay prospecting prep actions")).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: /Return → Ceres Freeport \(\+ship\/plan ceres\)/i }));
+    expect(onCmdMid).toHaveBeenCalledWith("+ship/plan ceres");
+    rMid.unmount();
+
+    // 3. Ore transferred to ship hold & ready to finish aboard ship -> [ORE HOLD READY] + Step Ashore + Open Quest Dialog, no Recover Rig clutter
     quests.applyFrame({
       schema: 1,
       active: [
@@ -1465,6 +1489,8 @@ describe("TacsimPortModals Dray-P Vehicle Bay and Co-op Refit quest guidance", (
     render(TacsimPortModals, { props: { app: stowedApp, onCmd: onCmd2 } });
     const b2 = screen.getByRole("status", { name: "active quest rig bay guidance" });
     expect(b2.textContent).toContain("[ORE HOLD READY] Step 6/7");
+    expect(screen.queryByRole("button", { name: /Recover Rig/i })).toBeNull();
+    expect(screen.queryByLabelText("rig bay prospecting prep actions")).toBeNull();
     await fireEvent.click(screen.getByRole("button", { name: /Step Ashore \(\+ship\/leave\)/i }));
     expect(onCmd2).toHaveBeenCalledWith("+ship/leave");
     expect(stowedApp.tacsim.closeModal).toHaveBeenCalled();
