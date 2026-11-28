@@ -6,6 +6,9 @@
   import type { GameApp } from "$lib/game.svelte";
   import {
     GUIDED_TOUR_KEYS,
+    evaluateSailingPreflightReadiness,
+    extractActiveDestinationPort,
+    extractActiveTradeNeed,
     formatQuestHoldReadinessSummary,
     inferStationPortFromRoomEntry,
     needsOriginPortProcurement,
@@ -75,6 +78,18 @@
   );
   const holdReadiness = $derived(
     tracked ? formatQuestHoldReadinessSummary(tracked, liveStowage) : null,
+  );
+  const trackedDest = $derived(
+    tracked ? extractActiveDestinationPort([tracked], tracked.key) : null,
+  );
+  const trackedPreflight = $derived(
+    tracked && trackedDest
+      ? evaluateSailingPreflightReadiness(
+          trackedDest,
+          extractActiveTradeNeed([tracked], tracked.key),
+          liveStowage,
+        )
+      : null,
   );
   const routeCrumb = $derived.by(() => {
     const tacsim = app.tacsim;
@@ -228,6 +243,15 @@
             {holdReadiness.tag} {holdReadiness.text}
           </span>
         {/if}
+        {#if trackedPreflight && trackedDest}
+          <span
+            class="hold-pill"
+            class:ready={trackedPreflight.ready}
+            aria-label="Tracked quest sailing preflight"
+          >
+            {trackedPreflight.ready ? "[PRE-FLIGHT OK]" : "[CHECK BEFORE UNDOCK]"} Fuel {trackedPreflight.propellantTonnes}t · Provisions {trackedPreflight.provisionsDays}d → {trackedDest.portLabel}
+          </span>
+        {/if}
       {/if}
       <span class="grow"></span>
       {#if tracked.canFinishNow}
@@ -291,6 +315,20 @@
           >
             <span class="hold-tag">{holdReadiness.tag}</span>
             <span>{holdReadiness.text}</span>
+          </div>
+        {/if}
+        {#if trackedPreflight && trackedDest}
+          <div
+            class="hold-strip"
+            class:ready={trackedPreflight.ready}
+            aria-label="Tracked quest sailing preflight"
+          >
+            <span class="hold-tag">
+              {trackedPreflight.ready ? "[PRE-FLIGHT OK]" : "[CHECK BEFORE UNDOCK]"}
+            </span>
+            <span>
+              {trackedPreflight.propellantOk ? "✓" : "✗"} Propellant {trackedPreflight.propellantTonnes}t · {trackedPreflight.provisionsOk ? "✓" : "✗"} Provisions {trackedPreflight.provisionsDays}d → {trackedDest.portLabel}
+            </span>
           </div>
         {/if}
         <div class="next-row">
@@ -409,6 +447,9 @@
         <strong>Corridor Captain</strong> — Guided Tour Complete ({tour.completed}/{tour.total})
       </span>
       <span class="grow"></span>
+      <button type="button" class="tbtn primary" onclick={() => onCmd("+market/jobs")}>
+        Jobs Board (+market/jobs)
+      </button>
       <button type="button" class="tbtn" onclick={() => q.openLog("completed")}>
         Completed ({q.completed.length})
       </button>
