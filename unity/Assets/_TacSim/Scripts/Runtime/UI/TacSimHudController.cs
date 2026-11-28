@@ -324,6 +324,7 @@ namespace TacSim.UI
         private Text _exchangeQuestQtyBtnLbl;
         private Button _exchangeSailJumpBtn;
         private Text _exchangeSailJumpBtnLbl;
+        private bool _exchangeJumpIsRefit;
         private RectTransform _listingsViewportRect;
         private GameObject _sailingQuestBanner;
         private Text _sailingQuestBannerText;
@@ -1072,7 +1073,11 @@ namespace TacSim.UI
             _exchangeQuestBannerText = CreateText(_exchangeQuestBanner.transform, string.Empty, 12, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(1f, 0.88f, 0.44f));
             _exchangeQuestBannerText.supportRichText = true;
             SetRect(_exchangeQuestBannerText.rectTransform, Vector2.zero, Vector2.one, new Vector2(12f, 0f), new Vector2(-176f, 0f));
-            _exchangeSailJumpBtn = CreateButton(_exchangeQuestBanner.transform, "SAIL TO BUYER", new Color(0.14f, 0.50f, 0.32f), () => JumpFromExchangeToQuestSailing());
+            _exchangeSailJumpBtn = CreateButton(_exchangeQuestBanner.transform, "SAIL TO BUYER", new Color(0.14f, 0.50f, 0.32f), () =>
+            {
+                if (_exchangeJumpIsRefit) JumpFromExchangeToRefitYard();
+                else JumpFromExchangeToQuestSailing();
+            });
             SetRect(_exchangeSailJumpBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-318f, 3f), new Vector2(-174f, -3f));
             _exchangeSailJumpBtnLbl = _exchangeSailJumpBtn.GetComponentInChildren<Text>();
             _exchangeSailJumpBtn.gameObject.SetActive(false);
@@ -2827,6 +2832,33 @@ namespace TacSim.UI
             return ApplyQuestDestinationPort();
         }
 
+        public void JumpFromExchangeToRefitYard()
+        {
+            SwitchTradeTerminalTab(TradeTerminalTab.Industry, autoQuery: false);
+        }
+
+        private bool IsRefitClearBid(MarketListingRow row, QuestRefitHoldReadiness refit)
+        {
+            if (row == null || !row.IsWantedBid || refit.Ready || _boundTradeState == null)
+                return false;
+            string gCode = row.GoodCode ?? string.Empty;
+            string iName = row.ItemName ?? string.Empty;
+            if (!refit.ProvisionsEmpty &&
+                (gCode.IndexOf("provisions", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                 iName.IndexOf("provisions", StringComparison.OrdinalIgnoreCase) >= 0))
+            {
+                return true;
+            }
+            if (!refit.CargoEmpty)
+            {
+                if (!string.IsNullOrEmpty(gCode) && _boundTradeState.GetHoldCommodityQuantity(gCode) > 0)
+                    return true;
+                if (!string.IsNullOrEmpty(iName) && _boundTradeState.GetHoldCommodityQuantity(iName) > 0)
+                    return true;
+            }
+            return false;
+        }
+
         private void RefreshSailingQuestGuidance()
         {
             QuestDestinationHint hint = default;
@@ -3040,6 +3072,12 @@ namespace TacSim.UI
                   .Append(':').Append(qNeed.WantsBuy ? 'B' : '-').Append(qNeed.WantsSell ? 'S' : '-')
                   .Append(':').Append(qNeed.QuestTitle).Append(':').Append(qAllNeeds.Count);
             }
+            else if (QuestJournal != null && QuestJournal.TryGetRefitHoldReadiness(_boundTradeState, out var qRefit))
+            {
+                sb.Append("|R:").Append(qRefit.Ready ? '1' : '0')
+                  .Append(':').Append(qRefit.CargoTonnes)
+                  .Append(':').Append(qRefit.ProvisionsDays);
+            }
             for (int i = 0; i < _boundTradeState.Listings.Count; i++)
             {
                 var r = _boundTradeState.Listings[i];
@@ -3125,11 +3163,17 @@ namespace TacSim.UI
             QuestTradeNeed questNeed = default;
             List<QuestTradeNeed> allQuestNeeds = null;
             bool hasQuestNeed = QuestJournal != null && QuestJournal.TryResolveContextualTradeNeed(_boundTradeState, out questNeed, out allQuestNeeds);
+            QuestRefitHoldReadiness refitReadiness = default;
+            bool hasRefitPrep = !hasQuestNeed && QuestJournal != null && QuestJournal.TryGetRefitHoldReadiness(_boundTradeState, out refitReadiness);
+            bool showBanner = hasQuestNeed || hasRefitPrep;
+            _exchangeJumpIsRefit = false;
             if (_exchangeQuestBanner != null)
             {
-                _exchangeQuestBanner.SetActive(hasQuestNeed);
+                _exchangeQuestBanner.SetActive(showBanner);
                 if (hasQuestNeed)
                 {
+                    if (_exchangeQuestQtyBtn != null)
+                        _exchangeQuestQtyBtn.gameObject.SetActive(true);
                     string verb = questNeed.WantsBuy && questNeed.WantsSell
                         ? "BUY / SELL"
                         : (questNeed.WantsSell ? "SELL" : "BUY");
@@ -3161,7 +3205,10 @@ namespace TacSim.UI
                         }
                         bool showSailJump = TryResolveExchangeHaulDestination(questNeed, out var haulDest);
                         if (_exchangeSailJumpBtn != null)
+                        {
                             _exchangeSailJumpBtn.gameObject.SetActive(showSailJump);
+                            SetRect(_exchangeSailJumpBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-318f, 3f), new Vector2(-174f, -3f));
+                        }
                         if (showSailJump && _exchangeSailJumpBtnLbl != null)
                             _exchangeSailJumpBtnLbl.text = $"SAIL: {haulDest.PortId.ToUpperInvariant()}";
                         SetRect(_exchangeQuestBannerText.rectTransform, Vector2.zero, Vector2.one,
@@ -3184,13 +3231,47 @@ namespace TacSim.UI
                     if (_exchangeQuestQtyBtnLbl != null)
                         _exchangeQuestQtyBtnLbl.text = $"SET QUEST QTY ({questNeed.TargetQuantity})";
                 }
+                else if (hasRefitPrep)
+                {
+                    if (_exchangeQuestQtyBtn != null)
+                        _exchangeQuestQtyBtn.gameObject.SetActive(false);
+                    bool showRefitJump = refitReadiness.Ready;
+                    _exchangeJumpIsRefit = showRefitJump;
+                    if (_exchangeSailJumpBtn != null)
+                    {
+                        _exchangeSailJumpBtn.gameObject.SetActive(showRefitJump);
+                        SetRect(_exchangeSailJumpBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-176f, 3f), new Vector2(-6f, -3f));
+                    }
+                    if (showRefitJump && _exchangeSailJumpBtnLbl != null)
+                        _exchangeSailJumpBtnLbl.text = "WORKS & REFIT";
+                    if (_exchangeQuestBannerText != null)
+                    {
+                        SetRect(_exchangeQuestBannerText.rectTransform, Vector2.zero, Vector2.one,
+                            new Vector2(12f, 0f), new Vector2(showRefitJump ? -184f : -12f, 0f));
+                        string stepTag = ResolveActiveQuestStepTag();
+                        string stepSuffix = string.IsNullOrEmpty(stepTag) ? string.Empty : $" <color=#FFDD44>{stepTag}</color>";
+                        if (refitReadiness.Ready)
+                        {
+                            _exchangeQuestBannerText.text = $"<color=#FFDD44>[QUEST]</color> <color=#55EE99><b>[REFIT HOLD CLEAR]</b></color> Cargo & Stores empty (propellant OK) — Ready for <b>+coop/refit prospector</b>{stepSuffix}";
+                        }
+                        else
+                        {
+                            string rem = !refitReadiness.CargoEmpty && !refitReadiness.ProvisionsEmpty
+                                ? $"Cargo {refitReadiness.CargoTonnes}t & Stores {refitReadiness.ProvisionsDays}d"
+                                : (!refitReadiness.CargoEmpty
+                                    ? $"Cargo {refitReadiness.CargoTonnes}t"
+                                    : $"Stores {refitReadiness.ProvisionsDays}d");
+                            _exchangeQuestBannerText.text = $"<color=#FFDD44>[QUEST]</color> <b>[REFIT PREP] EMPTY HOLD BEFORE REFIT</b> — {rem} remaining (propellant OK) · Sell stowed lots below before +coop/refit prospector{stepSuffix}";
+                        }
+                    }
+                }
                 else if (_exchangeSailJumpBtn != null)
                 {
                     _exchangeSailJumpBtn.gameObject.SetActive(false);
                 }
             }
             if (_listingsViewportRect != null)
-                _listingsViewportRect.offsetMax = new Vector2(0f, hasQuestNeed ? -80f : -46f);
+                _listingsViewportRect.offsetMax = new Vector2(0f, showBanner ? -80f : -46f);
 
             HighlightedQuestListingCount = 0;
             FirstExchangeListingIdSnapshot = 0;
@@ -3225,6 +3306,18 @@ namespace TacSim.UI
                 }
                 orderedListings.AddRange(restListings);
             }
+            else if (hasRefitPrep && !refitReadiness.Ready)
+            {
+                orderedListings = new List<MarketListingRow>(count);
+                var restListings = new List<MarketListingRow>(count);
+                for (int i = 0; i < count; i++)
+                {
+                    var candidate = _boundTradeState.Listings[i];
+                    if (IsRefitClearBid(candidate, refitReadiness)) orderedListings.Add(candidate);
+                    else restListings.Add(candidate);
+                }
+                orderedListings.AddRange(restListings);
+            }
             else
             {
                 orderedListings = _boundTradeState.Listings;
@@ -3235,7 +3328,9 @@ namespace TacSim.UI
                 if (i == 0) FirstExchangeListingIdSnapshot = row.ListingId;
                 var good = _boundTradeState.FindGoodByNameOrCode(row.GoodCode);
                 var slot = GetOrCreatePooledListingCard(i);
-                bool isQuestMatch = hasQuestNeed && questNeed.MatchesListing(row);
+                bool isTradeMatch = hasQuestNeed && questNeed.MatchesListing(row);
+                bool isRefitClear = hasRefitPrep && IsRefitClearBid(row, refitReadiness);
+                bool isQuestMatch = isTradeMatch || isRefitClear;
                 if (isQuestMatch) HighlightedQuestListingCount++;
 
                 slot.Root.name = $"Listing_{row.ListingId}";
@@ -3245,7 +3340,9 @@ namespace TacSim.UI
                         ? new Color(0.13f, 0.10f, 0.06f, 0.94f)
                         : new Color(0.06f, 0.12f, 0.18f, 0.94f));
 
-                string questPrefix = isQuestMatch ? "<color=#FFDD44><b>[QUEST]</b></color> " : string.Empty;
+                string questPrefix = isRefitClear
+                    ? "<color=#FFDD44><b>[REFIT CLEAR]</b></color> "
+                    : (isTradeMatch ? "<color=#FFDD44><b>[QUEST]</b></color> " : string.Empty);
                 string badge = row.IsWantedBid ? $"<color=#FFBB55>[BID #{row.ListingId}]</color>" : $"<color=#55DDFF>[ASK #{row.ListingId}]</color>";
                 string measureInfo = string.Empty;
                 if (good != null && good.Stowage == "stow.bulk")
