@@ -1268,6 +1268,35 @@ impl PortWalkState {
         })
     }
 
+    /// True when Step 5 Dray-P refit requires clearing the hold and `bid` buys a stowed cargo
+    /// commodity or leftover provisions that must be unloaded before `+coop/refit prospector`.
+    #[must_use]
+    pub fn is_refit_clear_bid(&self, bid: &BidRow) -> bool {
+        let Some(refit) = self.quest_refit_hold_readiness() else {
+            return false;
+        };
+        if refit.ready {
+            return false;
+        }
+        let gid = super::quests::normalize_good_slug(&bid.good_id);
+        let gname = super::quests::normalize_good_slug(&bid.good_name);
+        if !refit.provisions_empty && (gid == "provisions" || gname == "provisions") {
+            return true;
+        }
+        if !refit.cargo_empty {
+            return self.cargo_lots.iter().any(|l| {
+                if l.quantity <= 0 {
+                    return false;
+                }
+                let lg = super::quests::normalize_good_slug(&l.good_id);
+                let ln = super::quests::normalize_good_slug(&l.good_name);
+                (!gid.is_empty() && (lg == gid || ln == gid))
+                    || (!gname.is_empty() && (lg == gname || ln == gname))
+            });
+        }
+        false
+    }
+
     /// Evaluate Sailing Plan departure pre-flight readiness for an active destination quest
     /// (propellant tank, crew stores, and any required non-tank quest cargo in the hold).
     #[must_use]
@@ -3984,7 +4013,21 @@ impl PortWalkState {
                         self.qty_preset_idx = (self.qty_preset_idx + 1).min(QTY_PRESETS.len() - 1);
                     }
                     Key::Char('g' | 'G') => {
-                        self.apply_quest_trade_jump();
+                        if !self.apply_quest_trade_jump()
+                            && self.quest_refit_hold_readiness().is_some_and(|r| !r.ready)
+                            && let Some(idx) =
+                                self.bids.iter().position(|b| self.is_refit_clear_bid(b))
+                        {
+                            self.trade_subtab = 1;
+                            self.cursor_row = idx;
+                        }
+                    }
+                    Key::Char('c' | 'C') => {
+                        if self.quest_refit_hold_readiness().is_some_and(|r| r.ready) {
+                            self.drawer = Some(PortDrawerKind::Coop);
+                            self.cursor_row = 0;
+                            self.drawer_log_scroll = 0;
+                        }
                     }
                     Key::Char('d' | 'D') => {
                         if self.quest_dest_port.is_some() {
@@ -5648,6 +5691,34 @@ impl PortWalkState {
                             Style::default().fg(haul_col).add_modifier(Modifier::BOLD),
                         )));
                     }
+                } else if let Some(refit) = self.quest_refit_hold_readiness() {
+                    let (banner, col) = if refit.ready {
+                        (
+                            format!(
+                                "[QUEST] [REFIT HOLD CLEAR] Ready -> c:Co-op Desk (+coop/refit prospector){step_suffix}"
+                            ),
+                            Color::Green,
+                        )
+                    } else {
+                        let cargo_t = format!("{:.1}t", (refit.cargo_kg as f64) / 1000.0);
+                        let rem = match (refit.cargo_empty, refit.provisions_empty) {
+                            (false, false) => {
+                                format!("Cargo {cargo_t} & Stores {}d", refit.provisions_days)
+                            }
+                            (false, true) => format!("Cargo {cargo_t}"),
+                            _ => format!("Stores {}d", refit.provisions_days),
+                        };
+                        (
+                            format!(
+                                "[QUEST] [REFIT PREP] Empty hold: {rem} (g:Bids | propellant OK){step_suffix}"
+                            ),
+                            Color::Yellow,
+                        )
+                    };
+                    lines.push(Line::from(Span::styled(
+                        truncate_str(&banner, inner_w),
+                        Style::default().fg(col).add_modifier(Modifier::BOLD),
+                    )));
                 }
 
                 let list_rows = main_budget.saturating_sub(lines.len()).max(1);
@@ -5710,6 +5781,8 @@ impl PortWalkState {
                             let q_match = effective_need.as_ref().is_some_and(|n| {
                                 n.matches_listing(&bid.good_id, &bid.good_name, true)
                             });
+                            let refit_clear = !q_match && self.is_refit_clear_bid(bid);
+                            let highlighted = q_match || refit_clear;
                             let hold_text = if self.stowage_loaded {
                                 self.cargo_lots
                                     .iter()
@@ -5721,8 +5794,14 @@ impl PortWalkState {
                                 "--".to_string()
                             };
                             let mark = if sel { "> " } else { "  " };
-                            let qtag = if q_match { "[Q] " } else { "" };
-                            let st = if sel && q_match {
+                            let qtag = if refit_clear {
+                                "[CLEAR] "
+                            } else if q_match {
+                                "[Q] "
+                            } else {
+                                ""
+                            };
+                            let st = if sel && highlighted {
                                 Style::default()
                                     .fg(Color::Yellow)
                                     .add_modifier(Modifier::BOLD)
@@ -5730,7 +5809,7 @@ impl PortWalkState {
                                 Style::default()
                                     .fg(Color::White)
                                     .add_modifier(Modifier::BOLD)
-                            } else if q_match {
+                            } else if highlighted {
                                 Style::default().fg(Color::Yellow)
                             } else {
                                 Style::default().fg(Color::Gray)
@@ -11240,5 +11319,110 @@ mod tests {
             !stickney_txt.contains("do not sell here"),
             "haul guard should clear at destination port:\n{stickney_txt}"
         );
+    }
+
+    #[test]
+    fn trade_drawer_guides_step5_refit_hold_clearing_and_coop_handoff() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut st = PortWalkState::new();
+        st.current_venue = Some("ceres".into());
+        st.stowage_loaded = true;
+        st.stowage.cargo_kg = 2000;
+        st.stowage.reaction_kg = 15_000;
+        st.stowage.stores_days = 8;
+        st.cargo_lots.push(CargoLotRow {
+            good_id: "tacsim:metals".into(),
+            good_name: "Metals".into(),
+            quantity: 2,
+        });
+        st.bids.push(BidRow {
+            listing_id: 901,
+            good_id: "tacsim:silicates".into(),
+            good_name: "Silicates".into(),
+            vendor_name: "Ceres Works".into(),
+            quantity_wanted: 20,
+            unit_price_minor: 1200,
+            funded: true,
+        });
+        st.bids.push(BidRow {
+            listing_id: 902,
+            good_id: "tacsim:provisions".into(),
+            good_name: "Provisions".into(),
+            vendor_name: "Co-op Chandlery".into(),
+            quantity_wanted: 30,
+            unit_price_minor: 400,
+            funded: true,
+        });
+        st.bids.push(BidRow {
+            listing_id: 903,
+            good_id: "tacsim:metals".into(),
+            good_name: "Metals".into(),
+            vendor_name: "Ceres Exchange".into(),
+            quantity_wanted: 25,
+            unit_price_minor: 900,
+            funded: true,
+        });
+        st.observe_quest_coop_action(Some(QuestSuggestedAction {
+            label: "Refit Dray-P".into(),
+            command: "+coop/refit prospector".into(),
+        }));
+        st.observe_quest_step_badge(" [Step 5/7]".into());
+
+        let render_trade = |st: &mut PortWalkState| -> String {
+            st.drawer = Some(PortDrawerKind::Trade);
+            let backend = TestBackend::new(120, 24);
+            let mut term = Terminal::new(backend).expect("terminal");
+            term.draw(|f| st.draw_drawer_box(f, f.area(), true))
+                .expect("draw");
+            let buf = term.backend().buffer();
+            (0..buf.area.height)
+                .map(|y| {
+                    (0..buf.area.width)
+                        .map(|x| buf[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let blocked_txt = render_trade(&mut st);
+        assert!(
+            blocked_txt.contains("[REFIT PREP] Empty hold: Cargo 2.0t & Stores 8d (g:Bids | propellant OK) [Step 5/7]"),
+            "expected Step 5 refit prep banner:\n{blocked_txt}"
+        );
+
+        // `g` switches to Bids subtab and jumps cursor onto the first refit-clearing bid (#902 Provisions)
+        let _ = st.handle_drawer_key(Key::Char('g'), &[], Instant::now());
+        assert_eq!(st.trade_subtab, 1);
+        assert_eq!(st.cursor_row, 1);
+        let bids_txt = render_trade(&mut st);
+        assert!(
+            bids_txt.contains("[CLEAR] #902"),
+            "expected [CLEAR] tag on Provisions bid:\n{bids_txt}"
+        );
+        assert!(
+            bids_txt.contains("[CLEAR] #903"),
+            "expected [CLEAR] tag on stowed Metals bid:\n{bids_txt}"
+        );
+        assert!(
+            !bids_txt.contains("[CLEAR] #901"),
+            "unrelated Silicates bid must not get [CLEAR] tag:\n{bids_txt}"
+        );
+
+        // Clear cargo & provisions (propellant remains) -> banner flips to [REFIT HOLD CLEAR] and `c` jumps to Co-op Desk
+        st.stowage.cargo_kg = 0;
+        st.stowage.stores_days = 0;
+        st.cargo_lots.clear();
+        let clear_txt = render_trade(&mut st);
+        assert!(
+            clear_txt.contains(
+                "[REFIT HOLD CLEAR] Ready -> c:Co-op Desk (+coop/refit prospector) [Step 5/7]"
+            ),
+            "expected clear hold banner:\n{clear_txt}"
+        );
+        let _ = st.handle_drawer_key(Key::Char('c'), &[], Instant::now());
+        assert_eq!(st.drawer, Some(PortDrawerKind::Coop));
     }
 }
