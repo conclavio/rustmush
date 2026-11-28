@@ -135,5 +135,27 @@ describe("NotificationStore", () => {
     expect(ab.text[0]?.text).toBe("Quest Abandoned (restartable anytime): Stock the Locker");
     expect(cap.text[0]?.text).toContain("Corridor Captain (7/7)");
     expect(cap.text[0]?.text).toContain("Deliver Your Mined Ore to Market");
+    expect(cap.text[0]?.text).toContain("+market/jobs");
+    expect(cap.action).toEqual({ label: "Jobs Board", prefill: "+market/jobs" });
+
+    const nextDone = s.fromQuestMilestone("completed", "Return Load", 400, {
+      nextStepHint: "Next (5/7): Ilse Oduya-Brandt in Registry & Co-op Desk",
+    })!;
+    expect(nextDone.text[0]?.text).toBe(
+      "Quest Completed: Return Load · Next (5/7): Ilse Oduya-Brandt in Registry & Co-op Desk",
+    );
+    const readyWho = s.fromQuestMilestone("ready", "Metals Haul", 500, {
+      turnInHint: "Jonas Achterberg-Nkemelu (Receiving Counter)",
+    })!;
+    expect(readyWho.text[0]?.text).toBe(
+      "Ready to Turn In [?]: Metals Haul → Jonas Achterberg-Nkemelu (Receiving Counter)",
+    );
+    const abGuided = s.fromQuestMilestone("abandoned", "Stock the Locker", 600, {
+      restartable: true,
+      restartHint: "Ilse Oduya-Brandt in Registry & Co-op Desk",
+    })!;
+    expect(abGuided.text[0]?.text).toBe(
+      "Quest Abandoned (restart with Ilse Oduya-Brandt in Registry & Co-op Desk): Stock the Locker",
+    );
   });
 });
