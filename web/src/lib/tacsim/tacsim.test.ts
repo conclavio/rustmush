@@ -3237,4 +3237,112 @@ describe("PR #693 Web review regressions (items 1-7, 9-11)", () => {
     expect(approachBanner.textContent).toContain("Metals Down the Corridor");
     deck.unmount();
   });
+
+  it("shows Step n/7 badge, ship deck compartment cue, extra room offer count, and off-port Sail cue in 3D HUD quest pill", async () => {
+    let sock!: FakeSocket;
+    const app = new GameApp({
+      url: "ws://test/ws",
+      webSocketFactory: (u) => {
+        sock = new FakeSocket(u);
+        return sock;
+      },
+      random: () => 1,
+    });
+    app.client.connect("tok", "7");
+    sock.readyState = 1;
+    sock.onopen?.();
+    sock.deliver(
+      {
+        t: "hello",
+        d: {
+          proto: 1,
+          server: "test",
+          features: [],
+          panels: [PORT_TRADE_FEED, TACSIM_CONTENT_FEED],
+        },
+      } as OutputEvent,
+      0,
+    );
+    app.tacsim.view3dOpen = true;
+    app.tacsim.isAboardShip = true;
+    app.tacsim.seatedAtBridgeHelm = false;
+    app.tacsim.serverShipCompartment = "airlock";
+    app.tacsim.ambient.docked = true;
+    app.tacsim.ambient.port = "ceres";
+
+    // 1. Active Step 3 metals haul aboard ship in airlock -> shows Step 3/7 & Deck: Go to Bridge
+    app.quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+          title: "Metals Down the Corridor",
+          next_step: "File +ship/plan stickney and depart",
+          next_room_entry: "room.p07_receiving",
+          checkpoints: [
+            {
+              id: "deliver_metals",
+              title: "Deliver 5t metals to Stickney",
+              instructions: "+ship/plan stickney",
+              room_entry: "room.p07_receiving",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+      available: [],
+      completed: [],
+    });
+
+    const deck = render(TacsimSceneDeck, { props: { app, onCmd: vi.fn() } });
+    await tick();
+    const activePill = screen.getByRole("button", { name: /Metals Down the Corridor/i });
+    expect(activePill.textContent).toContain("[Step 3/7]");
+    expect(activePill.textContent).toContain("Deck: Go to Bridge");
+
+    // 2. Idle in station room with multi-quest NPC marker -> appends (+2 more)
+    app.tacsim.isAboardShip = false;
+    app.quests.applyFrame({
+      schema: 1,
+      room_markers: [
+        {
+          npc_id: "#18",
+          npc_name: "Ilse Oduya-Brandt",
+          marker: "available",
+          symbol: "!",
+          quest_key: "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel",
+          quest_title: "Stock the Locker and Tanks",
+          category: "guided",
+          quest_count: 3,
+        },
+      ],
+      active: [],
+      available: [],
+      completed: [],
+    });
+    await tick();
+    const multiPill = screen.getByRole("button", { name: /Ilse Oduya-Brandt/i });
+    expect(multiPill.textContent).toContain("(+2 more)");
+
+    // 3. Between Steps 3 and 4 while still docked at Ceres -> shows off-port Sail cue and opens Completed tab
+    app.quests.applyFrame({
+      schema: 1,
+      room_markers: [],
+      active: [],
+      available: [],
+      completed: [
+        { key: "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll", title: "S1" },
+        { key: "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel", title: "S2" },
+        { key: "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery", title: "S3" },
+      ],
+    });
+    await tick();
+    const nextPill = screen.getByRole("button", { name: /Next Guided \(4\/7\): Return Load/i });
+    expect(nextPill.textContent).toContain("Sail: +ship/plan stickney");
+    await fireEvent.click(nextPill);
+    expect(app.quests.logOpen).toBe(true);
+    expect(app.quests.logTab).toBe("completed");
+    deck.unmount();
+  });
 });
