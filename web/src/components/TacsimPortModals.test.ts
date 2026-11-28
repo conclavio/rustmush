@@ -578,4 +578,81 @@ describe("TacsimPortModals Dray-P Vehicle Bay and Co-op Refit quest guidance", (
     await fireEvent.click(screen.getByRole("button", { name: /Filter Surveys/i }));
     expect(onCmd6).toHaveBeenCalledWith("+market/jobs survey");
   });
+
+  it("prioritizes ready turn-in over available offers and shows extra quest count inside NPC Talk modal", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#15",
+      room_name: "Registry & Co-op Desk",
+      room_markers: [
+        {
+          npc_id: "#50",
+          npc_name: "Ilse Oduya-Brandt",
+          marker: "available",
+          symbol: "!",
+          quest_key: GUIDED_TOUR_KEYS[1],
+          quest_title: "Locker & Tanks",
+          category: "guided",
+        },
+        {
+          npc_id: "#50",
+          npc_name: "Ilse Oduya-Brandt",
+          marker: "turn_in",
+          symbol: "?",
+          quest_key: GUIDED_TOUR_KEYS[0],
+          quest_title: "First Papers at the Registry",
+          category: "guided",
+        },
+      ],
+      available: [
+        {
+          key: GUIDED_TOUR_KEYS[1],
+          title: "Locker & Tanks",
+          category: "guided",
+          giver_id: "#50",
+          giver_name: "Ilse Oduya-Brandt",
+          accept_cmd: "+quest/accept #50=tok2",
+        },
+      ],
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[0],
+          title: "First Papers at the Registry",
+          category: "guided",
+          giver_id: "#42",
+          giver_name: "Maren Halvorsen",
+          turn_in_id: "#50",
+          turn_in_name: "Ilse Oduya-Brandt",
+          ready_to_finish: true,
+          can_finish_now: true,
+          finish_cmd: "+quest/finish #50=tok1",
+          checkpoints: [],
+        },
+      ],
+      completed: [],
+    });
+
+    const app = makeApp(quests, "trade");
+    Object.assign(app.tacsim, {
+      activeModal: "npc",
+      focusedNpc: {
+        id: "#50",
+        name: "Ilse Oduya-Brandt",
+        bio: "Registry clerk",
+        isNpc: true,
+      },
+    });
+    const onCmd = vi.fn();
+    render(TacsimPortModals, { props: { app, onCmd } });
+
+    const turnInBtn = screen.getByRole("button", {
+      name: /\[\?\] Turn In Quest: First Papers at the Registry \(\+1 more\)/i,
+    });
+    expect(turnInBtn).toBeTruthy();
+
+    const finishBtn = screen.getByRole("button", { name: /\[\?\] Complete Now/i });
+    await fireEvent.click(finishBtn);
+    expect(onCmd).toHaveBeenCalledWith("+quest/finish #50=tok1");
+  });
 });
