@@ -4005,10 +4005,21 @@ impl PortWalkState {
             "{mode_word} ({cam_name})  |  {}  |  {wallet}  |  drawing {encoder_name}",
             self.room_title,
         );
+        let step_suffix = self.quest_step_badge.as_str();
+        let needs_rig_recovery = self.quest_mining_status.as_ref().is_some_and(|qm| {
+            qm.mine_done
+                && self.stowage_loaded
+                && self.hold_commodity_quantity(&qm.target_ore_slug) == 0
+        });
+        let ore_hold_ready = self.quest_mining_status.as_ref().is_some_and(|qm| {
+            qm.mine_done
+                && self.stowage_loaded
+                && self.hold_commodity_quantity(&qm.target_ore_slug) > 0
+        });
         if let Some(hop) = self.next_quest_hop() {
             let hop_word = if hop.hops == 1 { "hop" } else { "hops" };
             top.push_str(&format!(
-                "  |  [QUEST -> {} ({} {hop_word})]",
+                "  |  [QUEST -> {} ({} {hop_word})]{step_suffix}",
                 hop.next_room_name, hop.hops
             ));
         }
@@ -4017,13 +4028,19 @@ impl PortWalkState {
             && !target_comp.eq_ignore_ascii_case(&self.active_location_key)
         {
             let lower = target_comp.to_ascii_lowercase();
-            let deck_lbl = match lower.as_str() {
-                "bridge" => "Bridge",
-                "bay" => "Vehicle Bay (+tv/bay in)",
-                "airlock" => "Airlock (+ship/leave)",
-                other => other,
-            };
-            top.push_str(&format!("  |  [QUEST -> Deck: {deck_lbl}]"));
+            if lower == "bay" && needs_rig_recovery {
+                top.push_str(&format!(
+                    "  |  [RECOVER RIG FIRST -> Deck: Vehicle Bay (+tv/1 recover go)]{step_suffix}"
+                ));
+            } else {
+                let deck_lbl = match lower.as_str() {
+                    "bridge" => "Bridge",
+                    "bay" => "Vehicle Bay (+tv/bay in)",
+                    "airlock" => "Airlock (+ship/leave)",
+                    other => other,
+                };
+                top.push_str(&format!("  |  [QUEST -> Deck: {deck_lbl}]{step_suffix}"));
+            }
         }
         if self.aboard_ship
             && self.active_location_key == "bay"
@@ -4050,7 +4067,7 @@ impl PortWalkState {
                 "+tv/1 launch go"
             };
             top.push_str(&format!(
-                "  |  {hold_state_tag} Rig Bay: {} Scan {} Sound {} Mine {} ({rig_cmd})",
+                "  |  {hold_state_tag} Rig Bay: {} Scan {} Sound {} Mine {} ({rig_cmd}){step_suffix}",
                 chk(qm.scan_done),
                 chk(qm.sound_done),
                 chk(qm.mine_done),
@@ -4092,7 +4109,21 @@ impl PortWalkState {
         } else if self.aboard_ship
             && let Some(dest) = &self.quest_dest_port
         {
-            top.push_str(&format!("  |  [QUEST] Dest: {}", dest.port_label));
+            if needs_rig_recovery {
+                top.push_str(&format!(
+                    "  |  [RECOVER RIG FIRST] Recover Rig (+tv/1 recover go){step_suffix}"
+                ));
+            } else if ore_hold_ready {
+                top.push_str(&format!(
+                    "  |  [ORE HOLD READY] Dest: {}{step_suffix}",
+                    dest.port_label
+                ));
+            } else {
+                top.push_str(&format!(
+                    "  |  [QUEST] Dest: {}{step_suffix}",
+                    dest.port_label
+                ));
+            }
         }
         let bottom = if self.drawer.is_some() {
             "Tab: tab  Up/Dn: row  [/]: qty  PgUp/PgDn: log  Enter: run  Esc: close".to_string()
@@ -12687,6 +12718,79 @@ mod tests {
         assert!(
             rendered.contains("Next: Enroll at Registry (+coop/enroll)"),
             "expected focused NPC quest brief inside Nearby Interactables:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn hud_lines_shows_step_badge_recover_rig_deck_and_ore_hold_ready() {
+        let mut st = PortWalkState::new();
+        st.aboard_ship = true;
+        st.active_location_key = "bridge".into();
+        st.observe_quest_step_badge(" [Step 6/7]".to_string());
+        st.observe_quest_ship_target(Some("bay"));
+        st.quest_dest_port = Some(crate::tui::quests::QuestDestinationHint {
+            quest_title: "Scan, Sound, and Mine a Landing Site".into(),
+            port_id: "ceres".into(),
+            port_label: "Ceres Freeport".into(),
+        });
+        st.observe_quest_mining_status(Some(crate::tui::quests::QuestSurfaceMiningStatus {
+            quest_title: "Scan, Sound, and Mine a Landing Site".into(),
+            target_ore_slug: "carbon_ore".into(),
+            recommended_family: "carbon".into(),
+            scan_done: true,
+            sound_done: true,
+            mine_done: true,
+        }));
+
+        // 1. Post-mine with 0t ore stowed while on bridge -> [RECOVER RIG FIRST -> Deck: Vehicle Bay (+tv/1 recover go)] [Step 6/7]
+        let now = std::time::Instant::now();
+        let _ = st.observe_port_trade(
+            &serde_json::json!({
+                "enabled": true,
+                "venue": "commons",
+                "ship": {
+                    "hull_id": "#99",
+                    "stowage": { "cargo_kg": 0, "tank_kg": 10000, "stores_days": 10, "items": [] }
+                }
+            }),
+            now,
+        );
+        let (top_rec, _) = st.hud_lines("kitty");
+        assert!(
+            top_rec
+                .contains("[RECOVER RIG FIRST -> Deck: Vehicle Bay (+tv/1 recover go)] [Step 6/7]"),
+            "expected rig-recovery deck cue with Step 6/7:\n{top_rec}"
+        );
+        assert!(
+            !top_rec.contains("[QUEST] Dest: Ceres Freeport"),
+            "must not show premature Dest before rig recovery:\n{top_rec}"
+        );
+
+        // 2. After rig recovery (1t carbon_ore stowed) while in airlock targeting bridge -> [QUEST -> Deck: Bridge] [Step 6/7] & [ORE HOLD READY] Dest: Ceres Freeport
+        st.active_location_key = "airlock".into();
+        st.observe_quest_ship_target(Some("bridge"));
+        let _ = st.observe_port_trade(
+            &serde_json::json!({
+                "enabled": true,
+                "venue": "commons",
+                "ship": {
+                    "hull_id": "#99",
+                    "stowage": {
+                        "cargo_kg": 1000, "tank_kg": 10000, "stores_days": 10,
+                        "items": [{ "good": "tacsim:carbon_ore", "label": "Carbon Ore", "qty": 1 }]
+                    }
+                }
+            }),
+            now,
+        );
+        let (top_ore, _) = st.hud_lines("kitty");
+        assert!(
+            top_ore.contains("[QUEST -> Deck: Bridge] [Step 6/7]"),
+            "expected Bridge deck cue with Step 6/7:\n{top_ore}"
+        );
+        assert!(
+            top_ore.contains("[ORE HOLD READY] Dest: Ceres Freeport [Step 6/7]"),
+            "expected [ORE HOLD READY] Dest cue with Step 6/7:\n{top_ore}"
         );
     }
 }
