@@ -1264,6 +1264,26 @@ impl PortWalkState {
     /// Returns the quest destination port when the active trade need is SELL-only, already stowed
     /// in the ship's hold, and the pilot is currently at a different port (cross-port haul guard).
     #[must_use]
+    fn missing_listing_desk_hint<'a>(&self, need: &'a QuestTradeNeed) -> Option<&'a str> {
+        if (self.asks.is_empty() && self.bids.is_empty())
+            || self.quest_trade_ready_to_sail_dest().is_some()
+        {
+            return None;
+        }
+        let has_ask = self
+            .asks
+            .iter()
+            .any(|a| need.matches_listing(&a.good_id, &a.good_name, false));
+        let has_bid = self
+            .bids
+            .iter()
+            .any(|b| need.matches_listing(&b.good_id, &b.good_name, true));
+        if has_ask || has_bid {
+            return None;
+        }
+        need.venue_hint_label()
+    }
+
     pub fn quest_trade_ready_to_sail_dest(&self) -> Option<&QuestDestinationHint> {
         let need = self.effective_quest_trade_need()?;
         if need.wants_buy || !need.wants_sell {
@@ -5804,6 +5824,14 @@ impl PortWalkState {
                             truncate_str(&haul_msg, inner_w),
                             Style::default().fg(haul_col).add_modifier(Modifier::BOLD),
                         )));
+                    } else if let Some(desk) = self.missing_listing_desk_hint(need) {
+                        let desk_msg = format!("[DESK] Not listed here -> Try {desk} (Esc:walk)");
+                        lines.push(Line::from(Span::styled(
+                            truncate_str(&desk_msg, inner_w),
+                            Style::default()
+                                .fg(Color::LightYellow)
+                                .add_modifier(Modifier::BOLD),
+                        )));
                     }
                 } else if let Some(refit) = self.quest_refit_hold_readiness() {
                     let (banner, col) = if refit.ready {
@@ -9661,6 +9689,7 @@ mod tests {
                 target_quantity: 2,
                 wants_buy: true,
                 wants_sell: false,
+                ..QuestTradeNeed::default()
             }),
             Some(QuestDestinationHint {
                 quest_title: "Deliver Metals to Stickney".into(),
@@ -10122,6 +10151,7 @@ mod tests {
                 target_quantity: 5,
                 wants_buy: true,
                 wants_sell: false,
+                ..QuestTradeNeed::default()
             }),
             None,
         );
@@ -10142,6 +10172,7 @@ mod tests {
                 target_quantity: 10,
                 wants_buy: true,
                 wants_sell: false,
+                ..QuestTradeNeed::default()
             }),
             None,
         );
@@ -10164,6 +10195,7 @@ mod tests {
                 target_quantity: 5,
                 wants_buy: true,
                 wants_sell: true,
+                ..QuestTradeNeed::default()
             }),
             None,
         );
@@ -10246,6 +10278,7 @@ mod tests {
                 target_quantity: 5,
                 wants_buy: true,
                 wants_sell: true,
+                ..QuestTradeNeed::default()
             }),
             Some(QuestDestinationHint {
                 quest_title: "Metals Down the Corridor".into(),
@@ -10350,6 +10383,7 @@ mod tests {
                 target_quantity: 5,
                 wants_buy: true,
                 wants_sell: true,
+                ..QuestTradeNeed::default()
             }),
             Some(QuestDestinationHint {
                 quest_title: "Metals Down the Corridor".into(),
@@ -10532,6 +10566,7 @@ mod tests {
                 target_quantity: 10,
                 wants_buy: true,
                 wants_sell: false,
+                ..QuestTradeNeed::default()
             },
             QuestTradeNeed {
                 quest_title: "Stock the Locker and Tanks".into(),
@@ -10540,6 +10575,7 @@ mod tests {
                 target_quantity: 5,
                 wants_buy: true,
                 wants_sell: false,
+                ..QuestTradeNeed::default()
             },
         ]);
 
@@ -10590,6 +10626,7 @@ mod tests {
             target_quantity: 5,
             wants_buy: true,
             wants_sell: true,
+            ..QuestTradeNeed::default()
         }]);
         let eff3 = st
             .effective_quest_trade_need()
@@ -10713,6 +10750,7 @@ mod tests {
             target_quantity: 5,
             wants_buy: true,
             wants_sell: true,
+            ..QuestTradeNeed::default()
         }]);
         let mut queries = Vec::new();
         st.open_drawer(PortDrawerKind::Industry, &[], &mut queries, now);
@@ -10745,6 +10783,7 @@ mod tests {
             target_quantity: 1,
             wants_buy: false,
             wants_sell: true,
+            ..QuestTradeNeed::default()
         }]);
         let out7 = st.handle_key(Key::Char('h'), false, false, &[], now);
         assert_eq!(out7.commands, vec!["+market/history tacsim:carbon_ore"]);
@@ -10910,6 +10949,7 @@ mod tests {
             target_quantity: 5,
             wants_buy: true,
             wants_sell: true,
+            ..QuestTradeNeed::default()
         }]);
         assert_eq!(st.asks[0].listing_id, 11);
         assert_eq!(st.bids[0].listing_id, 21);
@@ -11304,6 +11344,7 @@ mod tests {
                 target_quantity: 5,
                 wants_buy: true,
                 wants_sell: false,
+                ..QuestTradeNeed::default()
             }),
             Some(QuestDestinationHint {
                 quest_title: "Metals Down the Corridor".into(),
@@ -11403,6 +11444,7 @@ mod tests {
                 target_quantity: 1,
                 wants_buy: false,
                 wants_sell: true,
+                ..QuestTradeNeed::default()
             }),
             Some(QuestDestinationHint {
                 quest_title: "Deliver Your Mined Ore to Market".into(),
@@ -11702,5 +11744,87 @@ mod tests {
         let out2 = st.handle_drawer_key(Key::Char('f'), &[], Instant::now());
         assert!(out2.commands.is_empty());
         assert_eq!(st.drawer, Some(PortDrawerKind::Industry));
+    }
+
+    #[test]
+    fn trade_drawer_shows_missing_listing_desk_hint_when_step2_item_at_other_desk() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut st = PortWalkState::new();
+        st.drawer = Some(PortDrawerKind::Trade);
+        st.stowage_loaded = true;
+        st.stowage.stores_days = 10;
+        st.stowage.reaction_kg = 0;
+        st.observe_quest_step_badge(" [Step 2/7]".into());
+        st.observe_quest_trade_needs(vec![
+            QuestTradeNeed {
+                quest_title: "Stock the Locker and Tanks".into(),
+                checkpoint_title: "Buy 10 provisions".into(),
+                commodity_slug: "provisions".into(),
+                target_quantity: 10,
+                wants_buy: true,
+                wants_sell: false,
+                room_entry: "room.c08_chandlery".into(),
+                room_name: "Co-op Chandlery".into(),
+            },
+            QuestTradeNeed {
+                quest_title: "Stock the Locker and Tanks".into(),
+                checkpoint_title: "Buy 5t propellant".into(),
+                commodity_slug: "propellant".into(),
+                target_quantity: 5,
+                wants_buy: true,
+                wants_sell: false,
+                room_entry: "room.c07_exchange".into(),
+                room_name: "Exchange Hall".into(),
+            },
+        ]);
+        // At Co-op Chandlery: only Provisions Ask on board (no Propellant) -> shows Exchange Hall desk hint
+        st.asks = vec![AskRow {
+            listing_id: 301,
+            good_id: "tacsim:provisions".into(),
+            good_name: "Provisions".into(),
+            vendor_name: "Co-op Chandlery".into(),
+            quantity: 40,
+            unit_price_minor: 500,
+            unit_mass_kg: 10,
+            unit_vol_dm3: 10,
+        }];
+        let render_trade = |st: &mut PortWalkState| -> String {
+            let backend = TestBackend::new(120, 20);
+            let mut term = Terminal::new(backend).expect("terminal");
+            term.draw(|f| st.draw_drawer_box(f, f.area(), true))
+                .expect("draw");
+            let buf = term.backend().buffer();
+            (0..buf.area.height)
+                .map(|y| {
+                    (0..buf.area.width)
+                        .map(|x| buf[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let chand_txt = render_trade(&mut st);
+        assert!(
+            chand_txt.contains("[DESK] Not listed here -> Try Exchange Hall (Esc:walk)"),
+            "expected missing-listing desk hint:\n{chand_txt}"
+        );
+
+        // Once Propellant Ask is loaded (at Exchange Hall) -> desk hint disappears cleanly
+        st.asks = vec![AskRow {
+            listing_id: 302,
+            good_id: "tacsim:propellant".into(),
+            good_name: "Propellant".into(),
+            vendor_name: "Exchange Hall".into(),
+            quantity: 50,
+            unit_price_minor: 800,
+            unit_mass_kg: 1000,
+            unit_vol_dm3: 1000,
+        }];
+        let exch_txt = render_trade(&mut st);
+        assert!(
+            !exch_txt.contains("[DESK] Not listed here"),
+            "desk hint should clear when matching ask is listed:\n{exch_txt}"
+        );
     }
 }
