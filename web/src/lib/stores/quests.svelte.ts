@@ -779,6 +779,7 @@ export function resolveQuestShipTargetCompartment(
   trackedKey: string | null,
   dockedPortId: string | null = null,
   settledPad = false,
+  nextGuidedOffer: GuidedTourRoadmapStep | null = null,
 ): "airlock" | "bay" | "bridge" | null {
   const mining = extractActiveSurfaceMiningStatus(active, trackedKey);
   const dockedNorm = dockedPortId?.trim().toLowerCase() ?? "";
@@ -806,6 +807,13 @@ export function resolveQuestShipTargetCompartment(
   }
   const dest = extractActiveDestinationPort(active, trackedKey);
   if (dest) {
+    return "bridge";
+  }
+  if (active.length === 0 && nextGuidedOffer) {
+    const targetPort = inferStationPortFromRoomEntry(nextGuidedOffer.giverRoomEntry);
+    if (dockedNorm && !settledPad && targetPort && targetPort === dockedNorm) {
+      return "airlock";
+    }
     return "bridge";
   }
   return null;

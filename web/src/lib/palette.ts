@@ -12,9 +12,9 @@ export interface PaletteCommand {
   summary: string;
 }
 
-/** One live active, available, route, next-step, or cycle quest shortcut in the palette. */
+/** One live active, available, route, next-step, cycle, or between-steps next-guided quest shortcut in the palette. */
 export interface PaletteQuestAction {
-  kind: "active" | "available" | "route" | "step" | "cycle";
+  kind: "active" | "available" | "route" | "step" | "cycle" | "nextGuided";
   key: string;
   npcId?: string;
   command?: string;
@@ -46,7 +46,7 @@ export interface PaletteEntry {
   local: boolean;
   /** Optional client-local or command quest action opened/prefilled/run on pick. */
   questAction?: {
-    kind: "active" | "available" | "route" | "step" | "cycle";
+    kind: "active" | "available" | "route" | "step" | "cycle" | "nextGuided";
     key: string;
     npcId?: string;
     command?: string;
@@ -91,7 +91,7 @@ export function paletteEntries(query: string, sources: PaletteSources): PaletteE
   if (sources.quests) {
     for (const qa of sources.quests) {
       const tag =
-        qa.kind === "available"
+        qa.kind === "available" || qa.kind === "nextGuided"
           ? "[!]"
           : qa.kind === "route"
             ? "[→]"
@@ -111,10 +111,12 @@ export function paletteEntries(query: string, sources: PaletteSources): PaletteE
         qa.kind === "route"
           ? "route walk board ashore"
           : qa.kind === "step"
-            ? "next step action"
+            ? "next step action sail"
             : qa.kind === "cycle"
               ? "cycle switch next tracked"
-              : "";
+              : qa.kind === "nextGuided"
+                ? "next guided tour offer"
+                : "";
       consider(
         {
           insert,
