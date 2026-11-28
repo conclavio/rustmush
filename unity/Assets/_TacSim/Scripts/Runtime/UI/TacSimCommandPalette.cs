@@ -89,6 +89,7 @@ namespace TacSim.UI
         private ShipInteriorController _ship;
         private OocArenaController _arena;
         private TacSimQuestJournal _quests;
+        private TacSimTradeAndShipState _trade;
         private TacSimActiveStage _activeStage = TacSimActiveStage.StationWalk;
 
         public bool IsOpen => _modalRoot != null && _modalRoot.activeSelf;
@@ -265,6 +266,11 @@ namespace TacSim.UI
         public void BindQuestJournal(TacSimQuestJournal quests)
         {
             _quests = quests;
+        }
+
+        public void BindTradeState(TacSimTradeAndShipState trade)
+        {
+            _trade = trade;
         }
 
         public void SetActiveStage(TacSimActiveStage stage)
@@ -488,9 +494,50 @@ namespace TacSim.UI
             if (_quests != null && _quests.LatestPanel != null)
             {
                 var qp = _quests.LatestPanel;
-                for (int i = 0; i < qp.Active.Count; i++)
+                var tracked = _quests.GetTrackedActiveQuest();
+
+                // Order active quests by urgency (can finish -> ready -> can verify -> in-progress; tracked first among equals)
+                var orderedActive = new List<MushActiveQuest>(qp.Active);
+                orderedActive.Sort((a, b) =>
                 {
-                    var q = qp.Active[i];
+                    int ua = a.CanFinishNow ? 0 : (a.ReadyToFinish ? 1 : (a.CanCheckNow ? 2 : 3));
+                    int ub = b.CanFinishNow ? 0 : (b.ReadyToFinish ? 1 : (b.CanCheckNow ? 2 : 3));
+                    if (ua != ub) return ua.CompareTo(ub);
+                    int ta = (tracked != null && a.Key == tracked.Key) ? 0 : 1;
+                    int tb = (tracked != null && b.Key == tracked.Key) ? 0 : 1;
+                    return ta.CompareTo(tb);
+                });
+
+                // 1. Surface immediate 1-click Finish / Verify actions across ALL active quests
+                for (int i = 0; i < orderedActive.Count; i++)
+                {
+                    var q = orderedActive[i];
+                    if (q.CanFinishNow && !string.IsNullOrEmpty(q.FinishCmd))
+                    {
+                        string finishCmd = q.FinishCmd;
+                        _allEntries.Add(new PaletteEntry(
+                            "QUEST STEP",
+                            $"Finish Now: {q.Title}",
+                            finishCmd,
+                            () => OnCommandRequested?.Invoke(finishCmd),
+                            $"quest finish complete turnin now {q.Title} {finishCmd}"));
+                    }
+                    else if (q.CanCheckNow && !string.IsNullOrEmpty(q.CheckCmd))
+                    {
+                        string checkCmd = q.CheckCmd;
+                        _allEntries.Add(new PaletteEntry(
+                            "QUEST STEP",
+                            $"Verify Now: {q.Title}",
+                            checkCmd,
+                            () => OnCommandRequested?.Invoke(checkCmd),
+                            $"quest verify check now {q.Title} {checkCmd}"));
+                    }
+                }
+
+                // 2. Active quest dialogs & locally resolved 3D Wayfinder trails
+                for (int i = 0; i < orderedActive.Count; i++)
+                {
+                    var q = orderedActive[i];
                     string qKey = q.Key;
                     bool ready = q.CanFinishNow || q.ReadyToFinish;
                     string dlgTitle = ready ? $"Complete Quest [?]: {q.Title}" : $"Quest Dialog: {q.Title}";
@@ -502,19 +549,42 @@ namespace TacSim.UI
                         () => _quests?.OpenQuestDialogByKey(qKey),
                         $"quest active objective dialog {q.Title} {q.TurnInName} {q.NextRoomName}"));
 
-                    if (!string.IsNullOrEmpty(q.NextRoomEntry))
+                    bool isTracked = tracked != null && q.Key == tracked.Key;
+                    bool needsOrigin = isTracked && _quests.NeedsOriginPortProcurement(_trade);
+                    bool needsExp = isTracked && _quests.NeedsSurfaceExpeditionBoarding();
+                    string rawRoom = q.NextRoomEntry;
+                    string targetRoom = rawRoom;
+                    string destLabel = !string.IsNullOrEmpty(q.NextRoomName) ? q.NextRoomName : rawRoom;
+                    bool isBoarding = false;
+                    if (_station?.Pack != null &&
+                        (!string.IsNullOrEmpty(rawRoom) || needsExp) &&
+                        _station.TryResolveLocalQuestRoom(rawRoom, needsOrigin, needsExp, out string localRoom, out isBoarding))
                     {
-                        string targetRoom = q.NextRoomEntry;
-                        string destLabel = !string.IsNullOrEmpty(q.NextRoomName) ? q.NextRoomName : targetRoom;
+                        bool redirected = !string.Equals(localRoom, rawRoom, StringComparison.OrdinalIgnoreCase);
+                        targetRoom = localRoom;
+                        if ((redirected || string.IsNullOrEmpty(q.NextRoomName)) &&
+                            _station.Pack.Rooms.TryGetValue(localRoom, out var roomDef) &&
+                            !string.IsNullOrEmpty(roomDef.Name))
+                        {
+                            destLabel = roomDef.Name;
+                        }
+                    }
+
+                    if (!string.IsNullOrEmpty(targetRoom))
+                    {
+                        string trailTitle = isBoarding
+                            ? $"Wayfinder to Board Ship: {destLabel}"
+                            : $"Wayfinder to Quest Objective: {destLabel}";
                         _allEntries.Add(new PaletteEntry(
                             "QUEST TRAIL",
-                            $"Wayfinder to Quest Objective: {destLabel}",
+                            trailTitle,
                             !string.IsNullOrEmpty(q.NextStep) ? $"{q.Title} — {q.NextStep}" : q.Title,
                             () => OnPlotStationRoomRequested?.Invoke(targetRoom),
-                            $"quest trail wayfinder route navigate objective {q.Title} {destLabel} {q.NextStep}"));
+                            $"quest trail wayfinder route navigate objective board {q.Title} {destLabel} {q.NextStep}"));
                     }
                 }
 
+                // 3. Available quest dialogs & 1-click Accept Now shortcuts
                 for (int i = 0; i < qp.Available.Count; i++)
                 {
                     var av = qp.Available[i];
@@ -530,32 +600,21 @@ namespace TacSim.UI
                                 _quests.OpenQuestDialogByKey(qKey);
                         },
                         $"quest available accept offer npc {av.Title} {av.GiverName}"));
+
+                    if (!string.IsNullOrEmpty(av.AcceptCmd))
+                    {
+                        string acceptCmd = av.AcceptCmd;
+                        _allEntries.Add(new PaletteEntry(
+                            "QUEST STEP",
+                            $"Accept Now: {av.Title}",
+                            $"{acceptCmd} — {av.GiverName}",
+                            () => OnCommandRequested?.Invoke(acceptCmd),
+                            $"quest accept now offer {av.Title} {av.GiverName} {acceptCmd}"));
+                    }
                 }
 
-                var tracked = _quests.GetTrackedActiveQuest();
                 if (tracked != null)
                 {
-                    if (tracked.CanFinishNow && !string.IsNullOrEmpty(tracked.FinishCmd))
-                    {
-                        string finishCmd = tracked.FinishCmd;
-                        _allEntries.Add(new PaletteEntry(
-                            "QUEST STEP",
-                            $"Finish Now: {tracked.Title}",
-                            finishCmd,
-                            () => OnCommandRequested?.Invoke(finishCmd),
-                            $"quest finish turnin now {tracked.Title} {finishCmd}"));
-                    }
-                    else if (tracked.CanCheckNow && !string.IsNullOrEmpty(tracked.CheckCmd))
-                    {
-                        string checkCmd = tracked.CheckCmd;
-                        _allEntries.Add(new PaletteEntry(
-                            "QUEST STEP",
-                            $"Verify Now: {tracked.Title}",
-                            checkCmd,
-                            () => OnCommandRequested?.Invoke(checkCmd),
-                            $"quest verify check now {tracked.Title} {checkCmd}"));
-                    }
-
                     if (_quests.TrackerRouteHops > 0 && !string.IsNullOrEmpty(_quests.TrackerRouteCommand))
                     {
                         string rCmd = _quests.TrackerRouteCommand;
@@ -642,12 +701,25 @@ namespace TacSim.UI
                     if (!string.IsNullOrEmpty(nextGuided.GiverRoomEntry))
                     {
                         string targetRoom = nextGuided.GiverRoomEntry;
+                        string destLabel = nextGuided.GiverRoomName;
+                        if (_station?.Pack != null &&
+                            _station.TryResolveLocalQuestRoom(nextGuided.GiverRoomEntry, false, false, out string localRoom, out _))
+                        {
+                            bool redirected = !string.Equals(localRoom, nextGuided.GiverRoomEntry, StringComparison.OrdinalIgnoreCase);
+                            targetRoom = localRoom;
+                            if ((redirected || string.IsNullOrEmpty(nextGuided.GiverRoomName)) &&
+                                _station.Pack.Rooms.TryGetValue(localRoom, out var roomDef) &&
+                                !string.IsNullOrEmpty(roomDef.Name))
+                            {
+                                destLabel = roomDef.Name;
+                            }
+                        }
                         _allEntries.Add(new PaletteEntry(
                             "QUEST TRAIL",
-                            $"Wayfinder to Next Guided ({nextGuided.Step}/7): {nextGuided.GiverRoomName}",
+                            $"Wayfinder to Next Guided ({nextGuided.Step}/7): {destLabel}",
                             $"Speak with {nextGuided.GiverLabel} ({nextGuided.LocationLabel})",
                             () => OnPlotStationRoomRequested?.Invoke(targetRoom),
-                            $"quest trail wayfinder route navigate next guided {nextGuided.GiverRoomName} {nextGuided.GiverLabel}"));
+                            $"quest trail wayfinder route navigate next guided {destLabel} {nextGuided.GiverRoomName} {nextGuided.GiverLabel}"));
                     }
 
                     _allEntries.Add(new PaletteEntry(
