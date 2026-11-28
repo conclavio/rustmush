@@ -110,6 +110,39 @@ namespace TacSim.UI
             return list;
         }
 
+        public List<string> GetFilteredSubtitlesSnapshot()
+        {
+            var list = new List<string>(_filteredIndices.Count);
+            for (int i = 0; i < _filteredIndices.Count; i++)
+                list.Add(_allEntries[_filteredIndices[i]].Subtitle);
+            return list;
+        }
+
+        private string FormatQuestReadinessTag(MushActiveQuest q)
+        {
+            if (q == null || _quests == null || q.CanFinishNow) return string.Empty;
+            string holdSummary = string.Empty;
+            bool hasHold = _quests.TryGetQuestHoldReadinessSummary(q, out holdSummary, out _);
+            if (hasHold)
+            {
+                if (holdSummary.StartsWith("[RECOVER RIG FIRST]", StringComparison.Ordinal))
+                    return "[RECOVER RIG FIRST]";
+                if (holdSummary.StartsWith("[ORE HOLD READY]", StringComparison.Ordinal))
+                    return "[ORE HOLD READY]";
+            }
+            if (_quests.TryGetQuestPreflightReadinessSummary(q, out _, out bool pfReady))
+                return pfReady ? "[PRE-FLIGHT OK]" : "[CHECK BEFORE UNDOCK]";
+            if (hasHold && !string.IsNullOrEmpty(holdSummary))
+            {
+                if (holdSummary.StartsWith("[HOLD READY]", StringComparison.Ordinal)) return "[HOLD READY]";
+                if (holdSummary.StartsWith("[HOLD]", StringComparison.Ordinal)) return "[HOLD]";
+                if (holdSummary.StartsWith("[READY]", StringComparison.Ordinal)) return "[READY]";
+                if (holdSummary.StartsWith("[REFIT CHECK]", StringComparison.Ordinal)) return "[REFIT CHECK]";
+                if (holdSummary.StartsWith("[ORE HOLD]", StringComparison.Ordinal)) return "[ORE HOLD]";
+            }
+            return string.Empty;
+        }
+
         private static string FormatQuestStepSuffix(string key)
         {
             int step = TacSimQuestJournal.GuidedStepNumber(key);
@@ -576,7 +609,9 @@ namespace TacSim.UI
                     string stepSfx = FormatQuestStepSuffix(qKey);
                     bool ready = q.CanFinishNow || q.ReadyToFinish;
                     string dlgTitle = ready ? $"Complete Quest [?]: {q.Title}{stepSfx}" : $"Quest Dialog: {q.Title}{stepSfx}";
-                    string dlgSub = !string.IsNullOrEmpty(q.NextStep) ? q.NextStep : $"Turn in to {q.TurnInName}";
+                    string rTag = FormatQuestReadinessTag(q);
+                    string baseSub = !string.IsNullOrEmpty(q.NextStep) ? q.NextStep : $"Turn in to {q.TurnInName}";
+                    string dlgSub = !string.IsNullOrEmpty(rTag) ? $"{rTag} {baseSub}" : baseSub;
                     _allEntries.Add(new PaletteEntry(
                         "QUEST",
                         dlgTitle,
@@ -678,9 +713,11 @@ namespace TacSim.UI
                     {
                         string cmdCopy = sugCmd;
                         pushedSuggestedCmd = (cmdCopy ?? string.Empty).Trim();
+                        string trackedTag = FormatQuestReadinessTag(tracked);
+                        string tagPfx = !string.IsNullOrEmpty(trackedTag) ? $"{trackedTag} " : string.Empty;
                         string sub = !string.IsNullOrEmpty(tracked.NextStep)
-                            ? $"{cmdCopy} — {tracked.NextStep}"
-                            : cmdCopy;
+                            ? $"{tagPfx}{cmdCopy} — {tracked.NextStep}"
+                            : $"{tagPfx}{cmdCopy}";
                         _allEntries.Add(new PaletteEntry(
                             "QUEST STEP",
                             $"Next: {sugLbl}",
@@ -706,50 +743,71 @@ namespace TacSim.UI
                         }
                         else if (!tracked.CanFinishNow && !tracked.TurnInHere)
                         {
-                            string retPortId = string.Empty;
-                            string retLabel = string.Empty;
-                            if (_quests.TryGetActiveDestinationPort(out var retDest))
+                            string miningHold = string.Empty;
+                            bool hasMiningHold = _quests.TryGetQuestHoldReadinessSummary(tracked, out miningHold, out _);
+                            if (hasMiningHold && miningHold.StartsWith("[RECOVER RIG FIRST]", StringComparison.Ordinal))
                             {
-                                retPortId = retDest.PortId;
-                                retLabel = retDest.PortLabel;
+                                if (!string.Equals(pushedSuggestedCmd, "+tv/1 recover go", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    string oreLabel = (mining.TargetOreSlug ?? "carbon_ore").Replace('_', ' ');
+                                    _allEntries.Add(new PaletteEntry(
+                                        "QUEST STEP",
+                                        "Recover Rig First [RECOVER RIG FIRST]",
+                                        $"+tv/1 recover go — Stow mined {oreLabel} in ship hold before returning to port",
+                                        () => OnPrefillCommandRequested?.Invoke("+tv/1 recover go"),
+                                        $"quest recover rig first {oreLabel} +tv/1 recover go mined ore"));
+                                }
                             }
                             else
                             {
-                                string roomEntry = tracked.NextRoomEntry;
-                                if (string.IsNullOrEmpty(roomEntry))
+                                string retPortId = string.Empty;
+                                string retLabel = string.Empty;
+                                if (_quests.TryGetActiveDestinationPort(out var retDest))
                                 {
-                                    for (int cIdx = tracked.Checkpoints.Count - 1; cIdx >= 0; cIdx--)
+                                    retPortId = retDest.PortId;
+                                    retLabel = retDest.PortLabel;
+                                }
+                                else
+                                {
+                                    string roomEntry = tracked.NextRoomEntry;
+                                    if (string.IsNullOrEmpty(roomEntry))
                                     {
-                                        if (!string.IsNullOrEmpty(tracked.Checkpoints[cIdx].RoomEntry))
+                                        for (int cIdx = tracked.Checkpoints.Count - 1; cIdx >= 0; cIdx--)
                                         {
-                                            roomEntry = tracked.Checkpoints[cIdx].RoomEntry;
-                                            break;
+                                            if (!string.IsNullOrEmpty(tracked.Checkpoints[cIdx].RoomEntry))
+                                            {
+                                                roomEntry = tracked.Checkpoints[cIdx].RoomEntry;
+                                                break;
+                                            }
                                         }
                                     }
+                                    string slug = TacSimQuestJournal.InferStationPortFromRoomEntry(roomEntry);
+                                    if (!string.IsNullOrEmpty(slug))
+                                    {
+                                        retPortId = slug;
+                                        retLabel = string.Equals(slug, "ceres", StringComparison.OrdinalIgnoreCase)
+                                            ? "Ceres Freeport"
+                                            : string.Equals(slug, "stickney", StringComparison.OrdinalIgnoreCase)
+                                                ? "Stickney Yards"
+                                                : slug;
+                                    }
                                 }
-                                string slug = TacSimQuestJournal.InferStationPortFromRoomEntry(roomEntry);
-                                if (!string.IsNullOrEmpty(slug))
+                                if (!string.IsNullOrEmpty(retPortId))
                                 {
-                                    retPortId = slug;
-                                    retLabel = string.Equals(slug, "ceres", StringComparison.OrdinalIgnoreCase)
-                                        ? "Ceres Freeport"
-                                        : string.Equals(slug, "stickney", StringComparison.OrdinalIgnoreCase)
-                                            ? "Stickney Yards"
-                                            : slug;
-                                }
-                            }
-                            if (!string.IsNullOrEmpty(retPortId))
-                            {
-                                string planCmd = $"+ship/plan {retPortId}";
-                                if (!string.Equals(pushedSuggestedCmd, planCmd, StringComparison.OrdinalIgnoreCase))
-                                {
-                                    string turnIn = !string.IsNullOrEmpty(tracked.TurnInName) ? tracked.TurnInName : retLabel;
-                                    _allEntries.Add(new PaletteEntry(
-                                        "QUEST SAIL",
-                                        $"Return -> {retLabel}",
-                                        $"{planCmd} — Return to {turnIn} with mined ore",
-                                        () => OnPrefillCommandRequested?.Invoke(planCmd),
-                                        $"quest return sail plan {retPortId} {retLabel} {planCmd} mined ore"));
+                                    string planCmd = $"+ship/plan {retPortId}";
+                                    if (!string.Equals(pushedSuggestedCmd, planCmd, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        string turnIn = !string.IsNullOrEmpty(tracked.TurnInName) ? tracked.TurnInName : retLabel;
+                                        string oreBadge = (hasMiningHold && miningHold.StartsWith("[ORE HOLD READY]", StringComparison.Ordinal))
+                                            ? " [ORE HOLD READY]"
+                                            : string.Empty;
+                                        _allEntries.Add(new PaletteEntry(
+                                            "QUEST SAIL",
+                                            $"Return -> {retLabel}{oreBadge}",
+                                            $"{planCmd} — Return to {turnIn} with mined ore",
+                                            () => OnPrefillCommandRequested?.Invoke(planCmd),
+                                            $"quest return sail plan {retPortId} {retLabel} {planCmd} mined ore"));
+                                    }
                                 }
                             }
                         }
