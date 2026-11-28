@@ -153,8 +153,21 @@ namespace TacSim.UI
 
         private Text _historySparkText;
         private Text _historyOutputText;
+        private RectTransform _historyViewportRect;
+        private GameObject _historyQuestBanner;
+        private Text _historyQuestLabel;
+        private string _questHistorySlug = string.Empty;
+        private string _questHistoryTitle = string.Empty;
+
         private Text _jobsOutputText;
         private Text _industryOutputText;
+        private RectTransform _industryViewportRect;
+        private GameObject _industryQuestBanner;
+        private Image _industryQuestBannerBg;
+        private Text _industryQuestLabel;
+        private Text _industryQuestBtnLabel;
+        private string _industryQuestCommand = string.Empty;
+
         private Text _haulGoodBtnLabel;
         private InputField _jobIdInput;
         private InputField _surveyIdInput;
@@ -164,6 +177,101 @@ namespace TacSim.UI
         private InputField _bayHullInput;
         private InputField _debtIdInput;
         private readonly List<Image> _goodBtnImages = new List<Image>();
+
+        public string QuestHistoryCommodityForTests => _questHistorySlug;
+        public bool IsHistoryQuestBannerVisible => _historyQuestBanner != null && _historyQuestBanner.activeSelf;
+        public string HistoryQuestBannerTextForTests => _historyQuestLabel != null ? _historyQuestLabel.text : string.Empty;
+        public bool IsIndustryQuestBannerVisible => _industryQuestBanner != null && _industryQuestBanner.activeSelf;
+        public string IndustryQuestBannerTextForTests => _industryQuestLabel != null ? _industryQuestLabel.text : string.Empty;
+
+        public bool TriggerQuestHistoryTrendForTests()
+        {
+            if (string.IsNullOrEmpty(_questHistorySlug)) return false;
+            SelectQuestHistoryCommodityIfAvailable();
+            ClearHistorySeries($"Fetching 24 IC-week house series for <b>{MushProtocol.EscapeUnityRichText(_questHistorySlug)}</b>...");
+            _emitCommand?.Invoke($"+market/history tacsim:{_questHistorySlug}");
+            return true;
+        }
+
+        public bool TriggerIndustryQuestActionForTests()
+        {
+            if (!IsIndustryQuestBannerVisible || string.IsNullOrEmpty(_industryQuestCommand)) return false;
+            _emitCommand?.Invoke(_industryQuestCommand);
+            return true;
+        }
+
+        public bool SelectQuestHistoryCommodityIfAvailable()
+        {
+            if (string.IsNullOrEmpty(_questHistorySlug)) return false;
+            SelectedHistoryGood = _questHistorySlug;
+            int idx = FindHistoryGoodIndex(_questHistorySlug);
+            HighlightGoodButtons(idx);
+            return true;
+        }
+
+        private static int FindHistoryGoodIndex(string slug)
+        {
+            if (string.IsNullOrWhiteSpace(slug)) return -1;
+            string s = slug.Trim();
+            for (int i = 0; i < HistoryAndHaulGoods.Length; i++)
+            {
+                if (string.Equals(HistoryAndHaulGoods[i].code, s, StringComparison.OrdinalIgnoreCase))
+                    return i;
+            }
+            return -1;
+        }
+
+        public void ApplyQuestGuidance(
+            string tradeCommoditySlug,
+            string tradeQuestTitle,
+            string coopActionLabel,
+            string coopActionCommand,
+            string refitReadinessSummary,
+            bool refitReady)
+        {
+            _questHistorySlug = (tradeCommoditySlug ?? string.Empty).Trim().ToLowerInvariant();
+            _questHistoryTitle = (tradeQuestTitle ?? string.Empty).Trim();
+
+            bool showHist = !string.IsNullOrEmpty(_questHistorySlug);
+            if (_historyQuestBanner != null)
+            {
+                _historyQuestBanner.SetActive(showHist);
+                if (showHist && _historyQuestLabel != null)
+                {
+                    string lbl = _questHistorySlug.Replace('_', ' ').ToUpperInvariant();
+                    string titleSuffix = string.IsNullOrEmpty(_questHistoryTitle) ? string.Empty : $" — {_questHistoryTitle}";
+                    _historyQuestLabel.text = $"[QUEST] 24-WEEK TREND: {lbl}{titleSuffix}";
+                }
+            }
+            if (_historyViewportRect != null)
+                _historyViewportRect.offsetMax = new Vector2(0f, showHist ? -206f : -164f);
+            HighlightGoodButtons(FindHistoryGoodIndex(SelectedHistoryGood));
+
+            bool showInd = !string.IsNullOrEmpty(coopActionCommand) &&
+                           coopActionCommand.StartsWith("+coop/refit", StringComparison.OrdinalIgnoreCase);
+            _industryQuestCommand = showInd ? coopActionCommand.Trim() : string.Empty;
+            if (_industryQuestBanner != null)
+            {
+                _industryQuestBanner.SetActive(showInd);
+                if (showInd)
+                {
+                    if (_industryQuestLabel != null)
+                    {
+                        string hdr = string.IsNullOrEmpty(coopActionLabel) ? "REFIT DRAY-P" : coopActionLabel.ToUpperInvariant();
+                        string detail = string.IsNullOrEmpty(refitReadinessSummary) ? _industryQuestCommand : refitReadinessSummary;
+                        _industryQuestLabel.text = $"[QUEST] {hdr} — {detail}";
+                    }
+                    if (_industryQuestBtnLabel != null)
+                        _industryQuestBtnLabel.text = $"Run {_industryQuestCommand}";
+                    if (_industryQuestBannerBg != null)
+                        _industryQuestBannerBg.color = refitReady
+                            ? new Color(0.08f, 0.34f, 0.22f, 0.94f)
+                            : new Color(0.32f, 0.24f, 0.08f, 0.94f);
+                }
+            }
+            if (_industryViewportRect != null)
+                _industryViewportRect.offsetMax = new Vector2(0f, showInd ? -176f : -134f);
+        }
 
         // Two-click confirmation state for financial / contract commitments (`U-M15`)
         private string _armedConfirmKey;
@@ -247,6 +355,7 @@ namespace TacSim.UI
             SelectedHistoryGood = "volatiles";
             SetSelectedHaulGood("volatiles");
             SetSelectedSurveyId("ahuna-a");
+            ApplyQuestGuidance(string.Empty, string.Empty, string.Empty, string.Empty, string.Empty, false);
             ClearHistorySeries();
             if (_historyOutputText != null) _historyOutputText.text = "Ready.";
             if (_jobsOutputText != null) _jobsOutputText.text = "Ready.";
@@ -618,7 +727,14 @@ namespace TacSim.UI
             _historySparkText.supportRichText = true;
             SetRect(_historySparkText.rectTransform, Vector2.zero, Vector2.one, new Vector2(12f, 4f), new Vector2(-12f, -4f));
 
-            _historyOutputText = BuildScrollOutput(HistoryTabBody.transform, "HistoryViewport", -164f);
+            _historyQuestBanner = CreatePanel(HistoryTabBody.transform, "HistoryQuestBanner", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -200f), new Vector2(0f, -162f), new Color(0.32f, 0.24f, 0.08f, 0.94f));
+            _historyQuestLabel = CreateText(_historyQuestBanner.transform, "[QUEST] 24-WEEK TREND", 13, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(1f, 0.93f, 0.68f));
+            SetRect(_historyQuestLabel.rectTransform, Vector2.zero, Vector2.one, new Vector2(12f, 2f), new Vector2(-180f, -2f));
+            var hqBtn = CreateButton(_historyQuestBanner.transform, "Load Quest Trend", new Color(0.56f, 0.39f, 0.10f), () => TriggerQuestHistoryTrendForTests());
+            SetRect(hqBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-172f, 4f), new Vector2(-8f, -4f));
+            _historyQuestBanner.SetActive(false);
+
+            _historyOutputText = BuildScrollOutput(HistoryTabBody.transform, "HistoryViewport", -164f, out _historyViewportRect);
             HistoryTabBody.SetActive(false);
         }
 
@@ -833,7 +949,16 @@ namespace TacSim.UI
                     _emitCommand?.Invoke($"+yard/collect {ord}");
                 });
 
-            _industryOutputText = BuildScrollOutput(IndustryTabBody.transform, "IndustryViewport", -134f);
+            _industryQuestBanner = CreatePanel(IndustryTabBody.transform, "IndustryQuestBanner", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -170f), new Vector2(0f, -132f), new Color(0.32f, 0.24f, 0.08f, 0.94f));
+            _industryQuestBannerBg = _industryQuestBanner.GetComponent<Image>();
+            _industryQuestLabel = CreateText(_industryQuestBanner.transform, "[QUEST] REFIT DRAY-P", 13, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(1f, 0.94f, 0.72f));
+            SetRect(_industryQuestLabel.rectTransform, Vector2.zero, Vector2.one, new Vector2(12f, 2f), new Vector2(-216f, -2f));
+            var iqBtn = CreateButton(_industryQuestBanner.transform, "Run +coop/refit prospector", new Color(0.56f, 0.39f, 0.10f), () => TriggerIndustryQuestActionForTests());
+            SetRect(iqBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-208f, 4f), new Vector2(-8f, -4f));
+            _industryQuestBtnLabel = iqBtn.GetComponentInChildren<Text>();
+            _industryQuestBanner.SetActive(false);
+
+            _industryOutputText = BuildScrollOutput(IndustryTabBody.transform, "IndustryViewport", -134f, out _industryViewportRect);
             IndustryTabBody.SetActive(false);
         }
 
@@ -845,12 +970,18 @@ namespace TacSim.UI
 
         private void HighlightGoodButtons(int selectedIdx)
         {
+            int questIdx = FindHistoryGoodIndex(_questHistorySlug);
             for (int i = 0; i < _goodBtnImages.Count; i++)
             {
                 if (_goodBtnImages[i] == null) continue;
-                _goodBtnImages[i].color = i == selectedIdx
-                    ? new Color(0.22f, 0.66f, 0.88f, 1f)
-                    : new Color(0.14f, 0.26f, 0.38f, 0.92f);
+                if (i == selectedIdx && i == questIdx)
+                    _goodBtnImages[i].color = new Color(0.74f, 0.54f, 0.12f, 1f);
+                else if (i == selectedIdx)
+                    _goodBtnImages[i].color = new Color(0.22f, 0.66f, 0.88f, 1f);
+                else if (i == questIdx)
+                    _goodBtnImages[i].color = new Color(0.46f, 0.34f, 0.10f, 0.96f);
+                else
+                    _goodBtnImages[i].color = new Color(0.14f, 0.26f, 0.38f, 0.92f);
             }
         }
 
@@ -867,7 +998,13 @@ namespace TacSim.UI
 
         private Text BuildScrollOutput(Transform parent, string name, float topInset)
         {
+            return BuildScrollOutput(parent, name, topInset, out _);
+        }
+
+        private Text BuildScrollOutput(Transform parent, string name, float topInset, out RectTransform viewportRect)
+        {
             var vp = CreatePanel(parent, name, new Vector2(0f, 0f), new Vector2(1f, 1f), Vector2.zero, new Vector2(0f, topInset), new Color(0.02f, 0.05f, 0.09f, 0.90f));
+            viewportRect = vp.GetComponent<RectTransform>();
             vp.AddComponent<RectMask2D>();
             var sr = vp.AddComponent<ScrollRect>();
 

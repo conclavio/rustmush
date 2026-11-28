@@ -13819,5 +13819,116 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void EconomyPanels_AutoSelectsQuestCommodityInHistoryAndShowsStep5RefitBannerInWorksAndYard()
+        {
+            var rootGo = new UnityEngine.GameObject("EconomyPanelsQuestGuidanceRoot");
+            try
+            {
+                var trade = new TacSimTradeAndShipState();
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.ShowLoginOverlay(false);
+                hud.BindTradeState(trade);
+
+                var emitted = new List<string>();
+                hud.OnCommandSubmitted += emitted.Add;
+
+                // 1. Step 3 Metals active -> switching to History auto-selects metals and shows quest banner
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"",
+                        ""title"": ""Metals Down the Corridor"",
+                        ""checkpoints"": [{
+                            ""id"": ""deliver_metals"",
+                            ""title"": ""Buy 5 tonnes of metals at Ceres and deliver to Stickney"",
+                            ""instructions"": ""Buy 5 metals and +market/sell at Stickney."",
+                            ""checked"": false, ""live_ready"": false
+                        }]
+                    }]
+                }")));
+
+                hud.OpenTradeAndSailingModal("EXCHANGE", openSailingTab: false);
+                emitted.Clear();
+                hud.SwitchTradeTerminalTab(TacSim.UI.TradeTerminalTab.History, autoQuery: true);
+                Assert.AreEqual("metals", hud.EconomyPanels.SelectedHistoryGood);
+                Assert.IsTrue(hud.EconomyPanels.IsHistoryQuestBannerVisible);
+                StringAssert.Contains("24-WEEK TREND: METALS", hud.EconomyPanels.HistoryQuestBannerTextForTests);
+                CollectionAssert.Contains(emitted, "+market/history tacsim:metals");
+
+                // 2. Step 7 mined carbon_ore -> History queries exact tacsim:carbon_ore
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore"",
+                        ""title"": ""Deliver Your Mined Ore to Market"",
+                        ""checkpoints"": [{
+                            ""id"": ""sell_carbon_ore"",
+                            ""title"": ""Sell 1t carbon_ore at Stickney"",
+                            ""instructions"": ""Run +market/sell carbon_ore."",
+                            ""checked"": false, ""live_ready"": false
+                        }]
+                    }]
+                }")));
+                emitted.Clear();
+                hud.SwitchTradeTerminalTab(TacSim.UI.TradeTerminalTab.History, autoQuery: true);
+                Assert.AreEqual("carbon_ore", hud.EconomyPanels.SelectedHistoryGood);
+                CollectionAssert.Contains(emitted, "+market/history tacsim:carbon_ore");
+
+                // 3. Step 5 Dray-P Refit -> Industry (Works & Yard) shows refit banner + live hold check + 1-click refit
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"",
+                        ""title"": ""Refit the Dray for Surface Mining"",
+                        ""checkpoints"": [{
+                            ""id"": ""refit_dray_p"",
+                            ""title"": ""Refit Dray into Dray-P"",
+                            ""instructions"": ""Empty cargo & stores and run +coop/refit prospector."",
+                            ""checked"": false, ""live_ready"": false
+                        }]
+                    }]
+                }")));
+                trade.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""ceres"",
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 0, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 5000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 6, ""stores_limit_days"": 120,
+                            ""items"": []
+                        }
+                    }
+                }"));
+                hud.SwitchTradeTerminalTab(TacSim.UI.TradeTerminalTab.Industry, autoQuery: false);
+                Assert.IsTrue(hud.EconomyPanels.IsIndustryQuestBannerVisible);
+                StringAssert.Contains("[REFIT CHECK]", hud.EconomyPanels.IndustryQuestBannerTextForTests);
+
+                trade.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""ceres"",
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 0, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 5000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 0, ""stores_limit_days"": 120,
+                            ""items"": []
+                        }
+                    }
+                }"));
+                StringAssert.Contains("[READY]", hud.EconomyPanels.IndustryQuestBannerTextForTests);
+
+                emitted.Clear();
+                Assert.IsTrue(hud.EconomyPanels.TriggerIndustryQuestActionForTests());
+                CollectionAssert.Contains(emitted, "+coop/refit prospector");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
