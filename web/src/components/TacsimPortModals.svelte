@@ -147,14 +147,6 @@
       ),
   );
   const questMining = $derived(app.quests?.surfaceMiningStatus ?? null);
-  const questArrivedAtDest = $derived(
-    Boolean(
-      questDestPort &&
-        currentVenueId &&
-        currentVenueId === questDestPort.portId &&
-        !(questMining && !questMining.mineDone),
-    ),
-  );
   const orderedDestinations = $derived.by(() => {
     const targetId =
       questDestPort?.portId ?? (questMining && !questMining.mineDone ? "commons" : null);
@@ -220,6 +212,16 @@
     if (!questMining?.mineDone) return null;
     return questMiningHoldQty > 0 ? "stowed" : "recover";
   });
+  const questArrivedAtDest = $derived(
+    Boolean(
+      questDestPort &&
+        currentVenueId &&
+        currentVenueId === questDestPort.portId &&
+        !app.tacsim.ambient?.settledPad &&
+        !(questMining && !questMining.mineDone) &&
+        questMiningHoldState !== "recover",
+    ),
+  );
   const stowageReadiness = $derived(evaluateQuestStowageReadiness(questTradeNeed, st));
   const sailingPreflight = $derived(
     evaluateSailingPreflightReadiness(questDestPort, questTradeNeed, st),
@@ -1396,11 +1398,35 @@
                     {/if}
                   </div>
                 </div>
+              {:else if questMining && questMiningHoldState === "recover"}
+              <div class="quest-banner" role="status" aria-label="active quest rig recovery guard">
+                <div class="qb-text">
+                  <span class="qtag">[RECOVER RIG FIRST]{questStepTag}</span>
+                  <strong>STOW {questMining.targetOreSlug.replaceAll("_", " ").toUpperCase()} BEFORE DEPARTURE</strong>
+                  <span class="muted">— recover your rig into ship hold before returning to {questDestPort.portLabel}</span>
+                </div>
+                <div class="qb-text">
+                  <button
+                    type="button"
+                    class="qbtn-gold"
+                    onclick={() => onCmd("+tv/1 recover go")}
+                  >
+                    Recover Rig (+tv/1 recover go)
+                  </button>
+                  <button
+                    type="button"
+                    class="ghost"
+                    onclick={() => (app.tacsim.activeModal = "rig")}
+                  >
+                    Open Vehicle Bay
+                  </button>
+                </div>
+              </div>
               {:else}
               <div class="quest-banner" role="status" aria-label="active quest destination">
                 <div class="qb-text">
-                  <span class="qtag">[QUEST]{questStepTag}</span>
-                  <strong>DESTINATION: {questDestPort.portLabel.toUpperCase()}</strong>
+                  <span class="qtag">{#if questMiningHoldState === "stowed"}[ORE HOLD READY]{:else}[QUEST]{/if}{questStepTag}</span>
+                  <strong>{#if questMiningHoldState === "stowed"}RETURN TO{:else}DESTINATION{/if}: {questDestPort.portLabel.toUpperCase()}</strong>
                   <span class="muted">— {questDestPort.questTitle}</span>
                 </div>
                 <button
@@ -1473,6 +1499,47 @@
                   </button>
                 </div>
               </div>
+            {:else if questMining && questMining.mineDone && questMiningReturnDest}
+              {#if questMiningHoldState === "recover"}
+                <div class="quest-banner" role="status" aria-label="active quest rig recovery guard">
+                  <div class="qb-text">
+                    <span class="qtag">[RECOVER RIG FIRST]{questStepTag}</span>
+                    <strong>STOW {questMining.targetOreSlug.replaceAll("_", " ").toUpperCase()} BEFORE DEPARTURE</strong>
+                    <span class="muted">— recover your rig into ship hold before returning to {questMiningReturnDest.portLabel}</span>
+                  </div>
+                  <div class="qb-text">
+                    <button
+                      type="button"
+                      class="qbtn-gold"
+                      onclick={() => onCmd("+tv/1 recover go")}
+                    >
+                      Recover Rig (+tv/1 recover go)
+                    </button>
+                    <button
+                      type="button"
+                      class="ghost"
+                      onclick={() => (app.tacsim.activeModal = "rig")}
+                    >
+                      Open Vehicle Bay
+                    </button>
+                  </div>
+                </div>
+              {:else}
+                <div class="quest-banner" role="status" aria-label="active quest destination">
+                  <div class="qb-text">
+                    <span class="qtag">[ORE HOLD READY]{questStepTag}</span>
+                    <strong>RETURN TO: {questMiningReturnDest.portLabel.toUpperCase()}</strong>
+                    <span class="muted">— {questMiningHoldQty}t {questMining.targetOreSlug.replaceAll("_", " ")} stowed · {questMining.questTitle}</span>
+                  </div>
+                  <button
+                    type="button"
+                    class="qbtn-gold"
+                    onclick={() => (app.tacsim.selectedDestination = questMiningReturnDest.portId)}
+                  >
+                    Select Quest Port ({questMiningReturnDest.portId})
+                  </button>
+                </div>
+              {/if}
             {/if}
             <h3>Select Corridor Destination Port</h3>
             <div class="dest-grid">
