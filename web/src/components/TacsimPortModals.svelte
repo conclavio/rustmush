@@ -112,6 +112,7 @@
       (n) => questTradeNeed === null || n.commoditySlug !== questTradeNeed.commoditySlug,
     ),
   );
+  const questHistoryCode = $derived(questTradeNeed ? questTradeNeed.commoditySlug : null);
   const questDestPort = $derived(
     app.quests.activeDestinationPort ??
       resolveNextGuidedOfferDestination(
@@ -237,6 +238,9 @@
               onclick={() => {
                 app.tacsim.activeModal = "trade";
                 tradeSubView = "history";
+                if (questHistoryCode) {
+                  historyGood = questHistoryCode;
+                }
                 onCmd(formatMarketHistoryCommand(historyGood));
               }}
             >
@@ -493,19 +497,40 @@
 
         {:else if modal === "trade" && tradeSubView === "history"}
           <div class="econ-pane">
+            {#if questTradeNeed}
+              <div class="quest-banner" role="status" aria-label="active quest history guidance">
+                <div class="qb-text">
+                  <span class="qtag">[QUEST]</span>
+                  <strong>24-WEEK TREND: {questTradeNeed.commoditySlug.replaceAll("_", " ").toUpperCase()}</strong>
+                  <span class="muted">— {questTradeNeed.questTitle}</span>
+                </div>
+                <button
+                  type="button"
+                  class="qbtn-gold"
+                  onclick={() => {
+                    historyGood = questTradeNeed.commoditySlug;
+                    onCmd(formatMarketHistoryCommand(questTradeNeed.commoditySlug));
+                  }}
+                >
+                  Load Quest Trend ({questTradeNeed.commoditySlug})
+                </button>
+              </div>
+            {/if}
             <div class="qty-row">
               <span class="muted">Commodity Series:</span>
               {#each HISTORY_GOODS as g (g.code)}
+                {@const isQuestGood = questHistoryCode === g.code}
                 <button
                   type="button"
                   class="qchip"
                   class:on={historyGood === g.code}
+                  class:quest-match={isQuestGood}
                   onclick={() => {
                     historyGood = g.code;
                     onCmd(formatMarketHistoryCommand(g.code));
                   }}
                 >
-                  {g.label}
+                  {isQuestGood ? `[Q] ${g.label}` : g.label}
                 </button>
               {/each}
             </div>
@@ -1702,9 +1727,11 @@
     background: rgba(62, 48, 14, 0.55);
   }
 
-  .dest-card.quest-match {
+  .dest-card.quest-match,
+  .qchip.quest-match {
     border-color: #d4a634;
     box-shadow: inset 0 0 0 1px rgba(255, 216, 77, 0.35);
+    color: #fef3c7;
   }
 
   .gauge.quest-target {

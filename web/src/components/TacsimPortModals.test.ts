@@ -448,4 +448,65 @@ describe("TacsimPortModals Dray-P Vehicle Bay and Co-op Refit quest guidance", (
     expect(matchedRows).toHaveLength(1);
     expect(matchedRows[0]?.textContent).toContain("Kasei Receiving");
   });
+
+  it("auto-selects and highlights the tracked quest commodity in 24-Week History", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[2],
+          title: "Metals Down the Corridor",
+          checkpoints: [
+            {
+              id: "deliver_metals",
+              title: "Buy 5 tonnes of metals at Ceres and deliver them to Stickney Yards",
+              instructions: "Buy 5 metals and sell with +market/sell at Stickney.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    const app = makeApp(quests, "trade");
+    const onCmd = vi.fn();
+    const first = render(TacsimPortModals, { props: { app, onCmd } });
+
+    await fireEvent.click(screen.getByRole("button", { name: "24-Week History" }));
+    expect(onCmd).toHaveBeenCalledWith("+market/history tacsim:metals");
+    const banner = screen.getByRole("status", { name: "active quest history guidance" });
+    expect(banner.textContent).toContain("24-WEEK TREND: METALS");
+    expect(screen.getByRole("button", { name: /\[Q\] Refined Metals/i })).toBeTruthy();
+    first.unmount();
+
+    // Also verify Step 7 mined carbon_ore uses exact tacsim:carbon_ore history command
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[6],
+          title: "Deliver Your Mined Ore to Market",
+          checkpoints: [
+            {
+              id: "sell_carbon_ore",
+              title: "Sell 1t carbon_ore at Stickney",
+              instructions: "Sell carbon_ore with +market/sell.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+    const app7 = makeApp(quests, "trade");
+    const onCmd7 = vi.fn();
+    render(TacsimPortModals, { props: { app: app7, onCmd: onCmd7 } });
+    await fireEvent.click(screen.getByRole("button", { name: "24-Week History" }));
+    expect(onCmd7).toHaveBeenCalledWith("+market/history tacsim:carbon_ore");
+    expect(screen.getByRole("status", { name: "active quest history guidance" }).textContent).toContain(
+      "CARBON ORE",
+    );
+  });
 });
