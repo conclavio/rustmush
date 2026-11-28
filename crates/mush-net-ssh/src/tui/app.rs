@@ -3719,6 +3719,14 @@ impl TuiApp {
             r.extend_submits(out.commands);
             r.extend_submits(self.port_walk.take_orders());
             r.extend_queries(out.queries);
+            if let Some((npc_id, npc_name)) = out.open_quest_for_npc {
+                self.port_walk.stop_motion();
+                self.quests_overlay
+                    .open_for_npc(&self.quests_snap, &npc_id, &npc_name);
+                if self.manifest.panels.iter().any(|p| p == QUESTS_FEED) {
+                    r.push_query((QUESTS_FEED.to_string(), Value::Null));
+                }
+            }
             self.pixel.invalidate_last_sent();
             return true;
         }
@@ -13651,6 +13659,74 @@ mod tests {
         });
         app.sync_port_walk_quest_state();
         assert!(app.port_walk.quest_dest_hint().is_none());
+    }
+
+    #[test]
+    fn npc_talk_drawer_renders_quest_banner_and_q_hands_off_to_f11_quest_dialog() {
+        let mut app = app();
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "room_markers": [{
+                    "npc_id": "#18",
+                    "npc_name": "Maren Halvorsen",
+                    "marker": "available",
+                    "symbol": "!",
+                    "quest_key": "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+                    "quest_title": "First Papers at the Registry"
+                }],
+                "available": [{
+                    "key": "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+                    "title": "First Papers at the Registry",
+                    "giver_id": "#18",
+                    "giver_name": "Maren Halvorsen",
+                    "turn_in_id": "#19",
+                    "turn_in_name": "Ilse Oduya-Brandt",
+                    "accept_cmd": "+quest/accept #18=tok1"
+                }],
+                "active": [],
+                "completed": []
+            }),
+        });
+
+        let mut queries = Vec::new();
+        app.port_walk.open_drawer(
+            crate::tui::port_walk::PortDrawerKind::Npc,
+            &[],
+            &mut queries,
+            std::time::Instant::now(),
+        );
+        let backend = ratatui::backend::TestBackend::new(96, 16);
+        let mut term = ratatui::Terminal::new(backend).expect("test terminal");
+        term.draw(|f| app.port_walk.draw_modal_overlay(f, f.area(), true))
+            .expect("draw npc drawer");
+        let rendered: String = term
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            rendered
+                .contains("[!] Quest Available: First Papers at the Registry (q: quest dialog)"),
+            "expected quest banner in NPC Talk drawer: {rendered}"
+        );
+
+        let out = app.port_walk.handle_key(
+            crate::tui::keys::Key::Char('q'),
+            false,
+            false,
+            &[],
+            std::time::Instant::now(),
+        );
+        assert!(!app.port_walk.drawer_open());
+        assert_eq!(
+            out.open_quest_for_npc,
+            Some(("#18".to_string(), "Maren Halvorsen".to_string()))
+        );
     }
 
     #[test]
