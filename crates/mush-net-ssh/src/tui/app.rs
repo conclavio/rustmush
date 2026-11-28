@@ -6196,22 +6196,37 @@ impl TuiApp {
             self.pixel.kind(),
             PictureKind::SpaceCockpit | PictureKind::Holotank | PictureKind::Docking
         ) {
+            let tracked_key = self.quests_overlay.tracked_key.as_deref();
+            let tracked_q = self
+                .quests_snap
+                .ordered_active(tracked_key)
+                .into_iter()
+                .next();
+            let step_badge = tracked_q
+                .map(|q| guided_step_badge(&q.key))
+                .filter(|b| !b.is_empty())
+                .or_else(|| {
+                    self.quests_snap
+                        .next_guided_offer()
+                        .map(|o| guided_step_badge(o.key))
+                })
+                .unwrap_or_default();
             if let Some(dest) = self.port_walk.quest_dest_hint() {
                 let text = if self.pixel.kind() == PictureKind::Docking {
                     if self.pixel.docking_active() {
                         format!(
-                            "  |  [QUEST DOCK] {} — {} (+ship/leave once docked)",
+                            "  |  [QUEST DOCK]{step_badge} {} — {} (+ship/leave once docked)",
                             dest.port_label, dest.quest_title
                         )
                     } else {
                         format!(
-                            "  |  [QUEST DOCK] {} (+helm/dock {})",
+                            "  |  [QUEST DOCK] {} (+helm/dock {}){step_badge}",
                             dest.port_label, dest.port_id
                         )
                     }
                 } else {
                     format!(
-                        "  |  [QUEST] Dest: {} (+ship/plan {})",
+                        "  |  [QUEST] Dest: {} (+ship/plan {}){step_badge}",
                         dest.port_label, dest.port_id
                     )
                 };
@@ -6221,21 +6236,13 @@ impl TuiApp {
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
                 ));
-            } else if let Some(qm) = self
-                .quests_snap
-                .surface_mining_status(self.quests_overlay.tracked_key.as_deref())
-            {
+            } else if let Some(qm) = self.quests_snap.surface_mining_status(tracked_key) {
                 let text = if !qm.mine_done {
                     format!(
-                        "  |  [QUEST] Mine {} (Alt+q quarry, z: ground, l: {})",
+                        "  |  [QUEST] Mine {} (Alt+q quarry, z: ground, l: {}){step_badge}",
                         qm.target_ore_slug, qm.recommended_family
                     )
                 } else {
-                    let tracked_q = self
-                        .quests_snap
-                        .ordered_active(self.quests_overlay.tracked_key.as_deref())
-                        .into_iter()
-                        .next();
                     let slug = tracked_q
                         .and_then(|q| {
                             super::quests::infer_station_port_from_room_entry(&q.next_room_entry)
@@ -6248,7 +6255,18 @@ impl TuiApp {
                         "titan" => "Ligeia Dock",
                         _ => "Ceres Freeport",
                     };
-                    format!("  |  [QUEST] Return: {lbl} (+ship/plan {slug})")
+                    if self.pixel.kind() == PictureKind::Docking {
+                        if self.pixel.docking_active() {
+                            format!(
+                                "  |  [QUEST DOCK]{step_badge} {lbl} — {} (+ship/leave once docked)",
+                                qm.quest_title
+                            )
+                        } else {
+                            format!("  |  [QUEST DOCK] {lbl} (+helm/dock {slug}){step_badge}")
+                        }
+                    } else {
+                        format!("  |  [QUEST] Return: {lbl} (+ship/plan {slug}){step_badge}")
+                    }
                 };
                 status_spans.push(Span::styled(
                     text,
@@ -14347,18 +14365,48 @@ mod tests {
         assert!(app.pixel.docking_active());
         let live_txt = dump_buf(&mut app);
         assert!(
-            live_txt.contains(
-                "[QUEST DOCK] Stickney Yards — Metals Down the Corridor (+ship/leave once docked)"
+            live_txt.contains("[QUEST DOCK] [Step 3/7] Stickney Yards — Metals Down the Corridor"),
+            "expected live Docking status bar approach hint with Step 3/7:\n{live_txt}"
+        );
+
+        // Post-mine Step 6 switches Docking status bar to Ceres Freeport return approach with [Step 6/7]
+        app.apply_event(&OutputEvent::Panel {
+            feed: QUESTS_FEED.into(),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "active": [{
+                    "key": "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+                    "title": "Scan, Sound, and Mine a Landing Site",
+                    "next_room_entry": "room.c07_exchange",
+                    "checkpoints": [
+                        { "id": "scan_landing_site", "title": "Scan site", "instructions": "+tv/1 scan go", "checked": true, "live_ready": true },
+                        { "id": "sound_mineral_pocket", "title": "Sound pocket", "instructions": "+tv/1 sound go", "checked": true, "live_ready": true },
+                        { "id": "mine_carbon_ore", "title": "Mine 1t carbon_ore", "instructions": "+tv/1 mine go", "checked": true, "live_ready": true }
+                    ]
+                }],
+                "available": [],
+                "completed": []
+            }),
+        });
+        let step6_dock_txt = dump_buf(&mut app);
+        assert!(
+            step6_dock_txt.contains(
+                "[QUEST DOCK] [Step 6/7] Ceres Freeport — Scan, Sound, and Mine a Landing Site"
             ),
-            "expected live Docking status bar approach hint:\n{live_txt}"
+            "expected post-mine Step 6 Ceres return Docking bar:\n{step6_dock_txt}"
         );
 
         // Text-mode CHART_SCREEN (no Kitty picture) also switches its quest bar to live Quest Dock Approach
         let _ = app.feed_input(b"\x07");
         let text_mode_txt = dump_buf(&mut app);
         assert!(
-            text_mode_txt.contains("[QUEST DOCK] Approach: Stickney Yards"),
+            text_mode_txt.contains("[QUEST DOCK] Approach: Ceres Freeport"),
             "expected live text-mode CHART_SCREEN Quest Dock Approach bar:\n{text_mode_txt}"
+        );
+        assert!(
+            text_mode_txt.contains("[Step 6/7]"),
+            "expected [Step 6/7] on text-mode CHART_SCREEN Quest Dock Approach bar:\n{text_mode_txt}"
         );
     }
 
