@@ -19209,5 +19209,73 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void RoomQuestBanner_ShowsGuidedStepBadgeBetweenStepsLocatorAndMasteryTopButton()
+        {
+            var rootGo = new UnityEngine.GameObject("RoomBannerStepMasteryTestRoot");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.ShowLoginOverlay(false);
+
+                // 1. Guided Step 1 offer in room -> Room Quest Banner includes [Step 1/7]
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_markers"": [{
+                        ""npc_id"": ""#11"", ""npc_name"": ""Maren Halvorsen"", ""marker"": ""available"", ""symbol"": ""!"",
+                        ""quest_key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                        ""quest_title"": ""First Papers at the Registry""
+                    }],
+                    ""available"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                        ""title"": ""First Papers at the Registry"", ""giver_id"": ""#11"", ""giver_name"": ""Maren Halvorsen""
+                    }],
+                    ""active"": [], ""completed"": []
+                }")));
+                Assert.IsTrue(hud.IsRoomQuestBannerVisible);
+                StringAssert.Contains("[Step 1/7]", hud.RoomQuestBannerLabelForTests);
+
+                // 2. Between guided steps (Step 1 done, walking in Concourse with no room markers) -> Next Step 2/7 banner + [J] ! 2/7 button
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_markers"": [], ""available"": [], ""active"": [],
+                    ""completed"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                        ""title"": ""First Papers at the Registry""
+                    }]
+                }")));
+                Assert.AreEqual("[J] ! 2/7", hud.QuestTopButtonLabelForTests);
+                Assert.IsTrue(hud.IsRoomQuestBannerVisible);
+                StringAssert.Contains("[!] NEXT STEP 2/7:", hud.RoomQuestBannerLabelForTests);
+                StringAssert.Contains("Registry & Co-op Desk", hud.RoomQuestBannerLabelForTests);
+                Assert.IsTrue(hud.TriggerRoomQuestBannerForTests());
+                Assert.IsTrue(hud.QuestJournal.IsOpen);
+                Assert.AreEqual("completed", hud.QuestJournal.ActiveQuestSubTab);
+                hud.QuestJournal.SetOpen(false);
+
+                // 3. All 7 guided steps completed -> [J] ★ 7/7 top button, room banner stays unobstructed
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_markers"": [], ""available"": [], ""active"": [],
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""2"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""3"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_04_return_haul"", ""title"": ""4"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"", ""title"": ""5"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"", ""title"": ""6"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore"", ""title"": ""7"" }
+                    ]
+                }")));
+                Assert.AreEqual("[J] ★ 7/7", hud.QuestTopButtonLabelForTests);
+                Assert.IsFalse(hud.IsRoomQuestBannerVisible);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

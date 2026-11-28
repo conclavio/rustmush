@@ -1529,6 +1529,11 @@ namespace TacSim.UI
                 return;
             if (!string.IsNullOrEmpty(_roomQuestBannerKey))
                 QuestJournal.OpenQuestDialogByKey(_roomQuestBannerKey);
+            else if (QuestJournal.ActiveQuestCount == 0 && QuestJournal.TryGetNextGuidedOffer(out _))
+            {
+                QuestJournal.SetOpen(true, QuestJournalTab.Quests);
+                QuestJournal.SelectQuestSubTab("completed");
+            }
             else
                 QuestJournal.ToggleOpen();
         }
@@ -1560,17 +1565,49 @@ namespace TacSim.UI
                 {
                     string actionVerb = isTurnIn ? "TURN IN" : "OFFER";
                     string titleSuffix = string.IsNullOrEmpty(questTitle) ? string.Empty : $": {questTitle}";
+                    int stepNo = TacSimQuestJournal.GuidedStepNumber(questKey);
+                    string stepSuffix = stepNo > 0 ? $" [Step {stepNo}/7]" : string.Empty;
                     int extraRoomQuests = Math.Max(0, QuestJournal.CountActionableRoomQuests() - 1);
                     string moreSuffix = extraRoomQuests > 0 ? $" (+{extraRoomQuests} more)" : string.Empty;
                     string who = string.IsNullOrEmpty(npcName) ? "Quest Contact" : npcName;
                     if (_roomQuestBannerLabel != null)
-                        _roomQuestBannerLabel.text = $"[{sym}] {who} — {actionVerb}{titleSuffix}{moreSuffix}";
+                        _roomQuestBannerLabel.text = $"[{sym}] {who} — {actionVerb}{titleSuffix}{stepSuffix}{moreSuffix}";
                     if (_roomQuestBannerBg != null)
                         _roomQuestBannerBg.color = isTurnIn
                             ? new Color(0.12f, 0.44f, 0.28f, 0.94f)
                             : new Color(0.56f, 0.39f, 0.10f, 0.94f);
                     _roomQuestBannerBtn.gameObject.SetActive(!_isCinematicHudActive);
                 }
+            }
+            else if (activeCount == 0 && QuestJournal.TryGetNextGuidedOffer(out var nextOffer))
+            {
+                _roomQuestBannerNpcId = string.Empty;
+                _roomQuestBannerKey = string.Empty;
+                if (_logTopBtnLabel != null)
+                    _logTopBtnLabel.text = $"[J] ! {nextOffer.Step}/7";
+                if (_logTopBtnImage != null)
+                    _logTopBtnImage.color = new Color(0.66f, 0.46f, 0.12f, 1f);
+                if (_roomQuestBannerBtn != null)
+                {
+                    if (_roomQuestBannerLabel != null)
+                        _roomQuestBannerLabel.text = $"[!] NEXT STEP {nextOffer.Step}/7: {nextOffer.GiverLabel} — {nextOffer.GiverRoomName} ([J])";
+                    if (_roomQuestBannerBg != null)
+                        _roomQuestBannerBg.color = new Color(0.46f, 0.34f, 0.10f, 0.94f);
+                    _roomQuestBannerBtn.gameObject.SetActive(!_isCinematicHudActive);
+                }
+            }
+            else if (activeCount == 0 &&
+                     QuestJournal.TryGetGuidedTourProgress(out _, out _, out _, out bool allTourDone) &&
+                     allTourDone)
+            {
+                _roomQuestBannerNpcId = string.Empty;
+                _roomQuestBannerKey = string.Empty;
+                if (_logTopBtnLabel != null)
+                    _logTopBtnLabel.text = "[J] ★ 7/7";
+                if (_logTopBtnImage != null)
+                    _logTopBtnImage.color = new Color(0.14f, 0.52f, 0.32f, 1f);
+                if (_roomQuestBannerBtn != null)
+                    _roomQuestBannerBtn.gameObject.SetActive(false);
             }
             else
             {
