@@ -16307,5 +16307,81 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void CharacterSheet_SurfacesHoldPreflightReadinessAndMasteryJobsHint()
+        {
+            var rootGo = new UnityEngine.GameObject("CharacterSheetPreflightAndMasteryTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                var tradeState = new TacSimTradeAndShipState();
+                hud.BindTradeState(tradeState);
+
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 2000,
+                            ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 12000,
+                            ""tank_limit_kg"": 80000,
+                            ""stores_days"": 0,
+                            ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:carbon_ore"", ""label"": ""Carbon Ore"", ""qty"": 2 }]
+                        }
+                    }
+                }"));
+
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore"",
+                        ""title"": ""Deliver Your Mined Ore to Market"",
+                        ""next_step"": ""Restock fuel and provisions, then sail to Stickney Yards."",
+                        ""checkpoints"": [{
+                            ""id"": ""sell_carbon_ore"",
+                            ""title"": ""Sell 1t carbon_ore at Stickney Yards"",
+                            ""instructions"": ""Fly to Stickney Yards (+ship/plan stickney) and +market/sell carbon_ore."",
+                            ""checked"": false,
+                            ""live_ready"": false
+                        }]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                hud.CharacterSheet.SetOpen(true);
+                hud.CharacterSheet.RefreshContents();
+                StringAssert.Contains("[HOLD READY] CARBON ORE: 2/1 u", hud.CharacterSheet.PilotSummarySnapshot);
+                StringAssert.Contains("[CHECK BEFORE UNDOCK] Fuel 12t OK | Provisions 0d! → Stickney Yards", hud.CharacterSheet.PilotSummarySnapshot);
+
+                // All 7 steps complete -> Corridor Captain Pilot tab includes Jobs Board: +market/jobs
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [],
+                    ""available"": [],
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""S1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""S2"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""S3"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_04_return_haul"", ""title"": ""S4"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"", ""title"": ""S5"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"", ""title"": ""S6"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore"", ""title"": ""S7"" }
+                    ]
+                }")));
+                hud.CharacterSheet.RefreshContents();
+                StringAssert.Contains("CORRIDOR CAPTAIN (7/7)", hud.CharacterSheet.PilotSummarySnapshot);
+                StringAssert.Contains("+market/jobs", hud.CharacterSheet.PilotSummarySnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
