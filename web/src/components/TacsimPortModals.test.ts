@@ -1245,4 +1245,95 @@ describe("TacsimPortModals Dray-P Vehicle Bay and Co-op Refit quest guidance", (
     expect(indApp.tacsim.closeModal).toHaveBeenCalled();
     expect(qStep5.dialogQuestKey).toBe(GUIDED_TOUR_KEYS[4]);
   });
+
+  it("shows missing-listing desk hint & Walk button when Step 2 remaining commodity is sold at another desk", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[1],
+          title: "Stock the Locker and Tanks",
+          checkpoints: [
+            {
+              id: "buy_provisions",
+              title: "Buy at least 10 provisions at Ceres Co-op Chandlery",
+              instructions: "Buy 10 provisions at Co-op Chandlery.",
+              room_entry: "room.c08_chandlery",
+              room_name: "Co-op Chandlery",
+              checked: false,
+              live_ready: false,
+            },
+            {
+              id: "buy_propellant",
+              title: "Buy at least 5 tonnes of propellant at Ceres Exchange Hall",
+              instructions: "Buy 5 tonnes of propellant at Exchange Hall.",
+              room_entry: "room.c07_exchange",
+              room_name: "Exchange Hall",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    // Standing at Co-op Chandlery with 10d provisions already stocked, board only lists Provisions (no Propellant)
+    const chandleryApp = makeApp(quests, "trade", {
+      cargoKg: 0,
+      cargoMaxKg: 100_000,
+      cargoL: 0,
+      cargoMaxL: 120_000,
+      propellantKg: 0,
+      propellantMaxKg: 80_000,
+      provisionsCrewDays: 10,
+      provisionsMaxCrewDays: 120,
+      cargoLines: [],
+    });
+    chandleryApp.tacsim.trade.asks = [
+      {
+        listingId: 301,
+        side: "ask",
+        goodId: "tacsim:provisions",
+        itemName: "Provisions",
+        vendorName: "Co-op Chandlery",
+        venue: "Ceres Freeport",
+        quantity: 40,
+        unit: "d",
+        unitPriceMinor: 500,
+        unitPriceText: "5 cr",
+        funded: true,
+      },
+    ];
+
+    const r1 = render(TacsimPortModals, { props: { app: chandleryApp, onCmd: vi.fn() } });
+    const banner = screen.getByRole("status", { name: "active quest trade guidance" });
+    expect(banner.textContent).toContain("BUY");
+    expect(banner.textContent).toContain("PROPELLANT");
+    expect(banner.textContent).toContain("Not listed at this desk — try Exchange Hall");
+    await fireEvent.click(screen.getByRole("button", { name: /Walk → Exchange Hall/i }));
+    expect(chandleryApp.tacsim.closeModal).toHaveBeenCalled();
+    r1.unmount();
+
+    // Once at Exchange Hall with Propellant listed -> hint disappears cleanly
+    chandleryApp.tacsim.trade.asks = [
+      {
+        listingId: 302,
+        side: "ask",
+        goodId: "tacsim:propellant",
+        itemName: "Propellant",
+        vendorName: "Exchange Hall",
+        venue: "Ceres Freeport",
+        quantity: 50,
+        unit: "t",
+        unitPriceMinor: 800,
+        unitPriceText: "8 cr",
+        funded: true,
+      },
+    ];
+    render(TacsimPortModals, { props: { app: chandleryApp, onCmd: vi.fn() } });
+    const banner2 = screen.getByRole("status", { name: "active quest trade guidance" });
+    expect(banner2.textContent).not.toContain("Not listed at this desk");
+    expect(screen.queryByRole("button", { name: /Walk → Exchange Hall/i })).toBeNull();
+  });
 });
