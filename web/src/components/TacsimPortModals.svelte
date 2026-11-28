@@ -117,14 +117,6 @@
         ]
       : trade.asks,
   );
-  const orderedBids = $derived(
-    questTradeNeed
-      ? [
-          ...trade.bids.filter((r) => matchesQuestTradeRow(questTradeNeed, r, true)),
-          ...trade.bids.filter((r) => !matchesQuestTradeRow(questTradeNeed, r, true)),
-        ]
-      : trade.bids,
-  );
   const secondaryTradeNeeds = $derived(
     allQuestTradeNeeds.filter(
       (n) => questTradeNeed === null || n.commoditySlug !== questTradeNeed.commoditySlug,
@@ -243,6 +235,40 @@
   });
   const refitHoldReadiness = $derived(
     questCoopAction?.kind === "refit" ? evaluateRefitHoldReadiness(st) : null,
+  );
+  const refitClearSlugs = $derived.by((): Set<string> => {
+    const out = new Set<string>();
+    if (!refitHoldReadiness || refitHoldReadiness.ready) return out;
+    if (!refitHoldReadiness.provisionsEmpty) out.add("provisions");
+    if (!refitHoldReadiness.cargoEmpty && st?.cargoLines) {
+      for (const line of st.cargoLines) {
+        if (line.qty <= 0) continue;
+        const g = normalizeGoodSlug(line.good);
+        const l = normalizeGoodSlug(line.label);
+        if (g) out.add(g);
+        if (l) out.add(l);
+      }
+    }
+    return out;
+  });
+  function isRefitClearBid(row: PortListingRow): boolean {
+    if (refitClearSlugs.size === 0) return false;
+    const g = normalizeGoodSlug(row.goodId ?? "");
+    const n = normalizeGoodSlug(row.itemName ?? "");
+    return (g.length > 0 && refitClearSlugs.has(g)) || (n.length > 0 && refitClearSlugs.has(n));
+  }
+  const orderedBids = $derived(
+    questTradeNeed
+      ? [
+          ...trade.bids.filter((r) => matchesQuestTradeRow(questTradeNeed, r, true)),
+          ...trade.bids.filter((r) => !matchesQuestTradeRow(questTradeNeed, r, true)),
+        ]
+      : refitClearSlugs.size > 0
+        ? [
+            ...trade.bids.filter((r) => isRefitClearBid(r)),
+            ...trade.bids.filter((r) => !isRefitClearBid(r)),
+          ]
+        : trade.bids,
   );
   const bayHullTarget = $derived(
     app.tacsim.activeHullRef ||
@@ -510,6 +536,38 @@
                 </button>
               </div>
             </div>
+          {:else if refitHoldReadiness && questCoopAction?.kind === "refit"}
+            <div class="quest-banner" role="status" aria-label="active quest refit hold clearing">
+              <div class="qb-text">
+                <span class="qtag">[QUEST]{questStepTag}</span>
+                {#if refitHoldReadiness.ready}
+                  <strong>[REFIT HOLD CLEAR]</strong>
+                  <span class="muted">
+                    — Cargo &amp; Stores empty (propellant OK) · Ready for +coop/refit prospector at Registry &amp; Co-op Desk
+                  </span>
+                {:else}
+                  <strong>[REFIT PREP] EMPTY HOLD BEFORE REFIT</strong>
+                  <span class="muted">
+                    — {!refitHoldReadiness.cargoEmpty && !refitHoldReadiness.provisionsEmpty
+                      ? `Cargo ${(refitHoldReadiness.cargoKg / 1000).toFixed(1)}t & Stores ${refitHoldReadiness.provisionsCrewDays}d`
+                      : !refitHoldReadiness.cargoEmpty
+                        ? `Cargo ${(refitHoldReadiness.cargoKg / 1000).toFixed(1)}t`
+                        : `Stores ${refitHoldReadiness.provisionsCrewDays}d`} remaining (propellant OK) · Sell stowed lots below before +coop/refit prospector
+                  </span>
+                {/if}
+              </div>
+              {#if refitHoldReadiness.ready}
+                <button
+                  type="button"
+                  class="buybtn"
+                  onclick={() => {
+                    app.tacsim.activeModal = "coop";
+                  }}
+                >
+                  Co-op Desk (+coop/refit)
+                </button>
+              {/if}
+            </div>
           {/if}
 
           <div class="qty-row">
@@ -574,11 +632,13 @@
                 <div class="rows">
                   {#each orderedBids as row (row.listingId)}
                     {@const qty = resolveLotQty(row)}
-                    {@const isQuestMatch = matchesQuestTradeRow(questTradeNeed, row, true)}
+                    {@const isTradeMatch = matchesQuestTradeRow(questTradeNeed, row, true)}
+                    {@const isRefitClear = !isTradeMatch && isRefitClearBid(row)}
+                    {@const isQuestMatch = isTradeMatch || isRefitClear}
                     <div class="lrow" class:quest-match={isQuestMatch}>
                       <div class="lmeta">
                         <strong>
-                          {#if isQuestMatch}<span class="qtag">[QUEST]</span>{" "}{/if}{row.itemName}
+                          {#if isRefitClear}<span class="qtag">[REFIT CLEAR]</span>{" "}{:else if isTradeMatch}<span class="qtag">[QUEST]</span>{" "}{/if}{row.itemName}
                         </strong>
                         <span class="muted">#{row.listingId} · {row.vendorName} · wants {row.quantity} {row.unit}</span>
                       </div>
