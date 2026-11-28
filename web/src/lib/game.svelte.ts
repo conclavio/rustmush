@@ -2139,27 +2139,40 @@ export class GameApp {
     const q = text.startsWith("/") ? text.slice(1) : text;
     const questItems: PaletteQuestAction[] = [];
     const tracked = this.quests.trackedQuest;
-    if (tracked) {
-      if (tracked.canFinishNow && tracked.finishCmd) {
+
+    // 1. Surface immediate 1-click Complete / Verify actions across ALL active quests (turn-in first),
+    // so ready-to-finish secondary quests are never hidden behind whichever quest is currently tracked.
+    const orderedActives = [...this.quests.active].sort((a, b) => {
+      const aFinish = a.canFinishNow ? 0 : a.readyToFinish ? 1 : a.canCheckNow ? 2 : 3;
+      const bFinish = b.canFinishNow ? 0 : b.readyToFinish ? 1 : b.canCheckNow ? 2 : 3;
+      if (aFinish !== bFinish) return aFinish - bFinish;
+      const aTracked = tracked && a.key === tracked.key ? 0 : 1;
+      const bTracked = tracked && b.key === tracked.key ? 0 : 1;
+      return aTracked - bTracked;
+    });
+    for (const aq of orderedActives) {
+      if (aq.canFinishNow && aq.finishCmd) {
         questItems.push({
           kind: "step",
-          key: tracked.key,
-          command: tracked.finishCmd,
-          title: `Complete: ${tracked.title}`,
-          detail: tracked.finishCmd,
+          key: aq.key,
+          command: aq.finishCmd,
+          title: `Complete: ${aq.title}`,
+          detail: aq.finishCmd,
           ready: true,
         });
-      } else if (tracked.canCheckNow && tracked.checkCmd) {
+      } else if (aq.canCheckNow && aq.checkCmd) {
         questItems.push({
           kind: "step",
-          key: tracked.key,
-          command: tracked.checkCmd,
-          title: `Verify Step: ${tracked.title}`,
-          detail: tracked.checkCmd,
+          key: aq.key,
+          command: aq.checkCmd,
+          title: `Verify Step: ${aq.title}`,
+          detail: aq.checkCmd,
           ready: true,
         });
       }
+    }
 
+    if (tracked) {
       let routeCrumb = null;
       if (this.tacsim.isAboardShip) {
         if (!this.tacsim.seatedAtBridgeHelm) {
@@ -2300,23 +2313,22 @@ export class GameApp {
           title: routeTitle,
           detail: `${routeCrumb.hops} ${routeCrumb.hops === 1 ? "hop" : "hops"} to ${nextGuided.giverRoomName} · ${routeCrumb.nextExitCommand}`,
         });
-      } else {
-        const curPort =
-          this.chart.frame?.chart?.vantage.port ||
-          this.chart.frame?.chart?.vantage.body ||
-          this.tacsim.ambient?.port ||
-          this.tacsim.trade?.hullPort ||
-          null;
-        const nextDest = resolveNextGuidedOfferDestination(nextGuided, curPort);
-        if (nextDest) {
-          questItems.push({
-            kind: "step",
-            key: nextGuided.key,
-            command: `+ship/plan ${nextDest.portId}`,
-            title: `Sail → ${nextDest.portLabel}`,
-            detail: `+ship/plan ${nextDest.portId} — ${nextDest.questTitle}`,
-          });
-        }
+      }
+      const curPort =
+        this.chart.frame?.chart?.vantage.port ||
+        this.chart.frame?.chart?.vantage.body ||
+        this.tacsim.ambient?.port ||
+        this.tacsim.trade?.hullPort ||
+        null;
+      const nextDest = resolveNextGuidedOfferDestination(nextGuided, curPort);
+      if (nextDest) {
+        questItems.push({
+          kind: "step",
+          key: nextGuided.key,
+          command: `+ship/plan ${nextDest.portId}`,
+          title: `Sail → ${nextDest.portLabel}`,
+          detail: `+ship/plan ${nextDest.portId} — ${nextDest.questTitle}`,
+        });
       }
 
       questItems.push({
@@ -2327,7 +2339,7 @@ export class GameApp {
       });
     }
 
-    for (const aq of this.quests.active) {
+    for (const aq of orderedActives) {
       questItems.push({
         kind: "active",
         key: aq.key,
@@ -2344,6 +2356,17 @@ export class GameApp {
         title: av.title,
         detail: `Offered by ${av.giverName}`,
       });
+      if (av.acceptCmd) {
+        questItems.push({
+          kind: "step",
+          key: av.key,
+          npcId: av.giverId,
+          command: av.acceptCmd,
+          title: `Accept: ${av.title}`,
+          detail: `${av.acceptCmd} — ${av.giverName}`,
+          offer: true,
+        });
+      }
     }
     this.paletteEntries = paletteEntries(q, {
       commands: this.commands.entries,

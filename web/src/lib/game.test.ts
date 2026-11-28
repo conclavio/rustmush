@@ -3195,4 +3195,76 @@ describe("quest command palette route, step and cycle shortcuts", () => {
     expect(afterBerth[0]?.text[0]?.text).toBe("Board Ship Here: Visiting Berth Gallery (+ship/board)");
     expect(afterBerth[0]?.action).toEqual({ label: "Board Ship", prefill: "+ship/board" });
   });
+
+  it("command palette surfaces non-tracked ready turn-ins first and 1-click accept shortcuts for room offers", () => {
+    const { app, ws } = boot();
+    let focused = "";
+    app.composer = {
+      focus: (prefill?: string) => {
+        focused = prefill ?? "";
+      },
+      blur: () => {},
+      cycleMode: () => {},
+      text: () => "",
+      setText: () => {},
+    };
+
+    app.quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "q.first",
+          title: "Tracked Active Step",
+          next_step: "Run +coop/refit prospector",
+          can_finish_now: false,
+          ready_to_finish: false,
+          checkpoints: [],
+        },
+        {
+          key: "q.second_ready",
+          title: "Secondary Ready Turn-In",
+          turn_in_name: "Ilse Oduya-Brandt",
+          can_finish_now: true,
+          ready_to_finish: true,
+          finish_cmd: "+quest/finish #50=tok2",
+          checkpoints: [],
+        },
+      ],
+      available: [
+        {
+          key: "q.offer",
+          title: "Room Side Offer",
+          giver_id: "#50",
+          giver_name: "Ilse Oduya-Brandt",
+          accept_cmd: "+quest/accept #50=tok3",
+        },
+      ],
+      completed: [],
+    });
+
+    // q.first is tracked, yet q.second_ready's [?] Complete entry must appear immediately in palette
+    expect(app.quests.trackedKey).toBe("q.first");
+    app.paletteQuery("/quest");
+    const labels = app.paletteEntries.map((e) => e.label);
+    const completeIdx = labels.indexOf("[?] Complete: Secondary Ready Turn-In");
+    const acceptIdx = labels.indexOf("[!] Accept: Room Side Offer");
+    const readyDialogIdx = labels.indexOf("[?] Secondary Ready Turn-In");
+    const trackedDialogIdx = labels.indexOf("quest Tracked Active Step");
+    expect(completeIdx).toBeGreaterThanOrEqual(0);
+    expect(acceptIdx).toBeGreaterThan(completeIdx);
+    expect(readyDialogIdx).toBeGreaterThanOrEqual(0);
+    expect(trackedDialogIdx).toBeGreaterThan(readyDialogIdx);
+
+    // Selecting [!] Accept prefills or executes +quest/accept
+    app.paletteSelected = acceptIdx;
+    app.palettePick(false);
+    expect(focused).toBe("+quest/accept #50=tok3");
+
+    const beforeSent = ws.sentJson().length;
+    app.paletteSelected = completeIdx;
+    app.palettePick(true);
+    const sent = ws.sentJson();
+    expect(sent.length).toBe(beforeSent + 1);
+    expect(sent[sent.length - 1]).toEqual({ t: "line", d: "+quest/finish #50=tok2" });
+  });
 });
