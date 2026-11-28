@@ -29,6 +29,7 @@
   import { expandRows } from "$lib/stores/map.svelte";
   import {
     GUIDED_TOUR_KEYS,
+    evaluateSailingPreflightReadiness,
     inferStationPortFromRoomEntry,
     resolveNextGuidedOfferDestination,
   } from "$lib/stores/quests.svelte";
@@ -67,6 +68,28 @@
       chart?.vantage.port || chart?.vantage.body || null,
     );
   });
+  const liveStowage = $derived(
+    app.tacsim?.ambient?.ownStowage ??
+      app.tacsim?.ambient?.stowage ??
+      (app.tacsim?.trade?.hullId ? app.tacsim.trade.stowage : null),
+  );
+  const arrivedAtDest = $derived.by(() => {
+    if (!questDest) return false;
+    const tracked = app.quests?.trackedQuest;
+    if (questMining && !(tracked?.canFinishNow || tracked?.readyToFinish)) {
+      return false;
+    }
+    const rawPort = (chart?.vantage.port || "").trim().toLowerCase();
+    if (!rawPort) return false;
+    const pid = questDest.portId.toLowerCase();
+    const plbl = questDest.portLabel.toLowerCase();
+    return rawPort === pid || rawPort === plbl || rawPort.includes(pid) || rawPort.includes(plbl);
+  });
+  const chartPreflight = $derived(
+    !arrivedAtDest && questDest
+      ? evaluateSailingPreflightReadiness(questDest, app.quests?.activeTradeNeed ?? null, liveStowage)
+      : null,
+  );
 
   /** The picture's size in its own units; it scales to the pane. */
   const SIZE = 640;
@@ -172,25 +195,64 @@
   {:else}
     <h2>{heading}</h2>
     {#if questDest || (questMining && !questMining.mineDone)}
-      <div class="quest-dest-banner" role="status" aria-label="active quest destination">
-        <span class="qbadge">[QUEST]{#if questStepNo !== null} Step {questStepNo}/7{/if}</span>
-        {#if questDest}
+      <div class="quest-dest-banner" class:arrived={arrivedAtDest} role="status" aria-label="active quest destination">
+        <span class="qbadge" class:arrived={arrivedAtDest}>
+          {arrivedAtDest ? "[QUEST ARRIVED]" : "[QUEST]"}{questStepNo !== null ? ` Step ${questStepNo}/7` : ""}
+        </span>
+        {#if questDest && arrivedAtDest}
+          <strong>At {questDest.portLabel}</strong>
+          <span class="muted">— {questDest.questTitle}</span>
+        {:else if questDest}
           <strong>Destination: {questDest.portLabel}</strong>
           <span class="muted">— {questDest.questTitle}</span>
         {:else if questMining}
           <strong>Surface Mining: {questMining.targetOreSlug}</strong>
           <span class="muted">— {questMining.questTitle}</span>
         {/if}
+        {#if chartPreflight}
+          <span class="qpreflight" class:ok={chartPreflight.ready} aria-label="chart sailing preflight">
+            {chartPreflight.ready ? "[PRE-FLIGHT OK]" : "[CHECK BEFORE UNDOCK]"}
+            Fuel {chartPreflight.propellantTonnes}t · Stores {chartPreflight.provisionsDays}d
+          </span>
+        {/if}
         <span class="qactions">
-          {#if questMining && !questMining.mineDone}
-            <button type="button" class="qground-btn" onclick={openQuestGroundChart}>
-              Ground Chart ({questMining.recommendedFamily.toUpperCase()})
-            </button>
-          {/if}
-          {#if questDest}
-            <button type="button" class="qplan-btn" onclick={prefillQuestPlan}>
-              Plan +ship/plan {questDest.portId}
-            </button>
+          {#if questDest && arrivedAtDest}
+            {#if app.quests?.trackedQuest?.canFinishNow && app.quests.trackedQuest.finishCmd}
+              <button
+                type="button"
+                class="qarrived-btn"
+                onclick={() => app.focusComposer?.(app.quests.trackedQuest!.finishCmd)}
+              >
+                Turn In Now (?)
+              </button>
+            {:else if app.tacsim?.isAboardShip}
+              <button
+                type="button"
+                class="qarrived-btn"
+                onclick={() => app.focusComposer?.("+ship/leave")}
+              >
+                Step Ashore (+ship/leave)
+              </button>
+            {:else if app.quests?.trackedQuest}
+              <button
+                type="button"
+                class="qarrived-btn"
+                onclick={() => app.quests.openQuestDialog(app.quests.trackedQuest!.key)}
+              >
+                Open Quest Dialog
+              </button>
+            {/if}
+          {:else}
+            {#if questMining && !questMining.mineDone}
+              <button type="button" class="qground-btn" onclick={openQuestGroundChart}>
+                Ground Chart ({questMining.recommendedFamily.toUpperCase()})
+              </button>
+            {/if}
+            {#if questDest}
+              <button type="button" class="qplan-btn" onclick={prefillQuestPlan}>
+                Plan +ship/plan {questDest.portId}
+              </button>
+            {/if}
           {/if}
         </span>
       </div>
@@ -462,5 +524,37 @@
   }
   .pad {
     padding: 0.5rem;
+  }
+  .quest-dest-banner.arrived {
+    border-color: rgba(52, 211, 153, 0.7);
+    background: rgba(16, 74, 52, 0.35);
+  }
+  .qbadge.arrived {
+    color: #6ee7b7;
+  }
+  .qpreflight {
+    font-family: var(--mono, monospace);
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 0.1rem 0.42rem;
+    border-radius: 4px;
+    border: 1px solid rgba(251, 191, 36, 0.55);
+    background: rgba(78, 56, 12, 0.45);
+    color: #fde68a;
+  }
+  .qpreflight.ok {
+    border-color: rgba(52, 211, 153, 0.65);
+    background: rgba(16, 74, 52, 0.45);
+    color: #6ee7b7;
+  }
+  .qarrived-btn {
+    background: rgba(16, 94, 62, 0.85);
+    border: 1px solid rgba(52, 211, 153, 0.75);
+    color: #d1fae5;
+    border-radius: 4px;
+    padding: 0.18rem 0.55rem;
+    font-size: 0.78rem;
+    font-weight: 700;
+    cursor: pointer;
   }
 </style>
