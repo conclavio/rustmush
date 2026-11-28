@@ -2210,15 +2210,33 @@ namespace TacSim.Core
                     break;
 
                 case InteractableKind.VehicleBayRig:
-                    Hud.ShowDetailModal(
-                        "DRAY-P VEHICLE BAY — PROSPECTOR RIG CRADLE",
-                        "Launch your tracked prospecting rig down the stern ramp onto a planetary surface site (`Occator Rim`, `Rheasilvia`, `Ahuna Flank`):",
-                        new List<(string, Action)>
+                    {
+                        string bayQuestBanner = string.Empty;
+                        var bayActions = new List<(string, Action)>();
+                        QuestSurfaceMiningStatus bayMining = default;
+                        bool hasBayQuest = Hud?.QuestJournal != null &&
+                                           Hud.QuestJournal.TryGetActiveSurfaceMiningStatus(out bayMining);
+                        if (hasBayQuest)
                         {
-                            ("Launch Down Stern Ramp (+tv/1 launch go)", () => ExecutePlayerCommand("surface:launch")),
-                            ("Lease Rig (+tv/lease go)", () => ExecutePlayerCommand("+tv/lease go")),
-                            ("Return to Hold (+tv/bay out)", () => ExecutePlayerCommand("+tv/bay out"))
-                        });
+                            bayQuestBanner = FormatVehicleBayQuestBannerMarkup(bayMining) + "\n\n";
+                            if (bayMining.MineDone)
+                            {
+                                bayActions.Add(("Recover Rig (+tv/1 recover go)", () => ExecutePlayerCommand("+tv/1 recover go")));
+                            }
+                            else if (!bayMining.ScanDone)
+                            {
+                                bayActions.Add(("License (+license)", () => ExecutePlayerCommand("+license")));
+                                bayActions.Add(("Ground Chart (+chart/ground)", () => ExecutePlayerCommand("+chart/ground")));
+                            }
+                        }
+                        bayActions.Add(("Launch Down Stern Ramp (+tv/1 launch go)", () => ExecutePlayerCommand("surface:launch")));
+                        bayActions.Add(("Lease Rig (+tv/lease go)", () => ExecutePlayerCommand("+tv/lease go")));
+                        bayActions.Add(("Return to Hold (+tv/bay out)", () => ExecutePlayerCommand("+tv/bay out")));
+                        Hud.ShowDetailModal(
+                            "DRAY-P VEHICLE BAY — PROSPECTOR RIG CRADLE",
+                            $"{bayQuestBanner}Launch your tracked prospecting rig down the stern ramp onto a planetary surface site (`Occator Rim`, `Rheasilvia`, `Ahuna Flank`):",
+                            bayActions);
+                    }
                     break;
 
                 default:
@@ -2309,6 +2327,16 @@ namespace TacSim.Core
             return $"{prefixes[seed % prefixes.Length]} {nouns[(seed / 13) % nouns.Length]} {(seed % 89) + 10}";
         }
 
+        public static string FormatVehicleBayQuestBannerMarkup(QuestSurfaceMiningStatus mining)
+        {
+            string scanMark = mining.ScanDone ? "<color=#55EE99>[✓]</color>" : "<color=#99BBCC>[ ]</color>";
+            string soundMark = mining.SoundDone ? "<color=#55EE99>[✓]</color>" : "<color=#99BBCC>[ ]</color>";
+            string mineMark = mining.MineDone ? "<color=#55EE99>[✓]</color>" : "<color=#99BBCC>[ ]</color>";
+            return $"<color=#FFDD44><b>[QUEST] {MushProtocol.EscapeUnityRichText(mining.QuestTitle)}</b></color>\n" +
+                   $"{scanMark} Scan Site   {soundMark} Sound Pocket   {mineMark} Mine {MushProtocol.EscapeUnityRichText(mining.TargetOreSlug)}\n" +
+                   $"<color=#77DDFF>{MushProtocol.EscapeUnityRichText(mining.FormatPrepHintLine())}</color>";
+        }
+
         public static string FormatRefitHoldCheckMarkup(QuestRefitHoldReadiness refit)
         {
             if (refit.Ready)
@@ -2376,16 +2404,30 @@ namespace TacSim.Core
                     break;
 
                 case "desk:refit":
-                    Hud.ShowDetailModal(
-                        "STICKNEY YARD REFIT & SERVICE DESK",
-                        "Refit a chartered Dray into a <b>Dray-P Prospector</b> (adds 2-rig stern Vehicle Bay + 86 t ore hold), inspect Stickney yard works, or review rig status (Occator terrain rigs are leased at Ceres Freeport Exchange):",
-                        new List<(string, Action)>
+                    {
+                        string refitQuestBanner = string.Empty;
+                        if (Hud?.QuestJournal != null &&
+                            Hud.QuestJournal.TryGetActiveCoopAction(out string rqTitle, out string rqLbl, out string rqCmd) &&
+                            rqCmd.StartsWith("+coop/refit", StringComparison.OrdinalIgnoreCase))
                         {
-                            ("Refit Dray-P (+coop/refit prospector)", () => ExecutePlayerCommand("+coop/refit prospector")),
-                            ("Inspect Works (+works)", () => ExecutePlayerCommand("+works")),
-                            ("Rig Status (+tv)", () => ExecutePlayerCommand("+tv")),
-                            ("Check Ship Status (+ship)", () => ExecutePlayerCommand("+ship"))
-                        });
+                            refitQuestBanner = $"<color=#FFDD44><b>[QUEST] {MushProtocol.EscapeUnityRichText(rqLbl.ToUpperInvariant())} — {MushProtocol.EscapeUnityRichText(rqTitle)}</b></color>\n";
+                            if (Hud.QuestJournal.TryGetRefitHoldReadiness(TradeState, out var refitReadiness))
+                            {
+                                refitQuestBanner += FormatRefitHoldCheckMarkup(refitReadiness) + "\n";
+                            }
+                            refitQuestBanner += "\n";
+                        }
+                        Hud.ShowDetailModal(
+                            "STICKNEY YARD REFIT & SERVICE DESK",
+                            $"{refitQuestBanner}Refit a chartered Dray into a <b>Dray-P Prospector</b> (adds 2-rig stern Vehicle Bay + 86 t ore hold), inspect Stickney yard works, or review rig status (Occator terrain rigs are leased at Ceres Freeport Exchange):",
+                            new List<(string, Action)>
+                            {
+                                ("Refit Dray-P (+coop/refit prospector)", () => ExecutePlayerCommand("+coop/refit prospector")),
+                                ("Inspect Works (+works)", () => ExecutePlayerCommand("+works")),
+                                ("Rig Status (+tv)", () => ExecutePlayerCommand("+tv")),
+                                ("Check Ship Status (+ship)", () => ExecutePlayerCommand("+ship"))
+                            });
+                    }
                     break;
 
                 case "desk:sim_lobby":

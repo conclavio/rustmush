@@ -11937,5 +11937,36 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestVehicleBayCradleMarkup_AndStickneyRefitDeskReadiness()
+        {
+            var preScan = new TacSim.UI.QuestSurfaceMiningStatus(
+                "Scan, Sound, and Mine a Landing Site",
+                "carbon_ore",
+                "carbon",
+                hasScanStep: true, scanDone: false,
+                hasSoundStep: true, soundDone: false,
+                hasMineStep: true, mineDone: false,
+                nextStepText: "Scan site");
+            string preMarkup = TacSimGameCoordinator.FormatVehicleBayQuestBannerMarkup(preScan);
+            StringAssert.Contains("[QUEST] Scan, Sound, and Mine a Landing Site", preMarkup);
+            StringAssert.Contains("Mine carbon_ore", preMarkup);
+            StringAssert.Contains("+license", preMarkup);
+            StringAssert.Contains("+tv/lease", preMarkup);
+            StringAssert.Contains("+chart/ground", preMarkup);
+
+            var postMine = new TacSim.UI.QuestSurfaceMiningStatus(
+                "Scan, Sound, and Mine a Landing Site",
+                "carbon_ore",
+                "carbon",
+                hasScanStep: true, scanDone: true,
+                hasSoundStep: true, soundDone: true,
+                hasMineStep: true, mineDone: true,
+                nextStepText: "Recover rig");
+            string postMarkup = TacSimGameCoordinator.FormatVehicleBayQuestBannerMarkup(postMine);
+            StringAssert.Contains("[✓]", postMarkup);
+            StringAssert.Contains("+tv/1 recover go", postMarkup);
+        }
     }
 }
