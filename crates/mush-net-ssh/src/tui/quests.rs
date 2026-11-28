@@ -2158,6 +2158,11 @@ impl QuestOverlayState {
                     self.close();
                     return QuestOverlayAction::Prefill(format!("+ship/plan {}", dest.port_id));
                 }
+                if snap.active.is_empty() && snap.guided_tour_progress().is_some_and(|t| t.all_done)
+                {
+                    self.close();
+                    return QuestOverlayAction::Prefill("+market/jobs".into());
+                }
                 QuestOverlayAction::None
             }
             Key::Char('x') if self.tab == QuestTab::Active => {
@@ -3066,6 +3071,46 @@ pub fn render_quest_overlay_full(
                         ),
                     ]));
                 }
+                if !snap.available.is_empty() {
+                    let plural = if snap.available.len() == 1 {
+                        "offer"
+                    } else {
+                        "offers"
+                    };
+                    detail_lines.push(Line::from(Span::styled(
+                        format!(
+                            "[!] {} quest {plural} here (Tab -> Available)",
+                            snap.available.len()
+                        ),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                }
+            } else if snap.guided_tour_progress().is_some_and(|t| t.all_done) {
+                detail_lines.push(Line::from(Span::styled(
+                    "* Corridor Captain (7/7) *",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                detail_lines.push(Line::from(Span::styled(
+                    "All 7 guided tour steps complete.",
+                    Style::default().fg(Color::Cyan),
+                )));
+                detail_lines.push(Line::from(vec![
+                    Span::styled(
+                        "Jobs [p]: ",
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("+market/jobs", Style::default().fg(Color::Green)),
+                ]));
+                detail_lines.push(Line::from(Span::styled(
+                    format!("Log: Tab -> Completed ({})", snap.completed.len()),
+                    Style::default().add_modifier(Modifier::DIM),
+                )));
                 if !snap.available.is_empty() {
                     let plural = if snap.available.len() == 1 {
                         "offer"
@@ -5184,6 +5229,33 @@ mod tests {
         assert!(
             offer_txt.contains("1 quest offer here (Tab -> Available)"),
             "expected Available Here Tab hint:\n{offer_txt}"
+        );
+
+        let completed_all: Vec<serde_json::Value> = GUIDED_TOUR_KEYS
+            .iter()
+            .enumerate()
+            .map(|(i, k)| json!({ "key": k, "title": format!("Step {}", i + 1) }))
+            .collect();
+        let mastered = parse_frame(&json!({
+            "schema": 1,
+            "active": [],
+            "available": [],
+            "completed": completed_all
+        }));
+        st.open = true;
+        st.tab = QuestTab::Active;
+        let master_txt = render_full(&st, &mastered, Some("stickney"));
+        assert!(
+            master_txt.contains("* Corridor Captain (7/7) *"),
+            "expected Corridor Captain mastery card in empty Active tab:\n{master_txt}"
+        );
+        assert!(
+            master_txt.contains("Jobs [p]: +market/jobs"),
+            "expected Jobs [p] shortcut in empty Active tab:\n{master_txt}"
+        );
+        assert_eq!(
+            st.handle_key_with_port(Key::Char('p'), &mastered, Some("stickney")),
+            QuestOverlayAction::Prefill("+market/jobs".into())
         );
     }
 }
