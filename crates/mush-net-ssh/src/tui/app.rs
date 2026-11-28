@@ -5493,9 +5493,10 @@ impl TuiApp {
                     }),
                 ),
                 Span::styled(
-                    format!(" (l: {} wash)", qm.recommended_family),
+                    format!(" (l: {} wash)  |  ", qm.recommended_family),
                     Style::default().fg(Color::Cyan),
                 ),
+                Span::styled(qm.prep_hint_line(), Style::default().fg(Color::Yellow)),
             ]);
             frame.render_widget(Paragraph::new(line), quest_bar);
             rest

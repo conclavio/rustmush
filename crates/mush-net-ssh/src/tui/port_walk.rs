@@ -129,6 +129,17 @@ pub struct QuestStowageReadiness {
     pub gauge_kind: &'static str, // "propellant" | "provisions" | "cargo"
 }
 
+/// Live Step 5 Dray-P refit empty-hold readiness (cargo & crew stores must be empty; propellant tank may remain).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuestRefitHoldReadiness {
+    pub cargo_empty: bool,
+    pub provisions_empty: bool,
+    pub cargo_kg: i64,
+    pub provisions_days: i64,
+    pub propellant_tonnes: i64,
+    pub ready: bool,
+}
+
 /// Immediate next-hop station exit breadcrumb toward the tracked quest's objective room.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QuestExitBreadcrumb {
@@ -968,6 +979,32 @@ impl PortWalkState {
             unit: "u",
             ready: current_qty >= target_qty,
             gauge_kind: "cargo",
+        })
+    }
+
+    /// Evaluate Step 5 Dray-P refit empty-hold readiness (cargo & crew stores must be empty; propellant tank OK).
+    #[must_use]
+    pub fn quest_refit_hold_readiness(&self) -> Option<QuestRefitHoldReadiness> {
+        if !self.stowage_loaded {
+            return None;
+        }
+        let act = self.quest_coop_action.as_ref()?;
+        if !act.command.starts_with("+coop/refit") {
+            return None;
+        }
+        let cargo_kg = self.stowage.cargo_kg.max(0);
+        let has_cargo_lots = self.cargo_lots.iter().any(|l| l.quantity > 0);
+        let cargo_empty = cargo_kg == 0 && !has_cargo_lots;
+        let provisions_days = self.stowage.stores_days.max(0);
+        let provisions_empty = provisions_days == 0;
+        let propellant_tonnes = self.stowage.reaction_kg.max(0) / 1000;
+        Some(QuestRefitHoldReadiness {
+            cargo_empty,
+            provisions_empty,
+            cargo_kg,
+            provisions_days,
+            propellant_tonnes,
+            ready: cargo_empty && provisions_empty,
         })
     }
 
@@ -4807,6 +4844,39 @@ impl PortWalkState {
                             .fg(Color::Yellow)
                             .add_modifier(Modifier::BOLD),
                     )));
+                    if let Some(refit) = self.quest_refit_hold_readiness() {
+                        let (msg, col) = if refit.ready {
+                            (
+                                format!(
+                                    "[READY] Hold empty | Stores empty | Tank {}t OK",
+                                    refit.propellant_tonnes
+                                ),
+                                Color::Green,
+                            )
+                        } else {
+                            let cargo_txt = if refit.cargo_empty {
+                                "OK".to_string()
+                            } else {
+                                format!("{}t", (refit.cargo_kg + 999) / 1000)
+                            };
+                            let stores_txt = if refit.provisions_empty {
+                                "OK".to_string()
+                            } else {
+                                format!("{}d", refit.provisions_days)
+                            };
+                            (
+                                format!(
+                                    "[CLEAR HOLD] Cargo: {cargo_txt} | Stores: {stores_txt} (Tank {}t OK)",
+                                    refit.propellant_tonnes
+                                ),
+                                Color::LightYellow,
+                            )
+                        };
+                        lines.push(Line::from(Span::styled(
+                            truncate_str(&msg, inner_w),
+                            Style::default().fg(col).add_modifier(Modifier::BOLD),
+                        )));
+                    }
                 }
                 lines.push(Line::from(Span::styled(
                     truncate_str(
@@ -8304,6 +8374,58 @@ mod tests {
             out.commands.iter().any(|c| c == "+coop/refit prospector"),
             "pressing p in Co-op drawer must submit '+coop/refit prospector', got {:?}",
             out.commands
+        );
+    }
+
+    #[test]
+    fn coop_drawer_shows_refit_empty_hold_readiness_with_propellant_allowed() {
+        let mut st = PortWalkState::new();
+        let now = Instant::now();
+        st.stowage_loaded = true;
+        st.stowage.cargo_kg = 2_000;
+        st.stowage.stores_days = 4;
+        st.stowage.reaction_kg = 12_000;
+        st.observe_quest_coop_action(Some(QuestSuggestedAction {
+            label: "Refit Dray-P".into(),
+            command: "+coop/refit prospector".into(),
+        }));
+        let mut queries = Vec::new();
+        st.open_drawer(PortDrawerKind::Coop, &[], &mut queries, now);
+
+        let blocked = st.quest_refit_hold_readiness().expect("refit readiness");
+        assert!(!blocked.ready);
+        assert!(!blocked.cargo_empty);
+        assert!(!blocked.provisions_empty);
+        assert_eq!(blocked.propellant_tonnes, 12);
+
+        let draw_text = |s: &PortWalkState| -> String {
+            let backend = ratatui::backend::TestBackend::new(88, 16);
+            let mut term = ratatui::Terminal::new(backend).expect("test terminal");
+            term.draw(|f| s.draw_drawer_box(f, f.area(), true))
+                .expect("draw coop drawer");
+            term.backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect()
+        };
+
+        let blocked_txt = draw_text(&st);
+        assert!(
+            blocked_txt.contains("[CLEAR HOLD] Cargo: 2t | Stores: 4d (Tank 12t OK)"),
+            "expected blocked refit hold line: {blocked_txt}"
+        );
+
+        // Clearing cargo + provisions makes refit READY even with 12t propellant in tank
+        st.stowage.cargo_kg = 0;
+        st.stowage.stores_days = 0;
+        let ready = st.quest_refit_hold_readiness().expect("refit ready");
+        assert!(ready.ready);
+        let ready_txt = draw_text(&st);
+        assert!(
+            ready_txt.contains("[READY] Hold empty | Stores empty | Tank 12t OK"),
+            "expected ready refit hold line: {ready_txt}"
         );
     }
 
