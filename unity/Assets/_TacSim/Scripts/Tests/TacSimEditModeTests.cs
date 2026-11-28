@@ -17383,5 +17383,79 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestJournalCompletedTab_ShowsNextGuidedStepAnd7of7JobsBoardHandoff()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave100PR3_CompletedTabHandoffTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                var tradeState = new TacSimTradeAndShipState();
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{""enabled"":true,""venue"":""ceres"",""listings"":[]}"));
+                hud.QuestJournal.BindTradeState(tradeState);
+
+                string prefilled = null;
+                string wayfinderRoom = null;
+                hud.QuestJournal.OnPrefillCommandRequested += c => prefilled = c;
+                hud.QuestJournal.OnWayfinderRoomRequested += r => wayfinderRoom = r;
+
+                // 1. Mid-tour (Steps 1-3 completed, 0 active, at Ceres -> Next Guided Step 4/7 at Stickney)
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [],
+                    ""available"": [],
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""First Papers"", ""turn_in_name"": ""Ilse"", ""completion"": ""Done 1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""Locker & Tanks"", ""turn_in_name"": ""Ilse"", ""completion"": ""Done 2"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""Metals Run"", ""turn_in_name"": ""Jonas"", ""completion"": ""Done 3"" }
+                    ]
+                }")));
+                hud.QuestJournal.SetOpen(true);
+                hud.QuestJournal.SelectQuestSubTab("completed");
+
+                StringAssert.Contains("Next Guided Step (4/7)", hud.QuestJournal.JournalBodySnapshot);
+                StringAssert.Contains("Jonas Achterberg-Nkemelu", hud.QuestJournal.JournalBodySnapshot);
+                Assert.IsTrue(hud.QuestJournal.IsJournalPrefillVisible);
+                Assert.AreEqual("SAIL STICKNEY", hud.QuestJournal.JournalPrefillLabelSnapshot);
+                Assert.IsTrue(hud.QuestJournal.TriggerJournalSuggestedPrefill());
+                Assert.AreEqual("+ship/plan stickney", prefilled);
+
+                hud.QuestJournal.SetOpen(true);
+                hud.QuestJournal.SelectQuestSubTab("completed");
+                hud.QuestJournal.TriggerJournalWayfinder();
+                Assert.AreEqual("room.p07_receiving", wayfinderRoom);
+
+                // 2. Full 7/7 completion -> Corridor Captain JOBS BOARD prefill (+market/jobs)
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [],
+                    ""available"": [],
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""S1"", ""turn_in_name"": ""Ilse"", ""completion"": ""D1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""S2"", ""turn_in_name"": ""Ilse"", ""completion"": ""D2"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""S3"", ""turn_in_name"": ""Jonas"", ""completion"": ""D3"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_04_return_haul"", ""title"": ""S4"", ""turn_in_name"": ""Ilse"", ""completion"": ""D4"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"", ""title"": ""S5"", ""turn_in_name"": ""Rosalind"", ""completion"": ""D5"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"", ""title"": ""S6"", ""turn_in_name"": ""Rosalind"", ""completion"": ""D6"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore"", ""title"": ""S7"", ""turn_in_name"": ""Wren"", ""completion"": ""D7"" }
+                    ]
+                }")));
+                hud.QuestJournal.SetOpen(true);
+                hud.QuestJournal.SelectQuestSubTab("completed");
+
+                StringAssert.Contains("CORRIDOR CAPTAIN", hud.QuestJournal.JournalBodySnapshot);
+                StringAssert.Contains("+market/jobs", hud.QuestJournal.JournalBodySnapshot);
+                Assert.IsTrue(hud.QuestJournal.IsJournalPrefillVisible);
+                Assert.AreEqual("JOBS BOARD", hud.QuestJournal.JournalPrefillLabelSnapshot);
+                Assert.IsTrue(hud.QuestJournal.TriggerJournalSuggestedPrefill());
+                Assert.AreEqual("+market/jobs", prefilled);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

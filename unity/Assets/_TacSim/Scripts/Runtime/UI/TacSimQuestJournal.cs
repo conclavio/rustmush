@@ -2995,9 +2995,17 @@ namespace TacSim.UI
         public bool TriggerJournalSuggestedPrefill()
         {
             if (LatestPanel == null) return false;
+            if (ActiveQuestSubTab == "completed" &&
+                TryGetGuidedTourProgress(out _, out _, out _, out bool completedAllDone) &&
+                completedAllDone)
+            {
+                SetOpen(false);
+                OnPrefillCommandRequested?.Invoke("+market/jobs");
+                return true;
+            }
             if (LatestPanel.Active.Count == 0)
             {
-                if (ActiveQuestSubTab == "active" && TryGetNextGuidedOffer(out _))
+                if ((ActiveQuestSubTab == "active" || ActiveQuestSubTab == "completed") && TryGetNextGuidedOffer(out _))
                 {
                     string curPort = _boundTradeState != null
                         ? (!string.IsNullOrEmpty(_boundTradeState.ActiveVenue)
@@ -3231,7 +3239,7 @@ namespace TacSim.UI
                     SetOpen(false);
                 }
             }
-            else if (ActiveQuestSubTab == "active" && LatestPanel.Active.Count == 0 &&
+            else if ((ActiveQuestSubTab == "active" || ActiveQuestSubTab == "completed") && LatestPanel.Active.Count == 0 &&
                 TryGetNextGuidedOffer(out var nextOffer) && !string.IsNullOrEmpty(nextOffer.GiverRoomEntry))
             {
                 OnWayfinderRoomRequested?.Invoke(nextOffer.GiverRoomEntry);
@@ -3513,15 +3521,38 @@ namespace TacSim.UI
                 }
                 else
                 {
-                    if (_qPrimaryBtn != null) _qPrimaryBtn.gameObject.SetActive(false);
-                    if (_qPrefillBtn != null) _qPrefillBtn.gameObject.SetActive(false);
-                    if (_qWayfinderBtn != null) _qWayfinderBtn.gameObject.SetActive(false);
-                    if (_qAbandonBtn != null) _qAbandonBtn.gameObject.SetActive(false);
-                    if (_qNextBtn != null) _qNextBtn.gameObject.SetActive(false);
+                    bool showCompPrefill = false;
+                    bool showCompWayfinder = false;
                     if (TryGetGuidedTourProgress(out _, out _, out _, out bool allTourDone) && allTourDone)
                     {
-                        sb.Append("<color=#55EE99><b>★ GUIDED CORRIDOR TOUR COMPLETE (7/7) — CORRIDOR CAPTAIN ★</b></color>\n\n");
+                        sb.Append("<color=#55EE99><b>★ GUIDED CORRIDOR TOUR COMPLETE (7/7) — CORRIDOR CAPTAIN ★</b></color>\n");
+                        sb.Append("<color=#88AAC8>Jobs Board: click JOBS BOARD (+market/jobs)</color>\n\n");
+                        showCompPrefill = true;
+                        if (_qPrefillLbl != null) _qPrefillLbl.text = "JOBS BOARD";
                     }
+                    else if (LatestPanel.Active.Count == 0 && TryGetNextGuidedOffer(out var nextOffer))
+                    {
+                        sb.Append($"<color=#FFDD44><b>[!] Next Guided Step ({nextOffer.Step}/7): {MushProtocol.EscapeUnityRichText(nextOffer.ShortLabel)}</b></color> — speak with <b>{MushProtocol.EscapeUnityRichText(nextOffer.GiverLabel)}</b> in <color=#77DDFF>{MushProtocol.EscapeUnityRichText(nextOffer.GiverRoomName)}</color> ({MushProtocol.EscapeUnityRichText(nextOffer.LocationLabel)})\n");
+                        showCompWayfinder = !string.IsNullOrEmpty(nextOffer.GiverRoomEntry);
+                        string curPort = _boundTradeState != null
+                            ? (!string.IsNullOrEmpty(_boundTradeState.ActiveVenue)
+                                ? _boundTradeState.ActiveVenue
+                                : _boundTradeState.AboardDockedPortHint)
+                            : string.Empty;
+                        if (!string.IsNullOrEmpty(curPort) &&
+                            TryGetNextGuidedOfferDestination(curPort, out var sailDest))
+                        {
+                            sb.Append($"<color=#77DDFF>Sail:</color> +ship/plan {MushProtocol.EscapeUnityRichText(sailDest.PortId)} ({MushProtocol.EscapeUnityRichText(sailDest.PortLabel)})\n");
+                            showCompPrefill = true;
+                            if (_qPrefillLbl != null) _qPrefillLbl.text = $"SAIL {sailDest.PortId.ToUpperInvariant()}";
+                        }
+                        sb.Append("\n");
+                    }
+                    if (_qPrimaryBtn != null) _qPrimaryBtn.gameObject.SetActive(false);
+                    if (_qPrefillBtn != null) _qPrefillBtn.gameObject.SetActive(showCompPrefill);
+                    if (_qWayfinderBtn != null) _qWayfinderBtn.gameObject.SetActive(showCompWayfinder);
+                    if (_qAbandonBtn != null) _qAbandonBtn.gameObject.SetActive(false);
+                    if (_qNextBtn != null) _qNextBtn.gameObject.SetActive(false);
                     if (LatestPanel.Completed.Count == 0)
                     {
                         sb.Append("<color=#88AAC8>No completed quests recorded yet.</color>");
