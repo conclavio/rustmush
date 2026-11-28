@@ -11,6 +11,7 @@
   import {
     GUIDED_TOUR_KEYS,
     extractActiveDestinationPort,
+    inferStationPortFromRoomEntry,
     needsOriginPortProcurement,
     needsSurfaceExpeditionBoarding,
     resolveNextGuidedOfferDestination,
@@ -253,16 +254,39 @@
     if (target === "airlock") return "Airlock";
     return null;
   });
-  const questDest = $derived(
-    app.quests
-      ? (extractActiveDestinationPort(app.quests.active, app.quests.trackedKey) ??
-          resolveNextGuidedOfferDestination(
-            app.quests.nextGuidedOffer,
-            app.tacsim.ambient?.port || app.tacsim.trade?.hullPort || app.tacsim.trade?.venueId || null,
-          ))
-      : null,
-  );
   const questMining = $derived(app.quests?.surfaceMiningStatus ?? null);
+  const PORT_LABELS: Record<string, string> = {
+    ceres: "Ceres Freeport",
+    stickney: "Stickney Yards",
+    luna: "Aitken Highport",
+    deimos: "Voltaire Anchorage",
+    titan: "Ligeia Terminal",
+    isidis: "Isidis Concession",
+  };
+  const questDest = $derived.by(() => {
+    if (!app.quests) return null;
+    const direct = extractActiveDestinationPort(app.quests.active, app.quests.trackedKey);
+    if (direct) return direct;
+    if (questMining?.mineDone) {
+      const slug = inferStationPortFromRoomEntry(trackedQuest?.nextRoomEntry) ?? "ceres";
+      return {
+        questTitle: questMining.questTitle,
+        portId: slug,
+        portLabel: PORT_LABELS[slug] ?? "Ceres Freeport",
+      };
+    }
+    return resolveNextGuidedOfferDestination(
+      app.quests.nextGuidedOffer,
+      app.tacsim.ambient?.port || app.tacsim.trade?.hullPort || app.tacsim.trade?.venueId || null,
+    );
+  });
+  const trackedQuestStep = $derived.by((): number | null => {
+    const key = trackedQuest?.key ?? app.quests?.nextGuidedOffer?.key ?? null;
+    if (!key) return null;
+    const idx = GUIDED_TOUR_KEYS.indexOf(key);
+    return idx >= 0 ? idx + 1 : null;
+  });
+  const questStepTag = $derived(trackedQuestStep !== null ? ` [Step ${trackedQuestStep}/7]` : "");
   const inVehicleBay = $derived(
     app.tacsim.isAboardShip &&
       (app.tacsim.serverShipCompartment === "bay" || app.tacsim.physicalLocationKey === "bay"),
@@ -335,7 +359,7 @@
         onclick={() => handleAction("ui:open_rig")}
         title="Open Dray-P Prospector Rig Cradle for {questMining.questTitle}"
       >
-        <span class="qdest-tag">[QUEST]</span>{" "}Rig: {questMining.scanDone ? "✓" : "○"} Scan · {questMining.soundDone ? "✓" : "○"} Sound · {questMining.mineDone ? "✓" : "○"} {questMining.targetOreSlug}
+        <span class="qdest-tag">[QUEST]</span>{" "}Rig: {questMining.scanDone ? "✓" : "○"} Scan · {questMining.soundDone ? "✓" : "○"} Sound · {questMining.mineDone ? "✓" : "○"} {questMining.targetOreSlug}{questStepTag}
       </button>
     {:else if app.tacsim.isAboardShip && questDest}
       <button
@@ -344,7 +368,7 @@
         onclick={planQuestDestination}
         title="Plan quest route to {questDest.portLabel} (+ship/plan {questDest.portId})"
       >
-        <span class="qdest-tag">[QUEST]</span>{" "}Dest: {questDest.portLabel}
+        <span class="qdest-tag">[QUEST]</span>{" "}Dest: {questDest.portLabel}{questStepTag}
       </button>
     {:else if app.tacsim.isAboardShip && questMining && !questMining.mineDone}
       <button
@@ -353,7 +377,7 @@
         onclick={openQuestGroundChart}
         title="Open Ground Chart ({questMining.recommendedFamily.toUpperCase()} wash) to pick a landing site"
       >
-        <span class="qdest-tag">[QUEST]</span>{" "}Mine {questMining.targetOreSlug} · Ground Chart
+        <span class="qdest-tag">[QUEST]</span>{" "}Mine {questMining.targetOreSlug} · Ground Chart{questStepTag}
       </button>
     {/if}
 
@@ -383,7 +407,7 @@
               onclick={planQuestDestination}
               title="Plan quest route to {questDest.portLabel} (+ship/plan {questDest.portId})"
             >
-              <span class="qdest-tag">[QUEST]</span>{" "}Dest: {questDest.portLabel}
+              <span class="qdest-tag">[QUEST]</span>{" "}Dest: {questDest.portLabel}{questStepTag}
             </button>
           {:else if questMining && !questMining.mineDone}
             <button
@@ -392,7 +416,7 @@
               onclick={openQuestGroundChart}
               title="Open Ground Chart ({questMining.recommendedFamily.toUpperCase()} wash) to pick a landing site"
             >
-              <span class="qdest-tag">[QUEST]</span>{" "}Mine {questMining.targetOreSlug} · Ground Chart
+              <span class="qdest-tag">[QUEST]</span>{" "}Mine {questMining.targetOreSlug} · Ground Chart{questStepTag}
             </button>
           {/if}
           <div class="visor-btns">
@@ -418,7 +442,7 @@
             <span class="qdest-tag">[QUEST DOCK]</span>
             <strong>{questDest.portLabel}</strong>
             <span class="qd-sep">—</span>
-            <span>{questDest.questTitle}</span>
+            <span>{questDest.questTitle}{questStepTag}</span>
             {#if trackedQuest?.nextStep}
               <span class="qd-step">· {trackedQuest.nextStep}</span>
             {/if}

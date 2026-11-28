@@ -3235,6 +3235,59 @@ describe("PR #693 Web review regressions (items 1-7, 9-11)", () => {
     expect(approachBanner.textContent).toContain("[QUEST DOCK]");
     expect(approachBanner.textContent).toContain("Stickney Yards");
     expect(approachBanner.textContent).toContain("Metals Down the Corridor");
+    expect(approachBanner.textContent).toContain("[Step 3/7]");
+
+    // Post-mine Step 6 transitions Bridge Flight Visor & 60 Hz Docking Approach to Ceres Freeport [Step 6/7]
+    sock.deliver(
+      {
+        t: "panel",
+        d: {
+          feed: "space.cockpit",
+          kind: "keyframe",
+          data: { active: true, site_id: "ceres_freeport" },
+        },
+      } as OutputEvent,
+      3,
+    );
+    sock.deliver(
+      {
+        t: "panel",
+        d: {
+          feed: "space.docking",
+          kind: "keyframe",
+          data: { active: true, site_id: "ceres_freeport", range_m: 120 },
+        },
+      } as OutputEvent,
+      4,
+    );
+    app.tacsim.selectedDestination = "ceres";
+    app.quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+          title: "Scan, Sound, and Mine a Landing Site",
+          next_step: "Return to Ceres Freeport and turn in to Rosalind",
+          next_room_entry: "room.c07_exchange",
+          checkpoints: [
+            { id: "scan_landing_site", title: "Scan site", instructions: "+tv/1 scan go", checked: true, live_ready: true },
+            { id: "sound_mineral_pocket", title: "Sound pocket", instructions: "+tv/1 sound go", checked: true, live_ready: true },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", instructions: "+tv/1 mine go", checked: true, live_ready: true },
+          ],
+        },
+      ],
+      available: [],
+      completed: [],
+    });
+    await tick();
+
+    const ceresDockBtn = screen.getByRole("button", { name: /\[Q\] 60 Hz Dock \(ceres\)/i });
+    expect(ceresDockBtn.classList.contains("quest-dock")).toBe(true);
+    const ceresChips = screen.getAllByRole("button", { name: /\[QUEST\]\s+Dest: Ceres Freeport \[Step 6\/7\]/i });
+    expect(ceresChips.length).toBeGreaterThanOrEqual(2);
+    const ceresApproach = screen.getByRole("status", { name: "quest docking approach" });
+    expect(ceresApproach.textContent).toContain("Ceres Freeport");
+    expect(ceresApproach.textContent).toContain("[Step 6/7]");
     deck.unmount();
   });
 
