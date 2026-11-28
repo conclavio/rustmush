@@ -185,4 +185,53 @@ describe("ChartScreen quest destination guidance", () => {
     expect(tacsim.selectedDestination).toBe("stickney");
     expect(focusComposer).toHaveBeenCalledWith("+ship/plan stickney");
   });
+
+  it("displays Step 6/7 badge, highlights Ceres during surface mining, and transitions to Ceres return post-mine", async () => {
+    const chart = new ChartStore();
+    chart.applyKeyframe(skyChartFixture());
+    const quests = new QuestsStore();
+    const focusComposer = vi.fn();
+    const tacsim = { selectedDestination: "stickney" };
+    const app = { chart, quests, tacsim, focusComposer } as unknown as GameApp;
+
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+          title: "Scan, Sound, and Mine a Landing Site",
+          next_room_entry: "room.c07_exchange",
+          checkpoints: [
+            { id: "scan_landing_site", title: "Surface scan", instructions: "+tv/1 scan go", checked: false, live_ready: false },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", instructions: "+tv/1 mine go", checked: false, live_ready: false },
+          ],
+        },
+      ],
+    });
+    const { container } = render(ChartScreen, { props: { app } });
+    const banner = await screen.findByRole("status", { name: "active quest destination" });
+    expect(banner.textContent).toContain("Step 6/7");
+    expect(container.querySelector('[data-quest-body="ceres"]')).not.toBeNull();
+
+    // Once mining completes -> flips to Return Destination: Ceres Freeport (+ship/plan ceres)
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+          title: "Scan, Sound, and Mine a Landing Site",
+          next_room_entry: "room.c07_exchange",
+          checkpoints: [
+            { id: "scan_landing_site", title: "Surface scan", instructions: "+tv/1 scan go", checked: true, live_ready: true },
+            { id: "sound_pocket", title: "Sound pocket", instructions: "+tv/1 sound go", checked: true, live_ready: true },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", instructions: "+tv/1 mine go", checked: true, live_ready: true },
+          ],
+        },
+      ],
+    });
+    const planBtn = await screen.findByRole("button", { name: "Plan +ship/plan ceres" });
+    await fireEvent.click(planBtn);
+    expect(tacsim.selectedDestination).toBe("ceres");
+    expect(focusComposer).toHaveBeenCalledWith("+ship/plan ceres");
+  });
 });
