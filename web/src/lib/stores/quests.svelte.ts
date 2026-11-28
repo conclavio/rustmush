@@ -103,6 +103,66 @@ export interface QuestStowageReadiness {
   gaugeKind: "propellant" | "provisions" | "cargo";
 }
 
+export interface QuestRefitHoldReadiness {
+  cargoEmpty: boolean;
+  provisionsEmpty: boolean;
+  cargoKg: number;
+  provisionsCrewDays: number;
+  propellantTonnes: number;
+  ready: boolean;
+}
+
+export function evaluateRefitHoldReadiness(
+  stowage:
+    | {
+        cargoKg: number;
+        propellantKg: number;
+        provisionsCrewDays: number;
+        cargoLines?: ReadonlyArray<{ qty: number }>;
+      }
+    | null
+    | undefined,
+): QuestRefitHoldReadiness | null {
+  if (!stowage) return null;
+  const cargoKg = Math.max(0, stowage.cargoKg);
+  const hasCargoLines = (stowage.cargoLines ?? []).some((l) => l.qty > 0);
+  const cargoEmpty = cargoKg === 0 && !hasCargoLines;
+  const provisionsCrewDays = Math.max(0, Math.floor(stowage.provisionsCrewDays));
+  const provisionsEmpty = provisionsCrewDays === 0;
+  const propellantTonnes = Math.floor(Math.max(0, stowage.propellantKg) / 1000);
+  return {
+    cargoEmpty,
+    provisionsEmpty,
+    cargoKg,
+    provisionsCrewDays,
+    propellantTonnes,
+    ready: cargoEmpty && provisionsEmpty,
+  };
+}
+
+export function extractSurfaceMiningPrepActions(
+  mining: QuestSurfaceMiningStatus | null,
+  rigSlot = 1,
+): QuestSuggestedAction[] {
+  if (!mining) return [];
+  const safeSlot = Number.isFinite(rigSlot) && rigSlot >= 1 ? Math.floor(rigSlot) : 1;
+  const recoverCmd = `+tv/${safeSlot} recover go`;
+  if (!mining.scanDone) {
+    return [
+      { label: "License", command: "+license" },
+      { label: "Lease Rig", command: "+tv/lease" },
+      { label: "Ground Chart", command: "+chart/ground" },
+    ];
+  }
+  if (!mining.mineDone) {
+    return [
+      { label: "Ground Chart", command: "+chart/ground" },
+      { label: "Recover Rig", command: recoverCmd },
+    ];
+  }
+  return [{ label: "Recover Rig", command: recoverCmd }];
+}
+
 export function evaluateQuestStowageReadiness(
   need: QuestTradeNeed | null,
   stowage:

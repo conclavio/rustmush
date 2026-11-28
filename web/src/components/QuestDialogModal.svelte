@@ -3,7 +3,10 @@
   // Every button dispatches a server-signed `+quest/...` command via `onCmd`.
   import type { GameApp } from "$lib/game.svelte";
   import {
+    evaluateRefitHoldReadiness,
+    extractActiveSurfaceMiningStatus,
     extractQuestSuggestedAction,
+    extractSurfaceMiningPrepActions,
     type ActiveQuestView,
     type AvailableQuestView,
   } from "$lib/stores/quests.svelte";
@@ -208,6 +211,13 @@
           {/if}
         </footer>
       {:else if selectedActive}
+        {@const activeMining = extractActiveSurfaceMiningStatus([selectedActive], selectedActive.key)}
+        {@const miningPrep = extractSurfaceMiningPrepActions(activeMining)}
+        {@const activeSuggested = extractQuestSuggestedAction(selectedActive)}
+        {@const activeRefitCheck =
+          activeSuggested?.command.startsWith("+coop/refit")
+            ? evaluateRefitHoldReadiness(app.tacsim?.trade?.stowage)
+            : null}
         <div class="qbody">
           <div class="row-tags">
             {#if selectedActive.category === "guided"}
@@ -241,6 +251,33 @@
             {/each}
           </ul>
 
+          {#if activeRefitCheck}
+            <div class="prep-strip" class:ready={activeRefitCheck.ready} aria-label="refit hold readiness">
+              <span class="prep-tag">{activeRefitCheck.ready ? "[READY]" : "[REFIT CHECK]"}</span>
+              <span class:ok={activeRefitCheck.cargoEmpty}>
+                {activeRefitCheck.cargoEmpty ? "✓ Cargo empty" : `✗ Cargo ${(activeRefitCheck.cargoKg / 1000).toFixed(1)}t`}
+              </span>
+              <span class:ok={activeRefitCheck.provisionsEmpty}>
+                {activeRefitCheck.provisionsEmpty ? "✓ Stores empty" : `✗ Stores ${activeRefitCheck.provisionsCrewDays}d`}
+              </span>
+              <span class="muted">Tank {activeRefitCheck.propellantTonnes}t OK</span>
+            </div>
+          {/if}
+          {#if miningPrep.length > 0}
+            <div class="prep-strip" aria-label="surface prospecting quick commands">
+              <span class="prep-tag">[PROSPECTING]</span>
+              {#each miningPrep as act (act.command)}
+                <button
+                  type="button"
+                  class="btn sm"
+                  title={`Prefill ${act.command}`}
+                  onclick={() => prefillAndClose(act.command)}
+                >
+                  {act.label} ({act.command})
+                </button>
+              {/each}
+            </div>
+          {/if}
           <div class="reward-box">
             <span class="reward-label">REWARD</span>
             <span>{selectedActive.rewardSummary}</span>
@@ -851,5 +888,31 @@
   }
   .tour-pip.current {
     background: #fbbf24;
+  }
+  .prep-strip {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    padding: 0.45rem 0.65rem;
+    border-radius: 6px;
+    border: 1px solid rgba(212, 166, 74, 0.55);
+    background: rgba(62, 46, 12, 0.42);
+    font-size: 0.76rem;
+    color: #fde68a;
+  }
+  .prep-strip.ready {
+    border-color: rgba(52, 211, 153, 0.65);
+    background: rgba(16, 74, 52, 0.42);
+    color: #a7f3d0;
+  }
+  .prep-tag {
+    font-family: var(--mono, monospace);
+    font-weight: 700;
+    color: #fbbf24;
+  }
+  .prep-strip.ready .prep-tag,
+  .prep-strip .ok {
+    color: #6ee7b7;
   }
 </style>
