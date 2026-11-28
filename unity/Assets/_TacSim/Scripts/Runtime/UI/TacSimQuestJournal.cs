@@ -873,6 +873,102 @@ namespace TacSim.UI
             return true;
         }
 
+        public bool TryGetCheckpointLiveBadge(
+            MushQuestCheckpoint cp,
+            out string badge,
+            out string colorHex,
+            out bool isReady)
+        {
+            badge = string.Empty;
+            colorHex = "#FFDD55";
+            isReady = false;
+            if (cp == null || _boundTradeState == null || string.IsNullOrEmpty(_boundTradeState.ShipHullId) || cp.Checked || cp.LiveReady)
+                return false;
+
+            string idLow = (cp.Id ?? string.Empty).ToLowerInvariant();
+            string titleLow = (cp.Title ?? string.Empty).ToLowerInvariant();
+            string instrLow = (cp.Instructions ?? string.Empty).ToLowerInvariant();
+            string textLow = $"{idLow} {titleLow} {instrLow}";
+
+            if (idLow.Contains("refit_dray", StringComparison.Ordinal) ||
+                textLow.Contains("+coop/refit", StringComparison.Ordinal))
+            {
+                bool cargoEmpty = _boundTradeState.HoldMassTonnes <= 0;
+                if (cargoEmpty && _boundTradeState.CargoLots != null)
+                {
+                    for (int i = 0; i < _boundTradeState.CargoLots.Count; i++)
+                    {
+                        if (_boundTradeState.CargoLots[i] != null && _boundTradeState.CargoLots[i].Quantity > 0)
+                        {
+                            cargoEmpty = false;
+                            break;
+                        }
+                    }
+                }
+                bool provEmpty = _boundTradeState.StoresCrewDays <= 0;
+                if (cargoEmpty && provEmpty)
+                {
+                    badge = "[HOLD CLEAR]";
+                    colorHex = "#55EE99";
+                    isReady = true;
+                }
+                else
+                {
+                    badge = "[CLEAR HOLD]";
+                    colorHex = "#FF7777";
+                    isReady = false;
+                }
+                return true;
+            }
+
+            if (idLow.StartsWith("mine_", StringComparison.Ordinal) ||
+                titleLow.StartsWith("mine ", StringComparison.Ordinal))
+            {
+                string oreSlug = "carbon_ore";
+                if (textLow.Contains("rare_earths", StringComparison.Ordinal) || textLow.Contains("rare earths", StringComparison.Ordinal))
+                    oreSlug = "rare_earths";
+                else if (textLow.Contains("metals", StringComparison.Ordinal))
+                    oreSlug = "metals";
+                else if (textLow.Contains("volatiles", StringComparison.Ordinal) || textLow.Contains("water_ice", StringComparison.Ordinal))
+                    oreSlug = "volatiles";
+                int haveOre = _boundTradeState.GetHoldCommodityQuantity(oreSlug);
+                int targetOre = ExtractLeadingPositiveInt(cp.Title);
+                if (targetOre <= 0) targetOre = ExtractLeadingPositiveInt(cp.Instructions);
+                if (targetOre <= 0) targetOre = 1;
+                if (haveOre >= targetOre)
+                {
+                    badge = "[STOWED]";
+                    colorHex = "#55EE99";
+                    isReady = true;
+                    return true;
+                }
+                return false;
+            }
+
+            if (!TryExtractTradeNeedFromCheckpoint(string.Empty, cp, out var need))
+                return false;
+            int target = Mathf.Max(1, need.TargetQuantity);
+            int have = _boundTradeState.GetHoldCommodityQuantity(need.CommoditySlug);
+            string unit = need.CommoditySlug == "propellant"
+                ? "t"
+                : (need.CommoditySlug == "provisions" ? "d" : "u");
+            if (have >= target)
+            {
+                badge = need.WantsBuy && need.WantsSell ? "[LOADED -> SAIL]" : "[STOWED]";
+                colorHex = "#55EE99";
+                isReady = true;
+                return true;
+            }
+            if (have > 0)
+            {
+                badge = $"[{have}/{target}{unit}]";
+                colorHex = "#FFDD55";
+                isReady = false;
+                return true;
+            }
+            return false;
+        }
+
         public static string InferStationPortFromRoomEntry(string roomEntry)
         {
             if (string.IsNullOrWhiteSpace(roomEntry)) return null;
@@ -2416,8 +2512,12 @@ namespace TacSim.UI
                 {
                     var cp = active.Checkpoints[i];
                     if (cp.Checked) done++;
-                    string sym = cp.Checked ? "<color=#55EE99>[✓]</color>" : (cp.LiveReady ? "<color=#FFDD55>[◆]</color>" : "<color=#99BBCC>[ ]</color>");
-                    sb.Append(sym).Append(' ').Append(MushProtocol.EscapeUnityRichText(cp.Title)).Append('\n');
+                    bool hasLiveBadge = TryGetCheckpointLiveBadge(cp, out string liveBadge, out string liveCol, out bool liveReady);
+                    string sym = cp.Checked ? "<color=#55EE99>[✓]</color>" : ((cp.LiveReady || liveReady) ? "<color=#FFDD55>[◆]</color>" : "<color=#99BBCC>[ ]</color>");
+                    sb.Append(sym).Append(' ').Append(MushProtocol.EscapeUnityRichText(cp.Title));
+                    if (hasLiveBadge)
+                        sb.Append(" <color=").Append(liveCol).Append("><b>").Append(MushProtocol.EscapeUnityRichText(liveBadge)).Append("</b></color>");
+                    sb.Append('\n');
                 }
                 if (TryGetQuestHoldReadinessSummary(active, out string holdSummary, out bool holdReady))
                 {
@@ -3137,8 +3237,11 @@ namespace TacSim.UI
                     for (int i = 0; i < active.Checkpoints.Count; i++)
                     {
                         var cp = active.Checkpoints[i];
-                        string mark = cp.Checked ? "<color=#55EE99>[✓]</color>" : (cp.LiveReady ? "<color=#FFDD55>[◆]</color>" : "<color=#99BBCC>[ ]</color>");
+                        bool hasLiveBadge = TryGetCheckpointLiveBadge(cp, out string liveBadge, out string liveCol, out bool liveReady);
+                        string mark = cp.Checked ? "<color=#55EE99>[✓]</color>" : ((cp.LiveReady || liveReady) ? "<color=#FFDD55>[◆]</color>" : "<color=#99BBCC>[ ]</color>");
                         sb.Append(mark).Append(" <b>").Append(MushProtocol.EscapeUnityRichText(cp.Title)).Append("</b>");
+                        if (hasLiveBadge)
+                            sb.Append(" <color=").Append(liveCol).Append("><b>").Append(MushProtocol.EscapeUnityRichText(liveBadge)).Append("</b></color>");
                         if (!string.IsNullOrEmpty(cp.RoomName))
                             sb.Append(" <color=#77DDFF>(").Append(MushProtocol.EscapeUnityRichText(cp.RoomName)).Append(")</color>");
                         sb.Append('\n');
@@ -3449,8 +3552,11 @@ namespace TacSim.UI
                         for (int i = 0; i < q.Checkpoints.Count; i++)
                         {
                             var cp = q.Checkpoints[i];
-                            string mark = cp.Checked ? "<color=#55EE99>[✓]</color>" : (cp.LiveReady ? "<color=#FFDD55>[◆]</color>" : "<color=#99BBCC>[ ]</color>");
+                            bool hasLiveBadge = TryGetCheckpointLiveBadge(cp, out string liveBadge, out string liveCol, out bool liveReady);
+                            string mark = cp.Checked ? "<color=#55EE99>[✓]</color>" : ((cp.LiveReady || liveReady) ? "<color=#FFDD55>[◆]</color>" : "<color=#99BBCC>[ ]</color>");
                             sb.Append($"{mark} <b>{MushProtocol.EscapeUnityRichText(cp.Title)}</b>");
+                            if (hasLiveBadge)
+                                sb.Append($" <color={liveCol}><b>{MushProtocol.EscapeUnityRichText(liveBadge)}</b></color>");
                             if (!string.IsNullOrEmpty(cp.RoomName))
                                 sb.Append($" <color=#77DDFF>({MushProtocol.EscapeUnityRichText(cp.RoomName)})</color>");
                             sb.Append('\n');
