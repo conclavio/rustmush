@@ -160,6 +160,11 @@ namespace TacSim.UI
         private string _questHistoryTitle = string.Empty;
 
         private Text _jobsOutputText;
+        private RectTransform _jobsViewportRect;
+        private GameObject _jobsQuestBanner;
+        private Text _jobsQuestLabel;
+        private Text _jobsQuestBtnLabel;
+        private string _jobsQuestFilterKind = string.Empty;
         private Text _industryOutputText;
         private RectTransform _industryViewportRect;
         private GameObject _industryQuestBanner;
@@ -183,6 +188,15 @@ namespace TacSim.UI
         public string HistoryQuestBannerTextForTests => _historyQuestLabel != null ? _historyQuestLabel.text : string.Empty;
         public bool IsIndustryQuestBannerVisible => _industryQuestBanner != null && _industryQuestBanner.activeSelf;
         public string IndustryQuestBannerTextForTests => _industryQuestLabel != null ? _industryQuestLabel.text : string.Empty;
+        public bool IsJobsQuestBannerVisible => _jobsQuestBanner != null && _jobsQuestBanner.activeSelf;
+        public string JobsQuestBannerTextForTests => _jobsQuestLabel != null ? _jobsQuestLabel.text : string.Empty;
+
+        public bool TriggerJobsQuestFilterForTests()
+        {
+            if (!IsJobsQuestBannerVisible || string.IsNullOrEmpty(_jobsQuestFilterKind)) return false;
+            _emitCommand?.Invoke(_jobsQuestFilterKind == "survey" ? "+market/jobs survey" : "+market/jobs haul");
+            return true;
+        }
 
         public bool TriggerQuestHistoryTrendForTests()
         {
@@ -227,7 +241,9 @@ namespace TacSim.UI
             string coopActionLabel,
             string coopActionCommand,
             string refitReadinessSummary,
-            bool refitReady)
+            bool refitReady,
+            string questDestPortLabel = null,
+            bool hasSurfaceMiningQuest = false)
         {
             _questHistorySlug = (tradeCommoditySlug ?? string.Empty).Trim().ToLowerInvariant();
             _questHistoryTitle = (tradeQuestTitle ?? string.Empty).Trim();
@@ -271,6 +287,28 @@ namespace TacSim.UI
             }
             if (_industryViewportRect != null)
                 _industryViewportRect.offsetMax = new Vector2(0f, showInd ? -176f : -134f);
+
+            bool showJobs = hasSurfaceMiningQuest || !string.IsNullOrWhiteSpace(questDestPortLabel);
+            _jobsQuestFilterKind = hasSurfaceMiningQuest
+                ? "survey"
+                : (!string.IsNullOrWhiteSpace(questDestPortLabel) ? "haul" : string.Empty);
+            if (_jobsQuestBanner != null)
+            {
+                _jobsQuestBanner.SetActive(showJobs);
+                if (showJobs)
+                {
+                    if (_jobsQuestLabel != null)
+                    {
+                        _jobsQuestLabel.text = hasSurfaceMiningQuest
+                            ? "[QUEST] Surface Survey Commissions — check open Ceres survey contracts (+market/jobs survey)"
+                            : $"[QUEST] Corridor Haulage -> {questDestPortLabel.Trim()} — stack bonus freight (+market/jobs haul)";
+                    }
+                    if (_jobsQuestBtnLabel != null)
+                        _jobsQuestBtnLabel.text = hasSurfaceMiningQuest ? "Filter Surveys" : "Filter Haulage";
+                }
+            }
+            if (_jobsViewportRect != null)
+                _jobsViewportRect.offsetMax = new Vector2(0f, showJobs ? -176f : -134f);
         }
 
         // Two-click confirmation state for financial / contract commitments (`U-M15`)
@@ -849,7 +887,15 @@ namespace TacSim.UI
                 });
             CreateButton(actRow, "My Crew", new Color(0.22f, 0.32f, 0.44f), () => _emitCommand?.Invoke("+sortie/contract"));
 
-            _jobsOutputText = BuildScrollOutput(JobsTabBody.transform, "JobsViewport", -134f);
+            _jobsQuestBanner = CreatePanel(JobsTabBody.transform, "JobsQuestBanner", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -170f), new Vector2(0f, -132f), new Color(0.32f, 0.24f, 0.08f, 0.94f));
+            _jobsQuestLabel = CreateText(_jobsQuestBanner.transform, "[QUEST] Jobs", 13, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(1f, 0.93f, 0.68f));
+            SetRect(_jobsQuestLabel.rectTransform, Vector2.zero, Vector2.one, new Vector2(12f, 2f), new Vector2(-176f, -2f));
+            var jqBtn = CreateButton(_jobsQuestBanner.transform, "Filter Jobs", new Color(0.56f, 0.39f, 0.10f), () => TriggerJobsQuestFilterForTests());
+            _jobsQuestBtnLabel = jqBtn.GetComponentInChildren<Text>();
+            SetRect(jqBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-168f, 4f), new Vector2(-8f, -4f));
+            _jobsQuestBanner.SetActive(false);
+
+            _jobsOutputText = BuildScrollOutput(JobsTabBody.transform, "JobsViewport", -134f, out _jobsViewportRect);
             JobsTabBody.SetActive(false);
         }
 
