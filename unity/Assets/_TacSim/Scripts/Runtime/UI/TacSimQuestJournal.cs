@@ -100,6 +100,35 @@ namespace TacSim.UI
             MineDone = mineDone;
             NextStepText = nextStepText ?? string.Empty;
         }
+
+        public string FormatPrepHintLine()
+        {
+            if (!ScanDone)
+                return "Prep: +license  |  +tv/lease  |  +chart/ground";
+            if (!MineDone)
+                return "Prep: +chart/ground  |  Recover: +tv/1 recover go";
+            return $"Recover: +tv/1 recover go (unload {TargetOreSlug} into hold)";
+        }
+    }
+
+    public readonly struct QuestRefitHoldReadiness
+    {
+        public readonly bool CargoEmpty;
+        public readonly bool ProvisionsEmpty;
+        public readonly int CargoTonnes;
+        public readonly int ProvisionsDays;
+        public readonly int PropellantTonnes;
+        public readonly bool Ready;
+
+        public QuestRefitHoldReadiness(bool cargoEmpty, bool provisionsEmpty, int cargoTonnes, int provisionsDays, int propellantTonnes)
+        {
+            CargoEmpty = cargoEmpty;
+            ProvisionsEmpty = provisionsEmpty;
+            CargoTonnes = Mathf.Max(0, cargoTonnes);
+            ProvisionsDays = Mathf.Max(0, provisionsDays);
+            PropellantTonnes = Mathf.Max(0, propellantTonnes);
+            Ready = cargoEmpty && provisionsEmpty;
+        }
     }
 
     public readonly struct QuestDestinationHint
@@ -288,6 +317,35 @@ namespace TacSim.UI
                 return true;
             }
             return false;
+        }
+
+        public bool TryGetRefitHoldReadiness(TacSimTradeAndShipState trade, out QuestRefitHoldReadiness readiness)
+        {
+            readiness = default;
+            if (trade == null) return false;
+            if (!TryGetActiveCoopAction(out _, out _, out string cmd) ||
+                !cmd.StartsWith("+coop/refit", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+            bool hasCargoLots = false;
+            for (int i = 0; i < trade.CargoLots.Count; i++)
+            {
+                if (trade.CargoLots[i] != null && trade.CargoLots[i].Quantity > 0)
+                {
+                    hasCargoLots = true;
+                    break;
+                }
+            }
+            bool cargoEmpty = trade.HoldMassTonnes <= 0 && !hasCargoLots;
+            bool provisionsEmpty = trade.StoresCrewDays <= 0;
+            readiness = new QuestRefitHoldReadiness(
+                cargoEmpty,
+                provisionsEmpty,
+                trade.HoldMassTonnes,
+                trade.StoresCrewDays,
+                trade.TankTonnes);
+            return true;
         }
 
         public bool TryGetActiveShipTargetCompartment(out string targetCompartment)
@@ -1609,6 +1667,12 @@ namespace TacSim.UI
                 command = "+tv/1 mine go";
                 return true;
             }
+            if (TryGetActiveSurfaceMiningStatus(out var miningStatus) && miningStatus.MineDone)
+            {
+                label = "Recover Rig";
+                command = "+tv/1 recover go";
+                return true;
+            }
             if (TryGetActiveDestinationPort(out var dest))
             {
                 label = $"Plan {dest.PortLabel}";
@@ -1714,6 +1778,10 @@ namespace TacSim.UI
                     if (TryGetSuggestedCommand(active, out string sugLbl, out string sugCmd))
                     {
                         sb.Append($"\n<color=#FFDD44><b>SUGGESTED CMD:</b></color> <color=#66EEAA>{MushProtocol.EscapeUnityRichText(sugCmd.Trim())}</color> ({MushProtocol.EscapeUnityRichText(sugLbl)})\n");
+                    }
+                    if (TryGetActiveSurfaceMiningStatus(out var dlgMining))
+                    {
+                        sb.Append($"<color=#FFDD44><b>PROSPECTING:</b></color> <color=#77DDFF>{MushProtocol.EscapeUnityRichText(dlgMining.FormatPrepHintLine())}</color>\n");
                     }
                     _dlgBodyText.text = sb.ToString();
                 }
