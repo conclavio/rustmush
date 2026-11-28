@@ -423,6 +423,21 @@ export function extractActiveDestinationPort(
   return null;
 }
 
+export function resolveQuestShipTargetCompartment(
+  active: readonly ActiveQuestView[],
+  trackedKey: string | null,
+): "bay" | "bridge" | null {
+  const mining = extractActiveSurfaceMiningStatus(active, trackedKey);
+  if (mining && !mining.mineDone) {
+    return "bay";
+  }
+  const dest = extractActiveDestinationPort(active, trackedKey);
+  if (dest) {
+    return "bridge";
+  }
+  return null;
+}
+
 export function extractActiveSurfaceMiningStatus(
   active: readonly ActiveQuestView[],
   trackedKey: string | null,

@@ -8,8 +8,10 @@
   import { clockText, roomBand } from "$lib/roomband";
   import {
     computeNextQuestExitBreadcrumb,
+    computeShipQuestBreadcrumb,
     exitMatchesQuestBreadcrumb,
   } from "$lib/tacsim/spatial";
+  import { resolveQuestShipTargetCompartment } from "$lib/stores/quests.svelte";
 
   let { app, onCmd }: { app: GameApp; onCmd: (cmd: string) => void } = $props();
 
@@ -25,7 +27,14 @@
   const questBreadcrumb = $derived.by(() => {
     const quests = app.quests;
     const tacsim = app.tacsim;
-    if (!quests || !tacsim || tacsim.isAboardShip) return null;
+    if (!quests || !tacsim) return null;
+    if (tacsim.isAboardShip) {
+      if (tacsim.seatedAtBridgeHelm) return null;
+      const targetComp = resolveQuestShipTargetCompartment(quests.active, quests.trackedKey);
+      const currentComp =
+        (tacsim.view3dOpen ? tacsim.physicalLocationKey : null) ?? tacsim.serverShipCompartment;
+      return computeShipQuestBreadcrumb(tacsim.shipTemplate, currentComp, targetComp);
+    }
     const tracked =
       quests.active.find((q) => q.key === quests.trackedKey) ?? quests.active[0] ?? null;
     const targetEntry =

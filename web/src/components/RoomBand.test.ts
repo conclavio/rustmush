@@ -14,7 +14,7 @@ import VitalsStrip from "./VitalsStrip.svelte";
 import type { GameApp } from "$lib/game.svelte";
 import type { RoomView } from "$lib/proto";
 import type { ChannelMeta } from "$lib/stores/channels.svelte";
-import { buildFallbackFreeport } from "$lib/tacsim/spatial";
+import { buildFallbackDray, buildFallbackFreeport } from "$lib/tacsim/spatial";
 
 const HALL: RoomView = {
   name: "The Hall",
@@ -171,6 +171,63 @@ describe("room band exit buttons submit safe goto commands", () => {
     expect(highlighted[0]!.getAttribute("title")).toContain("Quest route");
     const sideBtn = screen.getByRole("button", { name: "Side Closet" });
     expect(sideBtn.getAttribute("data-quest-exit")).toBeNull();
+  });
+
+  it("highlights the aboard-ship hatch leading to the Bridge when a destination quest is active", () => {
+    const dray = buildFallbackDray("tacsim.unit.dray");
+    const airlockEx = dray.exits.find((e) => e.from === "airlock" || e.to === "airlock");
+    expect(airlockEx).toBeDefined();
+    const hatchLabel =
+      airlockEx!.from === "airlock" ? airlockEx!.forwardLabel : airlockEx!.reverseLabel;
+    const hatchCmd =
+      airlockEx!.from === "airlock" ? airlockEx!.forwardCommand : airlockEx!.reverseCommand;
+
+    const roomView: RoomView = {
+      ...HALL,
+      name: "M/V Starling - Airlock",
+      exits: [
+        { name: hatchLabel, aliases: [hatchCmd] },
+        { name: "Cycle Ashore", aliases: ["out"] },
+      ],
+    };
+    const app = {
+      roomView,
+      screens: { exits: new Map() },
+      presence: { prune: vi.fn(), thinking: [], composing: [] },
+      quests: {
+        roomMarkers: [],
+        trackedKey: "q.stickney",
+        active: [
+          {
+            key: "q.stickney",
+            title: "Run Metals to Stickney Yards",
+            checkpoints: [
+              {
+                id: "sail_stickney",
+                title: "Sail to Stickney Yards",
+                instructions: "Run +ship/plan stickney",
+                checked: false,
+                liveReady: false,
+              },
+            ],
+          },
+        ],
+      },
+      tacsim: {
+        isAboardShip: true,
+        seatedAtBridgeHelm: false,
+        view3dOpen: false,
+        physicalLocationKey: null,
+        serverShipCompartment: "airlock",
+        shipTemplate: dray,
+      },
+    } as unknown as GameApp;
+
+    const { container } = render(RoomBand, { props: { app, onCmd: vi.fn() } });
+    const highlighted = Array.from(container.querySelectorAll("button.exit.quest-exit"));
+    expect(highlighted).toHaveLength(1);
+    expect(highlighted[0]!.getAttribute("title")).toContain("Quest route");
+    expect(screen.getByRole("button", { name: "Cycle Ashore" }).getAttribute("data-quest-exit")).toBeNull();
   });
 });
 
