@@ -169,7 +169,14 @@
     {#each app.presence.composing as c (c.name)}
       <span class="pill typing">{c.name} is typing</span>
     {/each}
-    {#if band.exits.length > 0}
+    {@const hasMatchedRoomExit = band.exits.some((e, i) =>
+      exitMatchesQuestBreadcrumb(e.name, app.roomView?.exits[i]?.aliases, questBreadcrumb),
+    )}
+    {@const showBoardChip =
+      !hasMatchedRoomExit && questBreadcrumb?.nextExitCommand === "+ship/board"}
+    {@const showLeaveChip =
+      !hasMatchedRoomExit && questBreadcrumb?.nextExitCommand === "+ship/leave"}
+    {#if band.exits.length > 0 || showBoardChip || showLeaveChip}
       <span class="exits" aria-label="exits">
         {#each band.exits as exit, i (`${i}\0${exit.name}`)}
           {@const rawAliases = app.roomView?.exits[i]?.aliases}
@@ -190,6 +197,27 @@
             {#if isQuestExit}<span class="qexit-badge" aria-hidden="true">★</span>{/if}{#if exit.key}<kbd>{exit.key}</kbd>{/if}{exit.name}
           </button>
         {/each}
+        {#if showBoardChip}
+          <button
+            type="button"
+            class="exit quest-exit"
+            data-quest-exit="true"
+            onclick={() => onCmd("+ship/board")}
+            title="Quest route · +ship/board"
+          >
+            <span class="qexit-badge" aria-hidden="true">★</span>Board Ship
+          </button>
+        {:else if showLeaveChip}
+          <button
+            type="button"
+            class="exit quest-exit"
+            data-quest-exit="true"
+            onclick={() => onCmd("+ship/leave")}
+            title="Quest route · +ship/leave"
+          >
+            <span class="qexit-badge" aria-hidden="true">★</span>Cycle Ashore
+          </button>
+        {/if}
       </span>
     {/if}
   {/if}

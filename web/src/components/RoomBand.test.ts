@@ -291,6 +291,115 @@ describe("room band exit buttons submit safe goto commands", () => {
     await fireEvent.click(btns[0]!);
     expect(openNpcDialog).toHaveBeenCalledWith("#22");
   });
+
+  it("coalesces duplicate per-NPC room markers into one highest-priority pill with aggregated count and shows Board Ship exit chip at Berth Gallery", async () => {
+    const onCmd = vi.fn();
+    const ceres = buildFallbackFreeport();
+    const berthView: RoomView = {
+      id: "#19",
+      name: "Visiting Berth Gallery",
+      zone: null,
+      desc: [],
+      exits: [{ name: "Concourse", aliases: ["concourse", "out"] }],
+      contents: [],
+      ambient: {},
+    };
+    const app = {
+      roomView: berthView,
+      screens: { exits: new Map() },
+      presence: { prune: vi.fn(), thinking: [], composing: [] },
+      quests: {
+        roomMarkers: [
+          {
+            npcId: "#50",
+            npcName: "Ilse Oduya-Brandt",
+            marker: "in_progress",
+            symbol: "?",
+            questKey: "q.active",
+            questTitle: "Active Check",
+            category: "optional",
+            questCount: 1,
+          },
+          {
+            npcId: "#50",
+            npcName: "Ilse Oduya-Brandt",
+            marker: "available",
+            symbol: "!",
+            questKey: "q.offer",
+            questTitle: "Locker & Tanks",
+            category: "guided",
+            questCount: 1,
+          },
+          {
+            npcId: "#50",
+            npcName: "Ilse Oduya-Brandt",
+            marker: "turn_in",
+            symbol: "?",
+            questKey: "q.turnin",
+            questTitle: "First Papers at the Registry",
+            category: "guided",
+            questCount: 1,
+          },
+        ],
+        active: [
+          {
+            key: "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+            title: "Metals Down the Corridor",
+            nextRoomEntry: "room.p07_receiving",
+            checkpoints: [
+              {
+                id: "deliver_metals",
+                title: "Buy 5 tonnes of metals at Ceres and deliver to Stickney",
+                instructions: "Buy 5t metals and sell at Stickney.",
+                roomEntry: "room.p07_receiving",
+                checked: false,
+                liveReady: false,
+              },
+            ],
+          },
+        ],
+        trackedKey: "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+        openNpcDialog: vi.fn(),
+      },
+      tacsim: {
+        isAboardShip: false,
+        seatedAtBridgeHelm: false,
+        view3dOpen: false,
+        physicalLocationKey: null,
+        serverStationRoomEntry: "room.c01_berth_gallery",
+        stationPack: ceres,
+        ambient: null,
+        trade: {
+          hullId: "#99",
+          stowage: {
+            cargoKg: 5000,
+            cargoMaxKg: 100_000,
+            cargoL: 1000,
+            cargoMaxL: 120_000,
+            propellantKg: 10_000,
+            propellantMaxKg: 80_000,
+            provisionsCrewDays: 10,
+            provisionsMaxCrewDays: 120,
+            cargoLines: [{ good: "tacsim:metals", label: "Metals", qty: 5, unit: "u", massKg: 5000 }],
+          },
+        },
+      },
+    } as unknown as GameApp;
+
+    const { container } = render(RoomBand, { props: { app, onCmd } });
+    // Duplicate #50 markers coalesce cleanly into a single Turn In pill with ×3 count (no each_key_duplicate!)
+    const markerBtns = Array.from(container.querySelectorAll("button.qmarker"));
+    expect(markerBtns).toHaveLength(1);
+    expect(markerBtns[0]!.getAttribute("data-marker")).toBe("turn_in");
+    expect(markerBtns[0]!.textContent).toContain("Turn In");
+    expect(markerBtns[0]!.textContent).toContain("×3");
+
+    // Standing in Berth Gallery with 5/5t metals loaded renders a clickable ★ Board Ship exit pill
+    const boardBtn = screen.getByRole("button", { name: /Board Ship/i });
+    expect(boardBtn.getAttribute("data-quest-exit")).toBe("true");
+    await fireEvent.click(boardBtn);
+    expect(onCmd).toHaveBeenCalledWith("+ship/board");
+  });
 });
 
 describe("channel colorHex inline style sanitization", () => {
