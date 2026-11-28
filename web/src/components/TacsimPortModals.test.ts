@@ -921,4 +921,68 @@ describe("TacsimPortModals Dray-P Vehicle Bay and Co-op Refit quest guidance", (
     render(TacsimPortModals, { props: { app: npcApp, onCmd: vi.fn() } });
     expect(screen.getByRole("button", { name: /Open Quest Dialog.*Step 1\/7/i })).toBeTruthy();
   });
+
+  it("shows cross-port Haul guard, missing stores reminder, and 1-click Sail handoff at origin port on Step 7", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[6],
+          title: "Deliver Your Mined Ore to Market",
+          next_room_entry: "room.p11_service",
+          checkpoints: [
+            {
+              id: "sell_carbon_ore",
+              title: "Sell at least 1 tonne of carbon ore at Stickney Yards",
+              instructions: "Fly to Stickney Yards (+ship/plan stickney) and +market/sell carbon_ore.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    // At Ceres with 2t carbon_ore stowed and 0d provisions -> shows Haul guard + Top up Stores + Sail button
+    const ceresApp = makeApp(quests, "trade", {
+      cargoKg: 2000,
+      cargoMaxKg: 100_000,
+      cargoL: 2000,
+      cargoMaxL: 120_000,
+      propellantKg: 12_000,
+      propellantMaxKg: 80_000,
+      provisionsCrewDays: 0,
+      provisionsMaxCrewDays: 120,
+      cargoLines: [{ good: "tacsim:carbon_ore", label: "Carbon Ore", qty: 2, unit: "t", massKg: 2000 }],
+    });
+    const rCeres = render(TacsimPortModals, { props: { app: ceresApp, onCmd: vi.fn() } });
+    const banner = screen.getByRole("status", { name: "active quest trade guidance" });
+    expect(banner.textContent).toContain("Haul → Stickney Yards (do not sell here)");
+    expect(banner.textContent).toContain("Top up Stores before undocking");
+
+    const sailBtn = screen.getByRole("button", { name: /Sail → Stickney Yards/i });
+    await fireEvent.click(sailBtn);
+    expect(ceresApp.tacsim.selectedDestination).toBe("stickney");
+    expect(ceresApp.tacsim.activeModal).toBe("sailing");
+    rCeres.unmount();
+
+    // Once docked at Stickney Yards -> haul guard disappears so player can sell cleanly
+    const stickneyApp = makeApp(quests, "trade", {
+      cargoKg: 2000,
+      cargoMaxKg: 100_000,
+      cargoL: 2000,
+      cargoMaxL: 120_000,
+      propellantKg: 12_000,
+      propellantMaxKg: 80_000,
+      provisionsCrewDays: 15,
+      provisionsMaxCrewDays: 120,
+      cargoLines: [{ good: "tacsim:carbon_ore", label: "Carbon Ore", qty: 2, unit: "t", massKg: 2000 }],
+    });
+    stickneyApp.tacsim.trade.venueLabel = "Stickney Yards";
+    render(TacsimPortModals, { props: { app: stickneyApp, onCmd: vi.fn() } });
+    const stickneyBanner = screen.getByRole("status", { name: "active quest trade guidance" });
+    expect(stickneyBanner.textContent).not.toContain("do not sell here");
+    expect(screen.queryByRole("button", { name: /Sail → Stickney Yards/i })).toBeNull();
+  });
 });
