@@ -30,6 +30,7 @@
   import {
     GUIDED_TOUR_KEYS,
     evaluateSailingPreflightReadiness,
+    formatQuestHoldReadinessSummary,
     inferStationPortFromRoomEntry,
     resolveNextGuidedOfferDestination,
   } from "$lib/stores/quests.svelte";
@@ -73,8 +74,14 @@
       app.tacsim?.ambient?.stowage ??
       (app.tacsim?.trade?.hullId ? app.tacsim.trade.stowage : null),
   );
+  const trackedHold = $derived(
+    app.quests?.trackedQuest ? formatQuestHoldReadinessSummary(app.quests.trackedQuest, liveStowage) : null,
+  );
+  const needsRigRecovery = $derived(trackedHold?.tag === "[RECOVER RIG FIRST]");
+  const oreHoldReady = $derived(trackedHold?.tag === "[ORE HOLD READY]");
   const arrivedAtDest = $derived.by(() => {
     if (!questDest) return false;
+    if (app.tacsim?.ambient?.settledPad || needsRigRecovery) return false;
     const tracked = app.quests?.trackedQuest;
     if (questMining && !(tracked?.canFinishNow || tracked?.readyToFinish)) {
       return false;
@@ -86,7 +93,7 @@
     return rawPort === pid || rawPort === plbl || rawPort.includes(pid) || rawPort.includes(plbl);
   });
   const chartPreflight = $derived(
-    !arrivedAtDest && questDest
+    !arrivedAtDest && !needsRigRecovery && questDest
       ? evaluateSailingPreflightReadiness(questDest, app.quests?.activeTradeNeed ?? null, liveStowage)
       : null,
   );
@@ -196,14 +203,17 @@
     <h2>{heading}</h2>
     {#if questDest || (questMining && !questMining.mineDone)}
       <div class="quest-dest-banner" class:arrived={arrivedAtDest} role="status" aria-label="active quest destination">
-        <span class="qbadge" class:arrived={arrivedAtDest}>
-          {arrivedAtDest ? "[QUEST ARRIVED]" : "[QUEST]"}{questStepNo !== null ? ` Step ${questStepNo}/7` : ""}
+        <span class="qbadge" class:arrived={arrivedAtDest || oreHoldReady}>
+          {#if needsRigRecovery}[RECOVER RIG FIRST]{:else if arrivedAtDest}[QUEST ARRIVED]{:else if oreHoldReady}[ORE HOLD READY]{:else}[QUEST]{/if}{#if questStepNo !== null}{" "}Step {questStepNo}/7{/if}
         </span>
-        {#if questDest && arrivedAtDest}
+        {#if needsRigRecovery}
+          <strong>Recover Rig First</strong>
+          <span class="muted">— stow mined ore (+tv/1 recover go) before returning to {questDest?.portLabel ?? "Ceres Freeport"}</span>
+        {:else if questDest && arrivedAtDest}
           <strong>At {questDest.portLabel}</strong>
           <span class="muted">— {questDest.questTitle}</span>
         {:else if questDest}
-          <strong>Destination: {questDest.portLabel}</strong>
+          <strong>{#if oreHoldReady}Return to{:else}Destination{/if}: {questDest.portLabel}</strong>
           <span class="muted">— {questDest.questTitle}</span>
         {:else if questMining}
           <strong>Surface Mining: {questMining.targetOreSlug}</strong>
@@ -211,12 +221,20 @@
         {/if}
         {#if chartPreflight}
           <span class="qpreflight" class:ok={chartPreflight.ready} aria-label="chart sailing preflight">
-            {chartPreflight.ready ? "[PRE-FLIGHT OK]" : "[CHECK BEFORE UNDOCK]"}
-            Fuel {chartPreflight.propellantTonnes}t · Stores {chartPreflight.provisionsDays}d
+            {#if chartPreflight.ready}[PRE-FLIGHT OK]{:else}[CHECK BEFORE UNDOCK]{/if}
+            Fuel {chartPreflight.propellantTonnes}t · Stores {chartPreflight.provisionsDays}d{#if chartPreflight.cargoRequired} · {#if chartPreflight.cargoOk}✓{:else}✗{/if} {chartPreflight.cargoLabel} {chartPreflight.cargoQty}/{chartPreflight.cargoTarget}{/if}
           </span>
         {/if}
         <span class="qactions">
-          {#if questDest && arrivedAtDest}
+          {#if needsRigRecovery}
+            <button
+              type="button"
+              class="qplan-btn"
+              onclick={() => app.focusComposer?.("+tv/1 recover go")}
+            >
+              Recover Rig (+tv/1 recover go)
+            </button>
+          {:else if questDest && arrivedAtDest}
             {#if app.quests?.trackedQuest?.canFinishNow && app.quests.trackedQuest.finishCmd}
               <button
                 type="button"
