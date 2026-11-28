@@ -2271,6 +2271,43 @@ describe("PR #693 Web review regressions (items 1-7, 9-11)", () => {
       title: "Talk to Maren Halvorsen",
       subtitle: "Steward",
     });
+    // Guided tour keys append [Step n/7] across available, turn_in, and in_progress prompts
+    expect(
+      formatActorInteractPrompt("Maren Halvorsen", true, "Steward", {
+        npcId: "#42",
+        marker: "available",
+        symbol: "!",
+        questKey: "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+        questTitle: "First Papers at the Registry",
+      }),
+    ).toEqual({
+      title: "[!] Maren Halvorsen — Quest Available [Step 1/7]",
+      subtitle: "Offer: First Papers at the Registry",
+    });
+    expect(
+      formatActorInteractPrompt("Ilse Oduya-Brandt", true, "Clerk", {
+        npcId: "#55",
+        marker: "turn_in",
+        symbol: "?",
+        questKey: "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+        questTitle: "First Papers at the Registry",
+      }),
+    ).toEqual({
+      title: "[?] Ilse Oduya-Brandt — Turn In Quest [Step 1/7]",
+      subtitle: "Complete: First Papers at the Registry",
+    });
+    expect(
+      formatActorInteractPrompt("Ilse Oduya-Brandt", true, "Clerk", {
+        npcId: "#55",
+        marker: "in_progress",
+        symbol: "?",
+        questKey: "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel",
+        questTitle: "Stock the Locker and Tanks",
+      }),
+    ).toEqual({
+      title: "[?] Talk to Ilse Oduya-Brandt [Step 2/7]",
+      subtitle: "Active quest: Stock the Locker and Tanks",
+    });
 
     // 2. Stage3D syncs live roomMarkers onto spawned NPCs and updates [E] prompt live
     const ceres = parseNeighborhoodPack(
@@ -2322,7 +2359,7 @@ describe("PR #693 Web review regressions (items 1-7, 9-11)", () => {
 
     expect(stage.getSpawnedActorQuestMarkerForTest("#42")?.marker).toBe("available");
     expect(stage.getSpawnedActorInteractableForTest("#42")?.title).toBe(
-      "[!] Maren Halvorsen — Quest Available",
+      "[!] Maren Halvorsen — Quest Available [Step 1/7]",
     );
     expect(stage.getSpawnedActorInteractableForTest("#42")?.npcMeta?.questMarker?.symbol).toBe("!");
 
@@ -2353,7 +2390,7 @@ describe("PR #693 Web review regressions (items 1-7, 9-11)", () => {
     });
     expect(stage.getSpawnedActorQuestMarkerForTest("#42")?.marker).toBe("turn_in");
     expect(stage.getSpawnedActorInteractableForTest("#42")?.title).toBe(
-      "[?] Maren Halvorsen — Turn In Quest",
+      "[?] Maren Halvorsen — Turn In Quest [Step 1/7]",
     );
 
     // Clearing markers reverts NPC prompt cleanly
