@@ -5054,10 +5054,11 @@ impl TuiApp {
         );
         self.port_walk.observe_quest_ship_target(
             self.quests_snap
-                .active_ship_target_compartment_for_location(
+                .active_ship_target_compartment_for_location_with_stowage(
                     tracked,
                     self.port_walk.docked_port_slug(),
                     self.port_walk.settled_pad(),
+                    stowage.as_ref(),
                 ),
         );
         self.port_walk.observe_quest_coop_action(
