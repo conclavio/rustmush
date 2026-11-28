@@ -1015,6 +1015,44 @@ impl PortWalkState {
         None
     }
 
+    /// Count distinct quests on the currently selected NPC in the Talk drawer.
+    #[must_use]
+    pub fn selected_npc_quest_count(&self) -> usize {
+        let sel = self.selected_npc_name.trim();
+        let mut keys: Vec<String> = Vec::new();
+        let push_unique = |keys: &mut Vec<String>, m: &QuestMarker| {
+            let k = if m.quest_key.is_empty() {
+                format!("{}:{}", m.marker, m.quest_title)
+            } else {
+                m.quest_key.clone()
+            };
+            if !keys.contains(&k) {
+                keys.push(k);
+            }
+        };
+        if !sel.is_empty() {
+            let mut exact_hit = false;
+            for m in &self.quest_markers {
+                if m.npc_name.trim().eq_ignore_ascii_case(sel) {
+                    exact_hit = true;
+                    push_unique(&mut keys, m);
+                }
+            }
+            if exact_hit {
+                return keys.len();
+            }
+            let sel_low = sel.to_ascii_lowercase();
+            for m in &self.quest_markers {
+                let n = m.npc_name.trim().to_ascii_lowercase();
+                if !n.is_empty() && (n.contains(&sel_low) || sel_low.contains(&n)) {
+                    push_unique(&mut keys, m);
+                }
+            }
+            return keys.len();
+        }
+        usize::from(self.quest_markers.len() == 1)
+    }
+
     fn stowage_readiness_for(&self, need: &QuestTradeNeed) -> Option<QuestStowageReadiness> {
         if !self.stowage_loaded {
             return None;
@@ -1576,12 +1614,37 @@ impl PortWalkState {
             .min_by_key(|m| Self::quest_marker_priority(m))
     }
 
+    fn count_npc_quest_markers(&self, npc_id: &str, npc_name: &str) -> usize {
+        let mut keys: Vec<String> = Vec::new();
+        for m in &self.quest_markers {
+            let matches = (!npc_id.is_empty() && m.npc_id == npc_id)
+                || (!npc_name.is_empty() && m.npc_name.eq_ignore_ascii_case(npc_name));
+            if matches {
+                let k = if m.quest_key.is_empty() {
+                    format!("{}:{}", m.marker, m.quest_title)
+                } else {
+                    m.quest_key.clone()
+                };
+                if !keys.contains(&k) {
+                    keys.push(k);
+                }
+            }
+        }
+        keys.len()
+    }
+
     fn format_npc_interact_label(&self, id: &str, name: &str, npc: bool) -> String {
         if npc && let Some(m) = self.find_quest_marker(id, name) {
+            let extra = self.count_npc_quest_markers(id, name).saturating_sub(1);
+            let more = if extra > 0 {
+                format!(" (+{extra} more)")
+            } else {
+                String::new()
+            };
             return match m.marker.as_str() {
-                "turn_in" => format!("[?] {name} — Turn In Quest"),
-                "available" => format!("[!] {name} — Quest Available"),
-                _ => format!("[?] Talk to {name}"),
+                "turn_in" => format!("[?] {name} — Turn In Quest{more}"),
+                "available" => format!("[!] {name} — Quest Available{more}"),
+                _ => format!("[?] Talk to {name}{more}"),
             };
         }
         if npc {
@@ -5758,8 +5821,17 @@ impl PortWalkState {
                     } else {
                         format!(": {}", m.quest_title)
                     };
+                    let extra = self.selected_npc_quest_count().saturating_sub(1);
+                    let more_part = if extra > 0 {
+                        format!(" (+{extra} more)")
+                    } else {
+                        String::new()
+                    };
                     lines.push(Line::from(Span::styled(
-                        truncate_str(&format!("{prefix}{title_part} (q: quest dialog)"), inner_w),
+                        truncate_str(
+                            &format!("{prefix}{title_part}{more_part} (q: quest dialog)"),
+                            inner_w,
+                        ),
                         Style::default().fg(col).add_modifier(Modifier::BOLD),
                     )));
                 }
@@ -10200,13 +10272,32 @@ mod tests {
         assert_eq!(best.marker, "turn_in");
         assert_eq!(
             st.format_npc_interact_label("#18", "Ilse Oduya-Brandt", true),
-            "[?] Ilse Oduya-Brandt — Turn In Quest"
+            "[?] Ilse Oduya-Brandt — Turn In Quest (+2 more)"
         );
 
         st.selected_npc_name = "Ilse Oduya-Brandt".into();
         assert_eq!(
             st.selected_npc_quest_marker().map(|m| m.marker.as_str()),
             Some("turn_in")
+        );
+        assert_eq!(st.selected_npc_quest_count(), 3);
+
+        st.drawer = Some(PortDrawerKind::Npc);
+        let backend = ratatui::backend::TestBackend::new(100, 20);
+        let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+        terminal
+            .draw(|f| st.draw_drawer_box(f, f.area(), true))
+            .expect("render npc drawer");
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            rendered.contains("[?] Turn In Quest: First Papers at the Registry (+2 more)"),
+            "{rendered}"
         );
     }
 }
