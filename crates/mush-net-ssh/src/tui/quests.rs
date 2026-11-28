@@ -1062,6 +1062,37 @@ impl QuestsSnapshot {
             .find(|s| s.status == GuidedTourStepStatus::Upcoming)
     }
 
+    /// Resolve a corridor destination hint for the between-steps Next Guided Offer when the
+    /// pilot is viewing the Sky Chart from a different station/body than the next giver's port.
+    #[must_use]
+    pub fn next_guided_offer_destination(
+        &self,
+        current_port_or_body: Option<&str>,
+    ) -> Option<QuestDestinationHint> {
+        let next = self.next_guided_offer()?;
+        let port_slug = infer_station_port_from_room_entry(next.giver_room_entry)?;
+        let (id, label, _) = KNOWN_DESTINATIONS
+            .iter()
+            .find(|(id, _, _)| *id == port_slug)?;
+        if let Some(cur) = current_port_or_body {
+            let cur_low = cur.trim().to_ascii_lowercase();
+            let label_low = label.to_ascii_lowercase();
+            if !cur_low.is_empty()
+                && (cur_low == *id || cur_low.contains(id) || cur_low.contains(&label_low))
+            {
+                return None;
+            }
+        }
+        Some(QuestDestinationHint {
+            quest_title: format!(
+                "Next Guided ({}/7): {} — {}",
+                next.step, next.short_label, next.giver_label
+            ),
+            port_id: (*id).to_string(),
+            port_label: (*label).to_string(),
+        })
+    }
+
     /// Render a compact, color-coded 7-step Guided Corridor Tour roadmap line for the F11 overlay.
     #[must_use]
     pub fn render_guided_tour_roadmap_line(&self) -> Option<Line<'static>> {
@@ -3344,6 +3375,40 @@ mod tests {
         assert!(
             txt.contains("Next Guided (4/7): Return Load — speak with Jonas Achterberg-Nkemelu (Receiving Counter)"),
             "{txt}"
+        );
+    }
+
+    #[test]
+    fn next_guided_offer_destination_routes_off_station_and_clears_when_already_at_port() {
+        let snap = parse_frame(&json!({
+            "schema": 1,
+            "completed": [
+                { "key": GUIDED_TOUR_KEYS[0], "title": "S1" },
+                { "key": GUIDED_TOUR_KEYS[1], "title": "S2" },
+                { "key": GUIDED_TOUR_KEYS[2], "title": "S3" }
+            ],
+            "active": [],
+            "available": []
+        }));
+        // Viewing sky chart from Ceres -> Step 4 giver (Jonas) is at Stickney Yards
+        let dest = snap
+            .next_guided_offer_destination(Some("Ceres Freeport"))
+            .expect("expected off-station destination hint");
+        assert_eq!(dest.port_id, "stickney");
+        assert_eq!(dest.port_label, "Stickney Yards");
+        assert!(
+            dest.quest_title.contains("Next Guided (4/7)"),
+            "{}",
+            dest.quest_title
+        );
+        // Viewing sky chart already at Stickney Yards -> clears
+        assert!(
+            snap.next_guided_offer_destination(Some("Stickney Yards"))
+                .is_none()
+        );
+        assert!(
+            snap.next_guided_offer_destination(Some("stickney"))
+                .is_none()
         );
     }
 }
