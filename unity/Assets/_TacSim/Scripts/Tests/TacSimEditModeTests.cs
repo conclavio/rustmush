@@ -12814,5 +12814,68 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void CommandPalette_SurfacesBetweenStepsNextGuidedOfferRouteSailAndJournalShortcut()
+        {
+            var rootGo = new UnityEngine.GameObject("CommandPaletteNextGuidedTestRoot");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                string prefilled = string.Empty;
+                string plottedRoom = string.Empty;
+                string sentCmd = string.Empty;
+                hud.CommandPalette.OnPrefillCommandRequested += c => prefilled = c;
+                hud.CommandPalette.OnPlotStationRoomRequested += r => plottedRoom = r;
+                hud.CommandPalette.OnCommandRequested += c => sentCmd = c;
+
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""S1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""S2"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""S3"" }
+                    ],
+                    ""active"": [],
+                    ""available"": []
+                }")));
+                hud.QuestJournal.SetTrackerRouteBreadcrumb("Berth Gallery", "+ship/board", 1);
+
+                hud.CommandPalette.SetOpen(true);
+
+                // 1. Route entry executes +ship/board
+                hud.CommandPalette.SetQuery("board ship");
+                StringAssert.Contains("Board Ship", hud.CommandPalette.SelectedEntryTitle);
+                hud.CommandPalette.ExecuteSelected();
+                Assert.AreEqual("+ship/board", sentCmd);
+
+                // 2. Sail entry prefills +ship/plan stickney
+                hud.CommandPalette.SetOpen(true);
+                hud.CommandPalette.SetQuery("sail stickney");
+                StringAssert.Contains("Sail -> Stickney Yards", hud.CommandPalette.SelectedEntryTitle);
+                hud.CommandPalette.ExecuteSelected();
+                Assert.AreEqual("+ship/plan stickney", prefilled);
+
+                // 3. Wayfinder trail entry plots room.p07_receiving
+                hud.CommandPalette.SetOpen(true);
+                hud.CommandPalette.SetQuery("wayfinder next guided");
+                StringAssert.Contains("Wayfinder to Next Guided (4/7)", hud.CommandPalette.SelectedEntryTitle);
+                hud.CommandPalette.ExecuteSelected();
+                Assert.AreEqual("room.p07_receiving", plottedRoom);
+
+                // 4. Offer entry opens [J] Quest Journal on Quests tab
+                hud.CommandPalette.SetOpen(true);
+                hud.CommandPalette.SetQuery("next guided offer");
+                StringAssert.Contains("Next Guided (4/7): Return Load", hud.CommandPalette.SelectedEntryTitle);
+                hud.CommandPalette.ExecuteSelected();
+                Assert.IsTrue(hud.QuestJournal.IsOpen);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
