@@ -14787,6 +14787,37 @@ namespace TacSim.Tests
                 StringAssert.Contains("Metals Down the Corridor", hud.DockingTelemetrySnapshot);
                 StringAssert.Contains("Dock at Stickney Yards and sell 5t metals", hud.DockingTelemetrySnapshot);
 
+                // 2b. Live stowage binding surfaces partial [HOLD] and complete [HOLD READY] on Docking HUD
+                var trade = new TacSim.World.TacSimTradeAndShipState();
+                hud.BindTradeState(trade);
+                trade.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""stickney"",
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 2000, ""tank_kg"": 10000, ""stores_days"": 10,
+                            ""items"": [{ ""good"": ""tacsim:metals"", ""label"": ""Metals"", ""qty"": 2 }]
+                        }
+                    }
+                }"));
+                hud.UpdateDockingHud(session, assistOn: true);
+                StringAssert.Contains("[HOLD] METALS: 2/5 u", hud.DockingTelemetrySnapshot);
+                trade.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""stickney"",
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 5000, ""tank_kg"": 10000, ""stores_days"": 10,
+                            ""items"": [{ ""good"": ""tacsim:metals"", ""label"": ""Metals"", ""qty"": 5 }]
+                        }
+                    }
+                }"));
+                hud.UpdateDockingHud(session, assistOn: true);
+                StringAssert.Contains("[HOLD READY] METALS: 5/5 u", hud.DockingTelemetrySnapshot);
+                StringAssert.Contains("#66FFAA", hud.DockingTelemetrySnapshot);
+
                 // 3. Between Steps 3 & 4 (no active quest, completed 1-3 -> Jonas at Stickney Yards)
                 hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
                     ""schema"": 1,
@@ -14826,6 +14857,33 @@ namespace TacSim.Tests
                 StringAssert.Contains("[Step 6/7]", hud.DockingTelemetrySnapshot);
                 StringAssert.Contains("Ceres Freeport", hud.DockingTelemetrySnapshot);
                 StringAssert.Contains("Return to Ceres Exchange Hall", hud.DockingTelemetrySnapshot);
+
+                // 4b. Step 6 post-mine with 0t ore -> [RECOVER RIG FIRST] (#FF7766); 1t carbon_ore -> [ORE HOLD READY] (#66FFAA)
+                trade.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": { ""cargo_kg"": 0, ""tank_kg"": 10000, ""stores_days"": 10, ""items"": [] }
+                    }
+                }"));
+                hud.UpdateDockingHud(ceresSession, assistOn: true);
+                StringAssert.Contains("[RECOVER RIG FIRST]", hud.DockingTelemetrySnapshot);
+                StringAssert.Contains("#FF7766", hud.DockingTelemetrySnapshot);
+                trade.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 1000, ""tank_kg"": 10000, ""stores_days"": 10,
+                            ""items"": [{ ""good"": ""tacsim:carbon_ore"", ""label"": ""Carbon Ore"", ""qty"": 1 }]
+                        }
+                    }
+                }"));
+                hud.UpdateDockingHud(ceresSession, assistOn: true);
+                StringAssert.Contains("[ORE HOLD READY]", hud.DockingTelemetrySnapshot);
+                StringAssert.Contains("#66FFAA", hud.DockingTelemetrySnapshot);
             }
             finally
             {
