@@ -1028,6 +1028,57 @@ export interface StationQuestBreadcrumb {
  * Resolve the immediate next room/exit along the shortest station BFS path
  * toward the tracked quest's objective room.
  */
+export interface LocalStationQuestTarget {
+  roomEntry: string;
+  isBoardingTarget: boolean;
+}
+
+/**
+ * Resolve an active quest's target room onto the player's currently loaded station pack:
+ * - Step 6 surface expeditions resolve to the local `berth_gallery` (`isBoardingTarget: true`).
+ * - Same-station targets resolve directly.
+ * - Cross-port targets (e.g. Stickney while standing on Ceres) resolve to the local Exchange /
+ *   Chandlery / Service Counter while `needsOriginExchangeFirst` is true, or to the local
+ *   `berth_gallery` (`isBoardingTarget: true`) once ready to sail.
+ */
+export function resolveLocalStationQuestTarget(
+  pack: AtlasNeighborhoodPack | null | undefined,
+  targetRoomEntry: string | null | undefined,
+  needsOriginExchangeFirst = false,
+  needsShipExpedition = false,
+): LocalStationQuestTarget | null {
+  if (!pack || (!targetRoomEntry && !needsShipExpedition)) return null;
+  if (needsShipExpedition) {
+    const berth = [...pack.rooms.values()].find((r) =>
+      r.entryId.toLowerCase().includes("berth_gallery"),
+    );
+    return berth ? { roomEntry: berth.entryId, isBoardingTarget: true } : null;
+  }
+  const raw = targetRoomEntry ?? "";
+  if (pack.rooms.has(raw)) {
+    return { roomEntry: raw, isBoardingTarget: false };
+  }
+  if (!/^room\.[cpldt]\d/i.test(raw.trim())) {
+    return null;
+  }
+  if (needsOriginExchangeFirst) {
+    const exchange =
+      [...pack.rooms.values()].find((r) => r.entryId.toLowerCase().includes("exchange")) ??
+      [...pack.rooms.values()].find(
+        (r) =>
+          r.entryId.toLowerCase().includes("chandlery") ||
+          r.entryId.toLowerCase().includes("service"),
+      );
+    if (exchange) {
+      return { roomEntry: exchange.entryId, isBoardingTarget: false };
+    }
+  }
+  const berth = [...pack.rooms.values()].find((r) =>
+    r.entryId.toLowerCase().includes("berth_gallery"),
+  );
+  return berth ? { roomEntry: berth.entryId, isBoardingTarget: true } : null;
+}
+
 export function computeNextQuestExitBreadcrumb(
   pack: AtlasNeighborhoodPack | null | undefined,
   currentRoomEntry: string | null | undefined,

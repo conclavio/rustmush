@@ -112,8 +112,12 @@ describe("NotificationStore", () => {
     expect(nextG.text[0]?.text).toBe(
       "Next Guided Step (6/7) [!]: Speak with Rosalind Qureshi-Mbeki in Exchange Hall",
     );
+    const board = s.fromQuestArrival("Visiting Berth Gallery", false, 700, undefined, true)!;
+    expect(board.text[0]?.text).toBe("Board Ship Here: Visiting Berth Gallery (+ship/board)");
+    expect(board.action).toEqual({ label: "Board Ship", prefill: "+ship/board" });
     expect(ti.action).toEqual({ label: "Quests", prefill: "/quests" });
     expect(s.toasts).toHaveLength(3);
+    expect(s.list).toHaveLength(4);
   });
 
   it("fromQuestMilestone formats checkpoint, restartable abandon, and 7/7 Corridor Captain mastery toasts", () => {
