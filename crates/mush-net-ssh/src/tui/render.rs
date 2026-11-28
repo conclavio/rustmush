@@ -4923,6 +4923,18 @@ pub fn render_chart_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
 /// destination's window — as the server sent them in `chart.lines`, so this
 /// client composes no figure of its own.
 pub fn render_chart_table_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
+    render_chart_table_rows_with_quest(data, ctx, None, None)
+}
+
+/// Quest-aware variant of [`render_chart_table_rows`] that prepends the active
+/// destination (`+ship/plan <port>`) or Step 6 surface-mining banner and highlights
+/// matching passage rows in bold gold.
+pub fn render_chart_table_rows_with_quest(
+    data: &Value,
+    ctx: &RenderCtx<'_>,
+    quest_dest: Option<&super::quests::QuestDestinationHint>,
+    quest_mining: Option<&super::quests::QuestSurfaceMiningStatus>,
+) -> PaneRows {
     if data.is_null() {
         return PaneRows::one("(no chart yet)");
     }
@@ -4930,7 +4942,43 @@ pub fn render_chart_table_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
         return PaneRows::one("(the server sent no tables)");
     };
     let system = ctx.tag("system");
+    let quest_style = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
     let mut rows = Vec::new();
+    if let Some(dest) = quest_dest {
+        rows.push(PaneRow::plain(Line::from(vec![
+            Span::styled("[QUEST] ", quest_style),
+            Span::styled(
+                clean(&format!(
+                    "Dest: {} (+ship/plan {}) — {}",
+                    dest.port_label, dest.port_id, dest.quest_title
+                )),
+                quest_style,
+            ),
+        ])));
+    } else if let Some(mine) = quest_mining.filter(|m| !m.mine_done) {
+        rows.push(PaneRow::plain(Line::from(vec![
+            Span::styled("[QUEST] ", quest_style),
+            Span::styled(
+                clean(&format!(
+                    "Surface Mining: {} (Alt+q -> z: ground, l: {})",
+                    mine.target_ore_slug, mine.recommended_family
+                )),
+                quest_style,
+            ),
+        ])));
+    }
+    let matches_dest = |line: &str| -> bool {
+        let Some(dest) = quest_dest else {
+            return false;
+        };
+        let low = line.to_ascii_lowercase();
+        let pid = dest.port_id.to_ascii_lowercase();
+        let plabel = dest.port_label.to_ascii_lowercase();
+        (!pid.is_empty() && low.contains(&pid)) || (!plabel.is_empty() && low.contains(&plabel))
+    };
+    let mut body_rows = 0usize;
     // The window first — the trader's question — then the sky table, which the
     // picture beside it already draws.
     for (key, head) in [
@@ -4948,10 +4996,18 @@ pub fn render_chart_table_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
             system,
         ))));
         for line in list.iter().filter_map(Value::as_str) {
-            rows.push(PaneRow::plain(Line::from(clean(line))));
+            body_rows += 1;
+            if matches_dest(line) {
+                rows.push(PaneRow::plain(Line::from(vec![
+                    Span::styled("[Q] ", quest_style),
+                    Span::styled(clean(line), quest_style),
+                ])));
+            } else {
+                rows.push(PaneRow::plain(Line::from(clean(line))));
+            }
         }
     }
-    if rows.is_empty() {
+    if body_rows == 0 {
         return PaneRows::one("(the server sent no tables)");
     }
     PaneRows { rows }
@@ -9089,6 +9145,80 @@ mod tests {
         assert_eq!(
             ground_rows[0],
             "[QUEST] B Freeport Commons (+ship/plan commons)"
+        );
+    }
+
+    #[test]
+    fn render_chart_table_rows_with_quest_prepends_banner_and_highlights_matching_passage() {
+        let row_texts = |rows: PaneRows| -> Vec<String> {
+            rows.rows
+                .into_iter()
+                .map(|r| {
+                    r.line
+                        .spans
+                        .into_iter()
+                        .map(|s| s.content.into_owned())
+                        .collect::<String>()
+                })
+                .collect()
+        };
+        let theme = AnsiTheme::classic();
+        let store = PanelStore::default();
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::Ansi16,
+            utf8: true,
+            store: &store,
+            selected_channel: None,
+            pane: None,
+            picture: None,
+        };
+        let chart_data = serde_json::json!({
+            "chart": {
+                "lines": {
+                    "sky": [
+                        "Aitken Highport — 18h, 1.2t",
+                        "Stickney Yards — 42h, 3.8t"
+                    ]
+                }
+            }
+        });
+        let dest = super::super::quests::QuestDestinationHint {
+            quest_title: "Metals Down the Corridor".into(),
+            port_id: "stickney".into(),
+            port_label: "Stickney Yards".into(),
+        };
+        let rows = row_texts(render_chart_table_rows_with_quest(
+            &chart_data,
+            &ctx,
+            Some(&dest),
+            None,
+        ));
+        assert_eq!(
+            rows[0],
+            "[QUEST] Dest: Stickney Yards (+ship/plan stickney) — Metals Down the Corridor"
+        );
+        assert_eq!(rows[2], "Aitken Highport — 18h, 1.2t");
+        assert_eq!(rows[3], "[Q] Stickney Yards — 42h, 3.8t");
+
+        // Step 6 surface mining quest without port dest -> shows surface mining banner
+        let mine = super::super::quests::QuestSurfaceMiningStatus {
+            quest_title: "Scan, Sound, and Mine".into(),
+            target_ore_slug: "carbon_ore".into(),
+            recommended_family: "carbon".into(),
+            scan_done: false,
+            sound_done: false,
+            mine_done: false,
+        };
+        let mine_rows = row_texts(render_chart_table_rows_with_quest(
+            &chart_data,
+            &ctx,
+            None,
+            Some(&mine),
+        ));
+        assert_eq!(
+            mine_rows[0],
+            "[QUEST] Surface Mining: carbon_ore (Alt+q -> z: ground, l: carbon)"
         );
     }
 }
