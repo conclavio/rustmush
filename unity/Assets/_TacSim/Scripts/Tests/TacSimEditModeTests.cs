@@ -18884,5 +18884,109 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void IndustryAndRegistry_GuardStep5RefitWithClearHoldExchangeHandoff()
+        {
+            var rootGo = new UnityEngine.GameObject("Step5RefitClearHoldGuardTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.ShowLoginOverlay(false);
+                var tradeState = new TacSimTradeAndShipState();
+                hud.BindTradeState(tradeState);
+                var emitted = new List<string>();
+                hud.OnCommandSubmitted += c => emitted.Add(c);
+
+                hud.OpenTradeAndSailingModal("CERES", openSailingTab: false);
+                hud.SwitchTradeTerminalTab(TacSim.UI.TradeTerminalTab.Industry, autoQuery: false);
+
+                // 1. Step 5 Refit with cargo & stores aboard -> [CLEAR HOLD FIRST] + CLEAR HOLD AT EXCHANGE switches to Exchange tab & emits +market/list
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""ceres"", ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 2000, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 12000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 4, ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:metals"", ""label"": ""Metals"", ""qty"": 2 }]
+                        }
+                    }
+                }"));
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"",
+                        ""title"": ""Refit the Dray for Surface Mining"",
+                        ""next_room_entry"": ""room.c05_registry"",
+                        ""checkpoints"": [{
+                            ""id"": ""refit_dray_p"",
+                            ""title"": ""Refit Dray into Dray-P"",
+                            ""instructions"": ""Empty cargo & stores then +coop/refit prospector."",
+                            ""checked"": false, ""live_ready"": false
+                        }]
+                    }],
+                    ""available"": [], ""completed"": []
+                }")));
+
+                Assert.IsTrue(hud.EconomyPanels.IsIndustryQuestBannerVisible);
+                StringAssert.Contains("[CLEAR HOLD FIRST]", hud.EconomyPanels.IndustryQuestBannerTextForTests);
+                StringAssert.Contains("[Step 5/7]", hud.EconomyPanels.IndustryQuestBannerTextForTests);
+                Assert.AreEqual("CLEAR HOLD AT EXCHANGE", hud.EconomyPanels.IndustryQuestButtonLabelForTests);
+                Assert.IsTrue(hud.EconomyPanels.TriggerIndustryQuestActionForTests());
+                Assert.AreEqual(TacSim.UI.TradeTerminalTab.Exchange, hud.ActiveTradeTab);
+                Assert.IsTrue(emitted.Contains("+market/list"), "Expected +market/list on CLEAR HOLD AT EXCHANGE");
+                Assert.IsFalse(emitted.Contains("+coop/refit prospector"), "Must not emit refit while hold has cargo/stores");
+
+                // Registry quick actions highlight [Q] Clear Hold (Exchange) while blocked
+                hud.RefreshContextualQuickActions("room.c05_registry", isSeatedAtHelm: false);
+                bool hasClearQ = false;
+                bool hasRefitQ = false;
+                for (int i = 0; i < hud.QuickActionSlotCount; i++)
+                {
+                    string lbl = hud.GetQuickActionLabelForTests(i);
+                    if (lbl == "[Q] Clear Hold (Exchange)") hasClearQ = true;
+                    if (lbl == "[Q] Refit Dray-P") hasRefitQ = true;
+                }
+                Assert.IsTrue(hasClearQ, "Registry quick actions should badge [Q] Clear Hold (Exchange) while hold is non-empty");
+                Assert.IsFalse(hasRefitQ, "Registry quick actions should not badge [Q] Refit Dray-P while hold is non-empty");
+
+                // 2. Empty hold & stores (12t propellant OK) -> [READY TO REFIT] + Run +coop/refit prospector & [Q] Refit Dray-P
+                emitted.Clear();
+                hud.SwitchTradeTerminalTab(TacSim.UI.TradeTerminalTab.Industry, autoQuery: false);
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""ceres"", ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 0, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 12000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 0, ""stores_limit_days"": 120,
+                            ""items"": []
+                        }
+                    }
+                }"));
+                hud.RefreshTradeTerminal();
+                StringAssert.Contains("[READY TO REFIT]", hud.EconomyPanels.IndustryQuestBannerTextForTests);
+                Assert.AreEqual("Run +coop/refit prospector", hud.EconomyPanels.IndustryQuestButtonLabelForTests);
+                Assert.IsTrue(hud.EconomyPanels.TriggerIndustryQuestActionForTests());
+                Assert.IsTrue(emitted.Contains("+coop/refit prospector"));
+
+                hud.RefreshContextualQuickActions("room.c05_registry", isSeatedAtHelm: false);
+                bool readyRefitQ = false;
+                for (int i = 0; i < hud.QuickActionSlotCount; i++)
+                {
+                    if (hud.GetQuickActionLabelForTests(i) == "[Q] Refit Dray-P")
+                        readyRefitQ = true;
+                }
+                Assert.IsTrue(readyRefitQ, "Registry quick actions should badge [Q] Refit Dray-P once hold is clear");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

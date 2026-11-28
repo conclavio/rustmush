@@ -633,6 +633,7 @@ namespace TacSim.UI
             _lastListingsSignature = null;
             _lastQuickActionKey = null;
             _lastQuickActionSeated = null;
+            _lastQuickActionRefitBlocked = null;
             if (Application.isPlaying && MushWsClient.LatestInstance != null && _boundWs == null)
                 BindWsClient(MushWsClient.LatestInstance);
 
@@ -1253,6 +1254,11 @@ namespace TacSim.UI
             {
                 if (_tradePanel != null) _tradePanel.SetActive(false);
                 QuestJournal?.TriggerTrackerWayfinder();
+            };
+            EconomyPanels.OnIndustryQuestClearHoldRequested += () =>
+            {
+                SwitchTradeTerminalTab(TradeTerminalTab.Exchange, autoQuery: false);
+                OnCommandSubmitted?.Invoke("+market/list");
             };
 
             _sailingTabBody.SetActive(false);
@@ -2343,8 +2349,24 @@ namespace TacSim.UI
 
         private string _lastQuickActionKey;
         private bool? _lastQuickActionSeated;
+        private bool? _lastQuickActionRefitBlocked;
         private string _questBreadcrumbLabel = string.Empty;
         private string _questBreadcrumbCommand = string.Empty;
+
+        private bool ComputeRegistryRefitHoldBlocked()
+        {
+            var activeQuest = QuestJournal?.GetTrackedActiveQuest();
+            if (activeQuest == null ||
+                _boundTradeState == null ||
+                string.IsNullOrEmpty(_boundTradeState.ShipHullId))
+            {
+                return false;
+            }
+            return QuestJournal.TryGetSuggestedCommand(activeQuest, out _, out string suggestedCmd) &&
+                   suggestedCmd.StartsWith("+coop/refit", StringComparison.OrdinalIgnoreCase) &&
+                   QuestJournal.TryGetRefitHoldReadiness(_boundTradeState, out var regRefit) &&
+                   !regRefit.Ready;
+        }
 
         public string QuestExitBreadcrumbLabel => _questBreadcrumbLabel;
         public string QuestExitBreadcrumbCommand => _questBreadcrumbCommand;
@@ -2401,7 +2423,10 @@ namespace TacSim.UI
         {
             if (_quickActionsContainer == null) return;
             string normalizedKey = roomOrModeKey ?? string.Empty;
-            if (_lastQuickActionKey == normalizedKey && _lastQuickActionSeated == isSeatedAtHelm)
+            bool refitHoldBlockedNow = ComputeRegistryRefitHoldBlocked();
+            if (_lastQuickActionKey == normalizedKey &&
+                _lastQuickActionSeated == isSeatedAtHelm &&
+                _lastQuickActionRefitBlocked == refitHoldBlockedNow)
             {
                 if (_helmFlightBar != null)
                     _helmFlightBar.SetActive(isSeatedAtHelm);
@@ -2410,6 +2435,7 @@ namespace TacSim.UI
             }
             _lastQuickActionKey = normalizedKey;
             _lastQuickActionSeated = isSeatedAtHelm;
+            _lastQuickActionRefitBlocked = refitHoldBlockedNow;
 
             for (int i = _quickActionsContainer.childCount - 1; i >= 0; i--)
                 DestroySafe(_quickActionsContainer.GetChild(i).gameObject);
@@ -2487,9 +2513,23 @@ namespace TacSim.UI
                     AddQuickBtn("Ship Status", () => OnCommandSubmitted?.Invoke("+ship"));
                     break;
                 case "room.c05_registry":
+                    bool refitHoldBlocked = questWantsRefit &&
+                                            _boundTradeState != null &&
+                                            !string.IsNullOrEmpty(_boundTradeState.ShipHullId) &&
+                                            QuestJournal != null &&
+                                            QuestJournal.TryGetRefitHoldReadiness(_boundTradeState, out var regRefit) &&
+                                            !regRefit.Ready;
                     AddQuickBtn("Co-op Terms", () => OnCommandSubmitted?.Invoke("+coop"));
                     AddQuickBtn(questWantsEnroll ? "[Q] Enroll Charter Hull" : "Enrol Charter Hull", () => OnCommandSubmitted?.Invoke("ui:open_coop_enrol"), questWantsEnroll);
-                    AddQuickBtn(questWantsRefit ? "[Q] Refit Dray-P" : "Refit Dray-P", () => OnCommandSubmitted?.Invoke("+coop/refit prospector"), questWantsRefit);
+                    if (refitHoldBlocked)
+                    {
+                        AddQuickBtn("[Q] Clear Hold (Exchange)", () => OnCommandSubmitted?.Invoke("ui:open_exchange"), isQuestHighlight: true);
+                        AddQuickBtn("Refit Dray-P", () => OnCommandSubmitted?.Invoke("+coop/refit prospector"));
+                    }
+                    else
+                    {
+                        AddQuickBtn(questWantsRefit ? "[Q] Refit Dray-P" : "Refit Dray-P", () => OnCommandSubmitted?.Invoke("+coop/refit prospector"), questWantsRefit);
+                    }
                     AddQuickBtn("Statement", () => OnCommandSubmitted?.Invoke("+coop/statement"));
                     break;
                 case "room.l05_registry":
@@ -3093,6 +3133,13 @@ namespace TacSim.UI
         public void RefreshTradeTerminal()
         {
             RefreshEconomyPanelsQuestGuidance();
+            if (_quickActionsContainer != null &&
+                _lastQuickActionKey != null &&
+                _lastQuickActionSeated.HasValue &&
+                _lastQuickActionRefitBlocked != ComputeRegistryRefitHoldBlocked())
+            {
+                RefreshContextualQuickActions(_lastQuickActionKey, _lastQuickActionSeated.Value);
+            }
             if (_boundTradeState == null || _tradePanel == null || !_tradePanel.activeSelf)
                 return;
 

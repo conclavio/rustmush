@@ -177,10 +177,12 @@ namespace TacSim.UI
         private Text _industryQuestBtnLabel;
         private string _industryQuestCommand = string.Empty;
         private bool _industryQuestIsWayfinder;
+        private bool _industryQuestIsClearHold;
         private bool _industryQuestClosesTradeModal;
 
         public event Action OnIndustryQuestWayfinderRequested;
         public event Action OnIndustryQuestTurnInDispatched;
+        public event Action OnIndustryQuestClearHoldRequested;
 
         private Text _haulGoodBtnLabel;
         private InputField _jobIdInput;
@@ -234,6 +236,11 @@ namespace TacSim.UI
         public bool TriggerIndustryQuestActionForTests()
         {
             if (!IsIndustryQuestBannerVisible) return false;
+            if (_industryQuestIsClearHold)
+            {
+                OnIndustryQuestClearHoldRequested?.Invoke();
+                return true;
+            }
             if (_industryQuestIsWayfinder)
             {
                 OnIndustryQuestWayfinderRequested?.Invoke();
@@ -307,21 +314,28 @@ namespace TacSim.UI
             bool showInd = showRefit || showReadyTurnIn;
             _industryQuestCommand = string.Empty;
             _industryQuestIsWayfinder = false;
+            _industryQuestIsClearHold = false;
             _industryQuestClosesTradeModal = false;
             if (_industryQuestBanner != null)
             {
                 _industryQuestBanner.SetActive(showInd);
                 if (showRefit)
                 {
+                    bool hasStowageSummary = !string.IsNullOrEmpty(refitReadinessSummary);
+                    bool refitBlocked = hasStowageSummary && !refitReady;
+                    _industryQuestIsClearHold = refitBlocked;
                     _industryQuestCommand = coopActionCommand.Trim();
                     if (_industryQuestLabel != null)
                     {
                         string hdr = string.IsNullOrEmpty(coopActionLabel) ? "REFIT DRAY-P" : coopActionLabel.ToUpperInvariant();
-                        string detail = string.IsNullOrEmpty(refitReadinessSummary) ? _industryQuestCommand : refitReadinessSummary;
-                        _industryQuestLabel.text = $"[QUEST] {hdr} — {detail}{stepSuffix}";
+                        string detail = hasStowageSummary ? refitReadinessSummary : _industryQuestCommand;
+                        string prefix = refitBlocked
+                            ? "[CLEAR HOLD FIRST]"
+                            : (hasStowageSummary ? "[READY TO REFIT]" : "[QUEST]");
+                        _industryQuestLabel.text = $"{prefix} {hdr} — {detail}{stepSuffix}";
                     }
                     if (_industryQuestBtnLabel != null)
-                        _industryQuestBtnLabel.text = $"Run {_industryQuestCommand}";
+                        _industryQuestBtnLabel.text = refitBlocked ? "CLEAR HOLD AT EXCHANGE" : $"Run {_industryQuestCommand}";
                     if (_industryQuestBannerBg != null)
                         _industryQuestBannerBg.color = refitReady
                             ? new Color(0.08f, 0.34f, 0.22f, 0.94f)
