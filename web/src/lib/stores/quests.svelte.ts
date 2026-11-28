@@ -588,14 +588,30 @@ export function inferStationPortFromRoomEntry(
   return null;
 }
 
+/**
+ * True when the tracked quest requires an active surface mining expedition
+ * (`scan` / `sound` / `mine` not yet complete) so a player standing ashore in a station
+ * should head to Berth Gallery and board their Dray-P rather than staying at the turn-in desk.
+ */
+export function needsSurfaceExpeditionBoarding(
+  active: readonly ActiveQuestView[],
+  trackedKey: string | null,
+): boolean {
+  const tracked = orderedActiveQuests(active, trackedKey)[0] ?? null;
+  if (!tracked || tracked.readyToFinish || tracked.canFinishNow) return false;
+  const mining = extractActiveSurfaceMiningStatus(active, trackedKey);
+  return mining !== null && !mining.mineDone;
+}
+
 export function resolveQuestShipTargetCompartment(
   active: readonly ActiveQuestView[],
   trackedKey: string | null,
   dockedPortId: string | null = null,
+  settledPad = false,
 ): "airlock" | "bay" | "bridge" | null {
   const mining = extractActiveSurfaceMiningStatus(active, trackedKey);
   const dockedNorm = dockedPortId?.trim().toLowerCase() ?? "";
-  if (dockedNorm) {
+  if (dockedNorm && !settledPad) {
     const tracked = orderedActiveQuests(active, trackedKey)[0] ?? null;
     if (tracked && (!mining || mining.mineDone || tracked.readyToFinish || tracked.canFinishNow)) {
       const targetEntry =
@@ -608,8 +624,14 @@ export function resolveQuestShipTargetCompartment(
       }
     }
   }
-  if (mining && !mining.mineDone) {
-    return "bay";
+  if (mining) {
+    if (!mining.mineDone) {
+      // Docked inside an orbital station berth -> head to Bridge to undock and land at a surface site;
+      // once settled on a surface landing pad (or when station-docked is unset) -> head to Vehicle Bay.
+      return dockedNorm && !settledPad ? "bridge" : "bay";
+    }
+    // Mining done, not yet docked at turn-in station -> head to Bridge to lift off & return to port.
+    return "bridge";
   }
   const dest = extractActiveDestinationPort(active, trackedKey);
   if (dest) {

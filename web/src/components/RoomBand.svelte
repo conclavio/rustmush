@@ -14,6 +14,7 @@
   } from "$lib/tacsim/spatial";
   import {
     needsOriginPortProcurement,
+    needsSurfaceExpeditionBoarding,
     resolveQuestShipTargetCompartment,
   } from "$lib/stores/quests.svelte";
 
@@ -34,13 +35,16 @@
     if (!quests || !tacsim) return null;
     if (tacsim.isAboardShip) {
       if (tacsim.seatedAtBridgeHelm) return null;
-      const dockedPortId = tacsim.ambient?.docked
-        ? normalizePortVenueTarget(tacsim.ambient?.port ?? tacsim.trade?.hullPort)
-        : null;
+      const settledPad = Boolean(tacsim.ambient?.settledPad);
+      const dockedPortId =
+        tacsim.ambient?.docked && !settledPad
+          ? normalizePortVenueTarget(tacsim.ambient?.port ?? tacsim.trade?.hullPort)
+          : null;
       const targetComp = resolveQuestShipTargetCompartment(
         quests.active,
         quests.trackedKey,
         dockedPortId,
+        settledPad,
       );
       const currentComp =
         (tacsim.view3dOpen ? tacsim.physicalLocationKey : null) ?? tacsim.serverShipCompartment;
@@ -63,11 +67,13 @@
       quests.trackedKey,
       liveStowage,
     );
+    const needsShipExpedition = needsSurfaceExpeditionBoarding(quests.active, quests.trackedKey);
     return computeNextQuestExitBreadcrumb(
       tacsim.stationPack,
       currentEntry,
       targetEntry,
       needsOriginExchange,
+      needsShipExpedition,
     );
   });
 

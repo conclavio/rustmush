@@ -6,6 +6,7 @@
   import type { GameApp } from "$lib/game.svelte";
   import {
     needsOriginPortProcurement,
+    needsSurfaceExpeditionBoarding,
     resolveQuestShipTargetCompartment,
   } from "$lib/stores/quests.svelte";
   import {
@@ -32,10 +33,17 @@
     if (!tracked || !tacsim) return null;
     if (tacsim.isAboardShip) {
       if (tacsim.seatedAtBridgeHelm) return null;
-      const dockedPortId = tacsim.ambient?.docked
-        ? normalizePortVenueTarget(tacsim.ambient?.port ?? tacsim.trade?.hullPort)
-        : null;
-      const targetComp = resolveQuestShipTargetCompartment(q.active, q.trackedKey, dockedPortId);
+      const settledPad = Boolean(tacsim.ambient?.settledPad);
+      const dockedPortId =
+        tacsim.ambient?.docked && !settledPad
+          ? normalizePortVenueTarget(tacsim.ambient?.port ?? tacsim.trade?.hullPort)
+          : null;
+      const targetComp = resolveQuestShipTargetCompartment(
+        q.active,
+        q.trackedKey,
+        dockedPortId,
+        settledPad,
+      );
       const currentComp =
         (tacsim.view3dOpen ? tacsim.physicalLocationKey : null) ?? tacsim.serverShipCompartment;
       return computeShipQuestBreadcrumb(tacsim.shipTemplate, currentComp, targetComp);
@@ -51,11 +59,13 @@
       tacsim.ambient?.stowage ??
       (tacsim.trade?.hullId ? tacsim.trade.stowage : null);
     const needsOriginExchange = needsOriginPortProcurement(q.active, q.trackedKey, liveStowage);
+    const needsShipExpedition = needsSurfaceExpeditionBoarding(q.active, q.trackedKey);
     return computeNextQuestExitBreadcrumb(
       tacsim.stationPack,
       currentEntry,
       targetEntry,
       needsOriginExchange,
+      needsShipExpedition,
     );
   });
 </script>
