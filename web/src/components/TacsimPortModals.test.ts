@@ -1519,4 +1519,83 @@ describe("TacsimPortModals Dray-P Vehicle Bay and Co-op Refit quest guidance", (
     await fireEvent.click(screen.getByRole("button", { name: /Surveys \(\+market\/jobs survey\)/i }));
     expect(onCmd2).toHaveBeenCalledWith("+market/jobs survey");
   });
+
+  it("guards Step 6 post-mine Sailing Plan with [RECOVER RIG FIRST] until ore is stowed, then shows [ORE HOLD READY]", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[5],
+          title: "Scan, Sound, and Mine a Landing Site",
+          turn_in_name: "Rosalind Qureshi-Mbeki",
+          next_room_entry: "room.c07_exchange",
+          next_room_name: "Exchange Hall",
+          checkpoints: [
+            { id: "scan_landing_site", title: "Scan site", checked: true, live_ready: true },
+            { id: "sound_mineral_pocket", title: "Sound pocket", checked: true, live_ready: true },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", checked: true, live_ready: true },
+            {
+              id: "return_exchange",
+              title: "Return to Ceres Freeport",
+              instructions: "Fly back to Ceres Freeport (+ship/plan ceres) and report to Rosalind.",
+              room_entry: "room.c07_exchange",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    // 1. Landed at Freeport Commons with 0t carbon_ore in ship hold -> [RECOVER RIG FIRST] + 1-click Recover Rig
+    const onCmd1 = vi.fn();
+    const recApp = makeApp(quests, "sailing", {
+      cargoKg: 0,
+      cargoMaxKg: 100_000,
+      cargoL: 0,
+      cargoMaxL: 120_000,
+      propellantKg: 10_000,
+      propellantMaxKg: 80_000,
+      provisionsCrewDays: 10,
+      provisionsMaxCrewDays: 120,
+      cargoLines: [],
+    });
+    recApp.tacsim.trade.venueId = "commons";
+    recApp.tacsim.trade.venueLabel = "Freeport Commons";
+    recApp.tacsim.trade.portName = "Freeport Commons";
+    recApp.tacsim.trade.hullPort = "commons";
+    const r1 = render(TacsimPortModals, { props: { app: recApp, onCmd: onCmd1 } });
+    const guardBanner = screen.getByRole("status", { name: "active quest rig recovery guard" });
+    expect(guardBanner.textContent).toContain("[RECOVER RIG FIRST] Step 6/7");
+    expect(guardBanner.textContent).toContain("STOW CARBON ORE BEFORE DEPARTURE");
+    await fireEvent.click(screen.getByRole("button", { name: /Recover Rig \(\+tv\/1 recover go\)/i }));
+    expect(onCmd1).toHaveBeenCalledWith("+tv/1 recover go");
+    await fireEvent.click(screen.getByRole("button", { name: /Open Vehicle Bay/i }));
+    expect(recApp.tacsim.activeModal).toBe("rig");
+    r1.unmount();
+
+    // 2. Rig recovered (1t carbon_ore in ship hold) -> [ORE HOLD READY] RETURN TO: CERES FREEPORT + Select Quest Port
+    const stowedApp = makeApp(quests, "sailing", {
+      cargoKg: 1000,
+      cargoMaxKg: 100_000,
+      cargoL: 1000,
+      cargoMaxL: 120_000,
+      propellantKg: 10_000,
+      propellantMaxKg: 80_000,
+      provisionsCrewDays: 10,
+      provisionsMaxCrewDays: 120,
+      cargoLines: [{ good: "tacsim:carbon_ore", label: "Carbon Ore", qty: 1, unit: "t", massKg: 1000 }],
+    });
+    stowedApp.tacsim.trade.venueId = "commons";
+    stowedApp.tacsim.trade.venueLabel = "Freeport Commons";
+    stowedApp.tacsim.trade.portName = "Freeport Commons";
+    stowedApp.tacsim.trade.hullPort = "commons";
+    render(TacsimPortModals, { props: { app: stowedApp, onCmd: vi.fn() } });
+    const destBanner = screen.getByRole("status", { name: "active quest destination" });
+    expect(destBanner.textContent).toContain("[ORE HOLD READY] Step 6/7");
+    expect(destBanner.textContent).toContain("RETURN TO: CERES FREEPORT");
+    await fireEvent.click(screen.getByRole("button", { name: /Select Quest Port \(ceres\)/i }));
+    expect(stowedApp.tacsim.selectedDestination).toBe("ceres");
+  });
 });
