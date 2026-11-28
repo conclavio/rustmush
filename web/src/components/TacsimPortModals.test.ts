@@ -985,4 +985,109 @@ describe("TacsimPortModals Dray-P Vehicle Bay and Co-op Refit quest guidance", (
     expect(stickneyBanner.textContent).not.toContain("do not sell here");
     expect(screen.queryByRole("button", { name: /Sail → Stickney Yards/i })).toBeNull();
   });
+
+  it("guides Step 5 Refit hold-clearing in Port Exchange (highlights stowed/provisions bids, flips to Co-op Desk handoff when clear)", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[4],
+          title: "Refit the Dray for Surface Mining",
+          next_room_entry: "room.c05_registry",
+          checkpoints: [
+            {
+              id: "refit_dray_p",
+              title: "Refit your Dray into a Dray-P prospector",
+              instructions: "Clear cargo and provisions, then run +coop/refit prospector at Registry.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    // 1. Leftover 2t metals + 8d provisions -> shows [REFIT PREP] banner & highlights matching bid rows first
+    const blockedApp = makeApp(quests, "trade", {
+      cargoKg: 2000,
+      cargoMaxKg: 100_000,
+      cargoL: 2000,
+      cargoMaxL: 120_000,
+      propellantKg: 15_000,
+      propellantMaxKg: 80_000,
+      provisionsCrewDays: 8,
+      provisionsMaxCrewDays: 120,
+      cargoLines: [{ good: "tacsim:metals", label: "Metals", qty: 2, unit: "t", massKg: 2000 }],
+    });
+    blockedApp.tacsim.trade.bids = [
+      {
+        listingId: 901,
+        side: "bid",
+        goodId: "tacsim:silicates",
+        itemName: "Silicates",
+        vendorName: "Ceres Works",
+        venue: "Ceres Freeport",
+        quantity: 20,
+        unit: "t",
+        unitPriceMinor: 1200,
+        unitPriceText: "12 cr",
+        funded: true,
+      },
+      {
+        listingId: 902,
+        side: "bid",
+        goodId: "tacsim:provisions",
+        itemName: "Provisions",
+        vendorName: "Co-op Chandlery",
+        venue: "Ceres Freeport",
+        quantity: 30,
+        unit: "d",
+        unitPriceMinor: 400,
+        unitPriceText: "4 cr",
+        funded: true,
+      },
+      {
+        listingId: 903,
+        side: "bid",
+        goodId: "tacsim:metals",
+        itemName: "Metals",
+        vendorName: "Ceres Exchange",
+        venue: "Ceres Freeport",
+        quantity: 25,
+        unit: "t",
+        unitPriceMinor: 900,
+        unitPriceText: "9 cr",
+        funded: true,
+      },
+    ];
+
+    const rBlocked = render(TacsimPortModals, { props: { app: blockedApp, onCmd: vi.fn() } });
+    const refitBanner = screen.getByRole("status", { name: "active quest refit hold clearing" });
+    expect(refitBanner.textContent).toContain("Step 5/7");
+    expect(refitBanner.textContent).toContain("[REFIT PREP] EMPTY HOLD BEFORE REFIT");
+    expect(refitBanner.textContent).toContain("Cargo 2.0t & Stores 8d");
+    expect(screen.getAllByText("[REFIT CLEAR]").length).toBe(2);
+    expect(screen.queryByRole("button", { name: /Co-op Desk \(\+coop\/refit\)/i })).toBeNull();
+    rBlocked.unmount();
+
+    // 2. Cargo & Provisions cleared (propellant stays in tank) -> [REFIT HOLD CLEAR] + 1-click Co-op Desk handoff
+    const clearApp = makeApp(quests, "trade", {
+      cargoKg: 0,
+      cargoMaxKg: 100_000,
+      cargoL: 0,
+      cargoMaxL: 120_000,
+      propellantKg: 15_000,
+      propellantMaxKg: 80_000,
+      provisionsCrewDays: 0,
+      provisionsMaxCrewDays: 120,
+      cargoLines: [],
+    });
+    render(TacsimPortModals, { props: { app: clearApp, onCmd: vi.fn() } });
+    const clearBanner = screen.getByRole("status", { name: "active quest refit hold clearing" });
+    expect(clearBanner.textContent).toContain("[REFIT HOLD CLEAR]");
+    const coopBtn = screen.getByRole("button", { name: /Co-op Desk \(\+coop\/refit\)/i });
+    await fireEvent.click(coopBtn);
+    expect(clearApp.tacsim.activeModal).toBe("coop");
+  });
 });
