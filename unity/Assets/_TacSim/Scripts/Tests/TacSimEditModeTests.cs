@@ -18711,5 +18711,83 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void GroundChart_GuardsStep6PostMineWithRecoverRigFirstAndOreHoldReady()
+        {
+            var rootGo = new UnityEngine.GameObject("GroundChartRecoverGuardTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.ShowLoginOverlay(false);
+                var tradeState = new TacSimTradeAndShipState();
+                hud.BindTradeState(tradeState);
+                string emitted = string.Empty;
+                hud.GroundChart.OnCommandRequested += c => emitted = c;
+
+                hud.GroundChart.SetOpen(true);
+
+                // 1. Step 6 post-mine with 0t ore stowed -> [RECOVER RIG FIRST] + RECOVER RIG -> +tv/1 recover go & close
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""commons"", ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 0, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 10000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": []
+                        }
+                    }
+                }"));
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""next_room_entry"": ""room.c07_exchange"",
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Scan"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""sound_mineral_pocket"", ""title"": ""Sound"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""checked"": true, ""live_ready"": true }
+                        ]
+                    }],
+                    ""available"": [], ""completed"": []
+                }")));
+                Assert.IsTrue(hud.GroundChart.HasQuestMiningBanner);
+                StringAssert.Contains("[RECOVER RIG FIRST]", hud.GroundChart.QuestMiningBannerText);
+                StringAssert.Contains("[Step 6/7]", hud.GroundChart.QuestMiningBannerText);
+                Assert.AreEqual("RECOVER RIG", hud.GroundChart.QuestBannerButtonLabelSnapshot);
+                Assert.IsTrue(hud.GroundChart.TriggerQuestBannerAction());
+                Assert.AreEqual("+tv/1 recover go", emitted);
+                Assert.IsFalse(hud.GroundChart.IsOpen, "RECOVER RIG should close Ground Chart modal");
+
+                // 2. Rig recovered (1t carbon_ore stowed) -> [ORE HOLD READY] + RETURN: CERES -> +ship/plan ceres
+                emitted = string.Empty;
+                hud.GroundChart.SetOpen(true);
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""commons"", ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 1000, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 10000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:carbon_ore"", ""label"": ""Carbon Ore"", ""qty"": 1 }]
+                        }
+                    }
+                }"));
+                StringAssert.Contains("[ORE HOLD READY]", hud.GroundChart.QuestMiningBannerText);
+                StringAssert.Contains("Return: Ceres Freeport (+ship/plan ceres)", hud.GroundChart.QuestMiningBannerText);
+                Assert.AreEqual("RETURN: CERES", hud.GroundChart.QuestBannerButtonLabelSnapshot);
+                Assert.IsTrue(hud.GroundChart.TriggerQuestBannerAction());
+                Assert.AreEqual("+ship/plan ceres", emitted);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

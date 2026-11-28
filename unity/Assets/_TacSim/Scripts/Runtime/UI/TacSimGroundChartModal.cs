@@ -245,6 +245,7 @@ namespace TacSim.UI
         private TacSimTradeAndShipState _tradeState;
         private string _questRecommendedFamily = string.Empty;
         private string _questReturnPortId = string.Empty;
+        private bool _questNeedsRigRecovery;
         private RawImage _mapImage;
         private RectTransform _mapRect;
         private Texture2D _mapTex;
@@ -472,6 +473,12 @@ namespace TacSim.UI
 
         public bool TriggerQuestBannerAction()
         {
+            if (_questNeedsRigRecovery)
+            {
+                SetOpen(false);
+                OnCommandRequested?.Invoke("+tv/1 recover go");
+                return true;
+            }
             if (!string.IsNullOrEmpty(_questReturnPortId))
             {
                 OnCommandRequested?.Invoke($"+ship/plan {_questReturnPortId}");
@@ -552,6 +559,7 @@ namespace TacSim.UI
         {
             if (_questBanner == null) return;
             _questReturnPortId = string.Empty;
+            _questNeedsRigRecovery = false;
             if (_questJournal != null && _questJournal.TryGetActiveSurfaceMiningStatus(out var qMine))
             {
                 _questRecommendedFamily = qMine.RecommendedFamily;
@@ -561,46 +569,60 @@ namespace TacSim.UI
                 string scanMark = qMine.ScanDone ? "<color=#55EE99>[✓]</color>" : "<color=#99BBCC>[ ]</color>";
                 string soundMark = qMine.SoundDone ? "<color=#55EE99>[✓]</color>" : "<color=#99BBCC>[ ]</color>";
                 string mineMark = qMine.MineDone ? "<color=#55EE99>[✓]</color>" : "<color=#99BBCC>[ ]</color>";
-                string holdTxt = _tradeState != null
-                    ? $"  ·  Hold: {_tradeState.GetHoldCommodityQuantity(qMine.TargetOreSlug)}t"
-                    : string.Empty;
+                bool hasStowage = _tradeState != null && !string.IsNullOrEmpty(_tradeState.ShipHullId);
+                int oreQty = _tradeState != null ? _tradeState.GetHoldCommodityQuantity(qMine.TargetOreSlug) : 0;
+                string holdTxt = _tradeState != null ? $"  ·  Hold: {oreQty}t" : string.Empty;
+                string leadTag = "[QUEST]";
                 string extra = string.Empty;
                 if (qMine.MineDone)
                 {
-                    string retPortId;
-                    string retPortLabel;
-                    if (_questJournal.TryGetActiveDestinationPort(out var returnDest))
+                    if (hasStowage && oreQty < 1)
                     {
-                        retPortId = returnDest.PortId;
-                        retPortLabel = returnDest.PortLabel;
+                        _questNeedsRigRecovery = true;
+                        leadTag = "[RECOVER RIG FIRST]";
+                        extra = "  ·  <color=#FFDD44>Recover rig (+tv/1 recover go) before returning to port</color>";
                     }
                     else
                     {
-                        retPortId = TacSimQuestJournal.InferStationPortFromRoomEntry(tracked?.NextRoomEntry);
-                        if (string.IsNullOrEmpty(retPortId)) retPortId = "ceres";
-                        retPortLabel = retPortId switch
+                        if (hasStowage && oreQty >= 1)
+                            leadTag = "[ORE HOLD READY]";
+                        string retPortId;
+                        string retPortLabel;
+                        if (_questJournal.TryGetActiveDestinationPort(out var returnDest))
                         {
-                            "stickney" => "Stickney Yards",
-                            "luna" => "Aitken Basin",
-                            "deimos" => "Voltaire Base",
-                            "titan" => "Ligeia Dock",
-                            _ => "Ceres Freeport"
-                        };
+                            retPortId = returnDest.PortId;
+                            retPortLabel = returnDest.PortLabel;
+                        }
+                        else
+                        {
+                            retPortId = TacSimQuestJournal.InferStationPortFromRoomEntry(tracked?.NextRoomEntry);
+                            if (string.IsNullOrEmpty(retPortId)) retPortId = "ceres";
+                            retPortLabel = retPortId switch
+                            {
+                                "stickney" => "Stickney Yards",
+                                "luna" => "Aitken Basin",
+                                "deimos" => "Voltaire Base",
+                                "titan" => "Ligeia Dock",
+                                _ => "Ceres Freeport"
+                            };
+                        }
+                        _questReturnPortId = retPortId;
+                        extra = $"  ·  <color=#55EE99>Return: {MushProtocol.EscapeUnityRichText(retPortLabel)} (+ship/plan {MushProtocol.EscapeUnityRichText(retPortId)})</color>";
                     }
-                    _questReturnPortId = retPortId;
-                    extra = $"  ·  <color=#55EE99>Return: {MushProtocol.EscapeUnityRichText(retPortLabel)} (+ship/plan {MushProtocol.EscapeUnityRichText(retPortId)})</color>";
                 }
                 else if (TryGetRecommendedQuestSite(out var recSite))
                 {
                     extra = $"  ·  <color=#FFDD44>Site: [!]{MushProtocol.EscapeUnityRichText(recSite.Site)} (+ship/plan {MushProtocol.EscapeUnityRichText(recSite.Venue)})</color>";
                 }
                 if (_questBannerText != null)
-                    _questBannerText.text = $"[QUEST]{stepTag} {scanMark} Scan  {soundMark} Sound  {mineMark} Mine {MushProtocol.EscapeUnityRichText(qMine.TargetOreSlug)}{holdTxt}{extra}";
+                    _questBannerText.text = $"{leadTag}{stepTag} {scanMark} Scan  {soundMark} Sound  {mineMark} Mine {MushProtocol.EscapeUnityRichText(qMine.TargetOreSlug)}{holdTxt}{extra}";
                 if (_questWashBtnLbl != null)
                 {
-                    _questWashBtnLbl.text = !string.IsNullOrEmpty(_questReturnPortId)
-                        ? $"RETURN: {_questReturnPortId.ToUpperInvariant()}"
-                        : $"{qMine.RecommendedFamily.ToUpperInvariant()} WASH";
+                    _questWashBtnLbl.text = _questNeedsRigRecovery
+                        ? "RECOVER RIG"
+                        : (!string.IsNullOrEmpty(_questReturnPortId)
+                            ? $"RETURN: {_questReturnPortId.ToUpperInvariant()}"
+                            : $"{qMine.RecommendedFamily.ToUpperInvariant()} WASH");
                 }
                 _questBanner.SetActive(true);
                 if (_sitesListBoxRect != null)
@@ -621,6 +643,8 @@ namespace TacSim.UI
             SelectedSiteVenue = string.Empty;
             SelectedSiteLetter = string.Empty;
             ActiveFamily = "volatiles";
+            _questNeedsRigRecovery = false;
+            _questReturnPortId = string.Empty;
             SetOpen(false);
             RefreshUi();
         }
