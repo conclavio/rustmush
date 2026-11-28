@@ -172,6 +172,11 @@ namespace TacSim.UI
         private Text _industryQuestLabel;
         private Text _industryQuestBtnLabel;
         private string _industryQuestCommand = string.Empty;
+        private bool _industryQuestIsWayfinder;
+        private bool _industryQuestClosesTradeModal;
+
+        public event Action OnIndustryQuestWayfinderRequested;
+        public event Action OnIndustryQuestTurnInDispatched;
 
         private Text _haulGoodBtnLabel;
         private InputField _jobIdInput;
@@ -188,6 +193,7 @@ namespace TacSim.UI
         public string HistoryQuestBannerTextForTests => _historyQuestLabel != null ? _historyQuestLabel.text : string.Empty;
         public bool IsIndustryQuestBannerVisible => _industryQuestBanner != null && _industryQuestBanner.activeSelf;
         public string IndustryQuestBannerTextForTests => _industryQuestLabel != null ? _industryQuestLabel.text : string.Empty;
+        public string IndustryQuestButtonLabelForTests => _industryQuestBtnLabel != null ? _industryQuestBtnLabel.text : string.Empty;
         public bool IsJobsQuestBannerVisible => _jobsQuestBanner != null && _jobsQuestBanner.activeSelf;
         public string JobsQuestBannerTextForTests => _jobsQuestLabel != null ? _jobsQuestLabel.text : string.Empty;
 
@@ -209,8 +215,16 @@ namespace TacSim.UI
 
         public bool TriggerIndustryQuestActionForTests()
         {
-            if (!IsIndustryQuestBannerVisible || string.IsNullOrEmpty(_industryQuestCommand)) return false;
+            if (!IsIndustryQuestBannerVisible) return false;
+            if (_industryQuestIsWayfinder)
+            {
+                OnIndustryQuestWayfinderRequested?.Invoke();
+                return true;
+            }
+            if (string.IsNullOrEmpty(_industryQuestCommand)) return false;
             _emitCommand?.Invoke(_industryQuestCommand);
+            if (_industryQuestClosesTradeModal)
+                OnIndustryQuestTurnInDispatched?.Invoke();
             return true;
         }
 
@@ -244,7 +258,10 @@ namespace TacSim.UI
             bool refitReady,
             string questDestPortLabel = null,
             bool hasSurfaceMiningQuest = false,
-            string questStepTag = null)
+            string questStepTag = null,
+            string readyTurnInSummary = null,
+            string readyTurnInCommand = null,
+            bool readyTurnInWayfinder = false)
         {
             _questHistorySlug = (tradeCommoditySlug ?? string.Empty).Trim().ToLowerInvariant();
             _questHistoryTitle = (tradeQuestTitle ?? string.Empty).Trim();
@@ -265,14 +282,19 @@ namespace TacSim.UI
                 _historyViewportRect.offsetMax = new Vector2(0f, showHist ? -206f : -164f);
             HighlightGoodButtons(FindHistoryGoodIndex(SelectedHistoryGood));
 
-            bool showInd = !string.IsNullOrEmpty(coopActionCommand) &&
-                           coopActionCommand.StartsWith("+coop/refit", StringComparison.OrdinalIgnoreCase);
-            _industryQuestCommand = showInd ? coopActionCommand.Trim() : string.Empty;
+            bool showRefit = !string.IsNullOrEmpty(coopActionCommand) &&
+                             coopActionCommand.StartsWith("+coop/refit", StringComparison.OrdinalIgnoreCase);
+            bool showReadyTurnIn = !showRefit && !string.IsNullOrWhiteSpace(readyTurnInSummary);
+            bool showInd = showRefit || showReadyTurnIn;
+            _industryQuestCommand = string.Empty;
+            _industryQuestIsWayfinder = false;
+            _industryQuestClosesTradeModal = false;
             if (_industryQuestBanner != null)
             {
                 _industryQuestBanner.SetActive(showInd);
-                if (showInd)
+                if (showRefit)
                 {
+                    _industryQuestCommand = coopActionCommand.Trim();
                     if (_industryQuestLabel != null)
                     {
                         string hdr = string.IsNullOrEmpty(coopActionLabel) ? "REFIT DRAY-P" : coopActionLabel.ToUpperInvariant();
@@ -283,6 +305,21 @@ namespace TacSim.UI
                         _industryQuestBtnLabel.text = $"Run {_industryQuestCommand}";
                     if (_industryQuestBannerBg != null)
                         _industryQuestBannerBg.color = refitReady
+                            ? new Color(0.08f, 0.34f, 0.22f, 0.94f)
+                            : new Color(0.32f, 0.24f, 0.08f, 0.94f);
+                }
+                else if (showReadyTurnIn)
+                {
+                    bool canFinishHere = !string.IsNullOrWhiteSpace(readyTurnInCommand);
+                    _industryQuestCommand = canFinishHere ? readyTurnInCommand.Trim() : string.Empty;
+                    _industryQuestIsWayfinder = !canFinishHere && readyTurnInWayfinder;
+                    _industryQuestClosesTradeModal = true;
+                    if (_industryQuestLabel != null)
+                        _industryQuestLabel.text = $"{readyTurnInSummary.Trim()}{stepSuffix}";
+                    if (_industryQuestBtnLabel != null)
+                        _industryQuestBtnLabel.text = canFinishHere ? "TURN IN (?)" : "WAYFINDER";
+                    if (_industryQuestBannerBg != null)
+                        _industryQuestBannerBg.color = canFinishHere
                             ? new Color(0.08f, 0.34f, 0.22f, 0.94f)
                             : new Color(0.32f, 0.24f, 0.08f, 0.94f);
                 }

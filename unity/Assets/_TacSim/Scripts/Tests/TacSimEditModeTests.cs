@@ -17048,5 +17048,103 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void WorksYardAndCoopDesk_ShowQuestReadyTurnInAndWayfinderHandoffOnceActionCompletes()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave96PR3_WorksAndCoopReadyTurnInTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                var tradeState = new TacSimTradeAndShipState();
+                hud.BindTradeState(tradeState);
+                hud.QuestJournal.BindTradeState(tradeState);
+
+                var submitted = new System.Collections.Generic.List<string>();
+                string wayfinderRoom = null;
+                hud.OnCommandSubmitted += submitted.Add;
+                hud.QuestJournal.OnWayfinderRoomRequested += r => wayfinderRoom = r;
+
+                // 1. Step 1 enrolled -> Ilse here -> Works & Yard shows [QUEST READY] + TURN IN (?) & Co-op Desk markup shows ready
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                        ""title"": ""First Papers at the Registry"",
+                        ""turn_in_name"": ""Ilse Oduya-Brandt"",
+                        ""next_room_entry"": ""room.c05_registry"",
+                        ""next_room_name"": ""Registry & Co-op Desk"",
+                        ""ready_to_finish"": true,
+                        ""can_finish_now"": true,
+                        ""finish_cmd"": ""+quest/finish #55=tok-step1"",
+                        ""checkpoints"": [{
+                            ""id"": ""enroll_coop"",
+                            ""title"": ""Enroll in Belt Co-op"",
+                            ""checked"": true,
+                            ""live_ready"": true
+                        }]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                hud.OpenTradeAndSailingModal("WORKS & YARD", openSailingTab: false);
+                hud.SwitchTradeTerminalTab(TacSim.UI.TradeTerminalTab.Industry, autoQuery: false);
+
+                Assert.IsTrue(hud.EconomyPanels.IsIndustryQuestBannerVisible);
+                StringAssert.Contains("[QUEST READY]", hud.EconomyPanels.IndustryQuestBannerTextForTests);
+                StringAssert.Contains("[Step 1/7]", hud.EconomyPanels.IndustryQuestBannerTextForTests);
+                StringAssert.Contains("Ilse Oduya-Brandt", hud.EconomyPanels.IndustryQuestBannerTextForTests);
+                Assert.AreEqual("TURN IN (?)", hud.EconomyPanels.IndustryQuestButtonLabelForTests);
+                Assert.IsTrue(hud.EconomyPanels.TriggerIndustryQuestActionForTests());
+                CollectionAssert.AreEqual(new[] { "+quest/finish #55=tok-step1" }, submitted);
+
+                string coopStep1 = TacSim.Core.TacSimGameCoordinator.FormatCoopReadyTurnInBannerMarkup(hud.QuestJournal.GetTrackedActiveQuest());
+                StringAssert.Contains("[QUEST READY]", coopStep1);
+                StringAssert.Contains("[Step 1/7]", coopStep1);
+                StringAssert.Contains("Ilse Oduya-Brandt", coopStep1);
+
+                // 2. Step 5 refitted -> Return to Rosalind in Exchange Hall -> WAYFINDER triggers room.c07_exchange
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"",
+                        ""title"": ""Refit the Dray for Surface Mining"",
+                        ""turn_in_name"": ""Rosalind Qureshi-Mbeki"",
+                        ""next_room_entry"": ""room.c07_exchange"",
+                        ""next_room_name"": ""Exchange Hall"",
+                        ""ready_to_finish"": true,
+                        ""can_finish_now"": false,
+                        ""checkpoints"": [{
+                            ""id"": ""refit_dray_p"",
+                            ""title"": ""Refit Dray-P"",
+                            ""checked"": true,
+                            ""live_ready"": true
+                        }]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                hud.OpenTradeAndSailingModal("WORKS & YARD", openSailingTab: false);
+                hud.SwitchTradeTerminalTab(TacSim.UI.TradeTerminalTab.Industry, autoQuery: false);
+
+                Assert.IsTrue(hud.EconomyPanels.IsIndustryQuestBannerVisible);
+                StringAssert.Contains("[QUEST READY]", hud.EconomyPanels.IndustryQuestBannerTextForTests);
+                StringAssert.Contains("[Step 5/7]", hud.EconomyPanels.IndustryQuestBannerTextForTests);
+                StringAssert.Contains("Rosalind Qureshi-Mbeki (Exchange Hall)", hud.EconomyPanels.IndustryQuestBannerTextForTests);
+                Assert.AreEqual("WAYFINDER", hud.EconomyPanels.IndustryQuestButtonLabelForTests);
+                Assert.IsTrue(hud.EconomyPanels.TriggerIndustryQuestActionForTests());
+                Assert.AreEqual("room.c07_exchange", wayfinderRoom);
+
+                string coopStep5 = TacSim.Core.TacSimGameCoordinator.FormatCoopReadyTurnInBannerMarkup(hud.QuestJournal.GetTrackedActiveQuest());
+                StringAssert.Contains("[QUEST READY]", coopStep5);
+                StringAssert.Contains("[Step 5/7]", coopStep5);
+                StringAssert.Contains("Exchange Hall", coopStep5);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

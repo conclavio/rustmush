@@ -1237,6 +1237,15 @@ namespace TacSim.UI
                     ? _boundTradeState.ShipHullId
                     : _activeHullRef);
             EconomyPanels.BuildSubPanels(_tradePanel.transform);
+            EconomyPanels.OnIndustryQuestTurnInDispatched += () =>
+            {
+                if (_tradePanel != null) _tradePanel.SetActive(false);
+            };
+            EconomyPanels.OnIndustryQuestWayfinderRequested += () =>
+            {
+                if (_tradePanel != null) _tradePanel.SetActive(false);
+                QuestJournal?.TriggerTrackerWayfinder();
+            };
 
             _sailingTabBody.SetActive(false);
             _tradePanel.SetActive(false);
@@ -2622,6 +2631,24 @@ namespace TacSim.UI
             string destPortLabel = QuestJournal.TryGetActiveDestinationPort(out var destHint)
                 ? destHint.PortLabel
                 : string.Empty;
+            string readyTurnInSummary = string.Empty;
+            string readyTurnInCommand = string.Empty;
+            bool readyTurnInWayfinder = false;
+            if (string.IsNullOrEmpty(coopCmd) && active != null && (active.CanFinishNow || active.ReadyToFinish))
+            {
+                string npcName = string.IsNullOrEmpty(active.TurnInName) ? "quest contact" : active.TurnInName;
+                if (active.CanFinishNow && !string.IsNullOrEmpty(active.FinishCmd))
+                {
+                    readyTurnInSummary = $"[QUEST READY] {active.Title} — Ready to turn in to {npcName} here";
+                    readyTurnInCommand = active.FinishCmd;
+                }
+                else
+                {
+                    string roomPart = string.IsNullOrEmpty(active.NextRoomName) ? string.Empty : $" ({active.NextRoomName})";
+                    readyTurnInSummary = $"[QUEST READY] {active.Title} — Return to {npcName}{roomPart}";
+                    readyTurnInWayfinder = true;
+                }
+            }
             EconomyPanels.ApplyQuestGuidance(
                 tradeSlug,
                 tradeTitle,
@@ -2631,7 +2658,10 @@ namespace TacSim.UI
                 refitReady,
                 questDestPortLabel: destPortLabel,
                 hasSurfaceMiningQuest: hasMining,
-                questStepTag: ResolveActiveQuestStepTag());
+                questStepTag: ResolveActiveQuestStepTag(),
+                readyTurnInSummary: readyTurnInSummary,
+                readyTurnInCommand: readyTurnInCommand,
+                readyTurnInWayfinder: readyTurnInWayfinder);
         }
 
         public void SwitchTradeTerminalTab(TradeTerminalTab tab, bool autoQuery = true)

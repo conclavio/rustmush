@@ -2400,10 +2400,29 @@ namespace TacSim.Core
             return $"<color=#FFCC44><b>[CLEAR HOLD FIRST]</b> Cargo: {cargoStatus}  |  Stores: {storesStatus}  |  Tank: {refit.PropellantTonnes}t OK</color>";
         }
 
+        public static string FormatCoopReadyTurnInBannerMarkup(MushActiveQuest active)
+        {
+            if (active == null || (!active.CanFinishNow && !active.ReadyToFinish))
+                return string.Empty;
+            int step = TacSimQuestJournal.GuidedStepNumber(active.Key);
+            string stepTag = step > 0 ? $" [Step {step}/7]" : string.Empty;
+            string safeTitle = MushProtocol.EscapeUnityRichText(active.Title);
+            string safeNpc = MushProtocol.EscapeUnityRichText(string.IsNullOrEmpty(active.TurnInName) ? "quest contact" : active.TurnInName);
+            if (active.CanFinishNow && !string.IsNullOrEmpty(active.FinishCmd))
+            {
+                return $"<color=#55EE99><b>[QUEST READY]{stepTag} {safeTitle}</b></color> — Ready to turn in to <b>{safeNpc}</b> here\n\n";
+            }
+            string roomPart = string.IsNullOrEmpty(active.NextRoomName)
+                ? string.Empty
+                : $" ({MushProtocol.EscapeUnityRichText(active.NextRoomName)})";
+            return $"<color=#FFDD44><b>[QUEST READY]{stepTag} {safeTitle}</b></color> — Return to <b>{safeNpc}</b>{roomPart}\n\n";
+        }
+
         private void ShowCoopEnrolPrompt()
         {
             string suggested = SuggestUniqueHullName();
             string questBanner = string.Empty;
+            var actions = new List<(string, Action)>();
             if (Hud?.QuestJournal != null &&
                 Hud.QuestJournal.TryGetActiveCoopAction(out string qTitle, out string qLbl, out _))
             {
@@ -2414,22 +2433,38 @@ namespace TacSim.Core
                 }
                 questBanner += "\n";
             }
+            else if (Hud?.QuestJournal != null)
+            {
+                var readyActive = Hud.QuestJournal.GetTrackedActiveQuest();
+                if (readyActive != null && (readyActive.CanFinishNow || readyActive.ReadyToFinish))
+                {
+                    questBanner = FormatCoopReadyTurnInBannerMarkup(readyActive);
+                    if (readyActive.CanFinishNow && !string.IsNullOrEmpty(readyActive.FinishCmd))
+                    {
+                        string finishCmd = readyActive.FinishCmd;
+                        actions.Add(("Turn In Quest (?)", () => ExecutePlayerCommand(finishCmd)));
+                    }
+                    else
+                    {
+                        string destLabel = string.IsNullOrEmpty(readyActive.NextRoomName) ? "Objective" : readyActive.NextRoomName;
+                        actions.Add(($"Wayfinder -> {destLabel}", () => Hud.QuestJournal.TriggerTrackerWayfinder()));
+                    }
+                }
+            }
+            actions.Add(("Read Terms (+coop)", () => ExecutePlayerCommand("+coop")));
+            actions.Add(("Enroll Charter Hull", () =>
+            {
+                string chosenName = Hud.GetModalInputValue();
+                if (string.IsNullOrWhiteSpace(chosenName))
+                    chosenName = suggested;
+                ExecutePlayerCommand($"+coop/enroll {chosenName}");
+            }));
+            actions.Add(("Refit Dray-P (+coop/refit prospector)", () => ExecutePlayerCommand("+coop/refit prospector")));
+            actions.Add(("Account Statement", () => ExecutePlayerCommand("+coop/statement")));
             Hud.ShowDetailModal(
                 "CO-OP FIRST CAPTAIN DESK",
                 $"{questBanner}The Co-op stakes the Dray hull and your first hold; it takes its lay from settled sales until buyout.\n\nEnter your hull's registry name below (must be unique on the server) and click <b>Enroll Charter Hull</b>:",
-                new List<(string, Action)>
-                {
-                    ("Read Terms (+coop)", () => ExecutePlayerCommand("+coop")),
-                    ("Enroll Charter Hull", () =>
-                    {
-                        string chosenName = Hud.GetModalInputValue();
-                        if (string.IsNullOrWhiteSpace(chosenName))
-                            chosenName = suggested;
-                        ExecutePlayerCommand($"+coop/enroll {chosenName}");
-                    }),
-                    ("Refit Dray-P (+coop/refit prospector)", () => ExecutePlayerCommand("+coop/refit prospector")),
-                    ("Account Statement", () => ExecutePlayerCommand("+coop/statement"))
-                },
+                actions,
                 commandPrefix: "+coop/enroll",
                 defaultInputValue: suggested);
         }
