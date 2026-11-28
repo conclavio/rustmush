@@ -232,7 +232,8 @@ describe("QuestTrackerPanel route step, guided tour pill, and quick-accept", () 
     } as unknown as GameApp;
 
     render(QuestTrackerPanel, { props: { app: appMine, onCmd: onCmdMine } });
-    const bayBtn = screen.getByRole("button", { name: /Walk → Vehicle Bay \(1h\)/i });
+    expect(screen.getByText("Step 6/7")).toBeTruthy();
+    const bayBtn = screen.getByRole("button", { name: /^Enter Vehicle Bay$/i });
     await fireEvent.click(bayBtn);
     expect(onCmdMine).toHaveBeenCalledWith("+tv/bay in");
   });
@@ -619,6 +620,7 @@ describe("QuestTrackerPanel route step, guided tour pill, and quick-accept", () 
     render(QuestTrackerPanel, { props: { app, onCmd } });
 
     const offerBanner = screen.getByLabelText("Available quest");
+    expect(offerBanner.textContent).toContain("Step 1/7");
     expect(offerBanner.textContent).toContain("Maren Halvorsen");
     expect(offerBanner.textContent).toContain("First Papers");
     expect(offerBanner.textContent).toContain("(+1 more)");

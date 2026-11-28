@@ -23,6 +23,9 @@
 
   const q = $derived(app.quests);
   const tracked = $derived(q.trackedQuest);
+  const trackedStep = $derived(
+    tracked ? (GUIDED_TOUR_KEYS.indexOf(tracked.key) >= 0 ? GUIDED_TOUR_KEYS.indexOf(tracked.key) + 1 : null) : null,
+  );
   const suggested = $derived(q.suggestedAction);
   const tour = $derived(q.guidedTourProgress);
   const firstOffer = $derived(
@@ -31,6 +34,13 @@
     ) ??
       q.available[0] ??
       null,
+  );
+  const firstOfferStep = $derived(
+    firstOffer
+      ? GUIDED_TOUR_KEYS.indexOf(firstOffer.key) >= 0
+        ? GUIDED_TOUR_KEYS.indexOf(firstOffer.key) + 1
+        : null
+      : null,
   );
   const extraOfferCount = $derived(Math.max(0, q.available.length - 1));
   const otherReadyHere = $derived(
@@ -143,6 +153,9 @@
       <button type="button" class="qtitle" onclick={() => q.openQuestDialog(tracked.key)}>
         {tracked.title}
       </button>
+      {#if trackedStep !== null}
+        <span class="step-pill">Step {trackedStep}/7</span>
+      {/if}
       <span class="progress">
         ({doneCount}/{tracked.checkpoints.length})
       </span>
@@ -236,6 +249,8 @@
             Board Ship
           {:else if routeCrumb.nextExitCommand === "+ship/leave"}
             Cycle Ashore
+          {:else if routeCrumb.nextExitCommand === "+tv/bay in" || routeCrumb.nextExitCommand === "+tv/bay"}
+            Enter Vehicle Bay
           {:else}
             Walk → {routeCrumb.nextRoomName} ({routeCrumb.hops}h)
           {/if}
@@ -296,6 +311,9 @@
   <section class="tracker offer-hint" aria-label="Available quest">
     <div class="tracker-bar">
       <span class="qmark" data-marker="available">!</span>
+      {#if firstOfferStep !== null}
+        <span class="step-pill">Step {firstOfferStep}/7</span>
+      {/if}
       <span class="inline-next">
         <strong>{firstOffer.giverName}</strong> offers: <em>{firstOffer.title}</em>{#if extraOfferCount > 0}{" "}<span class="extra-count">(+{extraOfferCount} more)</span>{/if}
       </span>
@@ -354,6 +372,8 @@
             Board Ship
           {:else if routeCrumb.nextExitCommand === "+ship/leave"}
             Cycle Ashore
+          {:else if routeCrumb.nextExitCommand === "+tv/bay in" || routeCrumb.nextExitCommand === "+tv/bay"}
+            Enter Vehicle Bay
           {:else}
             Walk → {routeCrumb.nextRoomName} ({routeCrumb.hops}h)
           {/if}
@@ -451,6 +471,18 @@
   .progress {
     color: var(--fg-muted, #94a3b8);
     font-size: 0.75rem;
+  }
+  .step-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.05rem 0.38rem;
+    border-radius: 999px;
+    border: 1px solid rgba(251, 191, 36, 0.5);
+    background: rgba(251, 191, 36, 0.14);
+    color: #fde68a;
+    font-family: var(--mono, monospace);
+    font-size: 0.67rem;
+    font-weight: 700;
   }
   .inline-next {
     color: var(--fg-muted, #cbd5e1);
