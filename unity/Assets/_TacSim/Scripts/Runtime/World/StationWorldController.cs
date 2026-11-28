@@ -167,23 +167,49 @@ namespace TacSim.World
             out string nextRoomName,
             out string nextCommand,
             out int hopCount,
-            bool needsOriginExchangeFirst = false)
+            bool needsOriginExchangeFirst = false,
+            bool needsShipExpedition = false)
         {
             nextRoomEntry = string.Empty;
             nextRoomName = string.Empty;
             nextCommand = string.Empty;
             hopCount = 0;
 
-            if (Pack == null || string.IsNullOrEmpty(fromRoomEntry) || string.IsNullOrEmpty(targetRoomEntry))
+            if (Pack == null || string.IsNullOrEmpty(fromRoomEntry) || (string.IsNullOrEmpty(targetRoomEntry) && !needsShipExpedition))
                 return false;
-            if (string.Equals(fromRoomEntry, targetRoomEntry, StringComparison.Ordinal))
+            if (!needsShipExpedition && string.Equals(fromRoomEntry, targetRoomEntry, StringComparison.Ordinal))
                 return false;
 
-            string effectiveTarget = targetRoomEntry;
+            string effectiveTarget = targetRoomEntry ?? string.Empty;
             bool boardingCrossPort = false;
-            if (!Pack.Rooms.ContainsKey(targetRoomEntry))
+            if (needsShipExpedition)
             {
-                if (!IsCorridorStationRoomEntry(targetRoomEntry))
+                string berthEntry = null;
+                foreach (var kv in Pack.Rooms)
+                {
+                    if (kv.Key.IndexOf("berth_gallery", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        berthEntry = kv.Key;
+                        break;
+                    }
+                }
+                if (string.IsNullOrEmpty(berthEntry))
+                    return false;
+
+                if (string.Equals(fromRoomEntry, berthEntry, StringComparison.Ordinal))
+                {
+                    nextRoomEntry = "ship";
+                    nextRoomName = "Board Ship";
+                    nextCommand = "+ship/board";
+                    hopCount = 1;
+                    return true;
+                }
+                effectiveTarget = berthEntry;
+                boardingCrossPort = true;
+            }
+            else if (!Pack.Rooms.ContainsKey(effectiveTarget))
+            {
+                if (!IsCorridorStationRoomEntry(effectiveTarget))
                     return false;
 
                 if (needsOriginExchangeFirst)
@@ -213,7 +239,7 @@ namespace TacSim.World
                     }
                 }
 
-                if (string.Equals(effectiveTarget, targetRoomEntry, StringComparison.Ordinal))
+                if (string.Equals(effectiveTarget, targetRoomEntry ?? string.Empty, StringComparison.Ordinal))
                 {
                     string berthEntry = null;
                     foreach (var kv in Pack.Rooms)
