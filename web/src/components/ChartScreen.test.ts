@@ -234,4 +234,67 @@ describe("ChartScreen quest destination guidance", () => {
     expect(tacsim.selectedDestination).toBe("ceres");
     expect(focusComposer).toHaveBeenCalledWith("+ship/plan ceres");
   });
+
+  it("shows live pre-flight Fuel/Stores readiness before departure and flips to [QUEST ARRIVED] once at destination port", async () => {
+    const raw = skyChartFixture() as { chart: { vantage: { port: string; body: string } } };
+    const chart = new ChartStore();
+    chart.applyKeyframe(raw);
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+          title: "Metals Down the Corridor",
+          next_room_entry: "room.p07_receiving",
+          checkpoints: [
+            {
+              id: "deliver_metals",
+              title: "Deliver 5t metals to Stickney Yards",
+              instructions: "+ship/plan stickney and sell metals.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+    const focusComposer = vi.fn();
+    const app1 = {
+      chart,
+      quests,
+      tacsim: {
+        selectedDestination: "ceres",
+        isAboardShip: true,
+        ambient: {
+          ownStowage: {
+            cargoKg: 5000,
+            propellantKg: 0,
+            provisionsCrewDays: 0,
+            cargoLines: [{ good: "tacsim:metals", label: "Metals", qty: 5 }],
+          },
+        },
+      },
+      focusComposer,
+    } as unknown as GameApp;
+
+    // 1. At Ceres heading to Stickney with 0 fuel/stores -> [CHECK BEFORE UNDOCK]
+    const r1 = render(ChartScreen, { props: { app: app1 } });
+    const pf = await screen.findByLabelText("chart sailing preflight");
+    expect(pf.textContent).toContain("[CHECK BEFORE UNDOCK]");
+    expect(pf.textContent).toContain("Fuel 0t");
+    r1.unmount();
+
+    // 2. Vantage now at Stickney Yards aboard ship -> [QUEST ARRIVED] + Step Ashore (+ship/leave)
+    raw.chart.vantage.port = "Stickney Yards";
+    raw.chart.vantage.body = "stickney";
+    chart.applyKeyframe(raw);
+    render(ChartScreen, { props: { app: app1 } });
+    const banner = await screen.findByRole("status", { name: "active quest destination" });
+    expect(banner.textContent).toContain("[QUEST ARRIVED] Step 3/7");
+    expect(banner.textContent).toContain("At Stickney Yards");
+    expect(screen.queryByLabelText("chart sailing preflight")).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: /Step Ashore \(\+ship\/leave\)/i }));
+    expect(focusComposer).toHaveBeenCalledWith("+ship/leave");
+  });
 });
