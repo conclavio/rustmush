@@ -8,6 +8,7 @@
     extractQuestSuggestedAction,
     extractSurfaceMiningPrepActions,
     formatQuestHoldReadinessSummary,
+    resolveNextGuidedOfferDestination,
     type ActiveQuestView,
     type AvailableQuestView,
   } from "$lib/stores/quests.svelte";
@@ -26,6 +27,17 @@
   const tour = $derived(q.guidedTourProgress);
   const roadmap = $derived(tour ? q.guidedTourRoadmap : []);
   const nextOffer = $derived(q.nextGuidedOffer);
+  const nextOfferDest = $derived(
+    resolveNextGuidedOfferDestination(
+      nextOffer,
+      app.chart?.frame?.chart?.vantage?.port ||
+        app.chart?.frame?.chart?.vantage?.body ||
+        app.tacsim?.ambient?.port ||
+        app.tacsim?.trade?.hullPort ||
+        app.tacsim?.trade?.venueId ||
+        null,
+    ),
+  );
   const liveStowage = $derived(
     app.tacsim?.ambient?.ownStowage ??
       app.tacsim?.ambient?.stowage ??
@@ -554,11 +566,56 @@
         {#if q.logTab === "active"}
           {#if q.active.length === 0}
             {#if nextOffer}
-              <p class="empty">
-                No active quests. <strong>Next Guided Step ({nextOffer.step}/7): {nextOffer.shortLabel}</strong> — speak with <strong>{nextOffer.giverLabel}</strong> in <em>{nextOffer.giverRoomName}</em> ({nextOffer.locationLabel}).
-              </p>
+              <article class="qcard">
+                <div class="qcard-top">
+                  <strong>
+                    <span class="mini-sym" data-marker="available">!</span>{" "}
+                    Next Guided Step ({nextOffer.step}/7): {nextOffer.shortLabel}
+                  </strong>
+                  <span class="qcard-meta">
+                    <span class="step-pill">Step {nextOffer.step}/7</span>
+                    <span class="room-tag">{nextOffer.giverRoomName}</span>
+                  </span>
+                </div>
+                <p class="next-line">
+                  No active quests. Speak with <strong>{nextOffer.giverLabel}</strong> in <em>{nextOffer.giverRoomName}</em> ({nextOffer.locationLabel}).
+                </p>
+                {#if nextOfferDest || q.available.length > 0}
+                  <div class="qcard-actions">
+                    {#if nextOfferDest}
+                      <button
+                        type="button"
+                        class="btn sm primary"
+                        onclick={() => prefillAndClose(`+ship/plan ${nextOfferDest.portId}`)}
+                      >
+                        Sail → {nextOfferDest.portLabel} (+ship/plan {nextOfferDest.portId})
+                      </button>
+                    {/if}
+                    {#if q.available.length > 0}
+                      <button
+                        type="button"
+                        class="btn sm"
+                        onclick={() => switchLogTab("available")}
+                      >
+                        View {q.available.length} Offer{q.available.length === 1 ? "" : "s"} Here
+                      </button>
+                    {/if}
+                  </div>
+                {/if}
+              </article>
             {:else}
               <p class="empty">No active quests. Look for NPCs with a golden <strong>!</strong> badge (like Maren Halvorsen in Port Watch Arrivals).</p>
+              {#if q.available.length > 0}
+                <div class="qcard-actions">
+                  <button
+                    type="button"
+                    class="btn sm primary"
+                    onclick={() => switchLogTab("available")}
+                  >
+                    View {q.available.length} Offer{q.available.length === 1 ? "" : "s"} Here
+                  </button>
+                </div>
+              {/if}
             {/if}
           {:else}
             {#each orderedActiveLog as item (item.key)}
