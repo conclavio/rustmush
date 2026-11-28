@@ -509,6 +509,7 @@ pub struct PortWalkState {
     actors: Vec<ActorEntry>,
     quest_markers: Vec<QuestMarker>,
     quest_trade_need: Option<QuestTradeNeed>,
+    quest_trade_needs: Vec<QuestTradeNeed>,
     quest_dest_port: Option<QuestDestinationHint>,
     quest_room_entry: Option<String>,
     quest_room_turn_in: bool,
@@ -619,6 +620,7 @@ impl PortWalkState {
             actors: Vec::new(),
             quest_markers: Vec::new(),
             quest_trade_need: None,
+            quest_trade_needs: Vec::new(),
             quest_dest_port: None,
             quest_room_entry: None,
             quest_room_turn_in: false,
@@ -894,6 +896,20 @@ impl PortWalkState {
         self.editing_hull_name = false;
         if kind == PortDrawerKind::Sailing {
             self.apply_quest_destination_jump();
+        } else if kind == PortDrawerKind::Trade
+            && let Some(need) = self.effective_quest_trade_need()
+            && !need.wants_buy
+            && need.wants_sell
+            && !self.bids.is_empty()
+        {
+            self.trade_subtab = 1;
+            if let Some(idx) = self
+                .bids
+                .iter()
+                .position(|b| need.matches_listing(&b.good_id, &b.good_name, true))
+            {
+                self.cursor_row = idx;
+            }
         }
         self.ensure_queries(manifest_panels, queries, now);
     }
@@ -920,8 +936,15 @@ impl PortWalkState {
         trade_need: Option<QuestTradeNeed>,
         dest_port: Option<QuestDestinationHint>,
     ) {
-        self.quest_trade_need = trade_need;
+        self.quest_trade_need = trade_need.clone();
+        self.quest_trade_needs = trade_need.into_iter().collect();
         self.quest_dest_port = dest_port;
+    }
+
+    /// Sync all pending trade needs on the tracked quest (e.g. Step 2 provisions + propellant).
+    pub fn observe_quest_trade_needs(&mut self, needs: Vec<QuestTradeNeed>) {
+        self.quest_trade_need = needs.first().cloned();
+        self.quest_trade_needs = needs;
     }
 
     /// Sync the tracked active quest's next station room target onto the 2.5D station cutaway feed.
@@ -979,13 +1002,10 @@ impl PortWalkState {
         None
     }
 
-    /// Evaluate active quest commodity readiness against live ship tanks, crew stores, or hold cargo lots.
-    #[must_use]
-    pub fn quest_stowage_readiness(&self) -> Option<QuestStowageReadiness> {
+    fn stowage_readiness_for(&self, need: &QuestTradeNeed) -> Option<QuestStowageReadiness> {
         if !self.stowage_loaded {
             return None;
         }
-        let need = self.quest_trade_need.as_ref()?;
         let target_qty = need.target_quantity.max(1);
         let label = need.commodity_slug.replace('_', " ").to_ascii_uppercase();
         if need.commodity_slug == "propellant" {
@@ -1036,6 +1056,67 @@ impl PortWalkState {
             ready: current_qty >= target_qty,
             gauge_kind: "cargo",
         })
+    }
+
+    /// Resolve the most relevant active quest trade need for the pilot's live stowage & venue book:
+    /// - Advances Step 2 past buy-only items already satisfied in live stowage and prefers an
+    ///   unsatisfied item present on the current venue's book.
+    /// - Narrows dual buy+sell delivery quests (Steps 3 & 4) to SELL-only once the required cargo
+    ///   is loaded in the ship's hold.
+    #[must_use]
+    pub fn effective_quest_trade_need(&self) -> Option<QuestTradeNeed> {
+        let needs: &[QuestTradeNeed] = if !self.quest_trade_needs.is_empty() {
+            &self.quest_trade_needs
+        } else {
+            std::slice::from_ref(self.quest_trade_need.as_ref()?)
+        };
+
+        let is_buy_satisfied = |n: &QuestTradeNeed| -> bool {
+            n.wants_buy && !n.wants_sell && self.stowage_readiness_for(n).is_some_and(|r| r.ready)
+        };
+        let unsatisfied: Vec<&QuestTradeNeed> =
+            needs.iter().filter(|n| !is_buy_satisfied(n)).collect();
+        let pool: Vec<&QuestTradeNeed> = if !unsatisfied.is_empty() {
+            unsatisfied
+        } else {
+            needs.iter().collect()
+        };
+
+        let matches_book = |n: &QuestTradeNeed| -> bool {
+            self.asks
+                .iter()
+                .any(|a| n.matches_listing(&a.good_id, &a.good_name, false))
+                || self
+                    .bids
+                    .iter()
+                    .any(|b| n.matches_listing(&b.good_id, &b.good_name, true))
+        };
+
+        let mut picked = if !self.asks.is_empty() || !self.bids.is_empty() {
+            pool.iter()
+                .copied()
+                .find(|n| matches_book(n))
+                .unwrap_or(pool[0])
+                .clone()
+        } else {
+            pool[0].clone()
+        };
+
+        if picked.wants_buy
+            && picked.wants_sell
+            && self.stowage_readiness_for(&picked).is_some_and(|r| r.ready)
+        {
+            picked.wants_buy = false;
+            picked.wants_sell = true;
+        }
+        Some(picked)
+    }
+
+    /// Evaluate active quest commodity readiness against live ship tanks, crew stores, or hold cargo lots.
+    #[must_use]
+    pub fn quest_stowage_readiness(&self) -> Option<QuestStowageReadiness> {
+        let need = self.effective_quest_trade_need()?;
+        self.stowage_readiness_for(&need)
     }
 
     /// Live stowage telemetry for F11 Quest Overlay trade & Step 5 refit readiness lines.
@@ -1419,7 +1500,7 @@ impl PortWalkState {
     }
 
     fn apply_quest_trade_jump(&mut self) -> bool {
-        let Some(need) = self.quest_trade_need.clone() else {
+        let Some(need) = self.effective_quest_trade_need() else {
             return false;
         };
         let target_qty = need.target_quantity.max(1);
@@ -4990,7 +5071,8 @@ impl PortWalkState {
                     ),
                 ]));
 
-                if let Some(ref need) = self.quest_trade_need {
+                let effective_need = self.effective_quest_trade_need();
+                if let Some(ref need) = effective_need {
                     let side_tag = if need.wants_buy && need.wants_sell {
                         "BUY/SELL"
                     } else if need.wants_sell {
@@ -4998,7 +5080,8 @@ impl PortWalkState {
                     } else {
                         "BUY"
                     };
-                    let hold_suffix = if let Some(r) = self.quest_stowage_readiness() {
+                    let readiness = self.stowage_readiness_for(need);
+                    let hold_suffix = if let Some(ref r) = readiness {
                         if r.ready {
                             format!(" | {}/{} [READY]", r.current_qty, r.target_qty)
                         } else {
@@ -5007,12 +5090,35 @@ impl PortWalkState {
                     } else {
                         String::new()
                     };
+                    let extra_suffix = if self.quest_trade_needs.len() > 1 {
+                        let extras: Vec<String> = self
+                            .quest_trade_needs
+                            .iter()
+                            .filter(|n| n.commodity_slug != need.commodity_slug)
+                            .map(|n| {
+                                let ok = self.stowage_readiness_for(n).is_some_and(|r| r.ready);
+                                format!(
+                                    "{} {}{}",
+                                    n.target_quantity,
+                                    n.commodity_slug.replace('_', " "),
+                                    if ok { " [OK]" } else { "" }
+                                )
+                            })
+                            .collect();
+                        if extras.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" | +{}", extras.join(", "))
+                        }
+                    } else {
+                        String::new()
+                    };
                     let qline = format!(
-                        "[QUEST] {side_tag} {} x {} (g:jump+qty){hold_suffix}",
+                        "[QUEST] {side_tag} {} x {} (g:jump+qty){hold_suffix}{extra_suffix}",
                         need.target_quantity,
                         need.commodity_slug.replace('_', " ")
                     );
-                    let banner_col = if self.quest_stowage_readiness().is_some_and(|r| r.ready) {
+                    let banner_col = if readiness.as_ref().is_some_and(|r| r.ready) {
                         Color::Green
                     } else {
                         Color::Yellow
@@ -5034,7 +5140,7 @@ impl PortWalkState {
                         for idx in visible_window(self.asks.len(), self.cursor_row, list_rows) {
                             if let Some(ask) = self.asks.get(idx) {
                                 let sel = idx == self.cursor_row;
-                                let q_match = self.quest_trade_need.as_ref().is_some_and(|n| {
+                                let q_match = effective_need.as_ref().is_some_and(|n| {
                                     n.matches_listing(&ask.good_id, &ask.good_name, false)
                                 });
                                 let fit_text = if self.stowage_loaded {
@@ -5080,7 +5186,7 @@ impl PortWalkState {
                     for idx in visible_window(self.bids.len(), self.cursor_row, list_rows) {
                         if let Some(bid) = self.bids.get(idx) {
                             let sel = idx == self.cursor_row;
-                            let q_match = self.quest_trade_need.as_ref().is_some_and(|n| {
+                            let q_match = effective_need.as_ref().is_some_and(|n| {
                                 n.matches_listing(&bid.good_id, &bid.good_name, true)
                             });
                             let hold_text = if self.stowage_loaded {
@@ -9556,5 +9662,126 @@ mod tests {
             .next_quest_hop()
             .expect("expected Cycle Ashore at Ceres airlock");
         assert_eq!(ashore.next_exit_command, "+ship/leave");
+    }
+
+    #[test]
+    fn trade_drawer_advances_step2_past_loaded_provisions_and_auto_opens_sell_tab_for_loaded_delivery()
+     {
+        let mut st = PortWalkState::new();
+        let now = Instant::now();
+        st.observe_port_trade(
+            &json!({
+                "enabled": true,
+                "venue": "ceres",
+                "port_name": "Ceres Freeport",
+                "stowage": {
+                    "cargo_kg": 0,
+                    "max_cargo_kg": 100000,
+                    "reaction_kg": 0,
+                    "max_reaction_kg": 80000,
+                    "stores_days": 10,
+                    "stores_limit_days": 120
+                },
+                "asks": [
+                    { "listing_id": 11, "good_id": "tacsim:provisions", "good_name": "Provisions", "vendor_name": "Chandlery", "quantity": 25, "unit_price_minor": 1000 },
+                    { "listing_id": 12, "good_id": "tacsim:propellant", "good_name": "Propellant", "vendor_name": "Exchange", "quantity": 40, "unit_price_minor": 1800 }
+                ],
+                "bids": []
+            }),
+            now,
+        );
+        st.observe_quest_trade_needs(vec![
+            QuestTradeNeed {
+                quest_title: "Stock the Locker and Tanks".into(),
+                checkpoint_title: "Buy 10 provisions".into(),
+                commodity_slug: "provisions".into(),
+                target_quantity: 10,
+                wants_buy: true,
+                wants_sell: false,
+            },
+            QuestTradeNeed {
+                quest_title: "Stock the Locker and Tanks".into(),
+                checkpoint_title: "Buy 5 propellant".into(),
+                commodity_slug: "propellant".into(),
+                target_quantity: 5,
+                wants_buy: true,
+                wants_sell: false,
+            },
+        ]);
+
+        let eff = st
+            .effective_quest_trade_need()
+            .expect("should advance to propellant");
+        assert_eq!(eff.commodity_slug, "propellant");
+        assert_eq!(eff.target_quantity, 5);
+
+        let mut queries = Vec::new();
+        st.open_drawer(PortDrawerKind::Trade, &[], &mut queries, now);
+        let jump = st.handle_key(Key::Char('g'), false, false, &[], now);
+        assert!(jump.consumed);
+        assert_eq!(st.trade_subtab, 0);
+        assert_eq!(st.asks[st.cursor_row].listing_id, 12);
+        assert_eq!(st.active_trade_qty_setting(), 5);
+
+        // Step 3 metals loaded in hold -> narrows to SELL and auto-opens Sell Bids tab (#22)
+        st.observe_port_trade(
+            &json!({
+                "enabled": true,
+                "venue": "stickney",
+                "port_name": "Stickney Yards",
+                "stowage": {
+                    "cargo_kg": 5000,
+                    "max_cargo_kg": 100000,
+                    "reaction_kg": 10000,
+                    "max_reaction_kg": 80000,
+                    "stores_days": 10,
+                    "stores_limit_days": 120
+                },
+                "cargo": [
+                    { "good": "tacsim:metals", "label": "Metals", "quantity": 5 }
+                ],
+                "asks": [
+                    { "listing_id": 21, "good_id": "tacsim:metals", "good_name": "Metals", "vendor_name": "Vendor", "quantity": 10, "unit_price_minor": 10000 }
+                ],
+                "bids": [
+                    { "listing_id": 22, "good_id": "tacsim:metals", "good_name": "Metals", "vendor_name": "Kasei", "quantity_wanted": 20, "unit_price_minor": 14500, "funded": true }
+                ]
+            }),
+            now,
+        );
+        st.observe_quest_trade_needs(vec![QuestTradeNeed {
+            quest_title: "Metals Down the Corridor".into(),
+            checkpoint_title: "Deliver 5t metals".into(),
+            commodity_slug: "metals".into(),
+            target_quantity: 5,
+            wants_buy: true,
+            wants_sell: true,
+        }]);
+        let eff3 = st
+            .effective_quest_trade_need()
+            .expect("should narrow to SELL");
+        assert!(!eff3.wants_buy);
+        assert!(eff3.wants_sell);
+
+        st.open_drawer(PortDrawerKind::Trade, &[], &mut queries, now);
+        assert_eq!(st.trade_subtab, 1, "expected Sell Bids tab auto-selected");
+        assert_eq!(st.bids[st.cursor_row].listing_id, 22);
+
+        let backend = ratatui::backend::TestBackend::new(96, 24);
+        let mut term = ratatui::Terminal::new(backend).expect("test terminal");
+        term.draw(|f| st.draw_drawer_box(f, f.area(), true))
+            .expect("draw sell trade drawer");
+        let rendered: String = term
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            rendered.contains("[QUEST] SELL 5 x metals (g:jump+qty)"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("[Q] #22"), "{rendered}");
     }
 }
