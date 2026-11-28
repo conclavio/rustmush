@@ -14744,5 +14744,67 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void DockingHud_RendersQuestDockApproachLineForActiveAndBetweenStepsDestinations()
+        {
+            var rootGo = new UnityEngine.GameObject("DockingHudQuestApproachTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                var session = DockingClientSession.CreateStandardPortPractice("dock.stickney.1", "Stickney Yards");
+
+                // 1. No active quest -> docking telemetry stays clean without [QUEST DOCK]
+                hud.UpdateDockingHud(session, assistOn: true);
+                Assert.IsTrue(hud.IsDockingHudVisible);
+                Assert.IsFalse(hud.DockingTelemetrySnapshot.Contains("[QUEST DOCK]"));
+
+                // 2. Active Step 3 metals delivery to Stickney Yards -> [QUEST DOCK] approach line appears
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"",
+                        ""title"": ""Metals Down the Corridor"",
+                        ""next_step"": ""Dock at Stickney Yards and sell 5t metals"",
+                        ""next_room_entry"": ""room.p07_receiving"",
+                        ""checkpoints"": [{
+                            ""id"": ""deliver_metals"",
+                            ""title"": ""Deliver 5t metals to Stickney Yards"",
+                            ""instructions"": ""Dock and +market/sell at Stickney."",
+                            ""room_entry"": ""room.p07_receiving"",
+                            ""checked"": false, ""live_ready"": false
+                        }]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                hud.UpdateDockingHud(session, assistOn: true);
+                StringAssert.Contains("[QUEST DOCK]", hud.DockingTelemetrySnapshot);
+                StringAssert.Contains("Stickney Yards", hud.DockingTelemetrySnapshot);
+                StringAssert.Contains("Metals Down the Corridor", hud.DockingTelemetrySnapshot);
+                StringAssert.Contains("Dock at Stickney Yards and sell 5t metals", hud.DockingTelemetrySnapshot);
+
+                // 3. Between Steps 3 & 4 (no active quest, completed 1-3 -> Jonas at Stickney Yards)
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [],
+                    ""available"": [],
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""S1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""S2"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""S3"" }
+                    ]
+                }")));
+                hud.UpdateDockingHud(session, assistOn: false);
+                StringAssert.Contains("[QUEST DOCK]", hud.DockingTelemetrySnapshot);
+                StringAssert.Contains("Stickney Yards", hud.DockingTelemetrySnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
