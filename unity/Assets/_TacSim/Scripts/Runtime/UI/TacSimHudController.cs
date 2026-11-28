@@ -664,6 +664,7 @@ namespace TacSim.UI
                 _lastListingsSignature = null;
                 RefreshSailingQuestGuidance();
                 RefreshQuestTopBadgeAndRoomBanner();
+                RefreshEconomyPanelsQuestGuidance();
                 if (_tradePanel != null && _tradePanel.activeSelf)
                     RefreshTradeTerminal();
             };
@@ -2512,11 +2513,38 @@ namespace TacSim.UI
             SwitchTradeTerminalTab(sailingTab ? TradeTerminalTab.Sailing : TradeTerminalTab.Exchange, autoQuery: false);
         }
 
+        private void RefreshEconomyPanelsQuestGuidance()
+        {
+            if (EconomyPanels == null || QuestJournal == null) return;
+            string tradeSlug = string.Empty;
+            string tradeTitle = string.Empty;
+            if (QuestJournal.TryResolveContextualTradeNeed(_boundTradeState, out var need, out _))
+            {
+                tradeSlug = need.CommoditySlug;
+                tradeTitle = need.QuestTitle;
+            }
+            string coopLabel = string.Empty;
+            string coopCmd = string.Empty;
+            string refitSummary = string.Empty;
+            bool refitReady = false;
+            var active = QuestJournal.GetTrackedActiveQuest();
+            if (active != null &&
+                QuestJournal.TryGetSuggestedCommand(active, out string sugLbl, out string sugCmd) &&
+                sugCmd.StartsWith("+coop/refit", StringComparison.OrdinalIgnoreCase))
+            {
+                coopLabel = sugLbl;
+                coopCmd = sugCmd;
+                QuestJournal.TryGetQuestHoldReadinessSummary(active, out refitSummary, out refitReady);
+            }
+            EconomyPanels.ApplyQuestGuidance(tradeSlug, tradeTitle, coopLabel, coopCmd, refitSummary, refitReady);
+        }
+
         public void SwitchTradeTerminalTab(TradeTerminalTab tab, bool autoQuery = true)
         {
             ActiveTradeTab = tab;
             _tradeSailingTabActive = tab == TradeTerminalTab.Sailing;
             EconomyPanels?.DisarmConfirm();
+            RefreshEconomyPanelsQuestGuidance();
             if (_exchangeTabBody != null) _exchangeTabBody.SetActive(tab == TradeTerminalTab.Exchange);
             if (EconomyPanels?.HistoryTabBody != null) EconomyPanels.HistoryTabBody.SetActive(tab == TradeTerminalTab.History);
             if (EconomyPanels?.JobsTabBody != null) EconomyPanels.JobsTabBody.SetActive(tab == TradeTerminalTab.Jobs);
@@ -2535,6 +2563,7 @@ namespace TacSim.UI
             {
                 if (tab == TradeTerminalTab.History)
                 {
+                    EconomyPanels?.SelectQuestHistoryCommodityIfAvailable();
                     string g = EconomyPanels != null ? EconomyPanels.SelectedHistoryGood : "volatiles";
                     OnCommandSubmitted?.Invoke($"+market/history tacsim:{g}");
                 }
@@ -2702,6 +2731,7 @@ namespace TacSim.UI
 
         public void RefreshTradeTerminal()
         {
+            RefreshEconomyPanelsQuestGuidance();
             if (_boundTradeState == null || _tradePanel == null || !_tradePanel.activeSelf)
                 return;
 
