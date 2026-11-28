@@ -12698,5 +12698,41 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void CharacterSheetPilotTab_ShowsGuidedTourProgressRoadmapAndNextOfferBetweenSteps()
+        {
+            var rootGo = new UnityEngine.GameObject("CharacterSheetGuidedRoadmapTestRoot");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#40"",
+                    ""room_name"": ""Stickney Concourse"",
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""S1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""S2"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""S3"" }
+                    ],
+                    ""active"": [],
+                    ""available"": []
+                }")));
+                hud.CharacterSheet.RefreshContents();
+
+                string summary = hud.CharacterSheet.PilotSummarySnapshot;
+                StringAssert.Contains("TOUR [###----] 3/7", summary);
+                StringAssert.Contains("[✓] 1. Co-op Charter", summary);
+                StringAssert.Contains("[○] 4. Return Load", summary);
+                StringAssert.Contains("NEXT GUIDED (4/7):", summary);
+                StringAssert.Contains("Jonas Achterberg-Nkemelu (Receiving Counter)", summary);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
