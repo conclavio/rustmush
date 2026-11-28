@@ -4,7 +4,10 @@
   import type { GameApp } from "$lib/game.svelte";
   import {
     GUIDED_TOUR_KEYS,
+    evaluateSailingPreflightReadiness,
+    extractActiveDestinationPort,
     extractActiveSurfaceMiningStatus,
+    extractActiveTradeNeed,
     extractQuestSuggestedAction,
     extractSurfaceMiningPrepActions,
     formatQuestHoldReadinessSummary,
@@ -294,6 +297,12 @@
         {@const activeMining = extractActiveSurfaceMiningStatus([selectedActive], selectedActive.key)}
         {@const miningPrep = extractSurfaceMiningPrepActions(activeMining)}
         {@const activeHoldSummary = formatQuestHoldReadinessSummary(selectedActive, liveStowage)}
+        {@const activeDest = extractActiveDestinationPort([selectedActive], selectedActive.key)}
+        {@const activePreflight = evaluateSailingPreflightReadiness(
+          activeDest,
+          extractActiveTradeNeed([selectedActive], selectedActive.key),
+          liveStowage,
+        )}
         <div class="qbody">
           <div class="row-tags">
             {#if selectedActive.category === "guided"}
@@ -356,6 +365,24 @@
                   | {extra.label} {extra.currentQty}/{extra.targetQty}{extra.unit}{extra.ready ? " OK" : ""}
                 </span>
               {/each}
+            </div>
+          {/if}
+          {#if activePreflight && activeDest}
+            <div class="prep-strip" class:ready={activePreflight.ready} aria-label="quest sailing preflight">
+              <span class="prep-tag">
+                {activePreflight.ready ? "[PRE-FLIGHT OK]" : "[CHECK BEFORE UNDOCK]"}
+              </span>
+              <span class:ok={activePreflight.propellantOk}>
+                {activePreflight.propellantOk
+                  ? `✓ Propellant ${activePreflight.propellantTonnes}t`
+                  : "✗ Propellant 0t"}
+              </span>
+              <span class:ok={activePreflight.provisionsOk}>
+                {activePreflight.provisionsOk
+                  ? `✓ Provisions ${activePreflight.provisionsDays}d`
+                  : "✗ Provisions 0d"}
+              </span>
+              <span class="muted">→ {activeDest.portLabel}</span>
             </div>
           {/if}
           {#if miningPrep.length > 0}
@@ -665,6 +692,12 @@
               {@const activeLogStepNo = guidedStepNum(item.key)}
               {@const itemSuggested = extractQuestSuggestedAction(item)}
               {@const itemHoldSummary = formatQuestHoldReadinessSummary(item, liveStowage)}
+              {@const itemDest = extractActiveDestinationPort([item], item.key)}
+              {@const itemPreflight = evaluateSailingPreflightReadiness(
+                itemDest,
+                extractActiveTradeNeed([item], item.key),
+                liveStowage,
+              )}
               <article class="qcard" class:tracked={q.trackedQuest?.key === item.key}>
                 <div class="qcard-top">
                   <strong>
@@ -716,6 +749,24 @@
                         | {extra.label} {extra.currentQty}/{extra.targetQty}{extra.unit}{extra.ready ? " OK" : ""}
                       </span>
                     {/each}
+                  </div>
+                {/if}
+                {#if itemPreflight && itemDest}
+                  <div class="prep-strip" class:ready={itemPreflight.ready} aria-label="quest sailing preflight">
+                    <span class="prep-tag">
+                      {itemPreflight.ready ? "[PRE-FLIGHT OK]" : "[CHECK BEFORE UNDOCK]"}
+                    </span>
+                    <span class:ok={itemPreflight.propellantOk}>
+                      {itemPreflight.propellantOk
+                        ? `✓ Propellant ${itemPreflight.propellantTonnes}t`
+                        : "✗ Propellant 0t"}
+                    </span>
+                    <span class:ok={itemPreflight.provisionsOk}>
+                      {itemPreflight.provisionsOk
+                        ? `✓ Provisions ${itemPreflight.provisionsDays}d`
+                        : "✗ Provisions 0d"}
+                    </span>
+                    <span class="muted">→ {itemDest.portLabel}</span>
                   </div>
                 {/if}
                 <div class="qcard-actions">
