@@ -3176,16 +3176,35 @@ namespace TacSim.Core
                     string surface = rv.Atlas != null && !string.IsNullOrEmpty(rv.Atlas.Surface) ? rv.Atlas.Surface.ToUpperInvariant() : "STATION";
                     Hud.UpdateTopBar($"{rv.Name.ToUpperInvariant()} [{surface}]", $"{_currentClockStr} | {_currentHullBadge}");
                     Hud.RefreshContextualQuickActions(matchedStationEntry, false);
-                    if (!alreadyInRoom && !firstSync && Hud.QuestJournal != null &&
-                        Hud.QuestJournal.TryGetMinimapObjective(out string questRoom, out bool questTurnIn, out _) &&
-                        !string.IsNullOrEmpty(questRoom) &&
-                        string.Equals(questRoom, matchedStationEntry, StringComparison.OrdinalIgnoreCase))
+                    if (!alreadyInRoom && !firstSync && Hud.QuestJournal != null)
                     {
-                        string roomUpper = (rv.Name ?? matchedStationEntry).ToUpperInvariant();
-                        Hud.FloatingCallouts?.ShowCallout(
-                            questTurnIn ? $"QUEST TURN-IN: {roomUpper}" : $"QUEST OBJECTIVE: {roomUpper}",
-                            new Color(1f, 0.86f, 0.32f, 1f),
-                            2.4f);
+                        if (Hud.QuestJournal.GetTrackedActiveQuest() == null &&
+                            Hud.QuestJournal.TryGetNextGuidedOffer(out var nextOffer) &&
+                            !string.IsNullOrEmpty(nextOffer.GiverRoomEntry) &&
+                            string.Equals(nextOffer.GiverRoomEntry, matchedStationEntry, StringComparison.OrdinalIgnoreCase))
+                        {
+                            Hud.FloatingCallouts?.ShowCallout(
+                                TacSimFloatingCallouts.FormatQuestRoomArrivalCallout(
+                                    rv.Name ?? matchedStationEntry,
+                                    isTurnIn: false,
+                                    nextOffer.Step,
+                                    nextOffer.GiverLabel),
+                                new Color(1f, 0.86f, 0.32f, 1f),
+                                2.6f);
+                            Audio?.PlayUiClick();
+                        }
+                        else if (Hud.QuestJournal.TryGetMinimapObjective(out string questRoom, out bool questTurnIn, out _) &&
+                            !string.IsNullOrEmpty(questRoom) &&
+                            string.Equals(questRoom, matchedStationEntry, StringComparison.OrdinalIgnoreCase))
+                        {
+                            Hud.FloatingCallouts?.ShowCallout(
+                                TacSimFloatingCallouts.FormatQuestRoomArrivalCallout(
+                                    rv.Name ?? matchedStationEntry,
+                                    questTurnIn),
+                                new Color(1f, 0.86f, 0.32f, 1f),
+                                2.4f);
+                            Audio?.PlayUiClick();
+                        }
                     }
                 }
 

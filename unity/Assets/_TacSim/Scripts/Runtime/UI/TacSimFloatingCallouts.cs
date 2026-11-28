@@ -75,6 +75,18 @@ namespace TacSim.UI
             return $"QUEST COMPLETED: {title}";
         }
 
+        public static string FormatQuestRoomArrivalCallout(
+            string roomName,
+            bool isTurnIn,
+            int nextGuidedStep = 0,
+            string nextGuidedGiver = null)
+        {
+            string roomUpper = string.IsNullOrWhiteSpace(roomName) ? "OBJECTIVE ROOM" : roomName.Trim().ToUpperInvariant();
+            if (nextGuidedStep > 0 && !string.IsNullOrWhiteSpace(nextGuidedGiver))
+                return $"NEXT GUIDED ({nextGuidedStep}/7) [!]: {nextGuidedGiver.Trim().ToUpperInvariant()} — {roomUpper}";
+            return isTurnIn ? $"QUEST TURN-IN: {roomUpper}" : $"QUEST OBJECTIVE: {roomUpper}";
+        }
+
         public void BuildLayer(Transform hudRoot, Font sharedFont)
         {
             _font = sharedFont != null ? sharedFont : Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
