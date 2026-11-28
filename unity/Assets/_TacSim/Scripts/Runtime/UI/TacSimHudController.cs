@@ -108,6 +108,7 @@ namespace TacSim.UI
         public ChatLogTab ActiveChatTab { get; private set; } = ChatLogTab.All;
         public int QuickActionSlotCount => _quickSlotActions.Count;
         public bool IsDockingHudVisible => _dockingPanel != null && _dockingPanel.activeSelf;
+        public string DockingTelemetrySnapshot => _dockingTelemetryText != null ? _dockingTelemetryText.text : string.Empty;
         public TradeTerminalTab ActiveTradeTab { get; private set; } = TradeTerminalTab.Exchange;
         public string ActiveHullRef => _activeHullRef;
         public string ActivePortHint => _activePortHint;
@@ -3586,8 +3587,26 @@ namespace TacSim.UI
                     : new Color(0.55f, 0.32f, 0.08f, 0.95f);
             }
 
-            var sb = new StringBuilder(256);
+            var sb = new StringBuilder(320);
             sb.AppendFormat("Target: <b>{0}</b>   [{1}/5 GATES GREEN]\n", MushProtocol.EscapeUnityRichText(session.TargetLabel), gates.GreenCount);
+            if (QuestJournal != null)
+            {
+                bool hasDest = QuestJournal.TryGetActiveDestinationPort(out var qDest);
+                if (!hasDest)
+                    hasDest = QuestJournal.TryGetNextGuidedOfferDestination(_activePortHint, out qDest);
+                if (hasDest && !string.IsNullOrEmpty(qDest.PortLabel))
+                {
+                    var tracked = QuestJournal.GetTrackedActiveQuest();
+                    string stepSuffix = tracked != null && !string.IsNullOrEmpty(tracked.NextStep)
+                        ? $" · {MushProtocol.EscapeUnityRichText(tracked.NextStep)}"
+                        : string.Empty;
+                    sb.AppendFormat(
+                        "<color=#FFDD44>[QUEST DOCK]</color> <b>{0}</b> — {1}{2}\n",
+                        MushProtocol.EscapeUnityRichText(qDest.PortLabel),
+                        MushProtocol.EscapeUnityRichText(qDest.QuestTitle),
+                        stepSuffix);
+                }
+            }
             sb.AppendFormat("Range Z: <b>{0} mm</b> (<= 500)   Closure: <b>{1} mm/s</b> (100..800)\n", session.DzMm, session.VzMmps);
             sb.AppendFormat("Lateral: X {0:+#;-#;0} mm ({1:+#;-#;0} mm/s) | Y {2:+#;-#;0} mm ({3:+#;-#;0} mm/s)\n",
                 session.DxMm, session.VxMmps, session.DyMm, session.VyMmps);
