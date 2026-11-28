@@ -253,8 +253,13 @@
   );
   const roomOfferMarker = $derived(
     !trackedQuest
-      ? (app.quests?.roomMarkers.find((m) => m.marker === "available" || m.marker === "turn_in") ?? null)
+      ? ((app.quests?.prioritizedRoomMarkers ?? app.quests?.roomMarkers ?? []).find(
+          (m) => m.marker === "turn_in" || m.marker === "available",
+        ) ?? null)
       : null,
+  );
+  const nextGuidedOffer = $derived(
+    !trackedQuest && !roomOfferMarker ? (app.quests?.nextGuidedOffer ?? null) : null,
   );
 
   function planQuestDestination(): void {
@@ -438,11 +443,11 @@
           <button
             type="button"
             class="quest-hud-pill"
-            data-ready={trackedQuest.readyToFinish ? "true" : "false"}
+            data-ready={trackedQuest.readyToFinish || trackedQuest.canFinishNow ? "true" : "false"}
             onclick={() => app.quests?.openQuestDialog(trackedQuest.key)}
             title="Open quest dialog"
           >
-            <span class="qhud-crest">{trackedQuest.readyToFinish ? "?" : "!"}</span>
+            <span class="qhud-crest">{trackedQuest.readyToFinish || trackedQuest.canFinishNow ? "?" : "▸"}</span>
             <span class="qhud-body">
               <strong>{trackedQuest.title}</strong>
               <span>{trackedQuest.nextStep}</span>
@@ -452,6 +457,7 @@
           <button
             type="button"
             class="quest-hud-pill"
+            data-ready={roomOfferMarker.marker === "turn_in" ? "true" : "false"}
             onclick={() => app.quests?.openNpcDialog(roomOfferMarker.npcId)}
             title="Speak with {roomOfferMarker.npcName}"
           >
@@ -459,6 +465,20 @@
             <span class="qhud-body">
               <strong>{roomOfferMarker.npcName}</strong>
               <span>{roomOfferMarker.questTitle}</span>
+            </span>
+          </button>
+        {:else if nextGuidedOffer}
+          <button
+            type="button"
+            class="quest-hud-pill"
+            data-ready="false"
+            onclick={() => app.quests?.openLog("active")}
+            title="Next Guided Tour Step ({nextGuidedOffer.step}/7)"
+          >
+            <span class="qhud-crest">!</span>
+            <span class="qhud-body">
+              <strong>Next Guided ({nextGuidedOffer.step}/7): {nextGuidedOffer.shortLabel}</strong>
+              <span>Speak with {nextGuidedOffer.giverLabel} ({nextGuidedOffer.giverRoomName})</span>
             </span>
           </button>
         {/if}
