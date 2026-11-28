@@ -51,8 +51,9 @@ use super::pixel::{KeyUse, PictureKind, PixelView};
 use super::port_walk::{PORT_TRADE_FEED, PortWalkState, TACSIM_CONTENT_FEED};
 use super::quests::{
     QUESTS_FEED, QuestMilestoneKind, QuestMilestoneTracker, QuestOverlayAction, QuestOverlayState,
-    QuestTab, QuestsSnapshot, parse_frame as parse_quests_frame, parse_room_markers,
-    render_quest_overlay_with_stowage, render_quest_sheet_lines, render_quest_tracker_lines_full,
+    QuestTab, QuestsSnapshot, guided_step_badge, is_guided_quest,
+    parse_frame as parse_quests_frame, parse_room_markers, render_quest_overlay_with_stowage,
+    render_quest_sheet_lines, render_quest_tracker_lines_full,
 };
 use super::render::{
     BODY_GROUND_FEED, CHART_FEED, Entry, GUTTER_W, PaneRow, PaneRows, RenderCtx, SITE_MAP_FEED,
@@ -5163,11 +5164,12 @@ impl TuiApp {
         // 1. Surface immediate 1-click Complete / Verify actions across ALL active quests (turn-in first).
         for &idx in &active_indices {
             let q = &self.quests_snap.active[idx];
+            let step_badge = guided_step_badge(&q.key);
             if q.can_finish_now && !q.finish_cmd.is_empty() {
                 let search = format!("complete finish {} {} quest", q.title, q.finish_cmd);
                 consider(&search, &|| PaletteEntry {
                     insert: q.finish_cmd.clone(),
-                    label: format!("[?] Complete: {}", q.title),
+                    label: format!("[?] Complete: {}{step_badge}", q.title),
                     detail: q.finish_cmd.clone(),
                     quest_action: Some(PaletteQuestAction::PrefillCommand),
                 });
@@ -5175,7 +5177,7 @@ impl TuiApp {
                 let search = format!("verify check {} {} quest", q.title, q.check_cmd);
                 consider(&search, &|| PaletteEntry {
                     insert: q.check_cmd.clone(),
-                    label: format!("[?] Verify: {}", q.title),
+                    label: format!("[?] Verify: {}{step_badge}", q.title),
                     detail: q.check_cmd.clone(),
                     quest_action: Some(PaletteQuestAction::PrefillCommand),
                 });
@@ -5193,6 +5195,13 @@ impl TuiApp {
                     ("[>] Board Ship".to_string(), "board ship route walk")
                 } else if hop.next_exit_command == "+ship/leave" {
                     ("[>] Cycle Ashore".to_string(), "ashore cycle leave route")
+                } else if hop.next_exit_command == "+tv/bay in"
+                    || hop.next_exit_command == "+tv/bay"
+                {
+                    (
+                        "[>] Enter Vehicle Bay".to_string(),
+                        "vehicle bay enter route walk",
+                    )
                 } else {
                     (
                         format!("[>] Walk -> {} ({}h)", hop.next_room_name, hop.hops),
@@ -5259,6 +5268,13 @@ impl TuiApp {
                     ("[>] Board Ship".to_string(), "board ship route walk")
                 } else if hop.next_exit_command == "+ship/leave" {
                     ("[>] Cycle Ashore".to_string(), "ashore cycle leave route")
+                } else if hop.next_exit_command == "+tv/bay in"
+                    || hop.next_exit_command == "+tv/bay"
+                {
+                    (
+                        "[>] Enter Vehicle Bay".to_string(),
+                        "vehicle bay enter route walk",
+                    )
                 } else {
                     (
                         format!("[>] Walk -> {} ({}h)", hop.next_room_name, hop.hops),
@@ -5330,9 +5346,10 @@ impl TuiApp {
             });
         }
 
-        // 2. Active quest dialog shortcuts (ready-to-finish first), then available dialogs + quick-accept.
+        // 2. Active quest dialog shortcuts (ready-to-finish first), then guided-first available dialogs + quick-accept.
         for &idx in &active_indices {
             let q = &self.quests_snap.active[idx];
+            let step_badge = guided_step_badge(&q.key);
             let search = format!("{} {} {} quest", q.title, q.next_step, q.turn_in_name);
             let badge = if q.can_finish_now || q.ready_to_finish {
                 "[?]"
@@ -5346,16 +5363,23 @@ impl TuiApp {
             };
             consider(&search, &|| PaletteEntry {
                 insert: "/quests".to_string(),
-                label: format!("{badge} {}", q.title),
+                label: format!("{badge} {}{step_badge}", q.title),
                 detail: detail.clone(),
                 quest_action: Some(PaletteQuestAction::OpenDialog(QuestTab::Active, idx)),
             });
         }
-        for (idx, q) in self.quests_snap.available.iter().enumerate() {
+        let mut available_indices: Vec<usize> = (0..self.quests_snap.available.len()).collect();
+        available_indices.sort_by_key(|&idx| {
+            let q = &self.quests_snap.available[idx];
+            (u8::from(!is_guided_quest(&q.key, &q.category)), idx)
+        });
+        for idx in available_indices {
+            let q = &self.quests_snap.available[idx];
+            let step_badge = guided_step_badge(&q.key);
             let search = format!("{} {} quest", q.title, q.giver_name);
             consider(&search, &|| PaletteEntry {
                 insert: "/quests".to_string(),
-                label: format!("[!] {}", q.title),
+                label: format!("[!] {}{step_badge}", q.title),
                 detail: format!("Quest offer — {}", q.giver_name),
                 quest_action: Some(PaletteQuestAction::OpenDialog(QuestTab::Available, idx)),
             });
@@ -5364,7 +5388,7 @@ impl TuiApp {
                     format!("accept {} {} {} quest", q.title, q.giver_name, q.accept_cmd);
                 consider(&accept_search, &|| PaletteEntry {
                     insert: q.accept_cmd.clone(),
-                    label: format!("[!] Accept: {}", q.title),
+                    label: format!("[!] Accept: {}{step_badge}", q.title),
                     detail: format!("{} — {}", q.accept_cmd, q.giver_name),
                     quest_action: Some(PaletteQuestAction::PrefillCommand),
                 });
@@ -14760,5 +14784,69 @@ mod tests {
             app.port_walk.quest_dest_hint().map(|d| d.port_id.as_str()),
             Some("deimos")
         );
+    }
+
+    #[test]
+    fn palette_prioritizes_guided_offers_and_appends_step_badges() {
+        let mut app = app();
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "active": [{
+                    "key": "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+                    "title": "Scan and Mine",
+                    "category": "guided",
+                    "next_step": "Enter Vehicle Bay",
+                    "checkpoints": []
+                }],
+                "available": [
+                    {
+                        "key": "quest.side_barge",
+                        "title": "Side Barge Audit",
+                        "category": "optional",
+                        "giver_name": "Harbor Clerk",
+                        "accept_cmd": "+quest/accept #40=side1"
+                    },
+                    {
+                        "key": "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+                        "title": "First Papers",
+                        "category": "guided",
+                        "giver_name": "Maren Halvorsen",
+                        "accept_cmd": "+quest/accept #18=guide1"
+                    }
+                ],
+                "completed": []
+            }),
+        });
+
+        app.feed_input(b"\x0bquest");
+        assert!(app.palette_open());
+        let labels: Vec<&str> = app
+            .palette
+            .as_ref()
+            .expect("palette open")
+            .entries
+            .iter()
+            .map(|e| e.label.as_str())
+            .collect();
+        let active_idx = labels
+            .iter()
+            .position(|l| l.contains("Scan and Mine [Step 6/7]"))
+            .expect("expected active [Step 6/7]");
+        let guided_offer_idx = labels
+            .iter()
+            .position(|l| l.contains("[!] First Papers [Step 1/7]"))
+            .expect("expected guided offer [Step 1/7]");
+        let side_offer_idx = labels
+            .iter()
+            .position(|l| l.contains("[!] Side Barge Audit"))
+            .expect("expected side offer");
+        assert!(
+            guided_offer_idx < side_offer_idx,
+            "expected guided offer ahead of side offer: {labels:?}"
+        );
+        assert!(active_idx < guided_offer_idx, "{labels:?}");
     }
 }

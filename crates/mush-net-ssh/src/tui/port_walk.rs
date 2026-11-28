@@ -3608,7 +3608,7 @@ impl PortWalkState {
             let lower = target_comp.to_ascii_lowercase();
             let deck_lbl = match lower.as_str() {
                 "bridge" => "Bridge",
-                "bay" => "Vehicle Bay (+tv/bay)",
+                "bay" => "Vehicle Bay (+tv/bay in)",
                 "airlock" => "Airlock (+ship/leave)",
                 other => other,
             };
@@ -10550,11 +10550,11 @@ mod tests {
             "expected Bridge deck cue in ship top bar:\n{top_bridge}"
         );
 
-        // Target Vehicle Bay while in Airlock -> shows [QUEST -> Deck: Vehicle Bay (+tv/bay)]
+        // Target Vehicle Bay while in Airlock -> shows [QUEST -> Deck: Vehicle Bay (+tv/bay in)]
         st.observe_quest_ship_target(Some("bay"));
         let (top_bay, _) = st.hud_lines("kitty");
         assert!(
-            top_bay.contains("[QUEST -> Deck: Vehicle Bay (+tv/bay)]"),
+            top_bay.contains("[QUEST -> Deck: Vehicle Bay (+tv/bay in)]"),
             "expected Vehicle Bay deck cue in ship top bar:\n{top_bay}"
         );
 
