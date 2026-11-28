@@ -531,6 +531,79 @@ namespace TacSim.UI
                         },
                         $"quest available accept offer npc {av.Title} {av.GiverName}"));
                 }
+
+                var tracked = _quests.GetTrackedActiveQuest();
+                if (tracked != null)
+                {
+                    if (tracked.CanFinishNow && !string.IsNullOrEmpty(tracked.FinishCmd))
+                    {
+                        string finishCmd = tracked.FinishCmd;
+                        _allEntries.Add(new PaletteEntry(
+                            "QUEST STEP",
+                            $"Finish Now: {tracked.Title}",
+                            finishCmd,
+                            () => OnCommandRequested?.Invoke(finishCmd),
+                            $"quest finish turnin now {tracked.Title} {finishCmd}"));
+                    }
+                    else if (tracked.CanCheckNow && !string.IsNullOrEmpty(tracked.CheckCmd))
+                    {
+                        string checkCmd = tracked.CheckCmd;
+                        _allEntries.Add(new PaletteEntry(
+                            "QUEST STEP",
+                            $"Verify Now: {tracked.Title}",
+                            checkCmd,
+                            () => OnCommandRequested?.Invoke(checkCmd),
+                            $"quest verify check now {tracked.Title} {checkCmd}"));
+                    }
+
+                    if (_quests.TrackerRouteHops > 0 && !string.IsNullOrEmpty(_quests.TrackerRouteCommand))
+                    {
+                        string rCmd = _quests.TrackerRouteCommand;
+                        string rRoom = _quests.TrackerRouteRoomName;
+                        int rHops = _quests.TrackerRouteHops;
+                        string rTitle = string.Equals(rCmd, "+ship/board", StringComparison.OrdinalIgnoreCase)
+                            ? "Board Ship"
+                            : (string.Equals(rCmd, "+ship/leave", StringComparison.OrdinalIgnoreCase)
+                                ? "Cycle Ashore"
+                                : $"Walk -> {rRoom} ({rHops}h)");
+                        string hopWord = rHops == 1 ? "hop" : "hops";
+                        _allEntries.Add(new PaletteEntry(
+                            "QUEST ROUTE",
+                            rTitle,
+                            $"{rHops} {hopWord} · {rCmd}",
+                            () => OnCommandRequested?.Invoke(rCmd),
+                            $"quest route walk board ashore {rRoom} {rCmd} {tracked.Title}"));
+                    }
+                    else if (_quests.TryGetSuggestedCommand(tracked, out string sugLbl, out string sugCmd))
+                    {
+                        string cmdCopy = sugCmd;
+                        string sub = !string.IsNullOrEmpty(tracked.NextStep)
+                            ? $"{cmdCopy} — {tracked.NextStep}"
+                            : cmdCopy;
+                        _allEntries.Add(new PaletteEntry(
+                            "QUEST STEP",
+                            $"Next: {sugLbl}",
+                            sub,
+                            () => OnPrefillCommandRequested?.Invoke(cmdCopy),
+                            $"quest next step action {sugLbl} {cmdCopy} {tracked.Title}"));
+                    }
+
+                    if (qp.Active.Count > 1)
+                    {
+                        int curIdx = 0;
+                        for (int i = 0; i < qp.Active.Count; i++)
+                        {
+                            if (qp.Active[i].Key == tracked.Key) { curIdx = i; break; }
+                        }
+                        var nextQ = qp.Active[(curIdx + 1) % qp.Active.Count];
+                        _allEntries.Add(new PaletteEntry(
+                            "QUEST CYCLE",
+                            $"Cycle Tracked Quest ({curIdx + 1}/{qp.Active.Count})",
+                            $"Switch HUD tracker to {nextQ.Title}",
+                            () => _quests?.CycleTrackedQuest(),
+                            $"quest cycle switch tracked next {nextQ.Title}"));
+                    }
+                }
             }
 
             // 1. UI Windows & Quick Controls
@@ -727,7 +800,7 @@ namespace TacSim.UI
                     row.Background.color = selected
                         ? new Color(0.16f, 0.44f, 0.62f, 0.98f)
                         : new Color(0.06f, 0.11f, 0.17f, 0.90f);
-                    string catColor = e.Category == "QUEST" || e.Category == "QUEST [!]" || e.Category == "QUEST TRAIL" ? "#FFDD55"
+                    string catColor = e.Category.StartsWith("QUEST", StringComparison.Ordinal) ? "#FFDD55"
                                     : (e.Category == "3D TRAIL" || e.Category == "SHIP TRAIL" ? "#66FFAA"
                                     : (e.Category == "SOLAR PORT" ? "#FFCC66"
                                     : (e.Category == "SPACE" ? "#FF8866"

@@ -1402,6 +1402,9 @@ namespace TacSim.UI
 
         public string TrackerDetailSnapshot => _trackerDetailText != null ? _trackerDetailText.text : string.Empty;
         public string TrackerActionLabelSnapshot => _trackerActionLbl != null ? _trackerActionLbl.text : string.Empty;
+        public string TrackerRouteRoomName => _trackerRouteRoomName;
+        public string TrackerRouteCommand => _trackerRouteCommand;
+        public int TrackerRouteHops => _trackerRouteHops;
 
         public void SetTrackerRouteBreadcrumb(string nextRoomName, string command, int hops)
         {
