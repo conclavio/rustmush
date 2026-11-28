@@ -15256,5 +15256,69 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void SailingTab_TagsQuestPortAndCurrentVenueAndSupportsStep6Commons()
+        {
+            var rootGo = new UnityEngine.GameObject("SailingTabQuestLabelsTest");
+            try
+            {
+                var tradeState = new TacSim.World.TacSimTradeAndShipState();
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.BindTradeState(tradeState);
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""balance_text"": ""5,000 cr"",
+                    ""listings"": []
+                }"));
+
+                // 1. Step 3 Stickney haul -> Stickney port button shows [Q], Ceres button shows [HERE]
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"",
+                        ""title"": ""Metals Down the Corridor"",
+                        ""checkpoints"": [{
+                            ""id"": ""deliver_metals"",
+                            ""title"": ""Deliver 5t metals to Stickney"",
+                            ""instructions"": ""File +ship/plan stickney."",
+                            ""checked"": false, ""live_ready"": false
+                        }]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                hud.OpenTradeAndSailingModal("SAILING PLAN", openSailingTab: true);
+                StringAssert.StartsWith("[Q] ", hud.QuestHighlightedPortLabelSnapshot);
+                StringAssert.Contains("Stickney Yards", hud.QuestHighlightedPortLabelSnapshot);
+                StringAssert.Contains("Ceres Freeport", hud.CurrentVenuePortLabelSnapshot);
+                StringAssert.Contains("[HERE]", hud.CurrentVenuePortLabelSnapshot);
+
+                // 2. Step 6 surface extraction -> Freeport Commons gets [Q] highlight & banner
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Surface scan"", ""instructions"": ""+tv/1 scan go"", ""checked"": false, ""live_ready"": false },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""instructions"": ""+tv/1 mine go"", ""checked"": false, ""live_ready"": false }
+                        ]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                Assert.IsTrue(hud.IsSailingQuestBannerVisible);
+                StringAssert.Contains("FREEPORT COMMONS", hud.SailingQuestBannerText);
+                StringAssert.StartsWith("[Q] ", hud.QuestHighlightedPortLabelSnapshot);
+                StringAssert.Contains("Freeport Commons", hud.QuestHighlightedPortLabelSnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
