@@ -2983,4 +2983,92 @@ describe("PR #693 Web review regressions (items 1-7, 9-11)", () => {
       stage.dispose();
     }
   });
+
+  it("renders prioritized turn-in and between-steps Next Guided quest pills inside TacsimSceneDeck 3D HUD", async () => {
+    let sock!: FakeSocket;
+    const app = new GameApp({
+      url: "ws://test/ws",
+      webSocketFactory: (u) => {
+        sock = new FakeSocket(u);
+        return sock;
+      },
+      random: () => 1,
+    });
+    app.client.connect("tok", "7");
+    sock.readyState = 1;
+    sock.onopen?.();
+    sock.deliver(
+      {
+        t: "hello",
+        d: {
+          proto: 1,
+          server: "test",
+          features: [],
+          panels: [PORT_TRADE_FEED, TACSIM_CONTENT_FEED],
+        },
+      } as OutputEvent,
+      0,
+    );
+    app.tacsim.view3dOpen = true;
+    app.tacsim.isAboardShip = false;
+    app.tacsim.seatedAtBridgeHelm = false;
+    app.quests.applyFrame({
+      schema: 1,
+      room_id: "#15",
+      room_name: "Registry & Co-op Desk",
+      room_markers: [
+        {
+          npc_id: "#99",
+          npc_name: "Harbor Clerk",
+          marker: "available",
+          symbol: "!",
+          quest_key: "side.offer",
+          quest_title: "Side Offer",
+          category: "optional",
+        },
+        {
+          npc_id: "#18",
+          npc_name: "Ilse Oduya-Brandt",
+          marker: "turn_in",
+          symbol: "?",
+          quest_key: "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+          quest_title: "First Papers at the Registry",
+          category: "guided",
+        },
+      ],
+      active: [],
+      available: [],
+      completed: [],
+    });
+
+    const deck = render(TacsimSceneDeck, { props: { app, onCmd: vi.fn() } });
+    await tick();
+    // Turn-in marker '?' wins over earlier '!' offer in the 3D HUD quest pill
+    const turnInPill = screen.getByRole("button", { name: /Ilse Oduya-Brandt/i });
+    expect(turnInPill.getAttribute("data-ready")).toBe("true");
+    expect(turnInPill.textContent).toContain("?");
+    expect(turnInPill.textContent).toContain("First Papers at the Registry");
+
+    // Between Steps 1 and 2 with no markers in room -> 3D HUD renders Next Guided (2/7) pill
+    app.quests.applyFrame({
+      schema: 1,
+      room_id: "#10",
+      room_name: "Port Watch Arrivals",
+      room_markers: [],
+      active: [],
+      available: [],
+      completed: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+          title: "First Papers at the Registry",
+        },
+      ],
+    });
+    await tick();
+    const nextPill = screen.getByRole("button", { name: /Next Guided \(2\/7\): Locker & Tanks/i });
+    expect(nextPill.textContent).toContain("Ilse Oduya-Brandt");
+    await fireEvent.click(nextPill);
+    expect(app.quests.logOpen).toBe(true);
+    deck.unmount();
+  });
 });
