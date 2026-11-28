@@ -227,4 +227,78 @@ describe("QuestDialogModal guided corridor tour roadmap", () => {
     const banner = screen.getByRole("status", { name: "Guided corridor tour complete" });
     expect(banner.textContent).toContain("Guided Corridor Tour Complete (7/7) — Corridor Captain");
   });
+
+  it("advances Step 2 dual-item hold readiness past loaded provisions and shows secondary OK status", () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#17",
+      room_name: "Exchange Hall",
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[1],
+          title: "Stock the Locker and Tanks",
+          giver_name: "Ilse Oduya-Brandt",
+          turn_in_name: "Ilse Oduya-Brandt",
+          next_step: "Buy 10 provisions and 5t propellant",
+          checkpoints: [
+            {
+              id: "buy_provisions",
+              title: "Buy 10 provisions",
+              instructions: "Buy 10 provisions at the Chandlery.",
+              checked: false,
+              live_ready: false,
+            },
+            {
+              id: "buy_propellant",
+              title: "Buy 5t propellant",
+              instructions: "Buy 5 tonnes of propellant at the Exchange.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+      available: [],
+      completed: [],
+    });
+    quests.openQuestDialog(GUIDED_TOUR_KEYS[1]!);
+
+    const app = {
+      quests,
+      tacsim: {
+        trade: {
+          hullId: "#99",
+          stowage: {
+            cargoKg: 0,
+            propellantKg: 1000,
+            provisionsCrewDays: 10,
+            cargoLines: [],
+          },
+        },
+      },
+      focusComposer: vi.fn(),
+    } as unknown as GameApp;
+
+    const first = render(QuestDialogModal, { app, onCmd: vi.fn() });
+    const strip = screen.getByLabelText("quest hold progress");
+    expect(strip.textContent).toContain("[HOLD]");
+    expect(strip.textContent).toContain("PROPELLANT: 1/5 t");
+    expect(strip.textContent).toContain("PROVISIONS 10/10d OK");
+    first.unmount();
+
+    // Also verify Quest Log active card shows the same multi-item summary once both are ready
+    (app.tacsim as unknown as { trade: { hullId: string; stowage: Record<string, unknown> } }).trade.stowage = {
+      cargoKg: 0,
+      propellantKg: 5000,
+      provisionsCrewDays: 10,
+      cargoLines: [],
+    };
+    quests.openLog("active");
+    render(QuestDialogModal, { app, onCmd: vi.fn() });
+    const logStrip = screen.getByLabelText("quest hold progress");
+    expect(logStrip.textContent).toContain("[HOLD READY]");
+    expect(logStrip.textContent).toContain("PROVISIONS: 10/10 d");
+    expect(logStrip.textContent).toContain("PROPELLANT 5/5t OK");
+  });
 });

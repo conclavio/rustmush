@@ -459,4 +459,86 @@ describe("QuestTrackerPanel route step, guided tour pill, and quick-accept", () 
     expect(onCmd).toHaveBeenCalledTimes(1);
     expect(onCmd.mock.calls[0]![0]).toMatch(/^goto /i);
   });
+
+  it("displays live multi-item Step 2 hold progress and Step 5 refit check directly on the HUD tracker", () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#17",
+      room_name: "Exchange Hall",
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[1],
+          title: "Stock the Locker and Tanks",
+          next_step: "Buy 5t propellant at Exchange",
+          checkpoints: [
+            {
+              id: "buy_provisions",
+              title: "Buy 10 provisions",
+              instructions: "Buy 10 provisions at the Chandlery.",
+              checked: false,
+              live_ready: false,
+            },
+            {
+              id: "buy_propellant",
+              title: "Buy 5t propellant",
+              instructions: "Buy 5 tonnes of propellant at the Exchange.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+        {
+          key: GUIDED_TOUR_KEYS[4],
+          title: "Refit the Dray for Surface Mining",
+          next_step: "Run +coop/refit prospector",
+          checkpoints: [
+            {
+              id: "refit_dray_p",
+              title: "Refit your Dray into a Dray-P prospector",
+              instructions: "Empty hold and run +coop/refit prospector.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+      available: [],
+      completed: [],
+    });
+
+    const app = {
+      quests,
+      tacsim: {
+        isAboardShip: false,
+        view3dOpen: false,
+        physicalLocationKey: null,
+        serverStationRoomEntry: "room.c07_exchange",
+        stationPack: buildFallbackFreeport(),
+        ambient: {
+          ownStowage: {
+            cargoKg: 0,
+            propellantKg: 2000,
+            provisionsCrewDays: 10,
+            cargoLines: [],
+          },
+        },
+      },
+      focusComposer: vi.fn(),
+    } as unknown as GameApp;
+
+    const first = render(QuestTrackerPanel, { props: { app, onCmd: vi.fn() } });
+    const holdStrip = screen.getByLabelText("Tracked quest hold readiness");
+    expect(holdStrip.textContent).toContain("[HOLD]");
+    expect(holdStrip.textContent).toContain("PROPELLANT: 2/5 t");
+    expect(holdStrip.textContent).toContain("PROVISIONS 10/10d OK");
+    first.unmount();
+
+    // Switch tracked quest to Step 5 refit with provisions still loaded -> [REFIT CHECK]
+    quests.track(GUIDED_TOUR_KEYS[4]!);
+    render(QuestTrackerPanel, { props: { app, onCmd: vi.fn() } });
+    const refitStrip = screen.getByLabelText("Tracked quest hold readiness");
+    expect(refitStrip.textContent).toContain("[REFIT CHECK]");
+    expect(refitStrip.textContent).toContain("Stores 10d");
+  });
 });
