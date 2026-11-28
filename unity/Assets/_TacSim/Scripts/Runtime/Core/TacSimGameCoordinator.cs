@@ -1291,15 +1291,29 @@ namespace TacSim.Core
 
         private void SyncQuestDestinationToBridgeHolo()
         {
-            if (ShipInterior == null) return;
-            if (Hud?.QuestJournal != null &&
-                Hud.QuestJournal.TryGetActiveDestinationPort(out var destHint))
+            if (ShipInterior != null)
             {
-                ShipInterior.SetQuestDestinationPort(destHint.PortId);
+                if (Hud?.QuestJournal != null &&
+                    Hud.QuestJournal.TryGetActiveDestinationPort(out var destHint))
+                {
+                    ShipInterior.SetQuestDestinationPort(destHint.PortId);
+                }
+                else
+                {
+                    ShipInterior.SetQuestDestinationPort(string.Empty);
+                }
             }
-            else
+            if (SurfaceStage != null)
             {
-                ShipInterior.SetQuestDestinationPort(string.Empty);
+                if (Hud?.QuestJournal != null &&
+                    Hud.QuestJournal.TryGetActiveSurfaceMiningStatus(out var miningStatus))
+                {
+                    SurfaceStage.SetQuestMiningTarget(miningStatus.TargetOreSlug, miningStatus.RecommendedFamily);
+                }
+                else
+                {
+                    SurfaceStage.SetQuestMiningTarget(string.Empty, string.Empty);
+                }
             }
         }
 

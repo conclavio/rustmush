@@ -166,6 +166,7 @@ namespace TacSim.UI
         public bool ArenaObjectiveBracketActive { get; private set; }
         public bool ArenaDriveWaypointBracketActive { get; private set; }
         public int OffscreenThreatBracketCount { get; private set; }
+        public int QuestOreBracketCount { get; private set; }
         public string GetActiveBracketTagSnapshot(int index) =>
             (index >= 0 && index < ActiveBracketCount && index < _pool.Count && _pool[index].TagLabel != null)
                 ? (_pool[index].TagLabel.text ?? string.Empty)
@@ -589,6 +590,7 @@ namespace TacSim.UI
 
         private void SyncSurfaceBracketsAndCompass(Camera cam, float sw, float sh, Vector2 canvasSize)
         {
+            QuestOreBracketCount = 0;
             if (_surface == null)
             {
                 HideAllBrackets();
@@ -599,8 +601,11 @@ namespace TacSim.UI
             {
                 float hdg = (_surface.RoverHeadingDeg % 360f + 360f) % 360f;
                 string drillStr = _surface.IsDrillingActive ? "DRILLING" : "DRILL READY";
+                string questTag = !string.IsNullOrEmpty(_surface.QuestTargetOreSlug)
+                    ? $"  |  QUEST: {_surface.QuestTargetOreSlug.Replace('_', ' ').ToUpperInvariant()}"
+                    : string.Empty;
                 _surfaceCompassText.text =
-                    $"HDG {hdg:000}°  |  {_surface.RoverSpeedKph:0} kph  |  CELL ({_surface.AuthoritativeSiteCellX},{_surface.AuthoritativeSiteCellY})  |  {drillStr}";
+                    $"HDG {hdg:000}°  |  {_surface.RoverSpeedKph:0} kph  |  CELL ({_surface.AuthoritativeSiteCellX},{_surface.AuthoritativeSiteCellY})  |  {drillStr}{questTag}";
             }
             if (_surfaceDrillIndicator != null)
             {
@@ -609,7 +614,7 @@ namespace TacSim.UI
                     : new Color(0.22f, 0.80f, 0.56f, 0.9f);
             }
 
-            if (cam == null)
+            if (cam == null && ScreenProjectionOverrideForTests == null)
             {
                 HideAllBrackets();
                 return;
@@ -618,7 +623,7 @@ namespace TacSim.UI
             int used = 0;
             if (_surface.TryGetActiveWaypointWorldPos(out Vector3 wpPos, out string wpLabel) && used < MaxBrackets)
             {
-                Vector3 sp = cam.WorldToScreenPoint(wpPos);
+                Vector3 sp = ProjectToScreen(cam, wpPos);
                 ComputeCanvasPositionFromScreenPoint(sp, sw, sh, canvasSize, 52f, out Vector2 pos, out _, out bool clamped);
                 float distM = _surface.RoverTransform != null ? Vector3.Distance(_surface.RoverTransform.position, wpPos) : 0f;
                 ConfigureBracket(
@@ -639,13 +644,23 @@ namespace TacSim.UI
             for (int i = 0; i < beacons.Count && used < MaxBrackets; i++)
             {
                 var bc = beacons[i];
-                Vector3 sp = cam.WorldToScreenPoint(bc.WorldPos);
-                if (sp.z < 0f) continue; // Keep off-screen ore beacons clean so only active waypoint clamps
+                Vector3 sp = ProjectToScreen(cam, bc.WorldPos);
+                if (sp.z < 0f && !bc.IsQuestTarget) continue; // Keep off-screen non-quest ore beacons clean
                 ComputeCanvasPositionFromScreenPoint(sp, sw, sh, canvasSize, 48f, out Vector2 pos, out _, out bool clamped);
-                if (clamped) continue;
+                if (clamped && !bc.IsQuestTarget) continue;
                 float distM = _surface.RoverTransform != null ? Vector3.Distance(_surface.RoverTransform.position, bc.WorldPos) : 0f;
-                Color col = bc.IsRich ? new Color(0.24f, 1.0f, 0.58f, 0.94f) : new Color(0.95f, 0.78f, 0.28f, 0.88f);
-                ConfigureBracket(_pool[used], pos, 46f, col, bc.IsRich ? "RICH ORE" : "ORE VEIN", $"{distM:0} m", string.Empty, false, false, interactive: false);
+                if (bc.IsQuestTarget)
+                {
+                    QuestOreBracketCount++;
+                    Color qCol = new Color(1.0f, 0.88f, 0.24f, 0.98f);
+                    string qTag = clamped ? "» [QUEST] ORE" : "[QUEST] ORE";
+                    ConfigureBracket(_pool[used], pos, 56f, qCol, qTag, $"{distM:0} m", string.Empty, false, false, interactive: false);
+                }
+                else
+                {
+                    Color col = bc.IsRich ? new Color(0.24f, 1.0f, 0.58f, 0.94f) : new Color(0.95f, 0.78f, 0.28f, 0.88f);
+                    ConfigureBracket(_pool[used], pos, 46f, col, bc.IsRich ? "RICH ORE" : "ORE VEIN", $"{distM:0} m", string.Empty, false, false, interactive: false);
+                }
                 used++;
             }
 

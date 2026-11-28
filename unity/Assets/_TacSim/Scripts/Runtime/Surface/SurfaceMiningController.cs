@@ -109,15 +109,53 @@ namespace TacSim.Surface
         public int RouteSplinePointCount => _roverRouteLine != null ? _roverRouteLine.positionCount : 0;
         public bool HasHoverDriveCursor => _hoverCursorRing != null;
         public int ActiveBeaconHaloCount => _markersRoot != null ? _markersRoot.childCount : 0;
+        public string QuestTargetOreSlug { get; private set; } = string.Empty;
+        public string QuestTargetFamily { get; private set; } = string.Empty;
+        public int QuestMatchedBeaconCount { get; private set; }
         public int RoverHeadlightCount => _roverHeadlights.Count;
         public bool IsRoverDustPlumeActive => _roverDustPlume != null && _roverDustPlume.gameObject.activeSelf;
         public float LastRoverSlopeTiltDeg { get; private set; }
 
+        private List<JsonNode> _lastReadings;
         private bool _hasCachedHullSiteCell;
         private int _cachedHullSiteX;
         private int _cachedHullSiteY;
         private string _cachedHullSiteTitle;
         public bool IsPadVisible => _padRoot != null && _padRoot.gameObject.activeSelf;
+
+        public void SetQuestMiningTarget(string oreSlug, string family)
+        {
+            string normOre = string.IsNullOrWhiteSpace(oreSlug) ? string.Empty : oreSlug.Trim().ToLowerInvariant();
+            string normFam = string.IsNullOrWhiteSpace(family) ? string.Empty : family.Trim().ToLowerInvariant();
+            if (string.Equals(QuestTargetOreSlug, normOre, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(QuestTargetFamily, normFam, StringComparison.OrdinalIgnoreCase))
+                return;
+            QuestTargetOreSlug = normOre;
+            QuestTargetFamily = normFam;
+            if (_lastReadings != null && TerrainGrid != null)
+                RebuildLiveReadingsMarkers(_lastReadings);
+        }
+
+        private bool IsQuestMatchingReading(string readingText)
+        {
+            if (string.IsNullOrEmpty(QuestTargetOreSlug) && string.IsNullOrEmpty(QuestTargetFamily))
+                return false;
+            if (!string.IsNullOrEmpty(QuestTargetFamily) &&
+                !string.IsNullOrEmpty(ActiveOreFamily) &&
+                string.Equals(ActiveOreFamily, QuestTargetFamily, StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (string.IsNullOrEmpty(readingText)) return false;
+            string low = readingText.ToLowerInvariant();
+            if (!string.IsNullOrEmpty(QuestTargetOreSlug))
+            {
+                if (low.Contains(QuestTargetOreSlug, StringComparison.Ordinal)) return true;
+                string spaced = QuestTargetOreSlug.Replace('_', ' ');
+                if (low.Contains(spaced, StringComparison.Ordinal)) return true;
+            }
+            if (!string.IsNullOrEmpty(QuestTargetFamily) && low.Contains(QuestTargetFamily, StringComparison.Ordinal))
+                return true;
+            return false;
+        }
 
         private void OnDestroy()
         {
@@ -135,6 +173,10 @@ namespace TacSim.Surface
             _hasDriveWaypoint = false;
             _hasCachedHullSiteCell = false;
             _cachedHullSiteTitle = null;
+            _lastReadings = null;
+            QuestTargetOreSlug = string.Empty;
+            QuestTargetFamily = string.Empty;
+            QuestMatchedBeaconCount = 0;
             _recentSiteLines.Clear();
             _ownedRigs.Clear();
             ActiveRunSummary = string.Empty;
@@ -174,13 +216,15 @@ namespace TacSim.Surface
             public readonly bool IsRich;
             public readonly int SiteCellX;
             public readonly int SiteCellY;
-            public SurfaceOreBeaconPoint(Vector3 worldPos, string label, bool isRich, int siteCellX = -1, int siteCellY = -1)
+            public readonly bool IsQuestTarget;
+            public SurfaceOreBeaconPoint(Vector3 worldPos, string label, bool isRich, int siteCellX = -1, int siteCellY = -1, bool isQuestTarget = false)
             {
                 WorldPos = worldPos;
                 Label = label;
                 IsRich = isRich;
                 SiteCellX = siteCellX;
                 SiteCellY = siteCellY;
+                IsQuestTarget = isQuestTarget;
             }
         }
 
@@ -1079,7 +1123,9 @@ namespace TacSim.Surface
 
         private void RebuildLiveReadingsMarkers(List<JsonNode> readings)
         {
+            _lastReadings = readings;
             _oreBeacons.Clear();
+            QuestMatchedBeaconCount = 0;
             if (_markersRoot == null || TerrainGrid == null) return;
             for (int i = _markersRoot.childCount - 1; i >= 0; i--)
             {
@@ -1102,9 +1148,15 @@ namespace TacSim.Surface
                     continue;
                 string txt = r.Str("text", "Ore Reading");
                 bool isRich = txt.IndexOf("rich", StringComparison.OrdinalIgnoreCase) >= 0;
+                bool isQuest = IsQuestMatchingReading(txt);
+                if (isQuest) QuestMatchedBeaconCount++;
                 Vector3 wp = SurfaceStageOrigin + TerrainGrid.SiteCellToLocalPos(siteCx, siteCy, 2.2f);
-                _oreBeacons.Add(new SurfaceOreBeaconPoint(wp, txt, isRich, siteCx, siteCy));
-                SpawnBeaconPillarAtSiteCell(siteCx, siteCy, txt, isRich ? new Color(0.2f, 1f, 0.58f) : new Color(0.32f, 0.85f, 1f), isRich);
+                _oreBeacons.Add(new SurfaceOreBeaconPoint(wp, txt, isRich, siteCx, siteCy, isQuest));
+                Color beaconCol = isQuest
+                    ? new Color(1.0f, 0.86f, 0.24f)
+                    : (isRich ? new Color(0.2f, 1f, 0.58f) : new Color(0.32f, 0.85f, 1f));
+                string beaconLabel = isQuest ? $"[QUEST] {txt}" : txt;
+                SpawnBeaconPillarAtSiteCell(siteCx, siteCy, beaconLabel, beaconCol, isRich || isQuest);
                 spawned++;
             }
         }
