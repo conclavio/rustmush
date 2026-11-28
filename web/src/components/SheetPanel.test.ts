@@ -156,7 +156,7 @@ describe("SheetPanel guided corridor tour summary", () => {
     });
     render(SheetPanel, { props: { app } });
     const offerBtn = screen.getByRole("button", {
-      name: /\[!\] Ilse Oduya-Brandt offers: Metals Down the Corridor \(\+1 more\)/i,
+      name: /\[!\] Ilse Oduya-Brandt offers: Metals Down the Corridor \(\+1 more\).*Step 3\/7/i,
     });
     await fireEvent.click(offerBtn);
     expect(quests.dialogOpen).toBe(true);
@@ -339,6 +339,11 @@ describe("SheetPanel guided corridor tour summary", () => {
     const holdRecover = screen.getByLabelText("sheet quest hold readiness");
     expect(holdRecover.textContent).toContain("[RECOVER RIG FIRST]");
     expect(holdRecover.textContent).toContain("+tv/1 recover go");
+    expect(holdRecover.classList.contains("recover")).toBe(true);
+    const holdSummary0 = screen.getByLabelText("sheet ship hold summary");
+    expect(holdSummary0.textContent).toContain("0.0t cargo");
+    expect(holdSummary0.textContent).toContain("10t propellant");
+    expect(holdSummary0.textContent).toContain("10d provisions");
     // Premature [PRE-FLIGHT OK] must stay hidden until mined ore is recovered into ship hold
     expect(screen.queryByLabelText("sheet quest sailing preflight")).toBeNull();
     const recBtn = screen.getByRole("button", { name: /Next: Recover Rig \(\+tv\/1 recover go\)/i });

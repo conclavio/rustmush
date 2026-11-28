@@ -105,6 +105,11 @@
       ) ?? avail[0]
     );
   });
+  const topOfferStepNo = $derived.by(() => {
+    if (!topOffer) return 0;
+    const idx = (GUIDED_TOUR_KEYS as readonly string[]).indexOf(topOffer.key);
+    return idx >= 0 ? idx + 1 : 0;
+  });
 
   // No poll: since interface cut I1 every command-side sheet write
   // republishes the keyframe to the subject (see web/README.md), so the
@@ -271,7 +276,12 @@
               <p class="qsum-next">{trackedQuest.nextStep}</p>
             {/if}
             {#if holdReadiness}
-              <div class="qsum-readiness" class:ready={holdReadiness.ready} aria-label="sheet quest hold readiness">
+              <div
+                class="qsum-readiness"
+                class:ready={holdReadiness.ready}
+                class:recover={holdReadiness.tag === "[RECOVER RIG FIRST]"}
+                aria-label="sheet quest hold readiness"
+              >
                 <strong>{holdReadiness.tag}</strong> {holdReadiness.text}
               </div>
             {/if}
@@ -281,6 +291,11 @@
                 {trackedPreflight.propellantOk ? " ✓" : " ✗"} Propellant {trackedPreflight.propellantTonnes}t ·
                 {trackedPreflight.provisionsOk ? " ✓" : " ✗"} Provisions {trackedPreflight.provisionsDays}d{#if trackedPreflight.cargoRequired} · {trackedPreflight.cargoOk ? "✓" : "✗"} {trackedPreflight.cargoLabel} {trackedPreflight.cargoQty}/{trackedPreflight.cargoTarget}{/if} → {trackedDest.portLabel}
               </div>
+            {/if}
+            {#if liveStowage}
+              <p class="qsum-hold" aria-label="sheet ship hold summary">
+                Ship Hold: {(Math.max(0, liveStowage.cargoKg) / 1000).toFixed(1)}t cargo · {Math.floor(Math.max(0, liveStowage.propellantKg) / 1000)}t propellant · {Math.max(0, Math.floor(liveStowage.provisionsCrewDays))}d provisions
+              </p>
             {/if}
             {#if trackedQuest.canFinishNow || suggestedAction || otherReadyHere.length > 0 || availableQuestsCount > 0}
               <div class="qsum-actions">
@@ -341,7 +356,7 @@
                 class="qsum-action-btn offer"
                 onclick={() => app.quests?.openQuestDialog(topOffer.key)}
               >
-                [!] {topOffer.giverName ? `${topOffer.giverName} offers: ` : ""}{topOffer.title}{availableQuestsCount > 1 ? ` (+${availableQuestsCount - 1} more)` : ""}
+                [!] {topOffer.giverName ? `${topOffer.giverName} offers: ` : ""}{topOffer.title}{availableQuestsCount > 1 ? ` (+${availableQuestsCount - 1} more)` : ""}{#if topOfferStepNo > 0}{" "}Step {topOfferStepNo}/7{/if}
               </button>
               {#if availableQuestsCount > 1}
                 <button
@@ -836,6 +851,19 @@
     border-color: rgba(52, 211, 153, 0.55);
     background: rgba(16, 185, 129, 0.14);
     color: #a7f3d0;
+  }
+
+  .qsum-readiness.recover {
+    border-color: rgba(248, 113, 113, 0.65);
+    background: rgba(239, 68, 68, 0.16);
+    color: #fecaca;
+  }
+
+  .qsum-hold {
+    margin: 0.22rem 0 0;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    color: var(--fg-muted);
   }
 
   .quest-summary.mastered {
