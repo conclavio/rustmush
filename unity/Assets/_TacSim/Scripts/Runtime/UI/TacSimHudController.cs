@@ -327,6 +327,7 @@ namespace TacSim.UI
         private enum ExchangeQuestJumpMode { Sail, RefitYard, TurnInNow, TurnInWayfinder }
         private ExchangeQuestJumpMode _exchangeJumpMode;
         private string _exchangeTurnInCmd = string.Empty;
+        private string _exchangeWayfinderRoomEntry = string.Empty;
         private RectTransform _listingsViewportRect;
         private GameObject _sailingQuestBanner;
         private Text _sailingQuestBannerText;
@@ -2885,8 +2886,9 @@ namespace TacSim.UI
         {
             if (_exchangeJumpMode != ExchangeQuestJumpMode.TurnInWayfinder || QuestJournal == null)
                 return false;
+            string roomEntry = _exchangeWayfinderRoomEntry;
             if (_tradePanel != null) _tradePanel.SetActive(false);
-            return QuestJournal.TriggerTrackerWayfinder();
+            return QuestJournal.TriggerWayfinderToRoom(roomEntry);
         }
 
         private bool IsRefitClearBid(MarketListingRow row, QuestRefitHoldReadiness refit)
@@ -3233,6 +3235,7 @@ namespace TacSim.UI
             bool showBanner = hasQuestNeed || hasRefitPrep || hasReadyTurnIn;
             _exchangeJumpMode = ExchangeQuestJumpMode.Sail;
             _exchangeTurnInCmd = string.Empty;
+            _exchangeWayfinderRoomEntry = string.Empty;
             if (_exchangeQuestBanner != null)
             {
                 _exchangeQuestBanner.SetActive(showBanner);
@@ -3270,15 +3273,36 @@ namespace TacSim.UI
                             }
                         }
                         bool showSailJump = TryResolveExchangeHaulDestination(questNeed, out var haulDest);
+                        bool hasListingMatch = false;
+                        for (int mIdx = 0; mIdx < _boundTradeState.Listings.Count; mIdx++)
+                        {
+                            if (questNeed.MatchesListing(_boundTradeState.Listings[mIdx]))
+                            {
+                                hasListingMatch = true;
+                                break;
+                            }
+                        }
+                        string missingDeskLabel = (!showSailJump && _boundTradeState.Listings.Count > 0 && !hasListingMatch)
+                            ? questNeed.FormatVenueHint()
+                            : string.Empty;
+                        bool showMissingDeskWayfinder = !string.IsNullOrEmpty(missingDeskLabel);
+                        bool showSecondBtn = showSailJump || showMissingDeskWayfinder;
+                        if (showMissingDeskWayfinder)
+                        {
+                            _exchangeJumpMode = ExchangeQuestJumpMode.TurnInWayfinder;
+                            _exchangeWayfinderRoomEntry = questNeed.ResolveVenueRoomEntry();
+                        }
                         if (_exchangeSailJumpBtn != null)
                         {
-                            _exchangeSailJumpBtn.gameObject.SetActive(showSailJump);
+                            _exchangeSailJumpBtn.gameObject.SetActive(showSecondBtn);
                             SetRect(_exchangeSailJumpBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-318f, 3f), new Vector2(-174f, -3f));
                         }
                         if (showSailJump && _exchangeSailJumpBtnLbl != null)
                             _exchangeSailJumpBtnLbl.text = $"SAIL: {haulDest.PortId.ToUpperInvariant()}";
+                        else if (showMissingDeskWayfinder && _exchangeSailJumpBtnLbl != null)
+                            _exchangeSailJumpBtnLbl.text = "WAYFINDER";
                         SetRect(_exchangeQuestBannerText.rectTransform, Vector2.zero, Vector2.one,
-                            new Vector2(12f, 0f), new Vector2(showSailJump ? -324f : -176f, 0f));
+                            new Vector2(12f, 0f), new Vector2(showSecondBtn ? -324f : -176f, 0f));
 
                         string haulPart = string.Empty;
                         if (showSailJump)
@@ -3289,6 +3313,10 @@ namespace TacSim.UI
                                 ? " | Top up Fuel & Stores first"
                                 : (fuelMissing ? " | Top up Fuel first" : (storesMissing ? " | Top up Stores first" : string.Empty));
                             haulPart = $"  |  <color=#55EE99>Haul → {MushProtocol.EscapeUnityRichText(haulDest.PortLabel)} (do not sell here{topupSuffix})</color>";
+                        }
+                        else if (showMissingDeskWayfinder)
+                        {
+                            haulPart = $"  |  <color=#FFCC66>Not listed here — try {MushProtocol.EscapeUnityRichText(missingDeskLabel)}</color>";
                         }
                         string stepTag = ResolveActiveQuestStepTag();
                         string stepSuffix = string.IsNullOrEmpty(stepTag) ? string.Empty : $" <color=#FFDD44>{stepTag}</color>";
