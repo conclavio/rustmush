@@ -1405,6 +1405,18 @@ impl QuestsSnapshot {
     /// Extract a verified, registered next command to prefill for an active quest's next step.
     #[must_use]
     pub fn suggested_action_for(q: &ActiveQuest) -> Option<QuestSuggestedAction> {
+        Self::suggested_action_for_with_stowage(q, None)
+    }
+
+    /// Live-stowage-aware variant of [`Self::suggested_action_for`]:
+    /// - Step 5 refit with cargo/stores aboard -> `Clear Hold (+market/list)` until empty.
+    /// - Step 6 post-mine with mined ore stowed -> `Plan <Return Port>` (`+ship/plan <port>`).
+    /// - Steps 3 & 4 buy+deliver with cargo not yet loaded -> `Buy Cargo (+market/list)` until loaded.
+    #[must_use]
+    pub fn suggested_action_for_with_stowage(
+        q: &ActiveQuest,
+        stowage: Option<&QuestStowageTelemetry>,
+    ) -> Option<QuestSuggestedAction> {
         if q.can_finish_now || q.can_check_now || q.ready_to_finish {
             return None;
         }
@@ -1422,6 +1434,15 @@ impl QuestsSnapshot {
         .to_lowercase();
 
         if text_low.contains("+coop/refit") || id_low.contains("refit_dray") {
+            if let Some(st) = stowage {
+                let has_cargo = st.cargo_kg > 0 || st.cargo_lots.iter().any(|(_, _, qty)| *qty > 0);
+                if has_cargo || st.provisions_days > 0 {
+                    return Some(QuestSuggestedAction {
+                        label: "Clear Hold (+market/list)".into(),
+                        command: "+market/list".into(),
+                    });
+                }
+            }
             return Some(QuestSuggestedAction {
                 label: "Refit Dray-P".into(),
                 command: "+coop/refit prospector".into(),
@@ -1458,10 +1479,65 @@ impl QuestsSnapshot {
         if let Some(mining) = single.surface_mining_status(Some(&q.key))
             && mining.mine_done
         {
+            if let Some(st) = stowage {
+                let want = normalize_good_slug(&mining.target_ore_slug);
+                let have_ore: i64 = st
+                    .cargo_lots
+                    .iter()
+                    .filter(|(g, l, _)| {
+                        normalize_good_slug(g) == want || normalize_good_slug(l) == want
+                    })
+                    .map(|(_, _, qty)| (*qty).max(0))
+                    .sum();
+                if have_ore >= 1 {
+                    let (port_id, port_label) =
+                        if let Some(dest) = single.active_destination_port(Some(&q.key)) {
+                            (dest.port_id, dest.port_label)
+                        } else {
+                            let slug = infer_station_port_from_room_entry(&q.next_room_entry)
+                                .unwrap_or("ceres");
+                            let lbl = match slug {
+                                "stickney" => "Stickney Yards",
+                                "luna" => "Aitken Basin",
+                                "deimos" => "Voltaire Base",
+                                "titan" => "Ligeia Dock",
+                                _ => "Ceres Freeport",
+                            };
+                            (slug.to_string(), lbl.to_string())
+                        };
+                    return Some(QuestSuggestedAction {
+                        label: format!("Plan {port_label}"),
+                        command: format!("+ship/plan {port_id}"),
+                    });
+                }
+            }
             return Some(QuestSuggestedAction {
                 label: "Recover Rig".into(),
                 command: "+tv/1 recover go".into(),
             });
+        }
+        if let Some(st) = stowage
+            && let Some(need) = single.active_trade_need(Some(&q.key))
+            && need.wants_buy
+            && need.wants_sell
+            && need.commodity_slug != "propellant"
+            && need.commodity_slug != "provisions"
+        {
+            let have: i64 = st
+                .cargo_lots
+                .iter()
+                .filter(|(g, l, _)| {
+                    normalize_good_slug(g) == need.commodity_slug
+                        || normalize_good_slug(l) == need.commodity_slug
+                })
+                .map(|(_, _, qty)| (*qty).max(0))
+                .sum();
+            if have < need.target_quantity.max(1) {
+                return Some(QuestSuggestedAction {
+                    label: "Buy Cargo (+market/list)".into(),
+                    command: "+market/list".into(),
+                });
+            }
         }
         if let Some(dest) = single.active_destination_port(Some(&q.key)) {
             return Some(QuestSuggestedAction {
@@ -2305,6 +2381,16 @@ impl QuestOverlayState {
         snap: &QuestsSnapshot,
         current_port: Option<&str>,
     ) -> QuestOverlayAction {
+        self.handle_key_full(key, snap, current_port, None)
+    }
+
+    pub fn handle_key_full(
+        &mut self,
+        key: Key,
+        snap: &QuestsSnapshot,
+        current_port: Option<&str>,
+        stowage: Option<&QuestStowageTelemetry>,
+    ) -> QuestOverlayAction {
         self.clamp_selection(snap);
         match key {
             Key::Esc | Key::Char('q') => {
@@ -2395,7 +2481,8 @@ impl QuestOverlayState {
                 self.confirm_abandon = false;
                 self.confirm_decline = false;
                 if let Some(item) = snap.active.get(self.selected)
-                    && let Some(act) = QuestsSnapshot::suggested_action_for(item)
+                    && let Some(act) =
+                        QuestsSnapshot::suggested_action_for_with_stowage(item, stowage)
                 {
                     self.close();
                     return QuestOverlayAction::Prefill(act.command);
@@ -2689,7 +2776,7 @@ pub fn render_quest_tracker_lines_full(
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             ))
-        } else if let Some(sug) = QuestsSnapshot::suggested_action_for(q) {
+        } else if let Some(sug) = QuestsSnapshot::suggested_action_for_with_stowage(q, stowage) {
             Line::from(Span::styled(
                 format!("F11 -> p: {}", sug.command),
                 Style::default().fg(Color::Cyan),
@@ -3357,7 +3444,7 @@ pub fn render_quest_overlay_full(
                         Style::default().add_modifier(Modifier::DIM),
                     )));
                 }
-                if let Some(act) = QuestsSnapshot::suggested_action_for(q) {
+                if let Some(act) = QuestsSnapshot::suggested_action_for_with_stowage(q, stowage) {
                     detail_lines.push(Line::from(vec![
                         Span::styled(
                             "Suggested [p]: ",
@@ -6612,5 +6699,110 @@ mod tests {
         let ov_step5_clear = render_overlay(&st, &snap, &stow_clear);
         assert!(ov_step5_clear.contains("[HOLD CLEAR]"), "{ov_step5_clear}");
         assert!(!ov_step5_clear.contains("[CLEAR HOLD]"), "{ov_step5_clear}");
+    }
+
+    #[test]
+    fn suggested_action_adapts_to_live_stowage_on_steps_3_5_and_6() {
+        let snap = parse_frame(&json!({
+            "schema": 1,
+            "active": [
+                {
+                    "key": GUIDED_TOUR_KEYS[2],
+                    "title": "Metals Down the Corridor",
+                    "next_room_entry": "room.p07_receiving",
+                    "checkpoints": [{
+                        "id": "deliver_metals",
+                        "title": "Buy 5t metals and deliver to Stickney Yards",
+                        "instructions": "Buy 5t metals then +ship/plan stickney and sell.",
+                        "checked": false,
+                        "live_ready": false
+                    }]
+                },
+                {
+                    "key": GUIDED_TOUR_KEYS[4],
+                    "title": "Refit the Dray for Surface Mining",
+                    "next_room_entry": "room.c05_registry",
+                    "checkpoints": [{
+                        "id": "refit_dray_p",
+                        "title": "Refit Dray to Dray-P",
+                        "instructions": "Run +coop/refit prospector.",
+                        "checked": false,
+                        "live_ready": false
+                    }]
+                },
+                {
+                    "key": GUIDED_TOUR_KEYS[5],
+                    "title": "Scan, Sound, and Mine a Landing Site",
+                    "next_room_entry": "room.c07_exchange",
+                    "checkpoints": [
+                        { "id": "scan_landing_site", "title": "Scan", "instructions": "+tv/1 scan go", "checked": true, "live_ready": true },
+                        { "id": "sound_pocket", "title": "Sound", "instructions": "+tv/1 sound go", "checked": true, "live_ready": true },
+                        { "id": "mine_carbon_ore", "title": "Mine 1t carbon_ore", "instructions": "+tv/1 mine go", "checked": true, "live_ready": true }
+                    ]
+                }
+            ]
+        }));
+
+        let empty_hold = QuestStowageTelemetry {
+            cargo_kg: 0,
+            propellant_kg: 8_000,
+            provisions_days: 10,
+            cargo_lots: vec![],
+        };
+        let loaded_metals = QuestStowageTelemetry {
+            cargo_kg: 5_000,
+            propellant_kg: 8_000,
+            provisions_days: 10,
+            cargo_lots: vec![("tacsim:metals".into(), "Metals".into(), 5)],
+        };
+        let clear_refit = QuestStowageTelemetry {
+            cargo_kg: 0,
+            propellant_kg: 8_000,
+            provisions_days: 0,
+            cargo_lots: vec![],
+        };
+        let stowed_ore = QuestStowageTelemetry {
+            cargo_kg: 1_000,
+            propellant_kg: 8_000,
+            provisions_days: 10,
+            cargo_lots: vec![("tacsim:carbon_ore".into(), "Carbon Ore".into(), 1)],
+        };
+
+        // Step 3: 0t metals -> +market/list; 5t metals -> +ship/plan stickney
+        let mut st = QuestOverlayState::default();
+        st.open_tab_index(QuestTab::Active, 0);
+        assert_eq!(
+            st.handle_key_full(Key::Char('p'), &snap, Some("ceres"), Some(&empty_hold)),
+            QuestOverlayAction::Prefill("+market/list".into())
+        );
+        st.open_tab_index(QuestTab::Active, 0);
+        assert_eq!(
+            st.handle_key_full(Key::Char('p'), &snap, Some("ceres"), Some(&loaded_metals)),
+            QuestOverlayAction::Prefill("+ship/plan stickney".into())
+        );
+
+        // Step 5: 10d stores -> +market/list; empty -> +coop/refit prospector
+        st.open_tab_index(QuestTab::Active, 1);
+        assert_eq!(
+            st.handle_key_full(Key::Char('p'), &snap, Some("ceres"), Some(&empty_hold)),
+            QuestOverlayAction::Prefill("+market/list".into())
+        );
+        st.open_tab_index(QuestTab::Active, 1);
+        assert_eq!(
+            st.handle_key_full(Key::Char('p'), &snap, Some("ceres"), Some(&clear_refit)),
+            QuestOverlayAction::Prefill("+coop/refit prospector".into())
+        );
+
+        // Step 6 post-mine: 0t ore -> +tv/1 recover go; 1t carbon_ore stowed -> +ship/plan ceres
+        st.open_tab_index(QuestTab::Active, 2);
+        assert_eq!(
+            st.handle_key_full(Key::Char('p'), &snap, Some("commons"), Some(&empty_hold)),
+            QuestOverlayAction::Prefill("+tv/1 recover go".into())
+        );
+        st.open_tab_index(QuestTab::Active, 2);
+        assert_eq!(
+            st.handle_key_full(Key::Char('p'), &snap, Some("commons"), Some(&stowed_ore)),
+            QuestOverlayAction::Prefill("+ship/plan ceres".into())
+        );
     }
 }

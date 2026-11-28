@@ -3644,10 +3644,12 @@ impl TuiApp {
             && self.input_mode == InputMode::Normal
         {
             let cur_port = self.current_quest_port_owned();
-            match self.quests_overlay.handle_key_with_port(
+            let stowage = self.port_walk.quest_stowage_telemetry();
+            match self.quests_overlay.handle_key_full(
                 key,
                 &self.quests_snap,
                 cur_port.as_deref(),
+                stowage.as_ref(),
             ) {
                 QuestOverlayAction::None | QuestOverlayAction::Close => {}
                 QuestOverlayAction::Prefill(cmd) => {
@@ -3737,10 +3739,12 @@ impl TuiApp {
             && self.input_mode == InputMode::Normal
         {
             let cur_port = self.current_quest_port_owned();
-            match self.quests_overlay.handle_key_with_port(
+            let stowage = self.port_walk.quest_stowage_telemetry();
+            match self.quests_overlay.handle_key_full(
                 key,
                 &self.quests_snap,
                 cur_port.as_deref(),
+                stowage.as_ref(),
             ) {
                 QuestOverlayAction::None | QuestOverlayAction::Close => {}
                 QuestOverlayAction::Prefill(cmd) => {
@@ -5271,7 +5275,10 @@ impl TuiApp {
                     detail: detail.clone(),
                     quest_action: Some(PaletteQuestAction::PrefillCommand),
                 });
-            } else if let Some(suggested) = QuestsSnapshot::suggested_action_for(tq) {
+            } else if let Some(suggested) = QuestsSnapshot::suggested_action_for_with_stowage(
+                tq,
+                self.port_walk.quest_stowage_telemetry().as_ref(),
+            ) {
                 pushed_suggested_cmd = suggested.command.trim().to_ascii_lowercase();
                 let detail = if tq.next_step.is_empty() {
                     suggested.command.clone()
