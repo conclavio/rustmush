@@ -102,6 +102,38 @@ namespace TacSim.UI
                 ? _allEntries[_filteredIndices[_selectedCursor]].Title
                 : string.Empty;
 
+        public List<string> GetFilteredTitlesSnapshot()
+        {
+            var list = new List<string>(_filteredIndices.Count);
+            for (int i = 0; i < _filteredIndices.Count; i++)
+                list.Add(_allEntries[_filteredIndices[i]].Title);
+            return list;
+        }
+
+        private static string FormatQuestStepSuffix(string key)
+        {
+            int step = TacSimQuestJournal.GuidedStepNumber(key);
+            return step > 0 ? $" [Step {step}/7]" : string.Empty;
+        }
+
+        private static bool IsGuidedQuest(string key, string category)
+        {
+            return string.Equals(category, "guided", StringComparison.OrdinalIgnoreCase) ||
+                TacSimQuestJournal.GuidedStepNumber(key) > 0;
+        }
+
+        private static string FormatQuestRouteTitle(string rCmd, string rRoom, int rHops)
+        {
+            if (string.Equals(rCmd, "+ship/board", StringComparison.OrdinalIgnoreCase))
+                return "Board Ship";
+            if (string.Equals(rCmd, "+ship/leave", StringComparison.OrdinalIgnoreCase))
+                return "Cycle Ashore";
+            if (string.Equals(rCmd, "+tv/bay in", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(rCmd, "+tv/bay", StringComparison.OrdinalIgnoreCase))
+                return "Enter Vehicle Bay";
+            return $"Walk -> {rRoom} ({rHops}h)";
+        }
+
         /// <summary>
         /// Returns true when a server command's usage line shows required or optional arguments
         /// (e.g. `&lt;target&gt;`, `[args]`, `=`), indicating the palette should pre-fill chat input instead of firing bare.
@@ -128,6 +160,7 @@ namespace TacSim.UI
             ("luna", "Aitken Highport (Luna)"),
             ("deimos", "Voltaire Anchorage (Deimos)"),
             ("titan", "Ligeia Terminal (Titan)"),
+            ("commons", "Freeport Commons (Ceres Surface)"),
             ("rheasilvia", "Rheasilvia Deep (Vesta)"),
             ("occator", "Occator Rim (Ceres Surface)"),
             ("kerwan", "Kerwan Basin"),
@@ -512,12 +545,13 @@ namespace TacSim.UI
                 for (int i = 0; i < orderedActive.Count; i++)
                 {
                     var q = orderedActive[i];
+                    string stepSfx = FormatQuestStepSuffix(q.Key);
                     if (q.CanFinishNow && !string.IsNullOrEmpty(q.FinishCmd))
                     {
                         string finishCmd = q.FinishCmd;
                         _allEntries.Add(new PaletteEntry(
                             "QUEST STEP",
-                            $"Finish Now: {q.Title}",
+                            $"Finish Now: {q.Title}{stepSfx}",
                             finishCmd,
                             () => OnCommandRequested?.Invoke(finishCmd),
                             $"quest finish complete turnin now {q.Title} {finishCmd}"));
@@ -527,7 +561,7 @@ namespace TacSim.UI
                         string checkCmd = q.CheckCmd;
                         _allEntries.Add(new PaletteEntry(
                             "QUEST STEP",
-                            $"Verify Now: {q.Title}",
+                            $"Verify Now: {q.Title}{stepSfx}",
                             checkCmd,
                             () => OnCommandRequested?.Invoke(checkCmd),
                             $"quest verify check now {q.Title} {checkCmd}"));
@@ -539,8 +573,9 @@ namespace TacSim.UI
                 {
                     var q = orderedActive[i];
                     string qKey = q.Key;
+                    string stepSfx = FormatQuestStepSuffix(qKey);
                     bool ready = q.CanFinishNow || q.ReadyToFinish;
-                    string dlgTitle = ready ? $"Complete Quest [?]: {q.Title}" : $"Quest Dialog: {q.Title}";
+                    string dlgTitle = ready ? $"Complete Quest [?]: {q.Title}{stepSfx}" : $"Quest Dialog: {q.Title}{stepSfx}";
                     string dlgSub = !string.IsNullOrEmpty(q.NextStep) ? q.NextStep : $"Turn in to {q.TurnInName}";
                     _allEntries.Add(new PaletteEntry(
                         "QUEST",
@@ -584,15 +619,23 @@ namespace TacSim.UI
                     }
                 }
 
-                // 3. Available quest dialogs & 1-click Accept Now shortcuts
-                for (int i = 0; i < qp.Available.Count; i++)
+                // 3. Available quest dialogs & 1-click Accept Now shortcuts (guided offers first)
+                var orderedAvail = new List<MushAvailableQuest>(qp.Available);
+                orderedAvail.Sort((a, b) =>
                 {
-                    var av = qp.Available[i];
+                    int ga = IsGuidedQuest(a.Key, a.Category) ? 0 : 1;
+                    int gb = IsGuidedQuest(b.Key, b.Category) ? 0 : 1;
+                    return ga.CompareTo(gb);
+                });
+                for (int i = 0; i < orderedAvail.Count; i++)
+                {
+                    var av = orderedAvail[i];
                     string giverId = av.GiverId;
                     string qKey = av.Key;
+                    string stepSfx = FormatQuestStepSuffix(qKey);
                     _allEntries.Add(new PaletteEntry(
                         "QUEST [!]",
-                        $"Accept Quest [!]: {av.Title}",
+                        $"Accept Quest [!]: {av.Title}{stepSfx}",
                         $"Offered by {av.GiverName}",
                         () =>
                         {
@@ -606,7 +649,7 @@ namespace TacSim.UI
                         string acceptCmd = av.AcceptCmd;
                         _allEntries.Add(new PaletteEntry(
                             "QUEST STEP",
-                            $"Accept Now: {av.Title}",
+                            $"Accept Now: {av.Title}{stepSfx}",
                             $"{acceptCmd} — {av.GiverName}",
                             () => OnCommandRequested?.Invoke(acceptCmd),
                             $"quest accept now offer {av.Title} {av.GiverName} {acceptCmd}"));
@@ -620,18 +663,14 @@ namespace TacSim.UI
                         string rCmd = _quests.TrackerRouteCommand;
                         string rRoom = _quests.TrackerRouteRoomName;
                         int rHops = _quests.TrackerRouteHops;
-                        string rTitle = string.Equals(rCmd, "+ship/board", StringComparison.OrdinalIgnoreCase)
-                            ? "Board Ship"
-                            : (string.Equals(rCmd, "+ship/leave", StringComparison.OrdinalIgnoreCase)
-                                ? "Cycle Ashore"
-                                : $"Walk -> {rRoom} ({rHops}h)");
+                        string rTitle = FormatQuestRouteTitle(rCmd, rRoom, rHops);
                         string hopWord = rHops == 1 ? "hop" : "hops";
                         _allEntries.Add(new PaletteEntry(
                             "QUEST ROUTE",
                             rTitle,
                             $"{rHops} {hopWord} · {rCmd}",
                             () => OnCommandRequested?.Invoke(rCmd),
-                            $"quest route walk board ashore {rRoom} {rCmd} {tracked.Title}"));
+                            $"quest route walk board ashore vehicle bay {rRoom} {rCmd} {tracked.Title}"));
                     }
                     else if (_quests.TryGetSuggestedCommand(tracked, out string sugLbl, out string sugCmd))
                     {
@@ -670,18 +709,14 @@ namespace TacSim.UI
                         string rCmd = _quests.TrackerRouteCommand;
                         string rRoom = _quests.TrackerRouteRoomName;
                         int rHops = _quests.TrackerRouteHops;
-                        string rTitle = string.Equals(rCmd, "+ship/board", StringComparison.OrdinalIgnoreCase)
-                            ? "Board Ship"
-                            : (string.Equals(rCmd, "+ship/leave", StringComparison.OrdinalIgnoreCase)
-                                ? "Cycle Ashore"
-                                : $"Walk -> {rRoom} ({rHops}h)");
+                        string rTitle = FormatQuestRouteTitle(rCmd, rRoom, rHops);
                         string hopWord = rHops == 1 ? "hop" : "hops";
                         _allEntries.Add(new PaletteEntry(
                             "QUEST ROUTE",
                             rTitle,
                             $"{rHops} {hopWord} to {nextGuided.GiverRoomName} · {rCmd}",
                             () => OnCommandRequested?.Invoke(rCmd),
-                            $"quest route walk board ashore {rRoom} {nextGuided.GiverRoomName} {rCmd} next guided"));
+                            $"quest route walk board ashore vehicle bay {rRoom} {nextGuided.GiverRoomName} {rCmd} next guided"));
                     }
 
                     string curPort = _station != null

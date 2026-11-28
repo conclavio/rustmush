@@ -15383,5 +15383,66 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void CommandPalette_PrioritizesGuidedOffersAddsStepBadgesAndLabelsVehicleBay()
+        {
+            var rootGo = new UnityEngine.GameObject("CommandPaletteQuestPriorityTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""category"": ""guided"",
+                        ""next_step"": ""Enter the Dray-P vehicle bay"",
+                        ""checkpoints"": [{ ""id"": ""scan_landing_site"", ""title"": ""Surface scan"", ""checked"": false, ""live_ready"": false }]
+                    }],
+                    ""available"": [
+                        {
+                            ""key"": ""quest.side_barge"",
+                            ""title"": ""Side Barge Audit"",
+                            ""category"": ""optional"",
+                            ""giver_id"": ""#40"",
+                            ""giver_name"": ""Harbor Clerk"",
+                            ""accept_cmd"": ""+quest/accept #40=side1""
+                        },
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                            ""title"": ""First Papers at the Registry"",
+                            ""category"": ""guided"",
+                            ""giver_id"": ""#18"",
+                            ""giver_name"": ""Maren Halvorsen"",
+                            ""accept_cmd"": ""+quest/accept #18=guide1""
+                        }
+                    ],
+                    ""completed"": []
+                }")));
+                hud.QuestJournal.SetTrackerRouteBreadcrumb("Vehicle Bay", "+tv/bay in", 1);
+
+                hud.CommandPalette.SetOpen(true);
+                hud.CommandPalette.SetQuery("quest");
+                var titles = hud.CommandPalette.GetFilteredTitlesSnapshot();
+
+                int step6Idx = titles.FindIndex(t => t.Contains("Scan, Sound, and Mine a Landing Site [Step 6/7]"));
+                int guidedIdx = titles.FindIndex(t => t.Contains("Accept Quest [!]: First Papers at the Registry [Step 1/7]"));
+                int sideIdx = titles.FindIndex(t => t.Contains("Accept Quest [!]: Side Barge Audit"));
+                int bayIdx = titles.FindIndex(t => t == "Enter Vehicle Bay");
+
+                Assert.GreaterOrEqual(step6Idx, 0, "Expected Step 6/7 badge on active quest entry");
+                Assert.GreaterOrEqual(guidedIdx, 0, "Expected Step 1/7 badge on guided offer entry");
+                Assert.GreaterOrEqual(sideIdx, 0, "Expected side offer entry");
+                Assert.Less(guidedIdx, sideIdx, "Guided offer must sort ahead of side offer in Command Palette");
+                Assert.GreaterOrEqual(bayIdx, 0, "Expected Enter Vehicle Bay route entry for +tv/bay in");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

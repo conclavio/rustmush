@@ -2187,8 +2187,9 @@ namespace TacSim.UI
                 return "+ship/board (Board Ship)";
             if (string.Equals(command, "+ship/leave", StringComparison.OrdinalIgnoreCase))
                 return "+ship/leave (Cycle Ashore)";
-            if (string.Equals(command, "+tv/bay", StringComparison.OrdinalIgnoreCase))
-                return "+tv/bay (Vehicle Bay)";
+            if (string.Equals(command, "+tv/bay in", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(command, "+tv/bay", StringComparison.OrdinalIgnoreCase))
+                return $"{command} (Vehicle Bay)";
             return $"-> {roomName} ({hops}h)";
         }
 
@@ -2198,7 +2199,8 @@ namespace TacSim.UI
                 return "BOARD SHIP";
             if (string.Equals(command, "+ship/leave", StringComparison.OrdinalIgnoreCase))
                 return "ASHORE";
-            if (string.Equals(command, "+tv/bay", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(command, "+tv/bay in", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(command, "+tv/bay", StringComparison.OrdinalIgnoreCase))
                 return "VEHICLE BAY";
             return $"WALK ({hops}h)";
         }
