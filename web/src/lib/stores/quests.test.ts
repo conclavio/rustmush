@@ -1379,7 +1379,7 @@ describe("QuestsStore", () => {
       },
     ]);
 
-    // 2. Abandoning Step 2 (removed from active without appearing in completed) -> emits "abandoned" with restartable: true
+    // 2. Abandoning Step 2 (removed from active without appearing in completed) -> emits "abandoned" with restartable + exact guided giver/room
     const abandonMilestones = store.applyFrame({
       schema: 1,
       active: [],
@@ -1391,6 +1391,68 @@ describe("QuestsStore", () => {
         key: GUIDED_TOUR_KEYS[1],
         title: "Stock the Locker and Tanks",
         restartable: true,
+        restartHint: "Ilse Oduya-Brandt in Registry & Co-op Desk",
+      },
+    ]);
+
+    // 2b. Completing Step 5 emits nextStepHint pointing to Rosalind in Exchange Hall (Step 6/7)
+    store.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[4],
+          title: "Refit the Dray for Surface Mining",
+          turn_in_name: "Rosalind Qureshi-Mbeki",
+          next_room_name: "Exchange Hall",
+          ready_to_finish: false,
+          checkpoints: [],
+        },
+      ],
+      completed: GUIDED_TOUR_KEYS.slice(0, 4).map((k, i) => ({ key: k, title: `Step ${i + 1}` })),
+    });
+    const readyMilestones = store.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[4],
+          title: "Refit the Dray for Surface Mining",
+          turn_in_name: "Rosalind Qureshi-Mbeki",
+          next_room_name: "Exchange Hall",
+          ready_to_finish: true,
+          checkpoints: [],
+        },
+      ],
+      completed: GUIDED_TOUR_KEYS.slice(0, 4).map((k, i) => ({ key: k, title: `Step ${i + 1}` })),
+    });
+    expect(readyMilestones).toEqual([
+      {
+        kind: "ready",
+        key: GUIDED_TOUR_KEYS[4],
+        title: "Refit the Dray for Surface Mining",
+        turnInHint: "Rosalind Qureshi-Mbeki (Exchange Hall)",
+      },
+    ]);
+    const step5Done = store.applyFrame({
+      schema: 1,
+      active: [],
+      available: [
+        {
+          key: GUIDED_TOUR_KEYS[5],
+          title: "Scan, Sound, and Mine a Landing Site",
+          giver_name: "Rosalind Qureshi-Mbeki",
+        },
+      ],
+      completed: GUIDED_TOUR_KEYS.slice(0, 5).map((k, i) => ({
+        key: k,
+        title: i === 4 ? "Refit the Dray for Surface Mining" : `Step ${i + 1}`,
+      })),
+    });
+    expect(step5Done).toEqual([
+      {
+        kind: "completed",
+        key: GUIDED_TOUR_KEYS[4],
+        title: "Refit the Dray for Surface Mining",
+        nextStepHint: "Next (6/7): Speak with Rosalind Qureshi-Mbeki here",
       },
     ]);
 

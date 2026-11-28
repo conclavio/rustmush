@@ -182,17 +182,28 @@ describe("Canonical 7-step Guided Onboarding Walkthrough (guided_onboarding.json
     ]);
     expect(extractQuestSuggestedAction(store.trackedQuest)?.command).toContain("+coop/enroll");
 
-    // Abandon Step 1 before completing any step -> emits restartable abandon milestone and keeps HUD opt-out clean
+    // Abandon Step 1 before completing any step -> emits restartable abandon milestone with exact giver/room and keeps HUD opt-out clean
     expect(store.applyFrame({ schema: 1, active: [], available: [], completed })).toEqual([
-      { kind: "abandoned", key: GUIDED_TOUR_KEYS[0], title: defs[0]!.title, restartable: true },
+      {
+        kind: "abandoned",
+        key: GUIDED_TOUR_KEYS[0],
+        title: defs[0]!.title,
+        restartable: true,
+        restartHint: "Maren Halvorsen in Port Watch Arrivals",
+      },
     ]);
     expect(store.nextGuidedOffer).toBeNull();
 
-    // Re-accept & complete Step 1
+    // Re-accept & complete Step 1 -> emits completed milestone with Next (2/7) pointer
     store.applyFrame({ schema: 1, active: [s1Active], available: [], completed });
     completed.push({ key: GUIDED_TOUR_KEYS[0]!, title: defs[0]!.title });
     expect(store.applyFrame({ schema: 1, active: [], available: [], completed })).toEqual([
-      { kind: "completed", key: GUIDED_TOUR_KEYS[0], title: defs[0]!.title },
+      {
+        kind: "completed",
+        key: GUIDED_TOUR_KEYS[0],
+        title: defs[0]!.title,
+        nextStepHint: "Next (2/7): Ilse Oduya-Brandt in Registry & Co-op Desk",
+      },
     ]);
     expect(store.nextGuidedOffer).toMatchObject({ step: 2, giverRoomEntry: "room.c05_registry" });
 
@@ -203,7 +214,13 @@ describe("Canonical 7-step Guided Onboarding Walkthrough (guided_onboarding.json
     });
     store.applyFrame({ schema: 1, active: [s2Active], available: [], completed });
     expect(store.applyFrame({ schema: 1, active: [], available: [], completed })).toEqual([
-      { kind: "abandoned", key: GUIDED_TOUR_KEYS[1], title: defs[1]!.title, restartable: true },
+      {
+        kind: "abandoned",
+        key: GUIDED_TOUR_KEYS[1],
+        title: defs[1]!.title,
+        restartable: true,
+        restartHint: "Ilse Oduya-Brandt in Registry & Co-op Desk",
+      },
     ]);
     expect(store.nextGuidedOffer).toMatchObject({
       step: 2,

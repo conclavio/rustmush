@@ -623,6 +623,9 @@ export interface QuestMilestone {
   detail?: string;
   tourAllDone?: boolean;
   restartable?: boolean;
+  nextStepHint?: string;
+  turnInHint?: string;
+  restartHint?: string;
 }
 
 export interface GuidedTourProgress {
@@ -1563,7 +1566,7 @@ export class QuestsStore {
 
   #hydrated = false;
   #seenActive = new Set<string>();
-  #seenActiveMeta = new Map<string, { title: string; allowRestart: boolean }>();
+  #seenActiveMeta = new Map<string, { title: string; allowRestart: boolean; giverName: string }>();
   #seenCheckpoints = new Set<string>();
   #seenReady = new Set<string>();
   #seenCompleted = new Set<string>();
@@ -1654,21 +1657,46 @@ export class QuestsStore {
       for (const c of nextCompleted) {
         if (c.key && !this.#seenCompleted.has(c.key)) {
           const isMasteryCompletion = newlyCompletedTour && GUIDED_TOUR_KEYS.includes(c.key);
+          const completedIdx = GUIDED_TOUR_KEYS.indexOf(c.key);
+          let nextStepHint: string | undefined;
+          if (
+            !isMasteryCompletion &&
+            completedIdx >= 0 &&
+            completedIdx + 1 < GUIDED_TOUR_ROADMAP_META.length
+          ) {
+            const nextMeta = GUIDED_TOUR_ROADMAP_META[completedIdx + 1]!;
+            if (!nextCompletedKeys.has(nextMeta.key) && !nextActiveKeys.has(nextMeta.key)) {
+              const offeredHere = nextAvailable.some((av) => av.key === nextMeta.key);
+              const nextStepNo = completedIdx + 2;
+              nextStepHint = offeredHere
+                ? `Next (${nextStepNo}/${GUIDED_TOUR_KEYS.length}): Speak with ${nextMeta.giverLabel} here`
+                : `Next (${nextStepNo}/${GUIDED_TOUR_KEYS.length}): ${nextMeta.giverLabel} in ${nextMeta.giverRoomName}`;
+            }
+          }
           milestones.push({
             kind: "completed",
             key: c.key,
             title: c.title,
             ...(isMasteryCompletion ? { tourAllDone: true } : {}),
+            ...(nextStepHint ? { nextStepHint } : {}),
           });
         }
       }
       for (const [prevKey, prevMeta] of this.#seenActiveMeta) {
         if (!nextActiveKeys.has(prevKey) && !nextCompletedKeys.has(prevKey)) {
+          const guidedMeta = GUIDED_TOUR_ROADMAP_META.find((m) => m.key === prevKey);
+          const restartHint =
+            prevMeta.allowRestart || Boolean(guidedMeta)
+              ? guidedMeta
+                ? `${guidedMeta.giverLabel} in ${guidedMeta.giverRoomName}`
+                : prevMeta.giverName || undefined
+              : undefined;
           milestones.push({
             kind: "abandoned",
             key: prevKey,
             title: prevMeta.title,
-            restartable: prevMeta.allowRestart,
+            restartable: prevMeta.allowRestart || Boolean(guidedMeta),
+            ...(restartHint ? { restartHint } : {}),
           });
         }
       }
@@ -1678,7 +1706,17 @@ export class QuestsStore {
         if (!this.#seenActive.has(a.key)) {
           milestones.push({ kind: "accepted", key: a.key, title: a.title });
         } else if (isReady && !this.#seenReady.has(a.key)) {
-          milestones.push({ kind: "ready", key: a.key, title: a.title });
+          const turnInHint = a.turnInName
+            ? a.nextRoomName
+              ? `${a.turnInName} (${a.nextRoomName})`
+              : a.turnInName
+            : undefined;
+          milestones.push({
+            kind: "ready",
+            key: a.key,
+            title: a.title,
+            ...(turnInHint ? { turnInHint } : {}),
+          });
         } else {
           for (const cp of a.checkpoints) {
             if (!cp.id || (!cp.checked && !cp.liveReady)) continue;
@@ -1701,7 +1739,10 @@ export class QuestsStore {
     this.#seenActiveMeta = new Map(
       nextActive
         .filter((a) => Boolean(a.key))
-        .map((a) => [a.key, { title: a.title, allowRestart: a.allowRestart }]),
+        .map((a) => [
+          a.key,
+          { title: a.title, allowRestart: a.allowRestart, giverName: a.giverName },
+        ]),
     );
     const nextCheckpoints = new Set<string>();
     for (const a of nextActive) {

@@ -108,32 +108,52 @@ export class NotificationStore {
     kind: "accepted" | "checkpoint" | "ready" | "completed" | "abandoned",
     title: string,
     ts: number,
-    opts?: { detail?: string; tourAllDone?: boolean; restartable?: boolean },
+    opts?: {
+      detail?: string;
+      tourAllDone?: boolean;
+      restartable?: boolean;
+      nextStepHint?: string;
+      turnInHint?: string;
+      restartHint?: string;
+    },
   ): Notification | null {
     const label = title.trim() || "Quest";
     const detail = opts?.detail?.trim() || "";
+    const nextStepHint = opts?.nextStepHint?.trim() || "";
+    const turnInHint = opts?.turnInHint?.trim() || "";
+    const restartHint = opts?.restartHint?.trim() || "";
     const text =
       kind === "completed"
         ? opts?.tourAllDone
-          ? `★ Corridor Captain (7/7) — Guided Tour Complete: ${label}`
-          : `Quest Completed: ${label}`
+          ? `★ Corridor Captain (7/7) — Guided Tour Complete: ${label} · Try +market/jobs`
+          : nextStepHint
+            ? `Quest Completed: ${label} · ${nextStepHint}`
+            : `Quest Completed: ${label}`
         : kind === "ready"
-          ? `Ready to Turn In [?]: ${label}`
+          ? turnInHint
+            ? `Ready to Turn In [?]: ${label} → ${turnInHint}`
+            : `Ready to Turn In [?]: ${label}`
           : kind === "checkpoint"
             ? detail
               ? `Objective Complete: ${detail}`
               : `Objective Updated: ${label}`
             : kind === "abandoned"
-              ? opts?.restartable
-                ? `Quest Abandoned (restartable anytime): ${label}`
-                : `Quest Abandoned: ${label}`
+              ? restartHint
+                ? `Quest Abandoned (restart with ${restartHint}): ${label}`
+                : opts?.restartable
+                  ? `Quest Abandoned (restartable anytime): ${label}`
+                  : `Quest Abandoned: ${label}`
               : `Quest Accepted: ${label}`;
+    const action =
+      kind === "completed" && opts?.tourAllDone
+        ? { label: "Jobs Board", prefill: "+market/jobs" }
+        : { label: "Quests", prefill: "/quests" };
     return this.add({
       serverId: this.#nextQuestNoticeId--,
       severity: "info",
       category: "quest",
       text: [{ text, tag: null }],
-      action: { label: "Quests", prefill: "/quests" },
+      action,
       ts,
     });
   }

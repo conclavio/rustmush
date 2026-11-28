@@ -1315,6 +1315,9 @@ export class GameApp {
             detail: m.detail,
             tourAllDone: m.tourAllDone,
             restartable: m.restartable,
+            nextStepHint: m.nextStepHint,
+            turnInHint: m.turnInHint,
+            restartHint: m.restartHint,
           });
           tacsimAudio.play(
             m.kind === "completed" || m.kind === "ready" ? "market_fill" : "ui_chime",
