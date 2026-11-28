@@ -1014,6 +1014,102 @@ export function findStationExitPath(
   return path;
 }
 
+export interface StationQuestBreadcrumb {
+  nextRoomEntry: string;
+  nextRoomName: string;
+  nextExitCommand: string;
+  nextExitLabel: string;
+  targetRoomEntry: string;
+  targetRoomName: string;
+  hops: number;
+}
+
+/**
+ * Resolve the immediate next room/exit along the shortest station BFS path
+ * toward the tracked quest's objective room.
+ */
+export function computeNextQuestExitBreadcrumb(
+  pack: AtlasNeighborhoodPack | null | undefined,
+  currentRoomEntry: string | null | undefined,
+  targetRoomEntry: string | null | undefined,
+): StationQuestBreadcrumb | null {
+  if (!pack || !currentRoomEntry || !targetRoomEntry || currentRoomEntry === targetRoomEntry) {
+    return null;
+  }
+  const path = findStationExitPath(pack, currentRoomEntry, targetRoomEntry);
+  if (path.length === 0) return null;
+  const first = path[0]!;
+  const nextRoom = pack.rooms.get(first.targetRoom);
+  const targetRoom = pack.rooms.get(targetRoomEntry);
+
+  let exitLabel = nextRoom?.name ?? first.targetRoom;
+  for (const ex of pack.exits) {
+    if (ex.hidden || ex.locked) continue;
+    if (ex.fromRoom === currentRoomEntry && ex.toRoom === first.targetRoom && ex.forwardLabel) {
+      exitLabel = ex.forwardLabel;
+      break;
+    }
+    if (ex.toRoom === currentRoomEntry && ex.fromRoom === first.targetRoom && ex.reverseLabel) {
+      exitLabel = ex.reverseLabel;
+      break;
+    }
+  }
+
+  return {
+    nextRoomEntry: first.targetRoom,
+    nextRoomName: nextRoom?.name ?? first.targetRoom,
+    nextExitCommand: first.command,
+    nextExitLabel: exitLabel,
+    targetRoomEntry,
+    targetRoomName: targetRoom?.name ?? targetRoomEntry,
+    hops: path.length,
+  };
+}
+
+/**
+ * True when a `RoomView` exit (by name or alias) corresponds to the immediate
+ * next step of a `StationQuestBreadcrumb`.
+ */
+export function exitMatchesQuestBreadcrumb(
+  exitName: string,
+  exitAliases: readonly string[] | undefined,
+  crumb: StationQuestBreadcrumb | null,
+): boolean {
+  if (!crumb) return false;
+  const wantCmd = crumb.nextExitCommand.trim().toLowerCase();
+  const wantWord = wantCmd.replace(/^goto\s+/i, "").trim();
+  const wantLabel = crumb.nextExitLabel.trim().toLowerCase();
+  const wantRoom = crumb.nextRoomName.trim().toLowerCase();
+
+  const nameNorm = exitName.trim().toLowerCase();
+  if (!nameNorm) return false;
+  const cmd = exitCommand(exitName)?.trim().toLowerCase() ?? "";
+  if (cmd && cmd === wantCmd) return true;
+  if (
+    (wantWord && nameNorm === wantWord) ||
+    (wantLabel && nameNorm === wantLabel) ||
+    (wantRoom && nameNorm === wantRoom)
+  ) {
+    return true;
+  }
+  if (exitAliases) {
+    for (const rawAlias of exitAliases) {
+      const a = rawAlias.trim().toLowerCase();
+      if (!a) continue;
+      if (
+        (wantWord && a === wantWord) ||
+        (wantLabel && a === wantLabel) ||
+        (wantRoom && a === wantRoom)
+      ) {
+        return true;
+      }
+      const acmd = exitCommand(rawAlias)?.trim().toLowerCase() ?? "";
+      if (acmd && acmd === wantCmd) return true;
+    }
+  }
+  return false;
+}
+
 export function areRoomsConnectedWithinHops(
   pack: AtlasNeighborhoodPack,
   roomA: string,

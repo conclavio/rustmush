@@ -6,6 +6,10 @@
   import type { GameApp } from "$lib/game.svelte";
   import { exitCommand } from "$lib/keys";
   import { clockText, roomBand } from "$lib/roomband";
+  import {
+    computeNextQuestExitBreadcrumb,
+    exitMatchesQuestBreadcrumb,
+  } from "$lib/tacsim/spatial";
 
   let { app, onCmd }: { app: GameApp; onCmd: (cmd: string) => void } = $props();
 
@@ -17,6 +21,21 @@
   }
 
   const band = $derived(roomBand(app.roomView, app.screens.exits));
+
+  const questBreadcrumb = $derived.by(() => {
+    const quests = app.quests;
+    const tacsim = app.tacsim;
+    if (!quests || !tacsim || tacsim.isAboardShip) return null;
+    const tracked =
+      quests.active.find((q) => q.key === quests.trackedKey) ?? quests.active[0] ?? null;
+    const targetEntry =
+      tracked?.nextRoomEntry ||
+      tracked?.checkpoints.find((c) => !c.checked && !c.liveReady && c.roomEntry)?.roomEntry ||
+      null;
+    const currentEntry =
+      (tacsim.view3dOpen ? tacsim.physicalLocationKey : null) ?? tacsim.serverStationRoomEntry;
+    return computeNextQuestExitBreadcrumb(tacsim.stationPack, currentEntry, targetEntry);
+  });
 
   const WEATHER_ICONS: Record<string, string> = {
     clear: "☀",
@@ -97,8 +116,22 @@
     {#if band.exits.length > 0}
       <span class="exits" aria-label="exits">
         {#each band.exits as exit, i (`${i}\0${exit.name}`)}
-          <button type="button" class="exit" onclick={() => walkExit(exit.name)} title={exit.key ? `${exit.name} (key ${exit.key})` : exit.name}>
-            {#if exit.key}<kbd>{exit.key}</kbd>{/if}{exit.name}
+          {@const rawAliases = app.roomView?.exits[i]?.aliases}
+          {@const isQuestExit = exitMatchesQuestBreadcrumb(exit.name, rawAliases, questBreadcrumb)}
+          {@const baseTitle = exit.key ? `${exit.name} (key ${exit.key})` : exit.name}
+          {@const exitTitle =
+            isQuestExit && questBreadcrumb
+              ? `Quest route (${questBreadcrumb.hops} ${questBreadcrumb.hops === 1 ? "hop" : "hops"} to ${questBreadcrumb.targetRoomName}) · ${baseTitle}`
+              : baseTitle}
+          <button
+            type="button"
+            class="exit"
+            class:quest-exit={isQuestExit}
+            data-quest-exit={isQuestExit ? "true" : undefined}
+            onclick={() => walkExit(exit.name)}
+            title={exitTitle}
+          >
+            {#if isQuestExit}<span class="qexit-badge" aria-hidden="true">★</span>{/if}{#if exit.key}<kbd>{exit.key}</kbd>{/if}{exit.name}
           </button>
         {/each}
       </span>
@@ -249,6 +282,25 @@
 
   .exit:hover {
     border-color: var(--c-exit);
+  }
+
+  .exit.quest-exit {
+    border-color: #fbbf24;
+    background: rgba(251, 191, 36, 0.16);
+    color: #fef3c7;
+    font-weight: 600;
+    box-shadow: 0 0 8px rgba(251, 191, 36, 0.28);
+  }
+
+  .exit.quest-exit:hover {
+    border-color: #fde68a;
+    filter: brightness(1.1);
+  }
+
+  .qexit-badge {
+    color: #fbbf24;
+    font-size: 0.78rem;
+    line-height: 1;
   }
 
   kbd {
