@@ -655,4 +655,82 @@ describe("TacsimPortModals Dray-P Vehicle Bay and Co-op Refit quest guidance", (
     await fireEvent.click(finishBtn);
     expect(onCmd).toHaveBeenCalledWith("+quest/finish #50=tok1");
   });
+
+  it("sorts quest-matching Port Asks and Standing Bids first in Commodity Exchange", () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[2],
+          title: "Metals Down the Corridor",
+          checkpoints: [
+            {
+              id: "deliver_metals",
+              title: "Buy 5t metals and sell at Stickney",
+              instructions: "Buy 5t metals at Exchange and +market/sell at Stickney.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    const app = makeApp(quests, "trade");
+    app.tacsim.trade.asks = [
+      {
+        listingId: 10,
+        goodCode: "tacsim:silicates",
+        itemName: "Silicates",
+        vendorName: "Ceres Depot",
+        quantity: 20,
+        unit: "t",
+        unitPriceMinor: 500,
+        unitPriceText: "5.00cr",
+      },
+      {
+        listingId: 11,
+        goodCode: "tacsim:metals",
+        itemName: "Metals",
+        vendorName: "Ceres Exchange",
+        quantity: 15,
+        unit: "t",
+        unitPriceMinor: 1500,
+        unitPriceText: "15.00cr",
+      },
+    ] as unknown as typeof app.tacsim.trade.asks;
+    app.tacsim.trade.bids = [
+      {
+        listingId: 20,
+        goodCode: "tacsim:water_ice",
+        itemName: "Water Ice",
+        vendorName: "Stickney Yards",
+        quantity: 30,
+        unit: "t",
+        unitPriceMinor: 800,
+        unitPriceText: "8.00cr",
+      },
+      {
+        listingId: 21,
+        goodCode: "tacsim:metals",
+        itemName: "Metals",
+        vendorName: "Kasei Receiving",
+        quantity: 12,
+        unit: "t",
+        unitPriceMinor: 2200,
+        unitPriceText: "22.00cr",
+      },
+    ] as unknown as typeof app.tacsim.trade.bids;
+
+    const { container } = render(TacsimPortModals, { props: { app, onCmd: vi.fn() } });
+    const cols = [...container.querySelectorAll("section.tcol")];
+    expect(cols).toHaveLength(2);
+    const askRows = [...cols[0]!.querySelectorAll(".lrow")];
+    const bidRows = [...cols[1]!.querySelectorAll(".lrow")];
+    expect(askRows[0]!.classList.contains("quest-match")).toBe(true);
+    expect(askRows[0]!.textContent).toContain("[QUEST] Metals");
+    expect(bidRows[0]!.classList.contains("quest-match")).toBe(true);
+    expect(bidRows[0]!.textContent).toContain("[QUEST] Metals");
+  });
 });

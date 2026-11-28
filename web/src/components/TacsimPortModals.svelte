@@ -107,6 +107,22 @@
   const questTradeNeed = $derived(
     resolveContextualTradeNeed(allQuestTradeNeeds, st, trade.asks, trade.bids),
   );
+  const orderedAsks = $derived(
+    questTradeNeed
+      ? [
+          ...trade.asks.filter((r) => matchesQuestTradeRow(questTradeNeed, r, false)),
+          ...trade.asks.filter((r) => !matchesQuestTradeRow(questTradeNeed, r, false)),
+        ]
+      : trade.asks,
+  );
+  const orderedBids = $derived(
+    questTradeNeed
+      ? [
+          ...trade.bids.filter((r) => matchesQuestTradeRow(questTradeNeed, r, true)),
+          ...trade.bids.filter((r) => !matchesQuestTradeRow(questTradeNeed, r, true)),
+        ]
+      : trade.bids,
+  );
   const secondaryTradeNeeds = $derived(
     allQuestTradeNeeds.filter(
       (n) => questTradeNeed === null || n.commoditySlug !== questTradeNeed.commoditySlug,
@@ -432,17 +448,17 @@
           <div class="tables">
             <section class="tcol">
               <h3>Port Asks (Buy Into Hold)</h3>
-              {#if trade.asks.length === 0}
+              {#if orderedAsks.length === 0}
                 <p class="muted">No active vendor asks at this port venue.</p>
               {:else}
                 <div class="rows">
-                  {#each trade.asks as row (row.listingId)}
+                  {#each orderedAsks as row (row.listingId)}
                     {@const qty = resolveLotQty(row)}
                     {@const isQuestMatch = matchesQuestTradeRow(questTradeNeed, row, false)}
                     <div class="lrow" class:quest-match={isQuestMatch}>
                       <div class="lmeta">
                         <strong>
-                          {#if isQuestMatch}<span class="qtag">[QUEST]</span> {/if}{row.itemName}
+                          {#if isQuestMatch}<span class="qtag">[QUEST]</span>{" "}{/if}{row.itemName}
                         </strong>
                         <span class="muted">#{row.listingId} · {row.vendorName} · {row.quantity} {row.unit} avail</span>
                       </div>
@@ -464,17 +480,17 @@
 
             <section class="tcol">
               <h3>Standing Bids (Sell From Hold)</h3>
-              {#if trade.bids.length === 0}
+              {#if orderedBids.length === 0}
                 <p class="muted">No standing buyer bids at this port venue.</p>
               {:else}
                 <div class="rows">
-                  {#each trade.bids as row (row.listingId)}
+                  {#each orderedBids as row (row.listingId)}
                     {@const qty = resolveLotQty(row)}
                     {@const isQuestMatch = matchesQuestTradeRow(questTradeNeed, row, true)}
                     <div class="lrow" class:quest-match={isQuestMatch}>
                       <div class="lmeta">
                         <strong>
-                          {#if isQuestMatch}<span class="qtag">[QUEST]</span> {/if}{row.itemName}
+                          {#if isQuestMatch}<span class="qtag">[QUEST]</span>{" "}{/if}{row.itemName}
                         </strong>
                         <span class="muted">#{row.listingId} · {row.vendorName} · wants {row.quantity} {row.unit}</span>
                       </div>
