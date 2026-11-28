@@ -117,7 +117,7 @@ import {
   needsSurfaceExpeditionBoarding,
   resolveNextGuidedOfferDestination,
   resolveQuestShipTargetCompartment,
-  resolveRefitHoldClearRoom,
+  resolveStowageObjectiveRoom,
 } from "./stores/quests.svelte";
 import {
   computeNextQuestExitBreadcrumb,
@@ -942,7 +942,7 @@ export class GameApp {
         this.tacsim.ambient?.stowage ??
         (this.tacsim.trade?.hullId ? this.tacsim.trade.stowage : null);
       const objRoom =
-        resolveRefitHoldClearRoom(this.quests.active, this.quests.trackedKey, liveStowage) ||
+        resolveStowageObjectiveRoom(this.quests.active, this.quests.trackedKey, liveStowage) ||
         tracked?.nextRoomEntry ||
         tracked?.checkpoints.find((c) => !c.checked && !c.liveReady && c.roomEntry)?.roomEntry ||
         "";
@@ -2212,7 +2212,7 @@ export class GameApp {
           this.tacsim.ambient?.stowage ??
           (this.tacsim.trade?.hullId ? this.tacsim.trade.stowage : null);
         const targetEntry =
-          resolveRefitHoldClearRoom(this.quests.active, this.quests.trackedKey, liveStowage) ||
+          resolveStowageObjectiveRoom(this.quests.active, this.quests.trackedKey, liveStowage) ||
           tracked.nextRoomEntry ||
           tracked.checkpoints.find((c) => !c.checked && !c.liveReady && c.roomEntry)?.roomEntry ||
           null;

@@ -16,7 +16,7 @@
     needsSurfaceExpeditionBoarding,
     resolveNextGuidedOfferDestination,
     resolveQuestShipTargetCompartment,
-    resolveRefitHoldClearRoom,
+    resolveStowageObjectiveRoom,
   } from "$lib/stores/quests.svelte";
   import { normalizePortVenueTarget, resolveLocalStationQuestTarget } from "$lib/tacsim/spatial";
   import {
@@ -184,7 +184,7 @@
       app.tacsim.ambient?.stowage ??
       (app.tacsim.trade?.hullId ? app.tacsim.trade.stowage : null);
     const rawTarget =
-      resolveRefitHoldClearRoom(quests.active, quests.trackedKey, liveStowage) ||
+      resolveStowageObjectiveRoom(quests.active, quests.trackedKey, liveStowage) ||
       trackedQuest?.nextRoomEntry ||
       trackedQuest?.checkpoints.find((c) => !c.checked && !c.liveReady && c.roomEntry)?.roomEntry ||
       (!trackedQuest ? quests.nextGuidedOffer?.giverRoomEntry : null) ||
