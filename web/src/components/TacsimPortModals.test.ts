@@ -318,4 +318,134 @@ describe("TacsimPortModals Dray-P Vehicle Bay and Co-op Refit quest guidance", (
     await fireEvent.click(screen.getByRole("button", { name: /\[?\] Complete Now/i }));
     expect(onCmd2).toHaveBeenCalledWith("+quest/finish #19=tok2");
   });
+
+  it("advances Step 2 Exchange guidance past loaded provisions to propellant and narrows loaded Step 3 metals to SELL bids", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[1],
+          title: "Stock the Locker and Tanks",
+          checkpoints: [
+            {
+              id: "buy_provisions",
+              title: "Buy at least 10 provisions at Ceres Co-op Chandlery",
+              instructions: "Buy 10 provisions.",
+              checked: false,
+              live_ready: false,
+            },
+            {
+              id: "buy_propellant",
+              title: "Buy at least 5 tonnes of propellant at Ceres Exchange Hall",
+              instructions: "Buy 5 propellant.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    const step2App = makeApp(quests, "trade", {
+      cargoKg: 0,
+      cargoMaxKg: 100_000,
+      cargoL: 0,
+      cargoMaxL: 120_000,
+      propellantKg: 0,
+      propellantMaxKg: 80_000,
+      provisionsCrewDays: 10,
+      provisionsMaxCrewDays: 120,
+      cargoLines: [],
+    });
+    (step2App.tacsim.trade as unknown as { asks: unknown[] }).asks = [
+      {
+        listingId: 11,
+        goodCode: "tacsim:provisions",
+        itemName: "Provisions",
+        vendorName: "Chandlery",
+        quantity: 20,
+        unit: "d",
+        unitPriceText: "10 cr",
+      },
+      {
+        listingId: 12,
+        goodCode: "tacsim:propellant",
+        itemName: "Propellant",
+        vendorName: "Exchange",
+        quantity: 40,
+        unit: "t",
+        unitPriceText: "18 cr",
+      },
+    ];
+    const first = render(TacsimPortModals, { props: { app: step2App, onCmd: vi.fn() } });
+    const banner2 = screen.getByRole("status", { name: "active quest trade guidance" });
+    expect(banner2.textContent).toContain("BUY");
+    expect(banner2.textContent).toContain("5 × PROPELLANT");
+    expect(banner2.textContent).toContain("10 PROVISIONS");
+    await fireEvent.click(screen.getByRole("button", { name: /Set Quest Qty \(5\)/i }));
+    expect(step2App.tacsim.selectedQtyPreset).toBe(5);
+    first.unmount();
+
+    // Step 3 with 5t metals already loaded -> banner narrows from BUY/SELL to SELL and highlights Standing Bid only
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[2],
+          title: "Metals Down the Corridor",
+          checkpoints: [
+            {
+              id: "deliver_metals",
+              title: "Buy 5 tonnes of metals at Ceres and deliver them to Stickney Yards",
+              instructions: "Buy 5 metals and sell with +market/sell at Stickney.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+    const step3App = makeApp(quests, "trade", {
+      cargoKg: 5000,
+      cargoMaxKg: 100_000,
+      cargoL: 2500,
+      cargoMaxL: 120_000,
+      propellantKg: 10_000,
+      propellantMaxKg: 80_000,
+      provisionsCrewDays: 10,
+      provisionsMaxCrewDays: 120,
+      cargoLines: [{ good: "tacsim:metals", label: "Metals", qty: 5, unit: "u", massKg: 5000 }],
+    });
+    (step3App.tacsim.trade as unknown as { asks: unknown[]; bids: unknown[] }).asks = [
+      {
+        listingId: 21,
+        goodCode: "tacsim:metals",
+        itemName: "Metals",
+        vendorName: "Ask Desk",
+        quantity: 10,
+        unit: "t",
+        unitPriceText: "100 cr",
+      },
+    ];
+    (step3App.tacsim.trade as unknown as { bids: unknown[] }).bids = [
+      {
+        listingId: 22,
+        goodCode: "tacsim:metals",
+        itemName: "Metals",
+        vendorName: "Kasei Receiving",
+        quantity: 20,
+        unit: "t",
+        unitPriceText: "145 cr",
+      },
+    ];
+    const { container } = render(TacsimPortModals, { props: { app: step3App, onCmd: vi.fn() } });
+    const banner3 = screen.getByRole("status", { name: "active quest trade guidance" });
+    expect(banner3.textContent).toContain("SELL");
+    expect(banner3.textContent).not.toContain("BUY/SELL");
+    expect(banner3.textContent).toContain("5 × METALS");
+    const matchedRows = container.querySelectorAll(".lrow.quest-match");
+    expect(matchedRows).toHaveLength(1);
+    expect(matchedRows[0]?.textContent).toContain("Kasei Receiving");
+  });
 });

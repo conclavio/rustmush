@@ -6,12 +6,14 @@ import {
   evaluateQuestStowageReadiness,
   evaluateRefitHoldReadiness,
   evaluateSailingPreflightReadiness,
+  extractActiveTradeNeeds,
   extractSurfaceMiningPrepActions,
   inferStationPortFromRoomEntry,
   matchesQuestTradeRow,
   needsOriginPortProcurement,
   needsSurfaceExpeditionBoarding,
   parseQuestMarkers,
+  resolveContextualTradeNeed,
   resolveQuestShipTargetCompartment,
 } from "./quests.svelte";
 
@@ -883,5 +885,81 @@ describe("QuestsStore", () => {
     // Fresh character (0 completed) -> null so non-guided worlds stay quiet
     store.applyFrame({ schema: 1, completed: [], active: [], available: [] });
     expect(store.nextGuidedOffer).toBeNull();
+  });
+
+  it("resolves multi-item Step 2 trade needs by venue book & live stowage and narrows loaded delivery runs to SELL", () => {
+    const store = new QuestsStore();
+    store.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel",
+          title: "Stock the Locker and Tanks",
+          checkpoints: [
+            {
+              id: "buy_provisions",
+              title: "Buy at least 10 provisions at Ceres Co-op Chandlery",
+              instructions: "Buy 10 provisions.",
+              checked: false,
+              live_ready: false,
+            },
+            {
+              id: "buy_propellant",
+              title: "Buy at least 5 tonnes of propellant at Ceres Exchange Hall",
+              instructions: "Buy 5 propellant.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+    const needs = extractActiveTradeNeeds(store.active, store.trackedKey);
+    expect(needs.map((n) => n.commoditySlug)).toEqual(["provisions", "propellant"]);
+
+    // At Exchange Hall (only propellant listed), picks propellant even before provisions bought
+    const atExchange = resolveContextualTradeNeed(
+      needs,
+      { propellantKg: 0, provisionsCrewDays: 0, cargoLines: [] },
+      [{ goodCode: "tacsim:propellant", itemName: "Propellant" }],
+      [],
+    );
+    expect(atExchange?.commoditySlug).toBe("propellant");
+    expect(atExchange?.targetQuantity).toBe(5);
+
+    // Once 10 provisions are loaded, advances to propellant even with empty book
+    const afterProvisions = resolveContextualTradeNeed(needs, {
+      propellantKg: 0,
+      provisionsCrewDays: 10,
+      cargoLines: [],
+    });
+    expect(afterProvisions?.commoditySlug).toBe("propellant");
+
+    // Dual buy+sell Step 3 narrowed to SELL-only once 5t metals are in hold
+    const step3Needs = [
+      {
+        questTitle: "Metals Down the Corridor",
+        checkpointTitle: "Deliver 5t metals",
+        commoditySlug: "metals",
+        targetQuantity: 5,
+        wantsBuy: true,
+        wantsSell: true,
+      },
+    ];
+    const unloaded = resolveContextualTradeNeed(step3Needs, {
+      propellantKg: 10_000,
+      provisionsCrewDays: 10,
+      cargoLines: [],
+    });
+    expect(unloaded?.wantsBuy).toBe(true);
+    expect(unloaded?.wantsSell).toBe(true);
+
+    const loaded = resolveContextualTradeNeed(step3Needs, {
+      propellantKg: 10_000,
+      provisionsCrewDays: 10,
+      cargoLines: [{ good: "tacsim:metals", label: "Metals", qty: 5 }],
+    });
+    expect(loaded?.wantsBuy).toBe(false);
+    expect(loaded?.wantsSell).toBe(true);
   });
 });
