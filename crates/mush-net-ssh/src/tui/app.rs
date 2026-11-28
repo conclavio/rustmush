@@ -5143,58 +5143,51 @@ impl TuiApp {
                 quest_action: None,
             });
         }
-        for (idx, q) in self.quests_snap.available.iter().enumerate() {
-            let search = format!("{} {} quest", q.title, q.giver_name);
-            consider(&search, &|| PaletteEntry {
-                insert: "/quests".to_string(),
-                label: format!("[!] {}", q.title),
-                detail: format!("Quest offer — {}", q.giver_name),
-                quest_action: Some(PaletteQuestAction::OpenDialog(QuestTab::Available, idx)),
-            });
-        }
-        for (idx, q) in self.quests_snap.active.iter().enumerate() {
-            let search = format!("{} {} {} quest", q.title, q.next_step, q.turn_in_name);
-            let badge = if q.can_finish_now || q.ready_to_finish {
-                "[?]"
+        let tracked_key = self.quests_overlay.tracked_key.as_deref();
+        let mut active_indices: Vec<usize> = (0..self.quests_snap.active.len()).collect();
+        active_indices.sort_by_key(|&idx| {
+            let q = &self.quests_snap.active[idx];
+            let urgency = if q.can_finish_now {
+                0u8
+            } else if q.ready_to_finish {
+                1u8
+            } else if q.can_check_now {
+                2u8
             } else {
-                "[*]"
+                3u8
             };
-            let detail = if q.next_step.is_empty() {
-                format!("Quest — {}", q.turn_in_name)
-            } else {
-                format!("Quest — {}", q.next_step)
-            };
-            consider(&search, &|| PaletteEntry {
-                insert: "/quests".to_string(),
-                label: format!("{badge} {}", q.title),
-                detail: detail.clone(),
-                quest_action: Some(PaletteQuestAction::OpenDialog(QuestTab::Active, idx)),
-            });
+            let tracked_rank = u8::from(tracked_key != Some(q.key.as_str()));
+            (urgency, tracked_rank, idx)
+        });
+
+        // 1. Surface immediate 1-click Complete / Verify actions across ALL active quests (turn-in first).
+        for &idx in &active_indices {
+            let q = &self.quests_snap.active[idx];
+            if q.can_finish_now && !q.finish_cmd.is_empty() {
+                let search = format!("complete finish {} {} quest", q.title, q.finish_cmd);
+                consider(&search, &|| PaletteEntry {
+                    insert: q.finish_cmd.clone(),
+                    label: format!("[?] Complete: {}", q.title),
+                    detail: q.finish_cmd.clone(),
+                    quest_action: Some(PaletteQuestAction::PrefillCommand),
+                });
+            } else if q.can_check_now && !q.check_cmd.is_empty() {
+                let search = format!("verify check {} {} quest", q.title, q.check_cmd);
+                consider(&search, &|| PaletteEntry {
+                    insert: q.check_cmd.clone(),
+                    label: format!("[?] Verify: {}", q.title),
+                    detail: q.check_cmd.clone(),
+                    quest_action: Some(PaletteQuestAction::PrefillCommand),
+                });
+            }
         }
+
         if let Some(tq) = self
             .quests_snap
             .ordered_active(self.quests_overlay.tracked_key.as_deref())
             .into_iter()
             .next()
         {
-            if tq.can_finish_now && !tq.finish_cmd.is_empty() {
-                let search = format!("complete finish {} {} quest", tq.title, tq.finish_cmd);
-                consider(&search, &|| PaletteEntry {
-                    insert: tq.finish_cmd.clone(),
-                    label: format!("[?] Complete: {}", tq.title),
-                    detail: tq.finish_cmd.clone(),
-                    quest_action: Some(PaletteQuestAction::PrefillCommand),
-                });
-            } else if tq.can_check_now && !tq.check_cmd.is_empty() {
-                let search = format!("verify check {} {} quest", tq.title, tq.check_cmd);
-                consider(&search, &|| PaletteEntry {
-                    insert: tq.check_cmd.clone(),
-                    label: format!("[?] Verify: {}", tq.title),
-                    detail: tq.check_cmd.clone(),
-                    quest_action: Some(PaletteQuestAction::PrefillCommand),
-                });
-            }
-
             if let Some(hop) = self.port_walk.next_quest_hop() {
                 let (route_label, search_head) = if hop.next_exit_command == "+ship/board" {
                     ("[>] Board Ship".to_string(), "board ship route walk")
@@ -5335,6 +5328,47 @@ impl TuiApp {
                 detail: detail.clone(),
                 quest_action: Some(PaletteQuestAction::OpenDialog(QuestTab::Active, 0)),
             });
+        }
+
+        // 2. Active quest dialog shortcuts (ready-to-finish first), then available dialogs + quick-accept.
+        for &idx in &active_indices {
+            let q = &self.quests_snap.active[idx];
+            let search = format!("{} {} {} quest", q.title, q.next_step, q.turn_in_name);
+            let badge = if q.can_finish_now || q.ready_to_finish {
+                "[?]"
+            } else {
+                "[*]"
+            };
+            let detail = if q.next_step.is_empty() {
+                format!("Quest — {}", q.turn_in_name)
+            } else {
+                format!("Quest — {}", q.next_step)
+            };
+            consider(&search, &|| PaletteEntry {
+                insert: "/quests".to_string(),
+                label: format!("{badge} {}", q.title),
+                detail: detail.clone(),
+                quest_action: Some(PaletteQuestAction::OpenDialog(QuestTab::Active, idx)),
+            });
+        }
+        for (idx, q) in self.quests_snap.available.iter().enumerate() {
+            let search = format!("{} {} quest", q.title, q.giver_name);
+            consider(&search, &|| PaletteEntry {
+                insert: "/quests".to_string(),
+                label: format!("[!] {}", q.title),
+                detail: format!("Quest offer — {}", q.giver_name),
+                quest_action: Some(PaletteQuestAction::OpenDialog(QuestTab::Available, idx)),
+            });
+            if !q.accept_cmd.is_empty() {
+                let accept_search =
+                    format!("accept {} {} {} quest", q.title, q.giver_name, q.accept_cmd);
+                consider(&accept_search, &|| PaletteEntry {
+                    insert: q.accept_cmd.clone(),
+                    label: format!("[!] Accept: {}", q.title),
+                    detail: format!("{} — {}", q.accept_cmd, q.giver_name),
+                    quest_action: Some(PaletteQuestAction::PrefillCommand),
+                });
+            }
         }
         let mut entries = prefix;
         entries.extend(rest);
@@ -13706,6 +13740,72 @@ mod tests {
         app.feed_input(b"\r");
         assert!(app.quests_overlay.open);
         assert_eq!(app.quests_overlay.tab, QuestTab::Active);
+    }
+
+    #[test]
+    fn palette_surfaces_secondary_ready_turn_in_first_and_quick_accept_for_room_offers() {
+        let mut app = app();
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "room_name": "Registry & Co-op Desk",
+                "available": [{
+                    "key": "q.offer",
+                    "title": "Room Side Offer",
+                    "giver_name": "Ilse Oduya-Brandt",
+                    "accept_cmd": "+quest/accept #50=tok3"
+                }],
+                "active": [
+                    {
+                        "key": "q.first",
+                        "title": "Tracked Active Step",
+                        "next_step": "Run +coop/refit prospector",
+                        "ready_to_finish": false,
+                        "can_finish_now": false
+                    },
+                    {
+                        "key": "q.second_ready",
+                        "title": "Secondary Ready Turn-In",
+                        "turn_in_name": "Ilse Oduya-Brandt",
+                        "ready_to_finish": true,
+                        "can_finish_now": true,
+                        "finish_cmd": "+quest/finish #50=tok2"
+                    }
+                ]
+            }),
+        });
+
+        // Without cycling away from q.first, Ctrl-K + "complete" immediately surfaces q.second_ready's finish command
+        app.feed_input(b"\x0bcomplete");
+        assert!(app.palette_open());
+        app.feed_input(b"\r");
+        assert_eq!(app.line.text(), "+quest/finish #50=tok2");
+
+        // Ctrl-K + "accept" immediately surfaces 1-click +quest/accept for the room offer
+        app.feed_input(b"\x1b");
+        app.feed_input(b"\x0baccept");
+        assert!(app.palette_open());
+        app.feed_input(b"\r");
+        assert_eq!(app.line.text(), "+quest/accept #50=tok3");
+
+        // Ctrl-K + "quest" lists Complete BEFORE Available Offer
+        app.feed_input(b"\x1b");
+        app.feed_input(b"\x0bquest");
+        let inserts = app.palette_entries();
+        let finish_pos = inserts
+            .iter()
+            .position(|s| s == "+quest/finish #50=tok2")
+            .expect("finish entry");
+        let accept_pos = inserts
+            .iter()
+            .position(|s| s == "+quest/accept #50=tok3")
+            .expect("accept entry");
+        assert!(
+            finish_pos < accept_pos,
+            "ready turn-in must rank ahead of available accept: {inserts:?}"
+        );
     }
 
     #[test]
