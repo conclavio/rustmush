@@ -1308,10 +1308,15 @@ namespace TacSim.Core
             if (Hud == null) return;
             if (_isAboardShip)
             {
+                string dockedPortSlug = _hullIsDocked
+                    ? (NormalizeCorridorPortSlug(_lastRoomView?.TacSim?.Port)
+                       ?? NormalizeCorridorPortSlug(_lastRoomView?.TacSim?.PortEntry)
+                       ?? NormalizeCorridorPortSlug(TradeState?.AboardDockedPortHint))
+                    : null;
                 if ((Player != null && Player.IsSeatedAtHelm) ||
                     ShipInterior == null ||
                     Hud.QuestJournal == null ||
-                    !Hud.QuestJournal.TryGetActiveShipTargetCompartment(out string shipTarget))
+                    !Hud.QuestJournal.TryGetActiveShipTargetCompartment(dockedPortSlug, out string shipTarget))
                 {
                     Hud.SetQuestExitBreadcrumb(string.Empty, string.Empty, 0);
                     Hud.QuestJournal?.SetTrackerRouteBreadcrumb(string.Empty, string.Empty, 0);

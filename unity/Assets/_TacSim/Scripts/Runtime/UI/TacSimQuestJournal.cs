@@ -348,10 +348,53 @@ namespace TacSim.UI
             return true;
         }
 
+        public static string InferStationPortFromRoomEntry(string roomEntry)
+        {
+            if (string.IsNullOrWhiteSpace(roomEntry)) return null;
+            string low = roomEntry.Trim().ToLowerInvariant();
+            if (!low.StartsWith("room.", StringComparison.Ordinal) || low.Length < 7)
+                return null;
+            char prefix = low[5];
+            if (!char.IsDigit(low[6]))
+                return null;
+            switch (prefix)
+            {
+                case 'c': return "ceres";
+                case 'p': return "stickney";
+                case 'l': return "luna";
+                case 'd': return "deimos";
+                case 't': return "titan";
+                default: return null;
+            }
+        }
+
         public bool TryGetActiveShipTargetCompartment(out string targetCompartment)
         {
+            return TryGetActiveShipTargetCompartment(null, out targetCompartment);
+        }
+
+        public bool TryGetActiveShipTargetCompartment(string dockedPortSlug, out string targetCompartment)
+        {
             targetCompartment = string.Empty;
-            if (TryGetActiveSurfaceMiningStatus(out var mining) && !mining.MineDone)
+            bool hasMining = TryGetActiveSurfaceMiningStatus(out var mining);
+            if (!string.IsNullOrWhiteSpace(dockedPortSlug))
+            {
+                var active = GetTrackedActiveQuest();
+                bool miningBlocking = hasMining && !mining.MineDone;
+                if (active != null &&
+                    (!miningBlocking || active.ReadyToFinish || active.CanFinishNow) &&
+                    TryGetMinimapObjective(out string objRoom, out _, out _))
+                {
+                    string targetPort = InferStationPortFromRoomEntry(objRoom);
+                    if (!string.IsNullOrEmpty(targetPort) &&
+                        string.Equals(targetPort, dockedPortSlug.Trim(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        targetCompartment = "airlock";
+                        return true;
+                    }
+                }
+            }
+            if (hasMining && !mining.MineDone)
             {
                 targetCompartment = "bay";
                 return true;
