@@ -1543,6 +1543,8 @@ impl PortWalkState {
             let raw_target = self.quest_room_entry.as_deref()?;
             if self.rooms.iter().any(|r| r.entry_id == raw_target) {
                 (raw_target.to_string(), &self.portals)
+            } else if let Some(role_room) = self.find_same_station_role_room(raw_target) {
+                (role_room.entry_id.clone(), &self.portals)
             } else if infer_station_port_from_room_entry(raw_target).is_some() {
                 if self.needs_origin_port_procurement()
                     && let Some(exchange) = self
@@ -3430,6 +3432,40 @@ impl PortWalkState {
         }
     }
 
+    fn parse_station_room_prefix_role(entry: &str) -> Option<(&str, &str)> {
+        let rest = entry.strip_prefix("room.")?;
+        let prefix_char = rest.chars().next()?;
+        if !matches!(
+            prefix_char.to_ascii_lowercase(),
+            'c' | 'p' | 'l' | 'd' | 't'
+        ) {
+            return None;
+        }
+        let after_prefix = &rest[prefix_char.len_utf8()..];
+        let digits_len = after_prefix.bytes().take_while(u8::is_ascii_digit).count();
+        if digits_len == 0 {
+            return None;
+        }
+        let role = after_prefix[digits_len..].strip_prefix('_')?;
+        if role.is_empty() {
+            return None;
+        }
+        let prefix_end = "room.".len() + prefix_char.len_utf8();
+        Some((&entry[..prefix_end], role))
+    }
+
+    /// Match a canonical corridor station room entry (e.g. `room.c08_chandlery`) onto a loaded
+    /// room sharing the exact same station prefix and role suffix (e.g. `room.c06_chandlery`)
+    /// without ever crossing stations.
+    fn find_same_station_role_room(&self, raw_target: &str) -> Option<&RoomGeom> {
+        let (prefix, role) = Self::parse_station_room_prefix_role(raw_target)?;
+        self.rooms.iter().find(|r| {
+            Self::parse_station_room_prefix_role(&r.entry_id).is_some_and(|(p, r_role)| {
+                p.eq_ignore_ascii_case(prefix) && r_role.eq_ignore_ascii_case(role)
+            })
+        })
+    }
+
     /// Resolve the active quest's target room onto the currently loaded station map
     /// (returns `None` while aboard ship), returning `(local_room_entry, is_boarding_target)`
     /// for 2.5D station markers and room-arrival callouts.
@@ -3448,6 +3484,9 @@ impl PortWalkState {
         let raw_target = self.quest_room_entry.as_deref()?;
         if self.rooms.iter().any(|r| r.entry_id == raw_target) {
             return Some((raw_target.to_string(), false));
+        }
+        if let Some(role_room) = self.find_same_station_role_room(raw_target) {
+            return Some((role_room.entry_id.clone(), false));
         }
         if infer_station_port_from_room_entry(raw_target).is_some() {
             if self.needs_origin_port_procurement()
@@ -11424,5 +11463,28 @@ mod tests {
         );
         let _ = st.handle_drawer_key(Key::Char('c'), &[], Instant::now());
         assert_eq!(st.drawer, Some(PortDrawerKind::Coop));
+    }
+
+    #[test]
+    fn resolved_station_quest_target_matches_same_station_role_suffix_without_cross_port_leak() {
+        let mut st = PortWalkState::new();
+        // Rename the loaded chandlery room to a different slot number on Ceres (`room.c06_chandlery`)
+        for r in &mut st.rooms {
+            if r.entry_id == "room.c08_chandlery" {
+                r.entry_id = "room.c06_chandlery".into();
+            }
+        }
+        st.observe_quest_objective_room(Some(("room.c08_chandlery".into(), false)));
+        assert_eq!(
+            st.resolved_station_quest_target(),
+            Some(("room.c06_chandlery".into(), false))
+        );
+
+        // Cross-port target (`room.p08_chandlery`) must NOT match Ceres chandlery; routes to Berth Gallery.
+        st.observe_quest_objective_room(Some(("room.p08_chandlery".into(), false)));
+        assert_eq!(
+            st.resolved_station_quest_target(),
+            Some(("room.c01_berth_gallery".into(), true))
+        );
     }
 }

@@ -1029,8 +1029,34 @@ impl QuestsSnapshot {
     /// falling back to the next guided NPC giver room between steps.
     #[must_use]
     pub fn active_objective_room(&self, tracked_key: Option<&str>) -> Option<(String, bool)> {
+        self.active_objective_room_with_stowage(tracked_key, None)
+    }
+
+    /// Stowage-aware variant of [`Self::active_objective_room`]: during Step 5 (`+coop/refit`),
+    /// dynamically redirects station wayfinding to `room.c07_exchange` while cargo remains in the
+    /// hold and `room.c08_chandlery` while only provisions remain, flipping back to the Co-op
+    /// Registry once the hold is clear for refit.
+    #[must_use]
+    pub fn active_objective_room_with_stowage(
+        &self,
+        tracked_key: Option<&str>,
+        stowage: Option<&QuestStowageTelemetry>,
+    ) -> Option<(String, bool)> {
         if let Some(q) = self.ordered_active(tracked_key).into_iter().next() {
             let is_turn_in = q.ready_to_finish || q.can_finish_now;
+            if !is_turn_in
+                && let Some(st) = stowage
+                && Self::suggested_action_for(q)
+                    .is_some_and(|a| a.command.to_ascii_lowercase().starts_with("+coop/refit"))
+            {
+                let has_cargo = st.cargo_kg > 0 || st.cargo_lots.iter().any(|(_, _, qty)| *qty > 0);
+                if has_cargo {
+                    return Some(("room.c07_exchange".to_string(), false));
+                }
+                if st.provisions_days > 0 {
+                    return Some(("room.c08_chandlery".to_string(), false));
+                }
+            }
             if !q.next_room_entry.is_empty() {
                 return Some((q.next_room_entry.clone(), is_turn_in));
             }
@@ -6062,5 +6088,62 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(sheet_txt.contains("Corridor Captain") && sheet_txt.contains("+market/jobs"));
+    }
+
+    #[test]
+    fn step5_active_objective_room_with_stowage_routes_exchange_chandlery_then_registry() {
+        let snap = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": "quest.guide_05_refit_prospector",
+                "title": "Refit the Dray-P",
+                "category": "onboarding",
+                "next_room_entry": "room.c05_registry",
+                "next_room_name": "Co-op Registry",
+                "next_step": "Empty hold and run +coop/refit prospector",
+                "checkpoints": [{
+                    "id": "refit",
+                    "title": "Refit Dray-P at Registry",
+                    "instructions": "Empty cargo and provisions, then run +coop/refit prospector",
+                    "room_entry": "room.c05_registry",
+                    "checked": false
+                }]
+            }],
+            "available": [],
+            "completed": []
+        }));
+
+        let with_cargo_and_stores = QuestStowageTelemetry {
+            cargo_kg: 2000,
+            propellant_kg: 5000,
+            provisions_days: 10,
+            cargo_lots: vec![("tacsim:metals".into(), "Metals".into(), 2)],
+        };
+        assert_eq!(
+            snap.active_objective_room_with_stowage(None, Some(&with_cargo_and_stores)),
+            Some(("room.c07_exchange".to_string(), false))
+        );
+
+        let stores_only = QuestStowageTelemetry {
+            cargo_kg: 0,
+            propellant_kg: 5000,
+            provisions_days: 6,
+            cargo_lots: vec![],
+        };
+        assert_eq!(
+            snap.active_objective_room_with_stowage(None, Some(&stores_only)),
+            Some(("room.c08_chandlery".to_string(), false))
+        );
+
+        let cleared_hold = QuestStowageTelemetry {
+            cargo_kg: 0,
+            propellant_kg: 5000,
+            provisions_days: 0,
+            cargo_lots: vec![],
+        };
+        assert_eq!(
+            snap.active_objective_room_with_stowage(None, Some(&cleared_hold)),
+            Some(("room.c05_registry".to_string(), false))
+        );
     }
 }
