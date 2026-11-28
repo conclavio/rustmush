@@ -1169,6 +1169,25 @@ impl QuestOverlayState {
         self.confirm_abandon = false;
     }
 
+    /// Cycle the HUD-tracked active quest across `snap.active` in a single action.
+    pub fn cycle_tracked(&mut self, snap: &QuestsSnapshot) -> Option<&str> {
+        if snap.active.is_empty() {
+            self.tracked_key = None;
+            return None;
+        }
+        if snap.active.len() == 1 {
+            self.tracked_key = Some(snap.active[0].key.clone());
+            return self.tracked_key.as_deref();
+        }
+        let cur = self
+            .tracked_key
+            .as_deref()
+            .and_then(|k| snap.active.iter().position(|q| q.key == k));
+        let next_idx = cur.map_or(1, |i| (i + 1) % snap.active.len());
+        self.tracked_key = Some(snap.active[next_idx].key.clone());
+        self.tracked_key.as_deref()
+    }
+
     pub fn tab_len(&self, snap: &QuestsSnapshot) -> usize {
         match self.tab {
             QuestTab::Active => snap.active.len(),
@@ -1332,6 +1351,16 @@ pub fn render_quest_tracker_lines_with_route(
         } else {
             "[*]"
         };
+        let multi_tag = if snap.active.len() > 1 {
+            let pos = snap
+                .active
+                .iter()
+                .position(|item| item.key == q.key)
+                .unwrap_or(0);
+            format!(" [{}/{}]", pos + 1, snap.active.len())
+        } else {
+            String::new()
+        };
         lines.push(Line::from(vec![
             Span::styled(
                 format!("{sym} "),
@@ -1346,7 +1375,7 @@ pub fn render_quest_tracker_lines_with_route(
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!(" ({done}/{})", q.checkpoints.len()),
+                format!(" ({done}/{}){multi_tag}", q.checkpoints.len()),
                 Style::default().add_modifier(Modifier::DIM),
             ),
         ]));
@@ -1367,6 +1396,13 @@ pub fn render_quest_tracker_lines_with_route(
             && !q.can_check_now
             && let Some(hop) = route_hop
         {
+            let route_text = if hop.next_exit_command == "+ship/board" {
+                "+ship/board (Board Ship)".to_string()
+            } else if hop.next_exit_command == "+ship/leave" {
+                "+ship/leave (Cycle Ashore)".to_string()
+            } else {
+                format!("-> {} ({}h)", hop.next_room_name, hop.hops)
+            };
             lines.push(Line::from(vec![
                 Span::styled(
                     "Route: ",
@@ -1374,10 +1410,7 @@ pub fn render_quest_tracker_lines_with_route(
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(
-                    format!("-> {} ({}h)", hop.next_room_name, hop.hops),
-                    Style::default().fg(Color::Yellow),
-                ),
+                Span::styled(route_text, Style::default().fg(Color::Yellow)),
             ]));
         }
         if !q.next_step.is_empty() {
@@ -1385,6 +1418,19 @@ pub fn render_quest_tracker_lines_with_route(
                 Span::styled("Next: ", Style::default().fg(Color::Cyan)),
                 Span::raw(q.next_step.clone()),
             ]));
+        }
+        if !snap.available.is_empty() {
+            let offer_txt = if snap.available.len() == 1 {
+                "[!] 1 offer here (F11 -> a)".to_string()
+            } else {
+                format!("[!] {} offers here (F11 -> a)", snap.available.len())
+            };
+            lines.push(Line::from(Span::styled(
+                offer_txt,
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )));
         }
         let hint_line = if q.can_finish_now {
             Line::from(Span::styled(
@@ -2404,5 +2450,67 @@ mod tests {
             snap.active_ship_target_compartment_for_port(None, Some("stickney")),
             Some("airlock")
         );
+    }
+
+    #[test]
+    fn tracker_cycles_multiple_active_quests_and_shows_simultaneous_room_offers_and_boarding_route()
+    {
+        let join = |lines: Vec<Line<'static>>| -> String {
+            lines
+                .iter()
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let snap = parse_frame(&json!({
+            "schema": 1,
+            "active": [
+                { "key": "q.first", "title": "First Quest", "next_step": "Do A", "checkpoints": [] },
+                { "key": "q.second", "title": "Second Quest", "next_step": "Do B", "checkpoints": [] }
+            ],
+            "available": [
+                { "key": "q.offer", "title": "New Room Offer", "giver_name": "Ilse", "accept_cmd": "+quest/accept #18 tok" }
+            ]
+        }));
+        let mut overlay = QuestOverlayState::default();
+        let board_hop = QuestExitBreadcrumb {
+            next_room_entry: "ship".into(),
+            next_room_name: "Board Ship".into(),
+            next_exit_command: "+ship/board".into(),
+            target_room_name: "Board Ship".into(),
+            hops: 1,
+        };
+        let first_txt = join(render_quest_tracker_lines_with_route(
+            &snap,
+            overlay.tracked_key.as_deref(),
+            Some(&board_hop),
+        ));
+        assert!(first_txt.contains("First Quest (0/0) [1/2]"), "{first_txt}");
+        assert!(
+            first_txt.contains("Route: +ship/board (Board Ship)"),
+            "{first_txt}"
+        );
+        assert!(
+            first_txt.contains("[!] 1 offer here (F11 -> a)"),
+            "{first_txt}"
+        );
+
+        assert_eq!(overlay.cycle_tracked(&snap), Some("q.second"));
+        let second_txt = join(render_quest_tracker_lines_with_route(
+            &snap,
+            overlay.tracked_key.as_deref(),
+            None,
+        ));
+        assert!(
+            second_txt.contains("Second Quest (0/0) [2/2]"),
+            "{second_txt}"
+        );
+        assert_eq!(overlay.cycle_tracked(&snap), Some("q.first"));
     }
 }
