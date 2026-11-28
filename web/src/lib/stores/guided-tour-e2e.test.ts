@@ -364,6 +364,22 @@ describe("Canonical 7-step Guided Onboarding Walkthrough (guided_onboarding.json
     store.applyFrame({ schema: 1, active: [s6PostMine], available: [], completed });
     expect(needsSurfaceExpeditionBoarding(store.active, store.trackedKey)).toBe(false);
     expect(resolveQuestShipTargetCompartment(store.active, store.trackedKey, null, true)).toBe("bridge");
+    // With live stowage loaded: empty ore hold on surface pad routes to Vehicle Bay (+tv/1 recover go),
+    // then flips to Bridge once 1t carbon_ore is stowed in the hold.
+    expect(
+      resolveQuestShipTargetCompartment(store.active, store.trackedKey, null, true, null, {
+        propellantKg: 10_000,
+        provisionsCrewDays: 6,
+        cargoLines: [],
+      }),
+    ).toBe("bay");
+    expect(
+      resolveQuestShipTargetCompartment(store.active, store.trackedKey, null, true, null, {
+        propellantKg: 10_000,
+        provisionsCrewDays: 6,
+        cargoLines: [{ good: "tacsim:carbon_ore", label: "Carbon Ore", qty: 1 }],
+      }),
+    ).toBe("bridge");
     expect(extractActiveDestinationPort(store.active, store.trackedKey)?.portId).toBe("ceres");
     expect(inferStationPortFromRoomEntry(store.trackedQuest?.nextRoomEntry)).toBe("ceres");
     expect(

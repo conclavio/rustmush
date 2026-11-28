@@ -1211,12 +1211,43 @@ export function needsSurfaceExpeditionBoarding(
   return mining !== null && !mining.mineDone;
 }
 
+const CORRIDOR_STATION_PORTS = ["ceres", "stickney", "luna", "deimos", "titan"] as const;
+
+function inferOriginPortFromTradeQuest(
+  quest: ActiveQuestView,
+  excludeDestPort: string | null,
+): string | null {
+  const cp = quest.checkpoints.find((c) => !c.checked && !c.liveReady) ?? quest.checkpoints[0];
+  const textLow = `${quest.title} ${cp?.title ?? ""} ${cp?.instructions ?? ""} ${quest.nextStep}`.toLowerCase();
+  for (const port of CORRIDOR_STATION_PORTS) {
+    if (excludeDestPort && port === excludeDestPort) continue;
+    if (
+      textLow.includes(`at ${port}`) ||
+      textLow.includes(`from ${port}`) ||
+      textLow.includes(`${port}'s`) ||
+      textLow.includes(`${port} exchange`) ||
+      textLow.includes(`${port} co-op`)
+    ) {
+      return port;
+    }
+  }
+  return null;
+}
+
 export function resolveQuestShipTargetCompartment(
   active: readonly ActiveQuestView[],
   trackedKey: string | null,
   dockedPortId: string | null = null,
   settledPad = false,
   nextGuidedOffer: GuidedTourRoadmapStep | null = null,
+  stowage:
+    | {
+        propellantKg: number;
+        provisionsCrewDays: number;
+        cargoLines: ReadonlyArray<{ good: string; label: string; qty: number }>;
+      }
+    | null
+    | undefined = null,
 ): "airlock" | "bay" | "bridge" | null {
   const tracked = orderedActiveQuests(active, trackedKey)[0] ?? null;
   const trackedOnly = tracked ? [tracked] : [];
@@ -1232,6 +1263,12 @@ export function resolveQuestShipTargetCompartment(
       if (targetPort && targetPort === dockedNorm) {
         return "airlock";
       }
+      if (stowage && needsOriginPortProcurement(trackedOnly, tracked.key, stowage)) {
+        const originPort = inferOriginPortFromTradeQuest(tracked, targetPort);
+        if (originPort ? originPort === dockedNorm : targetPort !== dockedNorm) {
+          return "airlock";
+        }
+      }
     }
   }
   if (mining) {
@@ -1240,7 +1277,22 @@ export function resolveQuestShipTargetCompartment(
       // once settled on a surface landing pad (or when station-docked is unset) -> head to Vehicle Bay.
       return dockedNorm && !settledPad ? "bridge" : "bay";
     }
-    // Mining done, not yet docked at turn-in station -> head to Bridge to lift off & return to port.
+    // Post-mine on surface pad: if live stowage is loaded and mined ore has not yet been recovered
+    // from the rig hopper into the ship hold, direct the pilot to Vehicle Bay (+tv/1 recover go).
+    if (stowage) {
+      const targetSlug = normalizeGoodSlug(mining.targetOreSlug);
+      const oreQty = (stowage.cargoLines ?? []).reduce(
+        (sum, c) =>
+          normalizeGoodSlug(c.good) === targetSlug || normalizeGoodSlug(c.label) === targetSlug
+            ? sum + Math.max(0, c.qty)
+            : sum,
+        0,
+      );
+      if (oreQty < 1) {
+        return "bay";
+      }
+    }
+    // Mining done & ore stowed (or stowage unknown), not yet docked at turn-in station -> Bridge.
     return "bridge";
   }
   const dest = tracked ? extractActiveDestinationPort(trackedOnly, tracked.key) : null;

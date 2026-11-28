@@ -211,12 +211,17 @@
       app.tacsim.ambient?.docked && !settledPad
         ? normalizePortVenueTarget(app.tacsim.ambient?.port ?? app.tacsim.trade?.hullPort)
         : null;
+    const liveStowage =
+      app.tacsim.ambient?.ownStowage ??
+      app.tacsim.ambient?.stowage ??
+      (app.tacsim.trade?.hullId ? app.tacsim.trade.stowage : null);
     return resolveQuestShipTargetCompartment(
       quests.active,
       quests.trackedKey,
       dockedPortId,
       settledPad,
       quests.nextGuidedOffer,
+      liveStowage,
     );
   });
 

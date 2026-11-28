@@ -146,6 +146,8 @@
         q.trackedKey,
         dockedPortId,
         settledPad,
+        null,
+        liveStowage,
       );
       const currentComp =
         (tacsim.view3dOpen ? tacsim.physicalLocationKey : null) ?? tacsim.serverShipCompartment;

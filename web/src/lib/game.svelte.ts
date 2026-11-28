@@ -2229,6 +2229,8 @@ export class GameApp {
             this.quests.trackedKey,
             dockedPortId,
             settledPad,
+            null,
+            liveStowage,
           );
           const currentComp =
             (this.tacsim.view3dOpen ? this.tacsim.physicalLocationKey : null) ??

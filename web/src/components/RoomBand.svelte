@@ -41,6 +41,10 @@
     const tracked =
       quests.active.find((q) => q.key === quests.trackedKey) ?? quests.active[0] ?? null;
     const nextOffer = !tracked ? quests.nextGuidedOffer : null;
+    const liveStowage =
+      tacsim.ambient?.ownStowage ??
+      tacsim.ambient?.stowage ??
+      (tacsim.trade?.hullId ? tacsim.trade.stowage : null);
     if (tacsim.isAboardShip) {
       if (tacsim.seatedAtBridgeHelm) return null;
       const settledPad = Boolean(tacsim.ambient?.settledPad);
@@ -53,6 +57,8 @@
         quests.trackedKey,
         dockedPortId,
         settledPad,
+        nextOffer,
+        liveStowage,
       );
       if (!targetComp && nextOffer) {
         const targetPort = inferStationPortFromRoomEntry(nextOffer.giverRoomEntry);
@@ -62,10 +68,6 @@
         (tacsim.view3dOpen ? tacsim.physicalLocationKey : null) ?? tacsim.serverShipCompartment;
       return computeShipQuestBreadcrumb(tacsim.shipTemplate, currentComp, targetComp);
     }
-    const liveStowage =
-      tacsim.ambient?.ownStowage ??
-      tacsim.ambient?.stowage ??
-      (tacsim.trade?.hullId ? tacsim.trade.stowage : null);
     const refitClearRoom = resolveStowageObjectiveRoom(quests.active, quests.trackedKey, liveStowage);
     const targetEntry =
       refitClearRoom ||
