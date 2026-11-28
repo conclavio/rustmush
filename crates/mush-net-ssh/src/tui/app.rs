@@ -5738,6 +5738,36 @@ impl TuiApp {
                     Style::default().fg(Color::Cyan),
                 ),
             ];
+            let next_key_hint = if !qm.scan_done {
+                "Next: s(scan)  |  "
+            } else if !qm.sound_done {
+                "Next: x(sound)  |  "
+            } else if !qm.mine_done {
+                "Next: m(mine)  |  "
+            } else {
+                ""
+            };
+            if !next_key_hint.is_empty() {
+                spans.push(Span::styled(
+                    next_key_hint,
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+            if !qm.mine_done
+                && let Some(drive_target) = self
+                    .panels
+                    .get(SITE_MAP_FEED)
+                    .and_then(|f| qm.first_matching_site_reading(f))
+            {
+                spans.push(Span::styled(
+                    format!("Drive: d {drive_target}  |  "),
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
             if qm.mine_done
                 && let Some(dest) = self.quests_snap.active_destination_port(tracked_q)
             {
@@ -14082,5 +14112,102 @@ mod tests {
             app.port_walk.quest_dest_hint().map(|d| d.port_id.as_str()),
             Some("stickney")
         );
+    }
+
+    #[test]
+    fn quarry_screen_quest_bar_shows_next_key_drive_pocket_starter_site_and_post_mine_return() {
+        let mut app = app();
+        let dump = |b: &ratatui::buffer::Buffer| -> String {
+            (0..b.area.height)
+                .map(|y| {
+                    (0..b.area.width)
+                        .map(|x| b[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(SITE_MAP_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "width": 10,
+                "height": 10,
+                "site": {
+                    "family": "carbon",
+                    "readings": [
+                        { "target": "B", "line": "B · 140 m N — rich carbon_ore pocket" }
+                    ]
+                }
+            }),
+        });
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(BODY_GROUND_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "width": 56,
+                "height": 28,
+                "ground": {
+                    "sites": [
+                        { "venue": "commons", "site": "Freeport Commons", "here": false, "best": null, "best_line": "", "tenure": "open" }
+                    ]
+                }
+            }),
+        });
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "active": [{
+                    "key": "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+                    "title": "Scan, Sound, and Mine a Landing Site",
+                    "next_room_entry": "room.c07_exchange",
+                    "checkpoints": [
+                        { "id": "scan_landing_site", "title": "Surface scan", "instructions": "+tv/1 scan go", "checked": true, "live_ready": true },
+                        { "id": "sound_mineral_pocket", "title": "Sound pocket", "instructions": "+tv/1 sound go", "checked": false, "live_ready": false },
+                        { "id": "mine_carbon_ore", "title": "Mine 1t carbon_ore", "instructions": "+tv/1 mine go", "checked": false, "live_ready": false }
+                    ]
+                }]
+            }),
+        });
+
+        app.active = QUARRY_SCREEN;
+        let qbuf = painted(&mut app, 220, 32);
+        let text = dump(&qbuf);
+        assert!(text.contains("Next: x(sound)"), "{text}");
+        assert!(text.contains("Drive: d B"), "{text}");
+        assert!(
+            text.contains("Site: [!] Freeport Commons (+ship/plan commons)"),
+            "{text}"
+        );
+
+        // Post-mine -> switches to Return: Ceres Freeport (+ship/plan ceres) + Recover
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "active": [{
+                    "key": "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+                    "title": "Scan, Sound, and Mine a Landing Site",
+                    "next_room_entry": "room.c07_exchange",
+                    "ready_to_finish": true,
+                    "checkpoints": [
+                        { "id": "scan_landing_site", "title": "Surface scan", "instructions": "+tv/1 scan go", "checked": true, "live_ready": true },
+                        { "id": "sound_mineral_pocket", "title": "Sound pocket", "instructions": "+tv/1 sound go", "checked": true, "live_ready": true },
+                        { "id": "mine_carbon_ore", "title": "Mine 1t carbon_ore", "instructions": "+tv/1 mine go", "checked": true, "live_ready": true }
+                    ]
+                }]
+            }),
+        });
+        let qbuf2 = painted(&mut app, 220, 32);
+        let text2 = dump(&qbuf2);
+        assert!(
+            text2.contains("Return: Ceres Freeport (+ship/plan ceres)"),
+            "{text2}"
+        );
+        assert!(text2.contains("Recover: +tv/1 recover go"), "{text2}");
     }
 }
