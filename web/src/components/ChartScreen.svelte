@@ -27,12 +27,20 @@
     type ChartRoute,
   } from "$lib/chart";
   import { expandRows } from "$lib/stores/map.svelte";
+  import { resolveNextGuidedOfferDestination } from "$lib/stores/quests.svelte";
 
   let { app }: { app: GameApp } = $props();
 
   const frame = $derived(app.chart.frame);
   const chart = $derived(frame?.chart ?? null);
-  const questDest = $derived(app.quests?.activeDestinationPort ?? null);
+  const questMining = $derived(app.quests?.surfaceMiningStatus ?? null);
+  const questDest = $derived(
+    app.quests?.activeDestinationPort ??
+      resolveNextGuidedOfferDestination(
+        app.quests?.nextGuidedOffer ?? null,
+        chart?.vantage.port || chart?.vantage.body || null,
+      ),
+  );
 
   /** The picture's size in its own units; it scales to the pane. */
   const SIZE = 640;
@@ -90,6 +98,18 @@
     }
     app.focusComposer?.(`+ship/plan ${questDest.portId}`);
   }
+
+  function openQuestGroundChart(): void {
+    if (!questMining) return;
+    if (app.quarry) {
+      app.quarry.mode = "ground";
+      app.quarry.family = questMining.recommendedFamily;
+    }
+    if (app.switchScreen?.("quarry")) {
+      return;
+    }
+    app.focusComposer?.("+chart/ground");
+  }
 </script>
 
 <div class="chart">
@@ -99,14 +119,28 @@
     </p>
   {:else}
     <h2>{heading}</h2>
-    {#if questDest}
+    {#if questDest || (questMining && !questMining.mineDone)}
       <div class="quest-dest-banner" role="status" aria-label="active quest destination">
         <span class="qbadge">[QUEST]</span>
-        <strong>Destination: {questDest.portLabel}</strong>
-        <span class="muted">— {questDest.questTitle}</span>
-        <button type="button" class="qplan-btn" onclick={prefillQuestPlan}>
-          Plan +ship/plan {questDest.portId}
-        </button>
+        {#if questDest}
+          <strong>Destination: {questDest.portLabel}</strong>
+          <span class="muted">— {questDest.questTitle}</span>
+        {:else if questMining}
+          <strong>Surface Mining: {questMining.targetOreSlug}</strong>
+          <span class="muted">— {questMining.questTitle}</span>
+        {/if}
+        <span class="qactions">
+          {#if questMining && !questMining.mineDone}
+            <button type="button" class="qground-btn" onclick={openQuestGroundChart}>
+              Ground Chart ({questMining.recommendedFamily.toUpperCase()})
+            </button>
+          {/if}
+          {#if questDest}
+            <button type="button" class="qplan-btn" onclick={prefillQuestPlan}>
+              Plan +ship/plan {questDest.portId}
+            </button>
+          {/if}
+        </span>
       </div>
     {/if}
     <div class="row">
@@ -231,8 +265,13 @@
     font-family: var(--font-mono, monospace);
     font-size: 0.78rem;
   }
-  .qplan-btn {
+  .qactions {
     margin-left: auto;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+  }
+  .qplan-btn {
     border: 1px solid #d4a64a;
     border-radius: 4px;
     background: rgba(212, 166, 74, 0.24);
@@ -245,6 +284,20 @@
   }
   .qplan-btn:hover {
     background: rgba(212, 166, 74, 0.38);
+  }
+  .qground-btn {
+    border: 1px solid #34d399;
+    border-radius: 4px;
+    background: rgba(16, 185, 129, 0.22);
+    color: #d1fae5;
+    font: inherit;
+    font-size: 0.78rem;
+    font-weight: 600;
+    padding: 0.15rem 0.55rem;
+    cursor: pointer;
+  }
+  .qground-btn:hover {
+    background: rgba(16, 185, 129, 0.36);
   }
   .tables li.quest-row {
     color: #fde68a;
