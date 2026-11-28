@@ -2325,6 +2325,22 @@ impl QuestOverlayState {
                 }
                 QuestOverlayAction::None
             }
+            Key::Char('p') if self.tab == QuestTab::Completed => {
+                self.confirm_abandon = false;
+                self.confirm_decline = false;
+                if snap.guided_tour_progress().is_some_and(|t| t.all_done) {
+                    self.close();
+                    return QuestOverlayAction::Prefill("+market/jobs".into());
+                }
+                if snap.active.is_empty()
+                    && current_port.is_some()
+                    && let Some(dest) = snap.next_guided_offer_destination(current_port)
+                {
+                    self.close();
+                    return QuestOverlayAction::Prefill(format!("+ship/plan {}", dest.port_id));
+                }
+                QuestOverlayAction::None
+            }
             Key::Char('x') if self.tab == QuestTab::Active => {
                 self.confirm_decline = false;
                 if let Some(item) = snap.active.get(self.selected)
@@ -3464,6 +3480,32 @@ pub fn render_quest_overlay_full(
                         .fg(Color::Green)
                         .add_modifier(Modifier::BOLD),
                 )));
+                detail_lines.push(Line::from(Span::styled(
+                    "Jobs Board: press p (+market/jobs)",
+                    Style::default().fg(Color::Green),
+                )));
+                detail_lines.push(Line::from(""));
+            } else if snap.active.is_empty()
+                && let Some(next) = snap.next_guided_offer()
+            {
+                detail_lines.push(Line::from(Span::styled(
+                    format!(
+                        "[!] Next Guided ({}/7): {} — {} ({})",
+                        next.step, next.short_label, next.giver_label, next.giver_room_name
+                    ),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                if let Some(dest) = snap.next_guided_offer_destination(current_port) {
+                    detail_lines.push(Line::from(Span::styled(
+                        format!(
+                            "Sail -> {} (p: +ship/plan {})",
+                            dest.port_label, dest.port_id
+                        ),
+                        Style::default().fg(Color::Cyan),
+                    )));
+                }
                 detail_lines.push(Line::from(""));
             }
             if let Some(q) = snap.completed.get(state.selected) {
@@ -3507,6 +3549,15 @@ pub fn render_quest_overlay_full(
             "Enter/a: accept quest  |  d: decline permanently  |  Tab: switch tab  |  Esc: close"
         }
         QuestTab::Available => "Enter/a: accept quest  |  Tab: switch tab  |  Esc: close",
+        QuestTab::Completed if snap.guided_tour_progress().is_some_and(|t| t.all_done) => {
+            "p: jobs board (+market/jobs)  |  Up/Down: browse history  |  Tab: switch tab  |  Esc: close"
+        }
+        QuestTab::Completed
+            if snap.active.is_empty()
+                && snap.next_guided_offer_destination(current_port).is_some() =>
+        {
+            "p: sail to next step  |  Up/Down: browse history  |  Tab: switch tab  |  Esc: close"
+        }
         QuestTab::Completed => "Up/Down: browse history  |  Tab: switch tab  |  Esc: close",
     };
     f.render_widget(
@@ -6271,5 +6322,75 @@ mod tests {
             snap.active_objective_room_with_stowage(None, Some(&both_done)),
             Some(("room.c05_registry".to_string(), false))
         );
+    }
+
+    #[test]
+    fn completed_tab_shows_next_guided_step_and_7of7_jobs_board_p_shortcut() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let render_completed =
+            |st: &QuestOverlayState, snap: &QuestsSnapshot, port: Option<&str>| -> String {
+                let backend = TestBackend::new(110, 24);
+                let mut term = Terminal::new(backend).expect("terminal");
+                term.draw(|f| {
+                    render_quest_overlay_full(f, f.area(), st, snap, None, port);
+                })
+                .expect("draw");
+                let buf = term.backend().buffer();
+                (0..buf.area.height)
+                    .map(|y| {
+                        (0..buf.area.width)
+                            .map(|x| buf[(x, y)].symbol())
+                            .collect::<String>()
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            };
+
+        // 1. Mid-tour (Steps 1-3 completed, 0 active, at Ceres -> Next Guided Step 4/7 at Stickney)
+        let mid_snap = parse_frame(&json!({
+            "schema": 1,
+            "active": [],
+            "available": [],
+            "completed": [
+                { "key": GUIDED_TOUR_KEYS[0], "title": "First Papers", "turn_in_name": "Ilse", "completion": "Done 1" },
+                { "key": GUIDED_TOUR_KEYS[1], "title": "Locker & Tanks", "turn_in_name": "Ilse", "completion": "Done 2" },
+                { "key": GUIDED_TOUR_KEYS[2], "title": "Metals Run", "turn_in_name": "Jonas", "completion": "Done 3" }
+            ]
+        }));
+        let mut st = QuestOverlayState::default();
+        st.open_tab_index(QuestTab::Completed, 0);
+        let mid_txt = render_completed(&st, &mid_snap, Some("ceres"));
+        assert!(
+            mid_txt.contains("Next Guided (4/7)") && mid_txt.contains("Sail -> Stickney Yards"),
+            "expected Step 4/7 continuation on Completed tab:\n{mid_txt}"
+        );
+        let act_sail = st.handle_key_with_port(Key::Char('p'), &mid_snap, Some("ceres"));
+        assert_eq!(
+            act_sail,
+            QuestOverlayAction::Prefill("+ship/plan stickney".into())
+        );
+        assert!(!st.open);
+
+        // 2. Full 7/7 completion -> Corridor Captain Jobs Board `p` shortcut
+        let done_snap = parse_frame(&json!({
+            "schema": 1,
+            "active": [],
+            "available": [],
+            "completed": GUIDED_TOUR_KEYS.iter().enumerate().map(|(i, k)| json!({
+                "key": k,
+                "title": format!("Step {}", i + 1),
+                "turn_in_name": "Contact",
+                "completion": "Done"
+            })).collect::<Vec<_>>()
+        }));
+        st.open_tab_index(QuestTab::Completed, 0);
+        let done_txt = render_completed(&st, &done_snap, Some("stickney"));
+        assert!(
+            done_txt.contains("Jobs Board: press p (+market/jobs)"),
+            "expected Jobs Board prompt on Completed tab:\n{done_txt}"
+        );
+        let act_jobs = st.handle_key_with_port(Key::Char('p'), &done_snap, Some("stickney"));
+        assert_eq!(act_jobs, QuestOverlayAction::Prefill("+market/jobs".into()));
+        assert!(!st.open);
     }
 }
