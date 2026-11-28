@@ -14364,5 +14364,113 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void StationWorldAndOpsDirectory_PrioritizeTurnInQuestMarkersAndResolveOffStationDirectoryTarget()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestDirectoryAndMarkerPriorityTest");
+            try
+            {
+                var coord = rootGo.AddComponent<TacSimGameCoordinator>();
+                var hudGo = new UnityEngine.GameObject("Hud");
+                hudGo.transform.SetParent(rootGo.transform, false);
+                coord.Hud = hudGo.AddComponent<TacSim.UI.TacSimHudController>();
+                coord.EnsureSubsystems();
+
+                var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+                var onRoom = typeof(TacSimGameCoordinator).GetMethod("HandleServerRoomView", flags);
+                Assert.IsNotNull(onRoom);
+
+                // Stand at Registry & Co-op Desk with Ilse carrying multiple quest markers (available AFTER turn_in)
+                onRoom.Invoke(coord, new object[]
+                {
+                    MushProtocol.ParseRoomView(JsonNode.Parse(@"{
+                        ""room"": { ""id"": ""#15"", ""name"": ""Registry & Co-op Desk"" },
+                        ""contents"": [{ ""id"": ""#50"", ""name"": ""Ilse Oduya-Brandt"" }],
+                        ""ambient"": {
+                            ""atlas"": { ""pack"": ""neighborhood.ceres_freeport"", ""entry"": ""room.c05_registry"" },
+                            ""npcs"": [""#50""],
+                            ""quest_markers"": [
+                                { ""npc_id"": ""#50"", ""npc_name"": ""Ilse Oduya-Brandt"", ""marker"": ""in_progress"", ""symbol"": ""?"", ""quest_key"": ""q.active"", ""quest_title"": ""Active Check"" },
+                                { ""npc_id"": ""#50"", ""npc_name"": ""Ilse Oduya-Brandt"", ""marker"": ""turn_in"", ""symbol"": ""?"", ""quest_key"": ""q.turnin"", ""quest_title"": ""First Papers at the Registry"" },
+                                { ""npc_id"": ""#50"", ""npc_name"": ""Ilse Oduya-Brandt"", ""marker"": ""available"", ""symbol"": ""!"", ""quest_key"": ""q.next"", ""quest_title"": ""Stock the Hold"" }
+                            ]
+                        }
+                    }"))
+                });
+
+                // 1. StationWorldController 3D overhead marker keeps turn_in (?) over later available (!) / in_progress (?)
+                var overheadMarker = coord.StationWorld.GetNpcQuestMarker("#50");
+                Assert.IsNotNull(overheadMarker);
+                Assert.AreEqual("turn_in", overheadMarker.Marker);
+                Assert.AreEqual("?", overheadMarker.Symbol);
+
+                // 2. OpsDirectory Presence tab picks turn_in [? QUEST] rather than first-match in_progress
+                coord.TradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""ceres"",
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 0, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 10000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": []
+                        }
+                    }
+                }"));
+                coord.Hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_markers"": [
+                        { ""npc_id"": ""#50"", ""npc_name"": ""Ilse Oduya-Brandt"", ""marker"": ""in_progress"", ""symbol"": ""?"", ""quest_key"": ""q.active"", ""quest_title"": ""Active Check"" },
+                        { ""npc_id"": ""#50"", ""npc_name"": ""Ilse Oduya-Brandt"", ""marker"": ""available"", ""symbol"": ""!"", ""quest_key"": ""q.next"", ""quest_title"": ""Stock the Hold"" },
+                        { ""npc_id"": ""#50"", ""npc_name"": ""Ilse Oduya-Brandt"", ""marker"": ""turn_in"", ""symbol"": ""?"", ""quest_key"": ""q.turnin"", ""quest_title"": ""First Papers at the Registry"" }
+                    ],
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"",
+                        ""title"": ""Metals Down the Corridor"",
+                        ""next_room_entry"": ""room.p07_receiving"",
+                        ""checkpoints"": [{
+                            ""id"": ""deliver_metals"",
+                            ""title"": ""Buy 5 tonnes of metals at Ceres and deliver to Stickney"",
+                            ""instructions"": ""Buy 5 metals and +market/sell at Stickney."",
+                            ""room_entry"": ""room.p07_receiving"",
+                            ""checked"": false, ""live_ready"": false
+                        }]
+                    }]
+                }")));
+
+                coord.Hud.OpsDirectory.SetOpen(true);
+                coord.Hud.OpsDirectory.SelectTab(TacSim.UI.OpsDirectoryTab.RoomPresence);
+                Assert.AreEqual(1, coord.Hud.OpsDirectory.HighlightedQuestPresenceRowCount);
+                StringAssert.Contains("[? QUEST]", coord.Hud.OpsDirectory.FirstPresenceRowLabel);
+                StringAssert.Contains("#FFDD44", coord.Hud.OpsDirectory.FirstPresenceRowLabel);
+
+                // 3. OpsDirectory Deck Directory resolves off-station Stickney target -> Ceres Exchange Hall while procuring
+                coord.Hud.OpsDirectory.SelectTab(TacSim.UI.OpsDirectoryTab.DeckDirectory);
+                Assert.GreaterOrEqual(coord.Hud.OpsDirectory.HighlightedQuestDirectoryRowIndex, 0);
+                Assert.AreEqual("room.c07_exchange", coord.Hud.OpsDirectory.HighlightedQuestDirectoryRoomId);
+
+                // 4. Once 5/5t metals are loaded -> OpsDirectory pivots highlight to Visiting Berth Gallery
+                coord.TradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""ceres"",
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 5000, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 10000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:metals"", ""label"": ""Metals"", ""qty"": 5 }]
+                        }
+                    }
+                }"));
+                coord.Hud.OpsDirectory.RefreshModalContents();
+                Assert.GreaterOrEqual(coord.Hud.OpsDirectory.HighlightedQuestDirectoryRowIndex, 0);
+                Assert.AreEqual("room.c01_berth_gallery", coord.Hud.OpsDirectory.HighlightedQuestDirectoryRoomId);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

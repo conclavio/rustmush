@@ -3285,6 +3285,7 @@ namespace TacSim.Core
             }
 
             _stageDirector?.SyncFrame(_isAboardShip, Hud != null && Hud.IsTextInputFocused);
+            Hud?.OpsDirectory?.UpdateLiveRoom(rv, ActiveStage);
 
             if (_ws != null && _ws.IsConnected && _ws.HasAdvertisedPanel("tacsim.quests"))
                 _ws.SendPanelSubscribe("tacsim.quests");
