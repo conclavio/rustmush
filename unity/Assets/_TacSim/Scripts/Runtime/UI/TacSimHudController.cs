@@ -1500,9 +1500,11 @@ namespace TacSim.UI
                 {
                     string actionVerb = isTurnIn ? "TURN IN" : "OFFER";
                     string titleSuffix = string.IsNullOrEmpty(questTitle) ? string.Empty : $": {questTitle}";
+                    int extraRoomQuests = Math.Max(0, QuestJournal.CountActionableRoomQuests() - 1);
+                    string moreSuffix = extraRoomQuests > 0 ? $" (+{extraRoomQuests} more)" : string.Empty;
                     string who = string.IsNullOrEmpty(npcName) ? "Quest Contact" : npcName;
                     if (_roomQuestBannerLabel != null)
-                        _roomQuestBannerLabel.text = $"[{sym}] {who} — {actionVerb}{titleSuffix}";
+                        _roomQuestBannerLabel.text = $"[{sym}] {who} — {actionVerb}{titleSuffix}{moreSuffix}";
                     if (_roomQuestBannerBg != null)
                         _roomQuestBannerBg.color = isTurnIn
                             ? new Color(0.12f, 0.44f, 0.28f, 0.94f)

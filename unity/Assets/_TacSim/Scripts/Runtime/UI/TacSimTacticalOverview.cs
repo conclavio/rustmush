@@ -27,6 +27,7 @@ namespace TacSim.UI
         public readonly Color AccentColor;
         public readonly bool IsLocked;
         public readonly bool IsRock;
+        public readonly bool IsQuestTarget;
         public readonly int SurfaceCellX;
         public readonly int SurfaceCellY;
 
@@ -40,7 +41,8 @@ namespace TacSim.UI
             bool isLocked = false,
             bool isRock = false,
             int surfaceCellX = -1,
-            int surfaceCellY = -1)
+            int surfaceCellY = -1,
+            bool isQuestTarget = false)
         {
             Id = id ?? string.Empty;
             DisplayName = displayName ?? string.Empty;
@@ -50,6 +52,7 @@ namespace TacSim.UI
             AccentColor = accentColor;
             IsLocked = isLocked;
             IsRock = isRock;
+            IsQuestTarget = isQuestTarget;
             SurfaceCellX = surfaceCellX;
             SurfaceCellY = surfaceCellY;
         }
@@ -116,7 +119,9 @@ namespace TacSim.UI
         public bool SortArenaByOdds => _sortArenaByOdds;
         public int VisibleRowCount { get; private set; }
         public int TotalEntryCount => _entries.Count;
+        public int QuestEntryCount { get; private set; }
         public string FirstRowId => _entries.Count > 0 ? _entries[0].Id : string.Empty;
+        public string FirstRowBadge => _entries.Count > 0 ? _entries[0].Badge : string.Empty;
 
         public void BuildDrawer(Transform hudRoot, Font sharedFont)
         {
@@ -381,21 +386,27 @@ namespace TacSim.UI
                     for (int i = 0; i < beacons.Count; i++)
                     {
                         var bc = beacons[i];
-                        if (ActiveFilter == TacticalOverviewFilter.Primary && !bc.IsRich) continue;
+                        bool isQuest = bc.IsQuestTarget;
+                        if (ActiveFilter == TacticalOverviewFilter.Primary && !bc.IsRich && !isQuest) continue;
                         if (ActiveFilter == TacticalOverviewFilter.Secondary && bc.IsRich) continue;
 
                         float distM = Vector3.Distance(roverPos, bc.WorldPos);
+                        string badge = isQuest ? "Q-ORE" : (bc.IsRich ? "RICH" : "ORE");
+                        Color col = isQuest
+                            ? new Color(1.0f, 0.86f, 0.24f)
+                            : (bc.IsRich ? new Color(0.28f, 1.0f, 0.58f) : new Color(0.40f, 0.88f, 1.0f));
                         _entries.Add(new OverviewRowEntry(
                             $"{bc.SiteCellX},{bc.SiteCellY}",
                             string.IsNullOrEmpty(bc.Label) ? $"Cell ({bc.SiteCellX},{bc.SiteCellY})" : bc.Label,
                             $"{distM:0}m",
                             distM,
-                            bc.IsRich ? "RICH" : "ORE",
-                            bc.IsRich ? new Color(0.28f, 1.0f, 0.58f) : new Color(0.40f, 0.88f, 1.0f),
+                            badge,
+                            col,
                             isLocked: false,
                             isRock: true,
                             surfaceCellX: bc.SiteCellX,
-                            surfaceCellY: bc.SiteCellY));
+                            surfaceCellY: bc.SiteCellY,
+                            isQuestTarget: isQuest));
                     }
                     break;
                 }
@@ -438,7 +449,19 @@ namespace TacSim.UI
                 }
             }
 
-            _entries.Sort((a, b) => a.SortDistance.CompareTo(b.SortDistance));
+            int questCount = 0;
+            for (int i = 0; i < _entries.Count; i++)
+            {
+                if (_entries[i].IsQuestTarget) questCount++;
+            }
+            QuestEntryCount = questCount;
+
+            _entries.Sort((a, b) =>
+            {
+                if (a.IsQuestTarget != b.IsQuestTarget)
+                    return a.IsQuestTarget ? -1 : 1;
+                return a.SortDistance.CompareTo(b.SortDistance);
+            });
         }
 
         private void RefreshStageFilterLabels(TacSimActiveStage stage)
@@ -450,7 +473,9 @@ namespace TacSim.UI
             if (_headerText != null)
             {
                 _headerText.text = stage == TacSimActiveStage.PlanetarySurface
-                    ? $"ORE SCANNER ({_entries.Count}) [T]"
+                    ? (QuestEntryCount > 0
+                        ? $"ORE SCANNER ({_entries.Count} · {QuestEntryCount} Q) [T]"
+                        : $"ORE SCANNER ({_entries.Count}) [T]")
                     : (isArena
                         ? $"ARENA TARGETS ({_entries.Count}) [T]"
                         : $"ORBITAL OVERVIEW ({_entries.Count}) [T]");
@@ -497,7 +522,9 @@ namespace TacSim.UI
                     row.BoundEntry = e;
                     row.Bg.color = e.IsLocked
                         ? new Color(0.32f, 0.14f, 0.14f, 0.96f)
-                        : new Color(0.06f, 0.12f, 0.19f, 0.92f);
+                        : (e.IsQuestTarget
+                            ? new Color(0.24f, 0.19f, 0.06f, 0.96f)
+                            : new Color(0.06f, 0.12f, 0.19f, 0.92f));
                     string hex = ToHexRgb(e.AccentColor);
                     row.Label.text = $"<color=#{hex}>[{e.Badge}]</color> {MushProtocol.EscapeUnityRichText(e.DisplayName)}  <color=#88BBDD>{e.DistanceText}</color>";
                     if (row.ActLabel != null)

@@ -480,6 +480,40 @@ namespace TacSim.UI
 
             return false;
         }
+
+        /// <summary>
+        /// Counts distinct actionable quests (`turn_in` / `available`) currently present in this room
+        /// across room markers, ready active turn-ins, and room offers.
+        /// </summary>
+        public int CountActionableRoomQuests()
+        {
+            var panel = LatestPanel;
+            if (panel == null) return 0;
+            var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            for (int i = 0; i < panel.RoomMarkers.Count; i++)
+            {
+                var m = panel.RoomMarkers[i];
+                if (m == null) continue;
+                if (string.Equals(m.Marker, "turn_in", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(m.Marker, "available", StringComparison.OrdinalIgnoreCase))
+                {
+                    keys.Add(!string.IsNullOrEmpty(m.QuestKey) ? m.QuestKey : $"{m.Marker}:{m.NpcId}:{m.QuestTitle}");
+                }
+            }
+            for (int i = 0; i < panel.Active.Count; i++)
+            {
+                var q = panel.Active[i];
+                if (q != null && q.CanFinishNow && !string.IsNullOrEmpty(q.Key))
+                    keys.Add(q.Key);
+            }
+            for (int i = 0; i < panel.Available.Count; i++)
+            {
+                var av = panel.Available[i];
+                if (av != null && !string.IsNullOrEmpty(av.Key))
+                    keys.Add(av.Key);
+            }
+            return keys.Count;
+        }
         public int AvailableQuestCount => LatestPanel?.Available.Count ?? 0;
         public int CompletedQuestCount => LatestPanel?.Completed.Count ?? 0;
 

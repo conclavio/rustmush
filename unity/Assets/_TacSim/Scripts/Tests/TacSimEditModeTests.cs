@@ -14669,5 +14669,80 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void TacticalOverviewAndRoomBanner_PrioritizeQuestOreBeaconsAndShowMultiQuestRoomCount()
+        {
+            var rootGo = new UnityEngine.GameObject("TacticalOverviewQuestOreAndRoomBannerTest");
+            try
+            {
+                var surfGo = new UnityEngine.GameObject("SurfaceStage");
+                surfGo.transform.SetParent(rootGo.transform, false);
+                var surf = surfGo.AddComponent<TacSim.Surface.SurfaceMiningController>();
+                surf.BuildSurfaceStage(null, "occator_rim");
+                surf.EnterSurfaceMode();
+
+                // Place a closer generic reading at (2,2) and a farther standard-grade carbon_ore reading at (6,6)
+                surf.ApplySiteMapFrame(JsonNode.Parse(@"{
+                    ""width"": 8,
+                    ""height"": 8,
+                    ""site"": {
+                        ""site"": ""Occator Rim"",
+                        ""family"": ""volatiles"",
+                        ""grid"": { ""x0"": 0, ""y0"": 0, ""span"": 1, ""cell_cm"": 1000 },
+                        ""rigs"": [{ ""slot"": 1, ""cell"": [1, 1] }],
+                        ""readings"": [
+                            { ""cell"": [2, 2], ""text"": ""A1: trace silicates"" },
+                            { ""cell"": [6, 6], ""text"": ""B2: carbon_ore vein"" }
+                        ]
+                    },
+                    ""rows"": [""........"",""........"",""........"",""........"",""........"",""........"",""........"",""........""],
+                    ""you"": [1, 1]
+                }"));
+                surf.SetQuestMiningTarget("carbon_ore", "carbon");
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.TacticalOverview.BindControllers(null, surf, null);
+
+                // 1. Tactical Overview sorts farther quest carbon_ore pocket FIRST with Q-ORE badge
+                hud.TacticalOverview.SetFilter(TacSim.UI.TacticalOverviewFilter.All);
+                hud.TacticalOverview.SyncOverview(TacSimActiveStage.PlanetarySurface, forceImmediate: true);
+                Assert.AreEqual(2, hud.TacticalOverview.VisibleRowCount);
+                Assert.AreEqual(1, hud.TacticalOverview.QuestEntryCount);
+                Assert.AreEqual("6,6", hud.TacticalOverview.FirstRowId);
+                Assert.AreEqual("Q-ORE", hud.TacticalOverview.FirstRowBadge);
+
+                // 2. Primary (RICH) filter keeps standard-grade Q-ORE quest targets visible
+                hud.TacticalOverview.SetFilter(TacSim.UI.TacticalOverviewFilter.Primary);
+                hud.TacticalOverview.SyncOverview(TacSimActiveStage.PlanetarySurface, forceImmediate: true);
+                Assert.AreEqual(1, hud.TacticalOverview.VisibleRowCount);
+                Assert.AreEqual("6,6", hud.TacticalOverview.FirstRowId);
+
+                // 3. Room Quest Banner shows TURN IN prioritized and appends (+1 more) when multiple quests are present
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#15"",
+                    ""room_name"": ""Registry & Co-op Desk"",
+                    ""room_markers"": [
+                        { ""npc_id"": ""#50"", ""npc_name"": ""Ilse Oduya-Brandt"", ""marker"": ""available"", ""symbol"": ""!"", ""quest_key"": ""q.offer"", ""quest_title"": ""Locker & Tanks"" },
+                        { ""npc_id"": ""#50"", ""npc_name"": ""Ilse Oduya-Brandt"", ""marker"": ""turn_in"", ""symbol"": ""?"", ""quest_key"": ""q.turnin"", ""quest_title"": ""First Papers at the Registry"" }
+                    ],
+                    ""available"": [
+                        { ""key"": ""q.offer"", ""title"": ""Locker & Tanks"", ""giver_id"": ""#50"", ""giver_name"": ""Ilse Oduya-Brandt"" }
+                    ],
+                    ""active"": [],
+                    ""completed"": []
+                }")));
+                Assert.IsTrue(hud.IsRoomQuestBannerVisible);
+                Assert.AreEqual(
+                    "[?] Ilse Oduya-Brandt — TURN IN: First Papers at the Registry (+1 more)",
+                    hud.RoomQuestBannerLabelForTests);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
