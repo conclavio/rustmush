@@ -2521,9 +2521,10 @@ impl TuiApp {
                         if let Some(last) = milestones.last() {
                             let tone = match last.kind {
                                 QuestMilestoneKind::Completed => "drive_arrived",
-                                QuestMilestoneKind::Accepted | QuestMilestoneKind::Ready => {
-                                    "power_online"
-                                }
+                                QuestMilestoneKind::Accepted
+                                | QuestMilestoneKind::Checkpoint
+                                | QuestMilestoneKind::Ready
+                                | QuestMilestoneKind::Abandoned => "power_online",
                             };
                             self.sounds.play(tone, Instant::now());
                         }

@@ -4,7 +4,7 @@
 //! Every mutation submits a server-signed `+quest/...` command after an explicit key
 //! inside the modal overlay (never from a bare nav key on the main screen).
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use mush_proto::RoomView;
 use ratatui::Frame;
@@ -420,14 +420,19 @@ pub const GUIDED_TOUR_KEYS: [&str; 7] = [
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QuestMilestoneKind {
     Accepted,
+    Checkpoint,
     Ready,
     Completed,
+    Abandoned,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QuestMilestone {
     pub kind: QuestMilestoneKind,
     pub title: String,
+    pub detail: Option<String>,
+    pub tour_all_done: bool,
+    pub restartable: bool,
 }
 
 impl QuestMilestone {
@@ -435,69 +440,157 @@ impl QuestMilestone {
     pub fn notice_text(&self) -> String {
         match self.kind {
             QuestMilestoneKind::Accepted => format!("[QUEST] Accepted: {}", self.title),
+            QuestMilestoneKind::Checkpoint => {
+                let step = self.detail.as_deref().unwrap_or(&self.title);
+                format!("[QUEST] Objective Complete: {step}")
+            }
             QuestMilestoneKind::Ready => format!("[QUEST] Ready to turn in: {}", self.title),
-            QuestMilestoneKind::Completed => format!("[QUEST] Completed: {}", self.title),
+            QuestMilestoneKind::Completed => {
+                if self.tour_all_done {
+                    format!(
+                        "[QUEST] ★ Corridor Captain (7/7) — Guided Tour Complete: {}",
+                        self.title
+                    )
+                } else {
+                    format!("[QUEST] Completed: {}", self.title)
+                }
+            }
+            QuestMilestoneKind::Abandoned => {
+                if self.restartable {
+                    format!("[QUEST] Abandoned (restartable anytime): {}", self.title)
+                } else {
+                    format!("[QUEST] Abandoned: {}", self.title)
+                }
+            }
         }
     }
 }
 
-/// Tracks genuine post-hydration quest state transitions (accepted, ready to turn in,
-/// completed) so initial login/reconnect keyframes never spam duplicate notices.
+/// Tracks genuine post-hydration quest state transitions (accepted, checkpoint complete,
+/// ready to turn in, completed + 7/7 mastery, abandoned) so initial login/reconnect
+/// keyframes never spam duplicate notices.
 #[derive(Clone, Debug, Default)]
 pub struct QuestMilestoneTracker {
     hydrated: bool,
     seen_active: HashSet<String>,
+    seen_active_meta: BTreeMap<String, (String, bool)>,
     seen_ready: HashSet<String>,
+    seen_checkpoints: HashSet<String>,
     seen_completed: HashSet<String>,
+    seen_tour_all_done: bool,
 }
 
 impl QuestMilestoneTracker {
     pub fn reset(&mut self) {
         self.hydrated = false;
         self.seen_active.clear();
+        self.seen_active_meta.clear();
         self.seen_ready.clear();
+        self.seen_checkpoints.clear();
         self.seen_completed.clear();
+        self.seen_tour_all_done = false;
     }
 
     pub fn observe(&mut self, snap: &QuestsSnapshot) -> Vec<QuestMilestone> {
         let mut out = Vec::new();
+        let current_active_keys: HashSet<&str> =
+            snap.active.iter().map(|q| q.key.as_str()).collect();
+        let current_completed_keys: HashSet<&str> =
+            snap.completed.iter().map(|c| c.key.as_str()).collect();
+        let tour_all_done = snap.guided_tour_progress().is_some_and(|p| p.all_done);
+        let newly_mastered = tour_all_done && !self.seen_tour_all_done;
+
         if self.hydrated {
             for q in &snap.active {
-                if !self.seen_active.contains(&q.key) {
+                let was_active = self.seen_active.contains(&q.key);
+                let is_ready = q.ready_to_finish || q.can_finish_now;
+                let became_ready = is_ready && !self.seen_ready.contains(&q.key);
+                if !was_active {
                     out.push(QuestMilestone {
                         kind: QuestMilestoneKind::Accepted,
                         title: q.title.clone(),
+                        detail: None,
+                        tour_all_done: false,
+                        restartable: false,
                     });
+                } else if !became_ready {
+                    for cp in &q.checkpoints {
+                        if !(cp.checked || cp.live_ready) {
+                            continue;
+                        }
+                        let cp_id = if cp.id.is_empty() { &cp.title } else { &cp.id };
+                        let cp_key = format!("{}:{cp_id}", q.key);
+                        if !self.seen_checkpoints.contains(&cp_key) {
+                            out.push(QuestMilestone {
+                                kind: QuestMilestoneKind::Checkpoint,
+                                title: q.title.clone(),
+                                detail: Some(cp.title.clone()),
+                                tour_all_done: false,
+                                restartable: false,
+                            });
+                        }
+                    }
                 }
-                if (q.ready_to_finish || q.can_finish_now) && !self.seen_ready.contains(&q.key) {
+                if became_ready {
                     out.push(QuestMilestone {
                         kind: QuestMilestoneKind::Ready,
                         title: q.title.clone(),
+                        detail: None,
+                        tour_all_done: false,
+                        restartable: false,
+                    });
+                }
+            }
+            for (prev_key, (prev_title, prev_restartable)) in &self.seen_active_meta {
+                if !current_active_keys.contains(prev_key.as_str())
+                    && !current_completed_keys.contains(prev_key.as_str())
+                {
+                    out.push(QuestMilestone {
+                        kind: QuestMilestoneKind::Abandoned,
+                        title: prev_title.clone(),
+                        detail: None,
+                        tour_all_done: false,
+                        restartable: *prev_restartable,
                     });
                 }
             }
             for c in &snap.completed {
                 if !self.seen_completed.contains(&c.key) {
+                    let is_mastery = newly_mastered && GUIDED_TOUR_KEYS.contains(&c.key.as_str());
                     out.push(QuestMilestone {
                         kind: QuestMilestoneKind::Completed,
                         title: c.title.clone(),
+                        detail: None,
+                        tour_all_done: is_mastery,
+                        restartable: false,
                     });
                 }
             }
         }
         self.hydrated = true;
         self.seen_active.clear();
+        self.seen_active_meta.clear();
         self.seen_ready.clear();
+        self.seen_checkpoints.clear();
         for q in &snap.active {
             self.seen_active.insert(q.key.clone());
+            self.seen_active_meta
+                .insert(q.key.clone(), (q.title.clone(), q.allow_restart));
             if q.ready_to_finish || q.can_finish_now {
                 self.seen_ready.insert(q.key.clone());
+            }
+            for cp in &q.checkpoints {
+                if cp.checked || cp.live_ready {
+                    let cp_id = if cp.id.is_empty() { &cp.title } else { &cp.id };
+                    self.seen_checkpoints.insert(format!("{}:{cp_id}", q.key));
+                }
             }
         }
         self.seen_completed.clear();
         for c in &snap.completed {
             self.seen_completed.insert(c.key.clone());
         }
+        self.seen_tour_all_done = tour_all_done;
         out
     }
 }
@@ -2916,10 +3009,16 @@ mod tests {
                 QuestMilestone {
                     kind: QuestMilestoneKind::Ready,
                     title: "First Papers".into(),
+                    detail: None,
+                    tour_all_done: false,
+                    restartable: false,
                 },
                 QuestMilestone {
                     kind: QuestMilestoneKind::Accepted,
                     title: "Stock the Locker".into(),
+                    detail: None,
+                    tour_all_done: false,
+                    restartable: false,
                 },
             ]
         );
@@ -2943,6 +3042,9 @@ mod tests {
             vec![QuestMilestone {
                 kind: QuestMilestoneKind::Completed,
                 title: "First Papers".into(),
+                detail: None,
+                tour_all_done: false,
+                restartable: false,
             }]
         );
         assert_eq!(m2[0].notice_text(), "[QUEST] Completed: First Papers");
@@ -2950,6 +3052,122 @@ mod tests {
         // Resetting suppresses next hydration again
         tracker.reset();
         assert!(tracker.observe(&completed).is_empty());
+    }
+
+    #[test]
+    fn milestone_tracker_emits_checkpoint_abandon_and_corridor_captain_mastery() {
+        let mut tracker = QuestMilestoneTracker::default();
+        let hydrated = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[1],
+                "title": "Stock the Locker and Fuel the Tank",
+                "allow_restart": true,
+                "ready_to_finish": false,
+                "checkpoints": [
+                    { "id": "buy_provisions", "title": "Buy 10 provisions", "checked": false, "live_ready": false },
+                    { "id": "buy_propellant", "title": "Buy 5t propellant", "checked": false, "live_ready": false }
+                ]
+            }],
+            "completed": [{ "key": GUIDED_TOUR_KEYS[0], "title": "Step 1" }]
+        }));
+        assert!(tracker.observe(&hydrated).is_empty());
+
+        // Individual objective completion emits Checkpoint milestone without Ready
+        let step_one_done = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[1],
+                "title": "Stock the Locker and Fuel the Tank",
+                "allow_restart": true,
+                "ready_to_finish": false,
+                "checkpoints": [
+                    { "id": "buy_provisions", "title": "Buy 10 provisions", "checked": true, "live_ready": true },
+                    { "id": "buy_propellant", "title": "Buy 5t propellant", "checked": false, "live_ready": false }
+                ]
+            }],
+            "completed": [{ "key": GUIDED_TOUR_KEYS[0], "title": "Step 1" }]
+        }));
+        let m_cp = tracker.observe(&step_one_done);
+        assert_eq!(m_cp.len(), 1);
+        assert_eq!(m_cp[0].kind, QuestMilestoneKind::Checkpoint);
+        assert_eq!(
+            m_cp[0].notice_text(),
+            "[QUEST] Objective Complete: Buy 10 provisions"
+        );
+
+        // Final checkpoint turning quest ready emits Ready only (no duplicate Checkpoint)
+        let now_ready = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[1],
+                "title": "Stock the Locker and Fuel the Tank",
+                "allow_restart": true,
+                "ready_to_finish": true,
+                "checkpoints": [
+                    { "id": "buy_provisions", "title": "Buy 10 provisions", "checked": true, "live_ready": true },
+                    { "id": "buy_propellant", "title": "Buy 5t propellant", "checked": true, "live_ready": true }
+                ]
+            }],
+            "completed": [{ "key": GUIDED_TOUR_KEYS[0], "title": "Step 1" }]
+        }));
+        let m_ready = tracker.observe(&now_ready);
+        assert_eq!(m_ready.len(), 1);
+        assert_eq!(m_ready[0].kind, QuestMilestoneKind::Ready);
+
+        // Abandoning a restartable quest emits Abandoned with restartable note
+        let abandoned = parse_frame(&json!({
+            "schema": 1,
+            "active": [],
+            "completed": [{ "key": GUIDED_TOUR_KEYS[0], "title": "Step 1" }]
+        }));
+        let m_ab = tracker.observe(&abandoned);
+        assert_eq!(m_ab.len(), 1);
+        assert_eq!(m_ab[0].kind, QuestMilestoneKind::Abandoned);
+        assert!(m_ab[0].restartable);
+        assert_eq!(
+            m_ab[0].notice_text(),
+            "[QUEST] Abandoned (restartable anytime): Stock the Locker and Fuel the Tank"
+        );
+
+        // Completing the 7th guided quest emits Corridor Captain mastery celebration
+        tracker.reset();
+        let before_7th = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[6],
+                "title": "Deliver Your Mined Ore to Market",
+                "ready_to_finish": true
+            }],
+            "completed": [
+                { "key": GUIDED_TOUR_KEYS[0], "title": "Step 1" },
+                { "key": GUIDED_TOUR_KEYS[1], "title": "Step 2" },
+                { "key": GUIDED_TOUR_KEYS[2], "title": "Step 3" },
+                { "key": GUIDED_TOUR_KEYS[3], "title": "Step 4" },
+                { "key": GUIDED_TOUR_KEYS[4], "title": "Step 5" },
+                { "key": GUIDED_TOUR_KEYS[5], "title": "Step 6" }
+            ]
+        }));
+        assert!(tracker.observe(&before_7th).is_empty());
+
+        let all_7_done = parse_frame(&json!({
+            "schema": 1,
+            "active": [],
+            "completed": [
+                { "key": GUIDED_TOUR_KEYS[0], "title": "Step 1" },
+                { "key": GUIDED_TOUR_KEYS[1], "title": "Step 2" },
+                { "key": GUIDED_TOUR_KEYS[2], "title": "Step 3" },
+                { "key": GUIDED_TOUR_KEYS[3], "title": "Step 4" },
+                { "key": GUIDED_TOUR_KEYS[4], "title": "Step 5" },
+                { "key": GUIDED_TOUR_KEYS[5], "title": "Step 6" },
+                { "key": GUIDED_TOUR_KEYS[6], "title": "Deliver Your Mined Ore to Market" }
+            ]
+        }));
+        let m_master = tracker.observe(&all_7_done);
+        assert_eq!(m_master.len(), 1);
+        assert_eq!(m_master[0].kind, QuestMilestoneKind::Completed);
+        assert!(m_master[0].tour_all_done);
+        assert!(m_master[0].notice_text().contains("Corridor Captain (7/7)"));
     }
 
     #[test]
