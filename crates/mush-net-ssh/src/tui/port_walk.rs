@@ -3902,22 +3902,35 @@ impl PortWalkState {
             && let Some(qm) = &self.quest_mining_status
         {
             let chk = |done: bool| if done { "[x]" } else { "[ ]" };
+            let ore_qty = if self.stowage_loaded {
+                Some(self.hold_commodity_quantity(&qm.target_ore_slug))
+            } else {
+                None
+            };
+            let hold_state_tag = if qm.mine_done {
+                match ore_qty {
+                    Some(q) if q > 0 => "[ORE HOLD READY]",
+                    Some(_) => "[RECOVER RIG FIRST]",
+                    None => "[QUEST]",
+                }
+            } else {
+                "[QUEST]"
+            };
             let rig_cmd = if qm.mine_done {
                 "+tv/1 recover go"
             } else {
                 "+tv/1 launch go"
             };
             top.push_str(&format!(
-                "  |  [QUEST] Rig Bay: {} Scan {} Sound {} Mine {} ({rig_cmd})",
+                "  |  {hold_state_tag} Rig Bay: {} Scan {} Sound {} Mine {} ({rig_cmd})",
                 chk(qm.scan_done),
                 chk(qm.sound_done),
                 chk(qm.mine_done),
                 qm.target_ore_slug
             ));
-            if self.stowage_loaded {
-                let ore_qty = self.hold_commodity_quantity(&qm.target_ore_slug);
+            if let Some(qty) = ore_qty {
                 top.push_str(&format!(
-                    "  |  Hold: {ore_qty}t {}",
+                    "  |  Hold: {qty}t {}",
                     qm.target_ore_slug.replace('_', " ")
                 ));
             }
@@ -3938,6 +3951,14 @@ impl PortWalkState {
                         .find(|(id, _, _)| id.eq_ignore_ascii_case(ret_slug))
                         .map_or("Ceres Freeport", |(_, lbl, _)| *lbl);
                     top.push_str(&format!("  |  Return: {ret_label} (+ship/plan {ret_slug})"));
+                }
+                if ore_qty.is_some_and(|q| q > 0)
+                    && let Some(ref ready) = self.quest_ready_turn_in
+                {
+                    top.push_str(&format!(
+                        "  |  [QUEST READY] +ship/leave -> Turn in to {}",
+                        ready.turn_in_name
+                    ));
                 }
             }
         } else if self.aboard_ship
@@ -11976,5 +11997,53 @@ mod tests {
         );
         let _ = st.handle_drawer_key(Key::Char('b'), &[], Instant::now());
         assert_eq!(st.drawer, Some(PortDrawerKind::Trade));
+    }
+
+    #[test]
+    fn vehicle_bay_top_bar_distinguishes_recover_rig_first_vs_ore_hold_ready() {
+        let mut st = PortWalkState::new();
+        st.aboard_ship = true;
+        st.active_location_key = "bay".into();
+        st.stowage_loaded = true;
+        st.observe_quest_mining_status(Some(QuestSurfaceMiningStatus {
+            quest_title: "Scan, Sound, and Mine a Landing Site".into(),
+            target_ore_slug: "carbon_ore".into(),
+            recommended_family: "carbon".into(),
+            scan_done: true,
+            sound_done: true,
+            mine_done: true,
+        }));
+
+        // 1. Mined ore still in rig hopper (hold 0t) -> [RECOVER RIG FIRST]
+        let (top_empty, _) = st.hud_lines("kitty");
+        assert!(
+            top_empty.contains("[RECOVER RIG FIRST] Rig Bay:"),
+            "expected [RECOVER RIG FIRST] in Vehicle Bay top bar:\n{top_empty}"
+        );
+        assert!(top_empty.contains("Hold: 0t carbon ore"), "{top_empty}");
+
+        // 2. Rig recovered into ship hold + ready to turn in -> [ORE HOLD READY] & [QUEST READY]
+        st.cargo_lots.push(CargoLotRow {
+            good_id: "tacsim:carbon_ore".into(),
+            good_name: "Carbon Ore".into(),
+            quantity: 1,
+        });
+        st.observe_quest_ready_turn_in(Some(QuestReadyTurnIn {
+            quest_title: "Scan, Sound, and Mine a Landing Site".into(),
+            turn_in_name: "Rosalind Qureshi-Mbeki".into(),
+            next_room_name: "Exchange Hall".into(),
+            can_finish_now: false,
+            finish_cmd: String::new(),
+        }));
+        let (top_ready, _) = st.hud_lines("kitty");
+        assert!(
+            top_ready.contains("[ORE HOLD READY] Rig Bay:"),
+            "expected [ORE HOLD READY] in Vehicle Bay top bar:\n{top_ready}"
+        );
+        assert!(top_ready.contains("Hold: 1t carbon ore"), "{top_ready}");
+        assert!(
+            top_ready.contains("[QUEST READY] +ship/leave -> Turn in to Rosalind Qureshi-Mbeki"),
+            "{top_ready}"
+        );
     }
 }

@@ -6014,18 +6014,39 @@ impl TuiApp {
                     }),
                 ),
             ];
-            if self.port_walk.has_stowage_loaded() {
-                let ore_qty = self.port_walk.hold_commodity_quantity(&qm.target_ore_slug);
+            let ore_qty_opt = if self.port_walk.has_stowage_loaded() {
+                Some(self.port_walk.hold_commodity_quantity(&qm.target_ore_slug))
+            } else {
+                None
+            };
+            if let Some(ore_qty) = ore_qty_opt {
+                let hold_badge = if qm.mine_done {
+                    if ore_qty > 0 {
+                        " [ORE HOLD READY]"
+                    } else {
+                        " [RECOVER RIG FIRST]"
+                    }
+                } else {
+                    ""
+                };
                 spans.push(Span::styled(
                     format!(
-                        "Hold: {ore_qty}t {}  ",
+                        "Hold: {ore_qty}t {}{hold_badge}  ",
                         qm.target_ore_slug.replace('_', " ")
                     ),
-                    Style::default().fg(if ore_qty > 0 {
-                        Color::Green
-                    } else {
-                        Color::Gray
-                    }),
+                    Style::default()
+                        .fg(if ore_qty > 0 {
+                            Color::Green
+                        } else if qm.mine_done {
+                            Color::Yellow
+                        } else {
+                            Color::Gray
+                        })
+                        .add_modifier(if qm.mine_done {
+                            Modifier::BOLD
+                        } else {
+                            Modifier::empty()
+                        }),
                 ));
             }
             spans.push(Span::styled(
@@ -6038,6 +6059,8 @@ impl TuiApp {
                 "Next: x(sound)  |  "
             } else if !qm.mine_done {
                 "Next: m(mine)  |  "
+            } else if ore_qty_opt == Some(0) {
+                "Next: Recover Rig (+tv/1 recover go)  |  "
             } else {
                 ""
             };
@@ -15307,5 +15330,72 @@ mod tests {
             "expected guided offer ahead of side offer: {labels:?}"
         );
         assert!(active_idx < guided_offer_idx, "{labels:?}");
+    }
+
+    #[test]
+    fn quarry_screen_distinguishes_recover_rig_first_vs_ore_hold_ready() {
+        let mut app = app();
+        let dump = |b: &ratatui::buffer::Buffer| -> String {
+            (0..b.area.height)
+                .map(|y| {
+                    (0..b.area.width)
+                        .map(|x| b[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        // 1. Mined ore still in rig hopper (hold 0t)
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(PORT_TRADE_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "ship": {
+                    "stowage": { "cargo_kg": 0, "items": [] }
+                }
+            }),
+        });
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "active": [{
+                    "key": "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+                    "title": "Scan, Sound, and Mine a Landing Site",
+                    "next_room_entry": "room.c07_exchange",
+                    "checkpoints": [
+                        { "id": "scan_landing_site", "title": "Surface scan", "instructions": "+tv/1 scan go", "checked": true, "live_ready": true },
+                        { "id": "sound_mineral_pocket", "title": "Sound pocket", "instructions": "+tv/1 sound go", "checked": true, "live_ready": true },
+                        { "id": "mine_carbon_ore", "title": "Mine 1t carbon_ore", "instructions": "+tv/1 mine go", "checked": true, "live_ready": true }
+                    ]
+                }]
+            }),
+        });
+        app.active = QUARRY_SCREEN;
+        let text1 = dump(&painted(&mut app, 260, 32));
+        assert!(text1.contains("[RECOVER RIG FIRST]"), "{text1}");
+        assert!(
+            text1.contains("Next: Recover Rig (+tv/1 recover go)"),
+            "{text1}"
+        );
+
+        // 2. Rig recovered -> 1t carbon_ore in ship hold
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(PORT_TRADE_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "ship": {
+                    "stowage": {
+                        "cargo_kg": 1000,
+                        "items": [{ "good": "tacsim:carbon_ore", "label": "Carbon Ore", "qty": 1 }]
+                    }
+                }
+            }),
+        });
+        let text2 = dump(&painted(&mut app, 260, 32));
+        assert!(text2.contains("[ORE HOLD READY]"), "{text2}");
+        assert!(!text2.contains("[RECOVER RIG FIRST]"), "{text2}");
     }
 }
