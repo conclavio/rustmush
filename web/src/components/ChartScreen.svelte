@@ -27,20 +27,46 @@
     type ChartRoute,
   } from "$lib/chart";
   import { expandRows } from "$lib/stores/map.svelte";
-  import { resolveNextGuidedOfferDestination } from "$lib/stores/quests.svelte";
+  import {
+    GUIDED_TOUR_KEYS,
+    inferStationPortFromRoomEntry,
+    resolveNextGuidedOfferDestination,
+  } from "$lib/stores/quests.svelte";
 
   let { app }: { app: GameApp } = $props();
+
+  const PORT_LABELS: Record<string, string> = {
+    ceres: "Ceres Freeport",
+    stickney: "Stickney Yards",
+    luna: "Aitken Basin",
+    deimos: "Voltaire Base",
+    titan: "Ligeia Dock",
+  };
 
   const frame = $derived(app.chart.frame);
   const chart = $derived(frame?.chart ?? null);
   const questMining = $derived(app.quests?.surfaceMiningStatus ?? null);
-  const questDest = $derived(
-    app.quests?.activeDestinationPort ??
-      resolveNextGuidedOfferDestination(
-        app.quests?.nextGuidedOffer ?? null,
-        chart?.vantage.port || chart?.vantage.body || null,
-      ),
-  );
+  const questStepNo = $derived.by((): number | null => {
+    const key = app.quests?.trackedQuest?.key;
+    if (!key) return null;
+    const idx = GUIDED_TOUR_KEYS.indexOf(key);
+    return idx >= 0 ? idx + 1 : null;
+  });
+  const questDest = $derived.by(() => {
+    if (app.quests?.activeDestinationPort) return app.quests.activeDestinationPort;
+    if (questMining?.mineDone) {
+      const inferred = inferStationPortFromRoomEntry(app.quests?.trackedQuest?.nextRoomEntry) ?? "ceres";
+      return {
+        questTitle: questMining.questTitle,
+        portId: inferred,
+        portLabel: PORT_LABELS[inferred] ?? "Ceres Freeport",
+      };
+    }
+    return resolveNextGuidedOfferDestination(
+      app.quests?.nextGuidedOffer ?? null,
+      chart?.vantage.port || chart?.vantage.body || null,
+    );
+  });
 
   /** The picture's size in its own units; it scales to the pane. */
   const SIZE = 640;
@@ -89,13 +115,21 @@
 
   const questBodyIds = $derived.by(() => {
     const out = new Set<string>();
-    if (!chart || !questDest) return out;
-    const pid = questDest.portId.toLowerCase();
-    out.add(pid);
-    for (const r of chart.routes) {
-      if (r.to.toLowerCase() === pid || r.venue.toLowerCase() === pid) {
-        out.add(r.body.toLowerCase());
+    if (!chart) return out;
+    if (questDest) {
+      const pid = questDest.portId.toLowerCase();
+      out.add(pid);
+      for (const r of chart.routes) {
+        if (r.to.toLowerCase() === pid || r.venue.toLowerCase() === pid) {
+          out.add(r.body.toLowerCase());
+        }
       }
+    } else if (questMining && !questMining.mineDone) {
+      const miningBody =
+        inferStationPortFromRoomEntry(app.quests?.trackedQuest?.nextRoomEntry) ?? "ceres";
+      out.add(miningBody.toLowerCase());
+    } else {
+      return out;
     }
     for (const b of chart.bodies) {
       if (out.has(b.id.toLowerCase()) && b.parent) {
@@ -139,7 +173,7 @@
     <h2>{heading}</h2>
     {#if questDest || (questMining && !questMining.mineDone)}
       <div class="quest-dest-banner" role="status" aria-label="active quest destination">
-        <span class="qbadge">[QUEST]</span>
+        <span class="qbadge">[QUEST]{#if questStepNo !== null} Step {questStepNo}/7{/if}</span>
         {#if questDest}
           <strong>Destination: {questDest.portLabel}</strong>
           <span class="muted">— {questDest.questTitle}</span>
