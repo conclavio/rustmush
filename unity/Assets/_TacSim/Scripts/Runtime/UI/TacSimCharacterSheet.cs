@@ -621,6 +621,16 @@ namespace TacSim.UI
                         readyTag,
                         next,
                         qPanel.Completed.Count);
+                    if (_questJournal.TryGetQuestHoldReadinessSummary(activeQuest, out string holdSummary, out bool holdReady))
+                    {
+                        string holdHex = holdReady ? "#55EE99" : "#FFDD44";
+                        sb.AppendFormat("<color={0}><b>{1}</b></color>\n", holdHex, MushProtocol.EscapeUnityRichText(holdSummary));
+                    }
+                    if (_questJournal.TryGetQuestPreflightReadinessSummary(activeQuest, out string pfSummary, out bool pfReady))
+                    {
+                        string pfHex = pfReady ? "#55EE99" : "#FFD166";
+                        sb.AppendFormat("<color={0}><b>{1}</b></color>\n", pfHex, MushProtocol.EscapeUnityRichText(pfSummary));
+                    }
 
                     int otherReadyCount = 0;
                     string firstOtherReadyTitle = string.Empty;
@@ -674,7 +684,7 @@ namespace TacSim.UI
                 }
                 else if (_questJournal.TryGetGuidedTourProgress(out int tourDone, out int tourTotal, out _, out bool allTourDone) && allTourDone)
                 {
-                    sb.AppendFormat("<color=#55EE99><b>★ CORRIDOR CAPTAIN ({0}/{1})</b></color> — Guided Tour Complete  |  Completed: {2}\n",
+                    sb.AppendFormat("<color=#55EE99><b>★ CORRIDOR CAPTAIN ({0}/{1})</b></color> — Guided Tour Complete  |  <color=#77DDFF>Jobs Board:</color> +market/jobs  |  Completed: {2}\n",
                         tourDone,
                         tourTotal,
                         qPanel.Completed.Count);
