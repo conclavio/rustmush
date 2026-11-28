@@ -3969,7 +3969,39 @@ namespace TacSim.UI
                     if (_modalPanel != null) _modalPanel.SetActive(false);
                 });
             }
+
+            var briefSb = new StringBuilder(160);
+            if (active != null && (turnInUrgent || offer == null))
+            {
+                if (!string.IsNullOrWhiteSpace(active.NextStep))
+                    briefSb.Append($"\n<color=#77DDFF><b>NEXT:</b></color> {MushProtocol.EscapeUnityRichText(active.NextStep)}");
+                if (QuestJournal.TryGetQuestHoldReadinessSummary(active, out string holdSummary, out bool holdReady))
+                {
+                    string holdHex = holdReady ? "#55EE99" : "#FFDD44";
+                    briefSb.Append($"\n<color={holdHex}><b>{MushProtocol.EscapeUnityRichText(holdSummary)}</b></color>");
+                }
+            }
+            else if (offer != null)
+            {
+                if (offer.Checkpoints != null && offer.Checkpoints.Count > 0 && !string.IsNullOrWhiteSpace(offer.Checkpoints[0].Title))
+                    briefSb.Append($"\n<color=#77DDFF><b>OBJECTIVE:</b></color> {MushProtocol.EscapeUnityRichText(offer.Checkpoints[0].Title)}");
+                if (!string.IsNullOrWhiteSpace(offer.RewardSummary))
+                    briefSb.Append($"\n<color=#FFDF77><b>REWARD:</b></color> {MushProtocol.EscapeUnityRichText(offer.RewardSummary)}");
+            }
+            if (briefSb.Length > 0)
+            {
+                _modalBaseIntro = string.IsNullOrEmpty(_modalBaseIntro)
+                    ? briefSb.ToString().TrimStart('\n')
+                    : $"{_modalBaseIntro}\n{briefSb}";
+                if (_modalBodyText != null)
+                {
+                    _modalBodyText.text = _modalBaseIntro;
+                    LayoutRebuilder.ForceRebuildLayoutImmediate(_modalBodyText.rectTransform);
+                }
+            }
         }
+
+        public string DetailModalBodySnapshot => _modalBodyText != null ? _modalBodyText.text : string.Empty;
 
         public bool TriggerDetailModalButtonContaining(string labelFragment)
         {
