@@ -17643,5 +17643,89 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void SolarSystemMap_ShowsPreflightBeforeDepartureAndQuestArrivedAtDestinationPort()
+        {
+            var rootGo = new UnityEngine.GameObject("SolarMapPreflightArrivedTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                var tradeState = new TacSimTradeAndShipState();
+                hud.BindTradeState(tradeState);
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": { ""cargo_kg"": 5000, ""tank_kg"": 0, ""stores_days"": 0 }
+                    }
+                }"));
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"",
+                        ""title"": ""Metals Down the Corridor"",
+                        ""next_room_entry"": ""room.p07_receiving"",
+                        ""checkpoints"": [{
+                            ""id"": ""deliver_metals"",
+                            ""title"": ""Deliver 5t metals to Stickney Yards"",
+                            ""instructions"": ""+ship/plan stickney and sell metals."",
+                            ""checked"": false,
+                            ""live_ready"": false
+                        }]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+
+                // 1. At Ceres with 0 fuel/stores -> dossier shows [CHECK BEFORE UNDOCK] and QUEST [3/7]: STICKNEY
+                var ceresFrame = TacSim.Space.TacSimSolarChartFrame.FromJson(JsonNode.Parse(@"{
+                    ""chart"": {
+                        ""vantage"": { ""port"": ""Ceres Freeport"", ""body"": ""ceres"" },
+                        ""scale_r0_au"": 0.5,
+                        ""scale_au_max"": 4.0,
+                        ""bodies"": [
+                            { ""id"": ""ceres"", ""label"": ""Ceres"", ""r_au"": 2.77, ""lon_deg"": 10.0, ""here"": true },
+                            { ""id"": ""mars"", ""label"": ""Mars"", ""r_au"": 1.52, ""lon_deg"": 40.0, ""here"": false }
+                        ],
+                        ""routes"": [
+                            { ""to"": ""stickney"", ""venue"": ""stickney"", ""body"": ""mars"", ""days"": 6.0 }
+                        ]
+                    }
+                }"));
+                hud.SolarMap.ApplyChartFrame(ceresFrame);
+                Assert.IsFalse(hud.SolarMap.IsArrivedAtQuestDestination);
+                Assert.AreEqual("QUEST [3/7]: STICKNEY", hud.SolarMap.QuestFocusButtonLabelSnapshot);
+                StringAssert.Contains("[CHECK BEFORE UNDOCK]", hud.SolarMap.DossierSnapshot);
+
+                // 2. Arrived at Stickney Yards -> IsArrivedAtQuestDestination = true, ARRIVED [3/7]: STICKNEY, [QUEST ARRIVED]
+                var stickneyFrame = TacSim.Space.TacSimSolarChartFrame.FromJson(JsonNode.Parse(@"{
+                    ""chart"": {
+                        ""vantage"": { ""port"": ""Stickney Yards"", ""body"": ""mars"" },
+                        ""scale_r0_au"": 0.5,
+                        ""scale_au_max"": 4.0,
+                        ""bodies"": [
+                            { ""id"": ""ceres"", ""label"": ""Ceres"", ""r_au"": 2.77, ""lon_deg"": 10.0, ""here"": false },
+                            { ""id"": ""mars"", ""label"": ""Mars"", ""r_au"": 1.52, ""lon_deg"": 40.0, ""here"": true }
+                        ],
+                        ""routes"": [
+                            { ""to"": ""ceres"", ""venue"": ""ceres"", ""body"": ""ceres"", ""days"": 6.0 }
+                        ]
+                    }
+                }"));
+                hud.SolarMap.ApplyChartFrame(stickneyFrame);
+                Assert.IsTrue(hud.SolarMap.IsArrivedAtQuestDestination);
+                Assert.AreEqual("ARRIVED [3/7]: STICKNEY", hud.SolarMap.QuestFocusButtonLabelSnapshot);
+                StringAssert.Contains("[QUEST ARRIVED] At Stickney Yards", hud.SolarMap.DossierSnapshot);
+                StringAssert.DoesNotContain("[CHECK BEFORE UNDOCK]", hud.SolarMap.DossierSnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
