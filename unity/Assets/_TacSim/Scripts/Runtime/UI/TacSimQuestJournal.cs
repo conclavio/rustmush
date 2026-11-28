@@ -1524,7 +1524,7 @@ namespace TacSim.UI
             return false;
         }
 
-        private static bool TryGetSurfaceMiningStatusForQuest(MushActiveQuest q, out QuestSurfaceMiningStatus status)
+        public static bool TryGetSurfaceMiningStatusForQuest(MushActiveQuest q, out QuestSurfaceMiningStatus status)
         {
             status = default;
             if (q == null) return false;
