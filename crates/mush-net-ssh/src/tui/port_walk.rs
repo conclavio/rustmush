@@ -1205,6 +1205,25 @@ impl PortWalkState {
         self.stowage_readiness_for(&need)
     }
 
+    /// Returns the quest destination port when the active trade need is SELL-only, already stowed
+    /// in the ship's hold, and the pilot is currently at a different port (cross-port haul guard).
+    #[must_use]
+    pub fn quest_trade_ready_to_sail_dest(&self) -> Option<&QuestDestinationHint> {
+        let need = self.effective_quest_trade_need()?;
+        if need.wants_buy || !need.wants_sell {
+            return None;
+        }
+        if !self.stowage_readiness_for(&need).is_some_and(|r| r.ready) {
+            return None;
+        }
+        let dest = self.quest_dest_port.as_ref()?;
+        let cur = self.current_port_slug()?;
+        if cur.eq_ignore_ascii_case(&dest.port_id) {
+            return None;
+        }
+        Some(dest)
+    }
+
     /// Live stowage telemetry for F11 Quest Overlay trade & Step 5 refit readiness lines.
     #[must_use]
     pub fn quest_stowage_telemetry(&self) -> Option<super::quests::QuestStowageTelemetry> {
@@ -3967,6 +3986,14 @@ impl PortWalkState {
                     Key::Char('g' | 'G') => {
                         self.apply_quest_trade_jump();
                     }
+                    Key::Char('d' | 'D') => {
+                        if self.quest_dest_port.is_some() {
+                            self.drawer = Some(PortDrawerKind::Sailing);
+                            self.cursor_row = 0;
+                            self.drawer_log_scroll = 0;
+                            self.apply_quest_destination_jump();
+                        }
+                    }
                     Key::Char('r') => {
                         self.trade_asked_at = None;
                         self.awaiting_trade_page = false;
@@ -5590,6 +5617,37 @@ impl PortWalkState {
                         truncate_str(&qline, inner_w),
                         Style::default().fg(banner_col).add_modifier(Modifier::BOLD),
                     )));
+                    if let Some(haul_dest) = self.quest_trade_ready_to_sail_dest() {
+                        let (haul_msg, haul_col) = if let Some(pf) =
+                            self.quest_sailing_preflight_readiness()
+                            && (!pf.propellant_ok || !pf.provisions_ok)
+                        {
+                            let topup = match (pf.propellant_ok, pf.provisions_ok) {
+                                (false, false) => "Fuel & Stores",
+                                (false, true) => "Fuel",
+                                _ => "Stores",
+                            };
+                            (
+                                format!(
+                                    "[HAUL] -> {} (d:Sail | Top up {topup} first | do not sell here)",
+                                    haul_dest.port_label
+                                ),
+                                Color::LightYellow,
+                            )
+                        } else {
+                            (
+                                format!(
+                                    "[HAUL] -> {} (d:Sail | do not sell here)",
+                                    haul_dest.port_label
+                                ),
+                                Color::Green,
+                            )
+                        };
+                        lines.push(Line::from(Span::styled(
+                            truncate_str(&haul_msg, inner_w),
+                            Style::default().fg(haul_col).add_modifier(Modifier::BOLD),
+                        )));
+                    }
                 }
 
                 let list_rows = main_budget.saturating_sub(lines.len()).max(1);
@@ -11111,6 +11169,76 @@ mod tests {
         assert!(
             npc_txt.contains("[Step 1/7]"),
             "npc drawer missing step badge:\n{npc_txt}"
+        );
+    }
+
+    #[test]
+    fn trade_drawer_shows_cross_port_haul_guard_and_d_jumps_to_sailing() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut st = PortWalkState::new();
+        st.current_venue = Some("ceres".into());
+        st.stowage_loaded = true;
+        st.stowage.reaction_kg = 12_000;
+        st.stowage.stores_days = 0;
+        st.cargo_lots.push(CargoLotRow {
+            good_id: "tacsim:carbon_ore".into(),
+            good_name: "Carbon Ore".into(),
+            quantity: 2,
+        });
+        st.observe_quest_guidance(
+            Some(QuestTradeNeed {
+                quest_title: "Deliver Your Mined Ore to Market".into(),
+                checkpoint_title: "Sell 1t carbon_ore at Stickney Yards".into(),
+                commodity_slug: "carbon_ore".into(),
+                target_quantity: 1,
+                wants_buy: false,
+                wants_sell: true,
+            }),
+            Some(QuestDestinationHint {
+                quest_title: "Deliver Your Mined Ore to Market".into(),
+                port_id: "stickney".into(),
+                port_label: "Stickney Yards".into(),
+            }),
+        );
+
+        let render_trade = |st: &mut PortWalkState| -> String {
+            st.drawer = Some(PortDrawerKind::Trade);
+            let backend = TestBackend::new(120, 24);
+            let mut term = Terminal::new(backend).expect("terminal");
+            term.draw(|f| st.draw_drawer_box(f, f.area(), true))
+                .expect("draw");
+            let buf = term.backend().buffer();
+            (0..buf.area.height)
+                .map(|y| {
+                    (0..buf.area.width)
+                        .map(|x| buf[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let ceres_txt = render_trade(&mut st);
+        assert!(
+            ceres_txt.contains(
+                "[HAUL] -> Stickney Yards (d:Sail | Top up Stores first | do not sell here)"
+            ),
+            "expected cross-port haul guard with missing stores reminder:\n{ceres_txt}"
+        );
+
+        // Pressing `d` switches to Sailing drawer with Stickney Yards selected
+        let _ = st.handle_drawer_key(Key::Char('d'), &[], Instant::now());
+        assert_eq!(st.drawer, Some(PortDrawerKind::Sailing));
+        assert_eq!(CORRIDORS[st.corridor_idx].0, "stickney");
+
+        // Once docked at Stickney Yards, haul guard clears
+        st.current_venue = Some("stickney".into());
+        let stickney_txt = render_trade(&mut st);
+        assert!(
+            !stickney_txt.contains("do not sell here"),
+            "haul guard should clear at destination port:\n{stickney_txt}"
         );
     }
 }
