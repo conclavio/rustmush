@@ -236,4 +236,123 @@ describe("SheetPanel guided corridor tour summary", () => {
     await fireEvent.click(jobsBtn);
     expect(focusComposer).toHaveBeenCalledWith("+market/jobs");
   });
+
+  it("shows cargo-aware sailing preflight, stowage-aware Next Command, and Step 6 rig recovery guard on SheetPanel", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      completed: [
+        { key: GUIDED_TOUR_KEYS[0], title: "S1" },
+        { key: GUIDED_TOUR_KEYS[1], title: "S2" },
+      ],
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[2],
+          title: "Metals Down the Corridor",
+          next_step: "Buy 5t metals at Ceres Exchange and deliver to Stickney Yards",
+          checkpoints: [
+            {
+              id: "deliver_metals",
+              title: "Buy and deliver 5t metals to Stickney Yards",
+              instructions: "Buy 5t metals (+market/buy metals 5) then sail to Stickney Yards (+ship/plan stickney) and sell.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+      available: [],
+    });
+
+    const focusComposer = vi.fn();
+    const ownStowage = {
+      cargoKg: 0,
+      propellantKg: 10_000,
+      provisionsCrewDays: 10,
+      cargoLines: [] as Array<{ good: string; label: string; qty: number }>,
+    };
+    const app = {
+      sheet: {
+        loaded: true,
+        unavailable: false,
+        approval: null,
+        schema: { sections: [] },
+        data: {},
+      },
+      quests,
+      tacsim: {
+        ambient: { ownStowage },
+      },
+      refreshSheet: vi.fn(),
+      focusComposer,
+    } as unknown as GameApp;
+
+    // 1. Step 3 with fuel & provisions OK but 0/5 metals -> [CHECK BEFORE UNDOCK] + Buy Cargo (+market/list)
+    const s3Empty = render(SheetPanel, { props: { app } });
+    const pfEmpty = screen.getByLabelText("sheet quest sailing preflight");
+    expect(pfEmpty.textContent).toContain("[CHECK BEFORE UNDOCK]");
+    expect(pfEmpty.textContent).toContain("✗ metals 0/5");
+    const buyBtn = screen.getByRole("button", { name: /Next: Buy Cargo \(\+market\/list\)/i });
+    await fireEvent.click(buyBtn);
+    expect(focusComposer).toHaveBeenCalledWith("+market/list");
+    s3Empty.unmount();
+
+    // 2. Step 3 with 5t metals stowed -> [PRE-FLIGHT OK] + Plan Stickney Yards (+ship/plan stickney)
+    focusComposer.mockClear();
+    ownStowage.cargoKg = 5000;
+    ownStowage.cargoLines = [{ good: "tacsim:metals", label: "Metals", qty: 5 }];
+    const s3Loaded = render(SheetPanel, { props: { app } });
+    const pfLoaded = screen.getByLabelText("sheet quest sailing preflight");
+    expect(pfLoaded.textContent).toContain("[PRE-FLIGHT OK]");
+    expect(pfLoaded.textContent).toContain("✓ metals 5/5");
+    const sailBtn = screen.getByRole("button", { name: /Next: Plan Stickney Yards \(\+ship\/plan stickney\)/i });
+    await fireEvent.click(sailBtn);
+    expect(focusComposer).toHaveBeenCalledWith("+ship/plan stickney");
+    s3Loaded.unmount();
+
+    // 3. Step 6 post-mine with 0t carbon_ore in ship hold -> [RECOVER RIG FIRST] + Recover Rig (+tv/1 recover go)
+    focusComposer.mockClear();
+    ownStowage.cargoKg = 0;
+    ownStowage.cargoLines = [];
+    quests.applyFrame({
+      schema: 1,
+      completed: GUIDED_TOUR_KEYS.slice(0, 5).map((key, i) => ({ key, title: `S${i + 1}` })),
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[5],
+          title: "Prospect the Surface",
+          next_room_entry: "room.c07_exchange",
+          next_step: "Recover rig and return carbon_ore to Rosalind at Ceres Exchange",
+          checkpoints: [
+            { id: "buy_license", title: "Buy prospecting license", checked: true, live_ready: true },
+            { id: "lease_rig", title: "Lease mining rig", checked: true, live_ready: true },
+            { id: "scan_site", title: "Scan site", checked: true, live_ready: true },
+            { id: "sound_pocket", title: "Sound pocket", checked: true, live_ready: true },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", checked: true, live_ready: true },
+            { id: "return_exchange", title: "Return to Ceres Exchange", checked: false, live_ready: false },
+          ],
+        },
+      ],
+      available: [],
+    });
+    const s6Recover = render(SheetPanel, { props: { app } });
+    const holdRecover = screen.getByLabelText("sheet quest hold readiness");
+    expect(holdRecover.textContent).toContain("[RECOVER RIG FIRST]");
+    expect(holdRecover.textContent).toContain("+tv/1 recover go");
+    const recBtn = screen.getByRole("button", { name: /Next: Recover Rig \(\+tv\/1 recover go\)/i });
+    await fireEvent.click(recBtn);
+    expect(focusComposer).toHaveBeenCalledWith("+tv/1 recover go");
+    s6Recover.unmount();
+
+    // 4. Step 6 after rig recovery (1t carbon_ore stowed) -> [ORE HOLD READY] + Plan Ceres Freeport (+ship/plan ceres)
+    focusComposer.mockClear();
+    ownStowage.cargoKg = 1000;
+    ownStowage.cargoLines = [{ good: "tacsim:carbon_ore", label: "Carbon Ore", qty: 1 }];
+    render(SheetPanel, { props: { app } });
+    const holdReady = screen.getByLabelText("sheet quest hold readiness");
+    expect(holdReady.textContent).toContain("[ORE HOLD READY]");
+    const retBtn = screen.getByRole("button", { name: /Next: Plan Ceres Freeport \(\+ship\/plan ceres\)/i });
+    await fireEvent.click(retBtn);
+    expect(focusComposer).toHaveBeenCalledWith("+ship/plan ceres");
+  });
 });

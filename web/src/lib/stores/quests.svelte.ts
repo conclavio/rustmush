@@ -391,8 +391,12 @@ export function formatQuestHoldReadinessSummary(
     };
     return {
       kind: "trade",
-      tag: ready ? "[ORE HOLD READY]" : "[ORE HOLD]",
-      text: `${ready ? "✓" : "○"} ${label}: ${currentQty}/${targetQty} t`,
+      tag: ready ? "[ORE HOLD READY]" : mining.mineDone ? "[RECOVER RIG FIRST]" : "[ORE HOLD]",
+      text: ready
+        ? `✓ ${label}: ${currentQty}/${targetQty} t`
+        : mining.mineDone
+          ? `○ ${label}: ${currentQty}/${targetQty} t · recover rig (+tv/1 recover go)`
+          : `○ ${label}: ${currentQty}/${targetQty} t`,
       ready,
       primary,
       secondary: [],
