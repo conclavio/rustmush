@@ -73,6 +73,20 @@
     return r.to.toLowerCase() === pid || r.venue.toLowerCase() === pid;
   }
 
+  const orderedRouteItems = $derived.by(() => {
+    if (!chart) return [];
+    const items = routes.map((line, i) => ({
+      line,
+      route: chart.routes[i],
+      isQuest: isQuestRoute(chart.routes[i]),
+    }));
+    if (!questDest) return items;
+    return [
+      ...items.filter((item) => item.isQuest),
+      ...items.filter((item) => !item.isQuest),
+    ];
+  });
+
   const questBodyIds = $derived.by(() => {
     const out = new Set<string>();
     if (!chart || !questDest) return out;
@@ -91,12 +105,16 @@
     return out;
   });
 
-  function prefillQuestPlan(): void {
-    if (!questDest) return;
+  function prefillRoutePlan(portId: string | undefined): void {
+    if (!portId) return;
     if (app.tacsim) {
-      app.tacsim.selectedDestination = questDest.portId;
+      app.tacsim.selectedDestination = portId;
     }
-    app.focusComposer?.(`+ship/plan ${questDest.portId}`);
+    app.focusComposer?.(`+ship/plan ${portId}`);
+  }
+
+  function prefillQuestPlan(): void {
+    prefillRoutePlan(questDest?.portId);
   }
 
   function openQuestGroundChart(): void {
@@ -215,13 +233,20 @@
       <div class="tables">
         <h3>the sky</h3>
         <pre>{bodies.join("\n")}</pre>
-        {#if routes.length > 0}
+        {#if orderedRouteItems.length > 0}
           <h3>passages now</h3>
-          <ul>
-            {#each routes as line, i (i)}
-              {@const qRow = isQuestRoute(chart.routes[i])}
-              <li class:quest-row={qRow}>
-                {#if qRow}<span class="qbadge">[QUEST]</span> {/if}{line}
+          <ul class="passage-list">
+            {#each orderedRouteItems as item, i (item.route?.venue ?? item.route?.to ?? i)}
+              {@const routePort = item.route?.venue || item.route?.to}
+              <li class:quest-row={item.isQuest}>
+                <button
+                  type="button"
+                  class="passage-btn"
+                  title={routePort ? `Prefill +ship/plan ${routePort}` : undefined}
+                  onclick={() => prefillRoutePlan(routePort)}
+                >
+                  {#if item.isQuest}<span class="qbadge">[QUEST]</span>{" "}{/if}{item.line}
+                </button>
               </li>
             {/each}
           </ul>
@@ -299,9 +324,32 @@
   .qground-btn:hover {
     background: rgba(16, 185, 129, 0.36);
   }
+  .tables ul.passage-list {
+    list-style: none;
+    padding-left: 0;
+  }
+  .passage-btn {
+    background: none;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    padding: 0.12rem 0.35rem;
+    cursor: pointer;
+    width: 100%;
+  }
+  .passage-btn:hover {
+    border-color: rgba(212, 166, 74, 0.55);
+    background: rgba(212, 166, 74, 0.1);
+  }
   .tables li.quest-row {
     color: #fde68a;
     font-weight: 600;
+  }
+  .tables li.quest-row .passage-btn {
+    border-color: rgba(255, 216, 77, 0.45);
+    background: rgba(212, 166, 74, 0.12);
   }
   h2 {
     font-size: 1rem;
