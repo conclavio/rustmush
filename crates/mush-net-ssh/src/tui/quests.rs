@@ -2094,6 +2094,30 @@ impl QuestsSnapshot {
             };
             return Some((text, Color::Yellow));
         }
+        if self.active.is_empty() {
+            if let Some(next) = self.next_guided_offer() {
+                return Some((
+                    format!(
+                        "[!] Next Step {}/{}: {} ({}) (F11)",
+                        next.step,
+                        GUIDED_TOUR_KEYS.len(),
+                        next.giver_label,
+                        next.giver_room_name
+                    ),
+                    Color::Yellow,
+                ));
+            }
+            if self.guided_tour_progress().is_some_and(|p| p.all_done) {
+                return Some((
+                    format!(
+                        "[*] Corridor Captain ({}/{}) (F11)",
+                        GUIDED_TOUR_KEYS.len(),
+                        GUIDED_TOUR_KEYS.len()
+                    ),
+                    Color::Green,
+                ));
+            }
+        }
         None
     }
 }
@@ -5338,6 +5362,39 @@ mod tests {
         let (offer_badge, offer_color) = offer_only.status_bar_quest_badge().expect("offer badge");
         assert_eq!(offer_badge, "[!] Maren Halvorsen: Offer (F11)");
         assert_eq!(offer_color, Color::Yellow);
+
+        // Between guided steps (Step 1 done, standing in an unrelated room with no room markers)
+        let between = parse_frame(&json!({
+            "schema": 1,
+            "active": [],
+            "available": [],
+            "completed": [{ "key": GUIDED_TOUR_KEYS[0], "title": "First Papers at the Registry" }]
+        }));
+        let (next_badge, next_color) = between
+            .status_bar_quest_badge()
+            .expect("between-steps badge");
+        assert_eq!(
+            next_badge,
+            "[!] Next Step 2/7: Ilse Oduya-Brandt (Registry & Co-op Desk) (F11)"
+        );
+        assert_eq!(next_color, Color::Yellow);
+
+        // All 7 guided steps completed -> Corridor Captain mastery badge
+        let mastered = parse_frame(&json!({
+            "schema": 1,
+            "active": [],
+            "available": [],
+            "completed": GUIDED_TOUR_KEYS.iter().map(|k| json!({ "key": k, "title": k })).collect::<Vec<_>>()
+        }));
+        let (master_badge, master_color) =
+            mastered.status_bar_quest_badge().expect("mastery badge");
+        assert_eq!(master_badge, "[*] Corridor Captain (7/7) (F11)");
+        assert_eq!(master_color, Color::Green);
+
+        // Clean room with no quest markers, no completed guided steps -> None (opt-out friendly)
+        let clean =
+            parse_frame(&json!({ "schema": 1, "active": [], "available": [], "completed": [] }));
+        assert!(clean.status_bar_quest_badge().is_none());
     }
 
     #[test]
