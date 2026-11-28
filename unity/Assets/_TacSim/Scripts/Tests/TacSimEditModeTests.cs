@@ -19094,5 +19094,120 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ShipCompartmentWayfinding_RespectsStep6RigRecoveryAndOriginPortProcurement()
+        {
+            var rootGo = new UnityEngine.GameObject("ShipWayfindingStowageTestRoot");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.ShowLoginOverlay(false);
+                var tradeState = new TacSimTradeAndShipState();
+                hud.BindTradeState(tradeState);
+
+                // 1. Step 6 post-mine on surface pad with 0t carbon_ore stowed -> "bay" (recover rig first!)
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""ceres"", ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 0, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 12000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": []
+                        }
+                    }
+                }"));
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""next_room_entry"": ""room.c07_exchange"",
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Surface scan"", ""instructions"": ""+tv/1 scan go"", ""room_entry"": ""room.c07_exchange"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""instructions"": ""+tv/1 mine go"", ""room_entry"": ""room.c07_exchange"", ""checked"": true, ""live_ready"": true }
+                        ]
+                    }],
+                    ""available"": [], ""completed"": []
+                }")));
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveShipTargetCompartment(null, out string recComp, settledPad: true));
+                Assert.AreEqual("bay", recComp);
+
+                // Recover rig -> 1t carbon_ore stowed -> flips to "bridge" on surface pad, "airlock" once back at Ceres
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""ceres"", ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 1000, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 12000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:carbon_ore"", ""label"": ""Carbon Ore"", ""qty"": 1 }]
+                        }
+                    }
+                }"));
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveShipTargetCompartment(null, out string liftComp, settledPad: true));
+                Assert.AreEqual("bridge", liftComp);
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveShipTargetCompartment("ceres", out string retComp, settledPad: false));
+                Assert.AreEqual("airlock", retComp);
+
+                // 2. Step 3 (buy 5t metals at Ceres -> Stickney): docked at Ceres with 2t metals -> "airlock",
+                // docked at unrelated Deimos -> "bridge", docked at Ceres with 5t metals -> "bridge"
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""ceres"", ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 2000, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 12000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:metals"", ""label"": ""Metals"", ""qty"": 2 }]
+                        }
+                    }
+                }"));
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"",
+                        ""title"": ""Metals Down the Corridor"",
+                        ""next_room_entry"": ""room.p07_receiving"",
+                        ""checkpoints"": [{
+                            ""id"": ""deliver_metals"",
+                            ""title"": ""Buy 5 tonnes of metals at Ceres and deliver them to Stickney Yards"",
+                            ""instructions"": ""At Ceres Exchange Hall, buy at least 5 tonnes of metals, then fly to Stickney and +market/sell."",
+                            ""room_entry"": ""room.p07_receiving"",
+                            ""checked"": false, ""live_ready"": false
+                        }]
+                    }],
+                    ""available"": [], ""completed"": []
+                }")));
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveShipTargetCompartment("ceres", out string buyComp, settledPad: false));
+                Assert.AreEqual("airlock", buyComp);
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveShipTargetCompartment("deimos", out string unrelatedComp, settledPad: false));
+                Assert.AreEqual("bridge", unrelatedComp);
+
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""ceres"", ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 5000, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 12000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:metals"", ""label"": ""Metals"", ""qty"": 5 }]
+                        }
+                    }
+                }"));
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveShipTargetCompartment("ceres", out string sailComp, settledPad: false));
+                Assert.AreEqual("bridge", sailComp);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

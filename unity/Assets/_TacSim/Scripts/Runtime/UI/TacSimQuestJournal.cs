@@ -1051,6 +1051,43 @@ namespace TacSim.UI
             return TryGetActiveShipTargetCompartment(null, out targetCompartment, settledPad: false);
         }
 
+        private static readonly string[] CorridorStationPorts = { "ceres", "stickney", "luna", "deimos", "titan" };
+
+        private static string InferOriginPortFromTradeQuest(MushActiveQuest q, string excludeDestPort)
+        {
+            if (q == null) return null;
+            MushQuestCheckpoint cp = null;
+            for (int i = 0; i < q.Checkpoints.Count; i++)
+            {
+                if (!q.Checkpoints[i].Checked && !q.Checkpoints[i].LiveReady)
+                {
+                    cp = q.Checkpoints[i];
+                    break;
+                }
+            }
+            if (cp == null && q.Checkpoints.Count > 0)
+                cp = q.Checkpoints[0];
+            string textLow = $"{q.Title} {cp?.Title ?? string.Empty} {cp?.Instructions ?? string.Empty} {q.NextStep}".ToLowerInvariant();
+            for (int i = 0; i < CorridorStationPorts.Length; i++)
+            {
+                string port = CorridorStationPorts[i];
+                if (!string.IsNullOrEmpty(excludeDestPort) &&
+                    string.Equals(port, excludeDestPort, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+                if (textLow.Contains($"at {port}", StringComparison.Ordinal) ||
+                    textLow.Contains($"from {port}", StringComparison.Ordinal) ||
+                    textLow.Contains($"{port}'s", StringComparison.Ordinal) ||
+                    textLow.Contains($"{port} exchange", StringComparison.Ordinal) ||
+                    textLow.Contains($"{port} co-op", StringComparison.Ordinal))
+                {
+                    return port;
+                }
+            }
+            return null;
+        }
+
         public bool TryGetActiveShipTargetCompartment(string dockedPortSlug, out string targetCompartment, bool settledPad = false)
         {
             targetCompartment = string.Empty;
@@ -1060,17 +1097,37 @@ namespace TacSim.UI
             string dockedStation = settledPad ? null : dockedPortSlug;
             if (!string.IsNullOrWhiteSpace(dockedStation))
             {
+                string dockedTrim = dockedStation.Trim();
                 bool miningBlocking = hasMining && !mining.MineDone;
                 if (active != null &&
-                    (!miningBlocking || active.ReadyToFinish || active.CanFinishNow) &&
-                    TryGetMinimapObjective(out string objRoom, out _, out _))
+                    (!miningBlocking || active.ReadyToFinish || active.CanFinishNow))
                 {
-                    string targetPort = InferStationPortFromRoomEntry(objRoom);
-                    if (!string.IsNullOrEmpty(targetPort) &&
-                        string.Equals(targetPort, dockedStation.Trim(), StringComparison.OrdinalIgnoreCase))
+                    string targetPort = null;
+                    if (TryGetMinimapObjective(out string objRoom, out _, out _))
                     {
-                        targetCompartment = "airlock";
-                        return true;
+                        targetPort = InferStationPortFromRoomEntry(objRoom);
+                        if (!string.IsNullOrEmpty(targetPort) &&
+                            string.Equals(targetPort, dockedTrim, StringComparison.OrdinalIgnoreCase))
+                        {
+                            targetCompartment = "airlock";
+                            return true;
+                        }
+                    }
+                    if (!active.ReadyToFinish &&
+                        !active.CanFinishNow &&
+                        _boundTradeState != null &&
+                        !string.IsNullOrEmpty(_boundTradeState.ShipHullId) &&
+                        NeedsOriginPortProcurement(_boundTradeState))
+                    {
+                        string originPort = InferOriginPortFromTradeQuest(active, targetPort);
+                        bool atOrigin = !string.IsNullOrEmpty(originPort)
+                            ? string.Equals(originPort, dockedTrim, StringComparison.OrdinalIgnoreCase)
+                            : !string.Equals(targetPort, dockedTrim, StringComparison.OrdinalIgnoreCase);
+                        if (atOrigin)
+                        {
+                            targetCompartment = "airlock";
+                            return true;
+                        }
                     }
                 }
             }
@@ -1079,6 +1136,13 @@ namespace TacSim.UI
                 if (!mining.MineDone)
                 {
                     targetCompartment = !string.IsNullOrWhiteSpace(dockedStation) ? "bridge" : "bay";
+                    return true;
+                }
+                if (_boundTradeState != null &&
+                    !string.IsNullOrEmpty(_boundTradeState.ShipHullId) &&
+                    !IsMiningOreStowed(mining))
+                {
+                    targetCompartment = "bay";
                     return true;
                 }
                 targetCompartment = "bridge";
