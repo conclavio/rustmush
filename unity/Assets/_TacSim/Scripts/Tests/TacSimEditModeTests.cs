@@ -15320,5 +15320,68 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestTracker_ShowsStepBadgesAndShipRouteActionLabels()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestTrackerStepShipRouteTest");
+            try
+            {
+                var journal = rootGo.AddComponent<TacSim.UI.TacSimQuestJournal>();
+                journal.BuildUi(rootGo.transform, null);
+
+                // 1. Active Step 6 quest with +tv/bay route -> shows [Step 6/7], +tv/bay (Vehicle Bay), and VEHICLE BAY button
+                journal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""next_step"": ""Enter the Dray-P vehicle bay"",
+                        ""checkpoints"": [{ ""id"": ""scan_landing_site"", ""title"": ""Surface scan"", ""checked"": false, ""live_ready"": false }]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                journal.SetTrackerRouteBreadcrumb("Vehicle Bay", "+tv/bay", 1);
+                StringAssert.Contains("[Step 6/7]", journal.TrackerDetailSnapshot);
+                StringAssert.Contains("+tv/bay (Vehicle Bay)", journal.TrackerDetailSnapshot);
+                Assert.AreEqual("VEHICLE BAY", journal.TrackerActionLabelSnapshot);
+
+                // 2. Active Step 3 quest with +ship/board route -> shows [Step 3/7], +ship/board (Board Ship), and BOARD SHIP button
+                journal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"",
+                        ""title"": ""Metals Down the Corridor"",
+                        ""next_step"": ""Board your hull at Berth Gangway"",
+                        ""checkpoints"": [{ ""id"": ""deliver_metals"", ""title"": ""Deliver 5t metals"", ""checked"": false, ""live_ready"": false }]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                journal.SetTrackerRouteBreadcrumb("Berth Gangway", "+ship/board", 1);
+                StringAssert.Contains("[Step 3/7]", journal.TrackerDetailSnapshot);
+                StringAssert.Contains("+ship/board (Board Ship)", journal.TrackerDetailSnapshot);
+                Assert.AreEqual("BOARD SHIP", journal.TrackerActionLabelSnapshot);
+
+                // 3. Idle room offer for Step 1 -> shows [Step 1/7]
+                journal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [],
+                    ""available"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                        ""title"": ""First Papers at the Registry"",
+                        ""category"": ""guided"",
+                        ""giver_name"": ""Maren Halvorsen""
+                    }],
+                    ""completed"": []
+                }")));
+                StringAssert.Contains("[Step 1/7]", journal.TrackerDetailSnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

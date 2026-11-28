@@ -2181,6 +2181,28 @@ namespace TacSim.UI
             SyncStructuredTrackerCard();
         }
 
+        private static string FormatTrackerRouteText(string roomName, string command, int hops)
+        {
+            if (string.Equals(command, "+ship/board", StringComparison.OrdinalIgnoreCase))
+                return "+ship/board (Board Ship)";
+            if (string.Equals(command, "+ship/leave", StringComparison.OrdinalIgnoreCase))
+                return "+ship/leave (Cycle Ashore)";
+            if (string.Equals(command, "+tv/bay", StringComparison.OrdinalIgnoreCase))
+                return "+tv/bay (Vehicle Bay)";
+            return $"-> {roomName} ({hops}h)";
+        }
+
+        private static string FormatTrackerRouteButtonLabel(string command, int hops)
+        {
+            if (string.Equals(command, "+ship/board", StringComparison.OrdinalIgnoreCase))
+                return "BOARD SHIP";
+            if (string.Equals(command, "+ship/leave", StringComparison.OrdinalIgnoreCase))
+                return "ASHORE";
+            if (string.Equals(command, "+tv/bay", StringComparison.OrdinalIgnoreCase))
+                return "VEHICLE BAY";
+            return $"WALK ({hops}h)";
+        }
+
         private void SyncStructuredTrackerCard()
         {
             if (_manualPinActive || LatestPanel == null) return;
@@ -2206,9 +2228,9 @@ namespace TacSim.UI
                 }
                 if (!active.CanFinishNow && !active.CanCheckNow && !string.IsNullOrEmpty(_trackerRouteRoomName) && _trackerRouteHops > 0)
                 {
-                    sb.Append("<color=#FFDD44>Route:</color> -> ")
-                      .Append(MushProtocol.EscapeUnityRichText(_trackerRouteRoomName))
-                      .Append(" (").Append(_trackerRouteHops).Append("h)\n");
+                    sb.Append("<color=#FFDD44>Route:</color> ")
+                      .Append(MushProtocol.EscapeUnityRichText(FormatTrackerRouteText(_trackerRouteRoomName, _trackerRouteCommand, _trackerRouteHops)))
+                      .Append('\n');
                 }
                 if (!string.IsNullOrEmpty(active.NextStep))
                     sb.Append("<color=#77DDFF>Next:</color> ").Append(MushProtocol.EscapeUnityRichText(active.NextStep));
@@ -2256,13 +2278,15 @@ namespace TacSim.UI
                     _trackerCycleBtn.gameObject.SetActive(LatestPanel.Active.Count > 1);
 
                 string tourSuffix = hasTour ? $" · TOUR {tourDone}/{tourTotal}" : string.Empty;
+                int activeStepNo = GuidedStepNumber(active.Key);
+                string activeStepSuffix = activeStepNo > 0 ? $" [Step {activeStepNo}/7]" : string.Empty;
                 PinnedCategory = $"QUEST ({done}/{active.Checkpoints.Count}){tourSuffix} [J]";
                 PinnedTitle = active.Title;
                 PinnedDetail = active.NextStep;
                 if (_trackerHeaderText != null) _trackerHeaderText.text = PinnedCategory;
                 if (_trackerDetailText != null)
                 {
-                    _trackerDetailText.text = $"<b><color=#FFDF77>{multiPrefix}{MushProtocol.EscapeUnityRichText(active.Title)}</color></b>\n{sb}";
+                    _trackerDetailText.text = $"<b><color=#FFDF77>{multiPrefix}{MushProtocol.EscapeUnityRichText(active.Title)}{activeStepSuffix}</color></b>\n{sb}";
                 }
                 if (_trackerActionBtn != null)
                 {
@@ -2272,14 +2296,7 @@ namespace TacSim.UI
                         if (active.CanFinishNow) _trackerActionLbl.text = "COMPLETE [?]";
                         else if (active.CanCheckNow) _trackerActionLbl.text = "VERIFY STEP";
                         else if (!string.IsNullOrEmpty(_trackerRouteCommand))
-                        {
-                            if (string.Equals(_trackerRouteCommand, "+ship/board", StringComparison.OrdinalIgnoreCase))
-                                _trackerActionLbl.text = "BOARD SHIP";
-                            else if (string.Equals(_trackerRouteCommand, "+ship/leave", StringComparison.OrdinalIgnoreCase))
-                                _trackerActionLbl.text = "ASHORE";
-                            else
-                                _trackerActionLbl.text = $"WALK ({_trackerRouteHops}h)";
-                        }
+                            _trackerActionLbl.text = FormatTrackerRouteButtonLabel(_trackerRouteCommand, _trackerRouteHops);
                         else if (!string.IsNullOrEmpty(active.NextRoomEntry)) _trackerActionLbl.text = "WAYFINDER";
                         else _trackerActionLbl.text = "OPEN DIALOG";
                     }
@@ -2299,7 +2316,9 @@ namespace TacSim.UI
                 string tourSuffix = hasTour ? $" · TOUR {tourDone}/{tourTotal}" : string.Empty;
                 int extraOffers = Mathf.Max(0, LatestPanel.Available.Count - 1);
                 string extraSuffix = extraOffers > 0 ? $" (+{extraOffers} more)" : string.Empty;
-                bool isGuided = string.Equals(topOffer.Category, "guided", StringComparison.OrdinalIgnoreCase) || GuidedStepNumber(topOffer.Key) > 0;
+                int offerStepNo = GuidedStepNumber(topOffer.Key);
+                string offerStepSuffix = offerStepNo > 0 ? $" [Step {offerStepNo}/7]" : string.Empty;
+                bool isGuided = string.Equals(topOffer.Category, "guided", StringComparison.OrdinalIgnoreCase) || offerStepNo > 0;
                 PinnedCategory = $"QUEST AVAILABLE [!]{tourSuffix}";
                 PinnedTitle = topOffer.Title;
                 PinnedDetail = $"Speak with {topOffer.GiverName}";
@@ -2307,7 +2326,7 @@ namespace TacSim.UI
                 if (_trackerDetailText != null)
                 {
                     string kindWord = isGuided ? "guided" : "optional";
-                    _trackerDetailText.text = $"<b><color=#FFDD44>[!] {MushProtocol.EscapeUnityRichText(topOffer.Title)}{extraSuffix}</color></b>\n{MushProtocol.EscapeUnityRichText(topOffer.GiverName)} has a {kindWord} quest.";
+                    _trackerDetailText.text = $"<b><color=#FFDD44>[!] {MushProtocol.EscapeUnityRichText(topOffer.Title)}{extraSuffix}{offerStepSuffix}</color></b>\n{MushProtocol.EscapeUnityRichText(topOffer.GiverName)} has a {kindWord} quest.";
                 }
                 if (_trackerActionBtn != null)
                 {
@@ -2341,7 +2360,7 @@ namespace TacSim.UI
                     sb.Append($"<color=#77DDFF>Speak:</color> {MushProtocol.EscapeUnityRichText(nextOffer.GiverLabel)} ({MushProtocol.EscapeUnityRichText(nextOffer.GiverRoomName)})");
                     if (!string.IsNullOrEmpty(_trackerRouteRoomName) && _trackerRouteHops > 0)
                     {
-                        sb.Append($"\n<color=#FFDD44>Route:</color> -> {MushProtocol.EscapeUnityRichText(_trackerRouteRoomName)} ({_trackerRouteHops}h)");
+                        sb.Append($"\n<color=#FFDD44>Route:</color> {MushProtocol.EscapeUnityRichText(FormatTrackerRouteText(_trackerRouteRoomName, _trackerRouteCommand, _trackerRouteHops))}");
                     }
                     if (hasSailDest)
                     {
@@ -2355,22 +2374,11 @@ namespace TacSim.UI
                     if (_trackerActionLbl != null)
                     {
                         if (!string.IsNullOrEmpty(_trackerRouteCommand))
-                        {
-                            if (string.Equals(_trackerRouteCommand, "+ship/board", StringComparison.OrdinalIgnoreCase))
-                                _trackerActionLbl.text = "BOARD SHIP";
-                            else if (string.Equals(_trackerRouteCommand, "+ship/leave", StringComparison.OrdinalIgnoreCase))
-                                _trackerActionLbl.text = "ASHORE";
-                            else
-                                _trackerActionLbl.text = $"WALK ({_trackerRouteHops}h)";
-                        }
+                            _trackerActionLbl.text = FormatTrackerRouteButtonLabel(_trackerRouteCommand, _trackerRouteHops);
                         else if (hasSailDest)
-                        {
                             _trackerActionLbl.text = $"SAIL {sailDest.PortId.ToUpperInvariant()}";
-                        }
                         else
-                        {
                             _trackerActionLbl.text = "WAYFINDER";
-                        }
                     }
                 }
                 if (_trackerNavBtn != null) _trackerNavBtn.gameObject.SetActive(!string.IsNullOrEmpty(nextOffer.GiverRoomEntry));
