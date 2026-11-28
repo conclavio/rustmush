@@ -3145,38 +3145,52 @@ impl PortWalkState {
             } else {
                 None
             }
-        } else if self.needs_surface_expedition_boarding() {
-            self.rooms
+        } else {
+            self.resolved_station_quest_target().map(|(id, _)| id)
+        }
+    }
+
+    /// Resolve the active quest's target room onto the currently loaded station map
+    /// (returns `None` while aboard ship), returning `(local_room_entry, is_boarding_target)`
+    /// for 2.5D station markers and room-arrival callouts.
+    #[must_use]
+    pub fn resolved_station_quest_target(&self) -> Option<(String, bool)> {
+        if self.aboard_ship {
+            return None;
+        }
+        if self.needs_surface_expedition_boarding() {
+            return self
+                .rooms
                 .iter()
                 .find(|r| r.entry_id.to_ascii_lowercase().contains("berth_gallery"))
-                .map(|r| r.entry_id.clone())
-        } else {
-            let raw_target = self.quest_room_entry.as_deref()?;
-            if self.rooms.iter().any(|r| r.entry_id == raw_target) {
-                Some(raw_target.to_string())
-            } else if infer_station_port_from_room_entry(raw_target).is_some() {
-                if self.needs_origin_port_procurement()
-                    && let Some(exchange) = self
-                        .rooms
-                        .iter()
-                        .find(|r| r.entry_id.to_ascii_lowercase().contains("exchange"))
-                        .or_else(|| {
-                            self.rooms.iter().find(|r| {
-                                let low = r.entry_id.to_ascii_lowercase();
-                                low.contains("chandlery") || low.contains("service")
-                            })
-                        })
-                {
-                    return Some(exchange.entry_id.clone());
-                }
-                self.rooms
-                    .iter()
-                    .find(|r| r.entry_id.to_ascii_lowercase().contains("berth_gallery"))
-                    .map(|r| r.entry_id.clone())
-            } else {
-                None
-            }
+                .map(|r| (r.entry_id.clone(), true));
         }
+        let raw_target = self.quest_room_entry.as_deref()?;
+        if self.rooms.iter().any(|r| r.entry_id == raw_target) {
+            return Some((raw_target.to_string(), false));
+        }
+        if infer_station_port_from_room_entry(raw_target).is_some() {
+            if self.needs_origin_port_procurement()
+                && let Some(exchange) = self
+                    .rooms
+                    .iter()
+                    .find(|r| r.entry_id.to_ascii_lowercase().contains("exchange"))
+                    .or_else(|| {
+                        self.rooms.iter().find(|r| {
+                            let low = r.entry_id.to_ascii_lowercase();
+                            low.contains("chandlery") || low.contains("service")
+                        })
+                    })
+            {
+                return Some((exchange.entry_id.clone(), false));
+            }
+            return self
+                .rooms
+                .iter()
+                .find(|r| r.entry_id.to_ascii_lowercase().contains("berth_gallery"))
+                .map(|r| (r.entry_id.clone(), true));
+        }
+        None
     }
 
     /// Synthesize the [`mush_pixel::station_walk::STATION_WALK_FEED`] JSON keyframe.
