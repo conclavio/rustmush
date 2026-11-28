@@ -1303,6 +1303,40 @@ namespace TacSim.UI
             return false;
         }
 
+        /// <summary>
+        /// Resolves a corridor destination hint for the between-steps Next Guided Offer when the
+        /// pilot is viewing the Solar System Map from a different station/body than the next giver's port.
+        /// </summary>
+        public bool TryGetNextGuidedOfferDestination(string currentPortOrBody, out QuestDestinationHint hint)
+        {
+            hint = default;
+            if (!TryGetNextGuidedOffer(out var next))
+                return false;
+            string portSlug = InferStationPortFromRoomEntry(next.GiverRoomEntry);
+            if (string.IsNullOrEmpty(portSlug))
+                return false;
+            for (int d = 0; d < KnownDestinations.Length; d++)
+            {
+                if (!string.Equals(KnownDestinations[d].portId, portSlug, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                string pid = KnownDestinations[d].portId;
+                string plabel = KnownDestinations[d].portLabel;
+                if (!string.IsNullOrWhiteSpace(currentPortOrBody))
+                {
+                    string curLow = currentPortOrBody.Trim().ToLowerInvariant();
+                    string lblLow = plabel.ToLowerInvariant();
+                    if (curLow == pid || curLow.Contains(pid, StringComparison.Ordinal) || curLow.Contains(lblLow, StringComparison.Ordinal))
+                        return false;
+                }
+                hint = new QuestDestinationHint(
+                    $"Next Guided ({next.Step}/7): {next.ShortLabel} — {next.GiverLabel}",
+                    pid,
+                    plabel);
+                return true;
+            }
+            return false;
+        }
+
         public bool TryGetMinimapObjective(out string roomEntry, out bool isTurnIn, out bool currentRoomHasOffer)
         {
             roomEntry = string.Empty;

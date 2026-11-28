@@ -12734,5 +12734,85 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void SolarSystemMap_HighlightsBetweenStepsNextGuidedPortAndGroundButtonForStep6()
+        {
+            var rootGo = new UnityEngine.GameObject("SolarMapGuidedNextAndGroundTestRoot");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                var ceresFrame = TacSim.Space.TacSimSolarChartFrame.FromJson(JsonNode.Parse(@"{
+                    ""chart"": {
+                        ""date"": ""2142-05-01"",
+                        ""vantage"": { ""port"": ""Ceres Freeport"", ""body"": ""ceres"" },
+                        ""bodies"": [
+                            { ""id"": ""ceres"", ""label"": ""Ceres"", ""glyph"": ""C"", ""radius_au"": 2.77, ""lon_deg"": 120.0, ""here"": true },
+                            { ""id"": ""mars"", ""label"": ""Mars"", ""glyph"": ""M"", ""radius_au"": 1.52, ""lon_deg"": 40.0, ""here"": false }
+                        ],
+                        ""routes"": [
+                            { ""to"": ""stickney"", ""venue"": ""stickney"", ""body"": ""mars"", ""legs"": [{ ""from"": ""ceres"", ""to"": ""mars"" }] }
+                        ]
+                    }
+                }"));
+                hud.SolarMap.ApplyChartFrame(ceresFrame);
+
+                // Between Steps 3 & 4 at Ceres -> Solar Map highlights Stickney Yards for Jonas
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""S1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""S2"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""S3"" }
+                    ],
+                    ""active"": [],
+                    ""available"": []
+                }")));
+                Assert.AreEqual("stickney", hud.SolarMap.QuestDestinationPortId);
+                Assert.IsTrue(hud.SolarMap.LastOrreryHasQuestDestinationRing);
+                Assert.IsTrue(hud.SolarMap.FocusQuestDestinationPort());
+                Assert.AreEqual("stickney", hud.SolarMap.SelectedPortId);
+
+                // Once already reading sky chart at Stickney Yards -> clears off-station destination highlight
+                var stickneyFrame = TacSim.Space.TacSimSolarChartFrame.FromJson(JsonNode.Parse(@"{
+                    ""chart"": {
+                        ""date"": ""2142-05-02"",
+                        ""vantage"": { ""port"": ""Stickney Yards"", ""body"": ""mars"" },
+                        ""bodies"": [
+                            { ""id"": ""ceres"", ""label"": ""Ceres"", ""glyph"": ""C"", ""radius_au"": 2.77, ""lon_deg"": 120.0, ""here"": false },
+                            { ""id"": ""mars"", ""label"": ""Mars"", ""glyph"": ""M"", ""radius_au"": 1.52, ""lon_deg"": 40.0, ""here"": true }
+                        ],
+                        ""routes"": [
+                            { ""to"": ""ceres"", ""venue"": ""ceres"", ""body"": ""ceres"", ""legs"": [{ ""from"": ""mars"", ""to"": ""ceres"" }] }
+                        ]
+                    }
+                }"));
+                hud.SolarMap.ApplyChartFrame(stickneyFrame);
+                Assert.AreEqual(string.Empty, hud.SolarMap.QuestDestinationPortId);
+
+                // Active Step 6 surface mining -> highlights GROUND [G]: CARBON button
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Surface scan"", ""instructions"": ""+tv/1 scan go"", ""checked"": false, ""live_ready"": false },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""instructions"": ""+tv/1 mine go"", ""checked"": false, ""live_ready"": false }
+                        ]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                Assert.IsTrue(hud.SolarMap.GroundChartQuestHighlighted);
+                Assert.AreEqual("GROUND [G]: CARBON", hud.SolarMap.GroundChartButtonLabel);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
