@@ -445,6 +445,57 @@ export function resolveRefitHoldClearRoom(
   return null;
 }
 
+/**
+ * Live-stowage-aware station room resolver for multi-desk quests:
+ * - Step 5 (`+coop/refit`): routes through Exchange Hall (cargo) and Co-op Chandlery (provisions)
+ *   before returning to Co-op Registry once empty.
+ * - Step 2 / multi-item buy quests: advances past buy-only checkpoints already satisfied in live
+ *   ship stowage (e.g. Chandlery -> Exchange Hall once 10d provisions are stocked, then -> Co-op
+ *   Registry once both provisions and 5t propellant are stowed).
+ */
+export function resolveStowageObjectiveRoom(
+  active: readonly ActiveQuestView[],
+  trackedKey: string | null,
+  stowage:
+    | {
+        cargoKg: number;
+        propellantKg: number;
+        provisionsCrewDays: number;
+        cargoLines?: ReadonlyArray<{ good: string; label: string; qty: number }>;
+      }
+    | null
+    | undefined,
+): string | null {
+  if (!stowage) return null;
+  const refitRoom = resolveRefitHoldClearRoom(active, trackedKey, stowage);
+  if (refitRoom) return refitRoom;
+
+  const tracked = orderedActiveQuests(active, trackedKey)[0] ?? null;
+  if (!tracked || tracked.readyToFinish || tracked.canFinishNow) return null;
+
+  const needs = extractActiveTradeNeeds([tracked], null);
+  if (needs.length === 0 || !needs.every((n) => n.wantsBuy && !n.wantsSell)) {
+    return null;
+  }
+  const normalizedStowage = {
+    propellantKg: stowage.propellantKg,
+    provisionsCrewDays: stowage.provisionsCrewDays,
+    cargoLines: stowage.cargoLines ?? [],
+  };
+  const firstUnsatisfied =
+    needs.find((n) => evaluateQuestStowageReadiness(n, normalizedStowage)?.ready !== true) ?? null;
+  if (firstUnsatisfied) {
+    if (firstUnsatisfied.roomEntry) return firstUnsatisfied.roomEntry;
+    if (firstUnsatisfied.commoditySlug === "provisions") return "room.c08_chandlery";
+    if (firstUnsatisfied.commoditySlug === "propellant") return "room.c07_exchange";
+    return null;
+  }
+  if (tracked.key === GUIDED_TOUR_KEYS[1]) {
+    return "room.c05_registry";
+  }
+  return null;
+}
+
 export interface QuestDestinationHint {
   questTitle: string;
   portId: string;

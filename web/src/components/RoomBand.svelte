@@ -17,7 +17,7 @@
     needsOriginPortProcurement,
     needsSurfaceExpeditionBoarding,
     resolveQuestShipTargetCompartment,
-    resolveRefitHoldClearRoom,
+    resolveStowageObjectiveRoom,
     sortRoomQuestMarkers,
   } from "$lib/stores/quests.svelte";
 
@@ -64,7 +64,7 @@
       tacsim.ambient?.ownStowage ??
       tacsim.ambient?.stowage ??
       (tacsim.trade?.hullId ? tacsim.trade.stowage : null);
-    const refitClearRoom = resolveRefitHoldClearRoom(quests.active, quests.trackedKey, liveStowage);
+    const refitClearRoom = resolveStowageObjectiveRoom(quests.active, quests.trackedKey, liveStowage);
     const targetEntry =
       refitClearRoom ||
       tracked?.nextRoomEntry ||

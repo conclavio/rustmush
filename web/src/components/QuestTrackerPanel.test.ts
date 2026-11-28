@@ -928,4 +928,81 @@ describe("QuestTrackerPanel route step, guided tour pill, and quick-accept", () 
     await fireEvent.click(screen.getByRole("button", { name: "Refit Dray-P" }));
     expect(focusComposer).toHaveBeenCalledWith("+coop/refit prospector");
   });
+
+  it("advances Step 2 live stowage wayfinding from Chandlery -> Exchange Hall -> Co-op Registry", () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#18",
+      room_name: "Co-op Chandlery",
+      room_markers: [],
+      available: [],
+      completed: [],
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[1],
+          title: "Stock the Locker and Tanks",
+          next_room_entry: "room.c08_chandlery",
+          next_step: "Buy 10 provisions at Chandlery and 5t propellant at Exchange.",
+          checkpoints: [
+            {
+              id: "buy_provisions",
+              title: "Buy at least 10 provisions at Ceres Co-op Chandlery",
+              instructions: "Buy 10 provisions.",
+              room_entry: "room.c08_chandlery",
+              room_name: "Co-op Chandlery",
+              checked: false,
+              live_ready: false,
+            },
+            {
+              id: "buy_propellant",
+              title: "Buy at least 5 tonnes of propellant at Ceres Exchange Hall",
+              instructions: "Buy 5 tonnes of propellant.",
+              room_entry: "room.c07_exchange",
+              room_name: "Exchange Hall",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    const makeChandleryApp = (provisionsCrewDays: number, propellantKg: number) =>
+      ({
+        quests,
+        tacsim: {
+          isAboardShip: false,
+          view3dOpen: false,
+          physicalLocationKey: null,
+          serverStationRoomEntry: "room.c06_chandlery",
+          stationPack: buildFallbackFreeport(),
+          ambient: {
+            ownStowage: {
+              cargoKg: 0,
+              propellantKg,
+              provisionsCrewDays,
+              cargoLines: [],
+            },
+          },
+        },
+        focusComposer: vi.fn(),
+      }) as unknown as GameApp;
+
+    // 1. 0 provisions & 0 fuel while standing at Chandlery -> already at first objective room
+    const r0 = render(QuestTrackerPanel, { props: { app: makeChandleryApp(0, 0), onCmd: vi.fn() } });
+    expect(screen.queryByRole("button", { name: /Walk →/i })).toBeNull();
+    r0.unmount();
+
+    // 2. Bought 10d provisions (0t fuel) -> immediately routes to Exchange Hall
+    const r1 = render(QuestTrackerPanel, { props: { app: makeChandleryApp(10, 0), onCmd: vi.fn() } });
+    const routeToExchange = screen.getByRole("button", { name: /Walk →/i });
+    expect(routeToExchange.getAttribute("title")).toContain("Exchange Hall");
+    r1.unmount();
+
+    // 3. Bought 5t propellant too (10d provisions & 5t fuel) -> immediately routes to Co-op Registry for Ilse
+    render(QuestTrackerPanel, { props: { app: makeChandleryApp(10, 5_000), onCmd: vi.fn() } });
+    const routeToRegistry = screen.getByRole("button", { name: /Walk →/i });
+    expect(routeToRegistry.getAttribute("title")).toContain("Registry");
+  });
 });

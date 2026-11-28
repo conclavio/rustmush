@@ -17,7 +17,7 @@
     needsSurfaceExpeditionBoarding,
     resolveNextGuidedOfferDestination,
     resolveQuestShipTargetCompartment,
-    resolveRefitHoldClearRoom,
+    resolveStowageObjectiveRoom,
   } from "$lib/stores/quests.svelte";
   import {
     computeNextQuestExitBreadcrumb,
@@ -147,7 +147,7 @@
       return computeShipQuestBreadcrumb(tacsim.shipTemplate, currentComp, targetComp);
     }
     const targetEntry =
-      resolveRefitHoldClearRoom(q.active, q.trackedKey, liveStowage) ||
+      resolveStowageObjectiveRoom(q.active, q.trackedKey, liveStowage) ||
       tracked.nextRoomEntry ||
       tracked.checkpoints.find((c) => !c.checked && !c.liveReady && c.roomEntry)?.roomEntry ||
       null;
