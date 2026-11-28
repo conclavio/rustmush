@@ -1599,18 +1599,58 @@ impl PortWalkState {
         true
     }
 
+    fn sailing_quest_target_code(&self) -> Option<&str> {
+        if let Some(ref hint) = self.quest_dest_port {
+            return Some(hint.port_id.as_str());
+        }
+        if self
+            .quest_mining_status
+            .as_ref()
+            .is_some_and(|m| !m.mine_done)
+        {
+            return Some("commons");
+        }
+        None
+    }
+
+    fn ordered_sailing_corridor_indices(&self) -> Vec<usize> {
+        let mut indices: Vec<usize> = (0..CORRIDORS.len()).collect();
+        if let Some(target) = self.sailing_quest_target_code()
+            && let Some(pos) = CORRIDORS
+                .iter()
+                .position(|(id, _, _)| id.eq_ignore_ascii_case(target))
+        {
+            indices.remove(pos);
+            indices.insert(0, pos);
+        }
+        indices
+    }
+
     fn apply_quest_destination_jump(&mut self) -> bool {
-        let Some(hint) = self.quest_dest_port.clone() else {
+        if let Some(hint) = self.quest_dest_port.clone() {
+            if let Some(idx) = CORRIDORS
+                .iter()
+                .position(|(id, _, _)| id.eq_ignore_ascii_case(&hint.port_id))
+            {
+                self.corridor_idx = idx;
+                self.push_drawer_log(format!(
+                    "[QUEST] Selected corridor destination: {} ({})",
+                    hint.port_label, hint.quest_title
+                ));
+                return true;
+            }
             return false;
-        };
-        if let Some(idx) = CORRIDORS
-            .iter()
-            .position(|(id, _, _)| id.eq_ignore_ascii_case(&hint.port_id))
+        }
+        if let Some(qm) = self.quest_mining_status.clone()
+            && !qm.mine_done
+            && let Some(idx) = CORRIDORS
+                .iter()
+                .position(|(id, _, _)| id.eq_ignore_ascii_case("commons"))
         {
             self.corridor_idx = idx;
             self.push_drawer_log(format!(
-                "[QUEST] Selected corridor destination: {} ({})",
-                hint.port_label, hint.quest_title
+                "[QUEST] Selected surface extraction site: Freeport Commons ({})",
+                qm.target_ore_slug.replace('_', " ")
             ));
             return true;
         }
@@ -3878,16 +3918,36 @@ impl PortWalkState {
             },
             PortDrawerKind::Sailing => match key {
                 Key::Up | Key::Char('k') => {
-                    self.corridor_idx = self.corridor_idx.saturating_sub(1);
+                    let ordered = self.ordered_sailing_corridor_indices();
+                    let cur_pos = ordered
+                        .iter()
+                        .position(|&ci| ci == self.corridor_idx)
+                        .unwrap_or(0);
+                    let next_pos = cur_pos.saturating_sub(1);
+                    if let Some(&ci) = ordered.get(next_pos) {
+                        self.corridor_idx = ci;
+                    }
                 }
                 Key::Down | Key::Char('j') => {
-                    self.corridor_idx = (self.corridor_idx + 1).min(CORRIDORS.len() - 1);
+                    let ordered = self.ordered_sailing_corridor_indices();
+                    let cur_pos = ordered
+                        .iter()
+                        .position(|&ci| ci == self.corridor_idx)
+                        .unwrap_or(0);
+                    let next_pos = (cur_pos + 1).min(ordered.len().saturating_sub(1));
+                    if let Some(&ci) = ordered.get(next_pos) {
+                        self.corridor_idx = ci;
+                    }
                 }
                 Key::Char('r') => {
                     self.queue_depart = !self.queue_depart;
                 }
                 Key::Char('g' | 'G') => {
                     self.apply_quest_destination_jump();
+                }
+                Key::Char('c' | 'C') => {
+                    out.commands.push("+chart/ground".to_string());
+                    self.push_drawer_log("[Sailing] Ground Chart: +chart/ground".to_string());
                 }
                 Key::Char('b' | 'B') => {
                     self.drawer = Some(PortDrawerKind::Trade);
@@ -5642,18 +5702,39 @@ impl PortWalkState {
                             Style::default().fg(col).add_modifier(Modifier::BOLD),
                         )));
                     }
+                } else if let Some(ref qm) = self.quest_mining_status
+                    && !qm.mine_done
+                {
+                    let qline = format!(
+                        "[QUEST] Surface Extraction: {} (g:Commons  c:+chart/ground)",
+                        qm.target_ore_slug.replace('_', " ")
+                    );
+                    lines.push(Line::from(Span::styled(
+                        truncate_str(&qline, inner_w),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    )));
                 }
                 let list_rows = main_budget.saturating_sub(lines.len()).max(1);
-                let cur = self.cursor_idx_clamped(CORRIDORS.len());
-                for idx in visible_window(CORRIDORS.len(), cur, list_rows) {
+                let ordered = self.ordered_sailing_corridor_indices();
+                let cur_idx = self.cursor_idx_clamped(CORRIDORS.len());
+                let cur_pos = ordered.iter().position(|&ci| ci == cur_idx).unwrap_or(0);
+                let quest_target_code = self.sailing_quest_target_code().map(str::to_string);
+                for pos in visible_window(ordered.len(), cur_pos, list_rows) {
+                    let idx = ordered[pos];
                     if let Some(&(code, name, desc)) = CORRIDORS.get(idx) {
-                        let sel = idx == cur;
-                        let q_match = self
-                            .quest_dest_port
-                            .as_ref()
-                            .is_some_and(|h| h.port_id.eq_ignore_ascii_case(code));
+                        let sel = idx == cur_idx;
+                        let q_match = quest_target_code
+                            .as_deref()
+                            .is_some_and(|t| t.eq_ignore_ascii_case(code));
+                        let is_here = self
+                            .current_venue
+                            .as_deref()
+                            .is_some_and(|v| v.eq_ignore_ascii_case(code));
                         let mark = if sel { "> " } else { "  " };
                         let qtag = if q_match { "[Q] " } else { "" };
+                        let here_tag = if is_here { " [HERE]" } else { "" };
                         let st = if sel && q_match {
                             Style::default()
                                 .fg(Color::Yellow)
@@ -5664,10 +5745,12 @@ impl PortWalkState {
                                 .add_modifier(Modifier::BOLD)
                         } else if q_match {
                             Style::default().fg(Color::Yellow)
+                        } else if is_here {
+                            Style::default().fg(Color::Cyan)
                         } else {
                             Style::default().fg(Color::Gray)
                         };
-                        let row = format!("{mark}{qtag}{name:<19} {desc}");
+                        let row = format!("{mark}{qtag}{name:<19} {desc}{here_tag}");
                         lines.push(Line::from(Span::styled(truncate_str(&row, inner_w), st)));
                     }
                 }
@@ -10351,5 +10434,91 @@ mod tests {
         let _ = st.observe_port_trade(&trade_frame, now);
         assert_eq!(st.asks[0].listing_id, 11);
         assert_eq!(st.bids[0].listing_id, 21);
+    }
+
+    #[test]
+    fn sailing_drawer_sorts_quest_dest_first_marks_here_and_supports_step6_mining() {
+        let mut st = PortWalkState::new();
+        let now = Instant::now();
+        let _ = st.observe_port_trade(&json!({ "enabled": true, "venue": "ceres" }), now);
+
+        // 1. Active Stickney quest destination floats Stickney Yards to visual row 0 and marks Ceres [HERE]
+        st.observe_quest_guidance(
+            None,
+            Some(QuestDestinationHint {
+                quest_title: "Metals Down the Corridor".into(),
+                port_id: "stickney".into(),
+                port_label: "Stickney Yards".into(),
+            }),
+        );
+        let mut queries = Vec::new();
+        st.open_drawer(PortDrawerKind::Sailing, &[], &mut queries, now);
+        assert_eq!(CORRIDORS[st.corridor_idx].0, "stickney");
+        let ordered = st.ordered_sailing_corridor_indices();
+        assert_eq!(CORRIDORS[ordered[0]].0, "stickney");
+
+        let render_sailing = |state: &PortWalkState| -> String {
+            let backend = ratatui::backend::TestBackend::new(100, 22);
+            let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+            terminal
+                .draw(|f| state.draw_drawer_box(f, f.area(), true))
+                .expect("render sailing drawer");
+            let buf = terminal.backend().buffer();
+            let mut out = String::new();
+            for y in 0..buf.area.height {
+                for x in 0..buf.area.width {
+                    out.push_str(buf[(x, y)].symbol());
+                }
+                out.push('\n');
+            }
+            out
+        };
+
+        let rendered_step3 = render_sailing(&st);
+        let pos_stickney = rendered_step3
+            .find("[Q] Stickney Yards")
+            .expect("expected [Q] Stickney Yards");
+        let pos_ceres_here = rendered_step3
+            .find("Ceres Freeport")
+            .expect("expected Ceres Freeport");
+        assert!(
+            pos_stickney < pos_ceres_here,
+            "expected [Q] Stickney Yards ahead of Ceres Freeport:\n{rendered_step3}"
+        );
+        assert!(
+            rendered_step3.contains("[HERE]"),
+            "expected [HERE] tag on current port:\n{rendered_step3}"
+        );
+
+        // 2. Step 6 surface extraction (no port dest) floats Freeport Commons first, shows Step 6 banner, and binds 'c' -> +chart/ground
+        st.observe_quest_guidance(None, None);
+        st.observe_quest_mining_status(Some(QuestSurfaceMiningStatus {
+            quest_title: "Scan, Sound, and Mine a Landing Site".into(),
+            target_ore_slug: "carbon_ore".into(),
+            recommended_family: "carbon".into(),
+            scan_done: false,
+            sound_done: false,
+            mine_done: false,
+        }));
+        st.open_drawer(PortDrawerKind::Sailing, &[], &mut queries, now);
+        assert_eq!(CORRIDORS[st.corridor_idx].0, "commons");
+        let ordered_step6 = st.ordered_sailing_corridor_indices();
+        assert_eq!(CORRIDORS[ordered_step6[0]].0, "commons");
+        let rendered_step6 = render_sailing(&st);
+        assert!(
+            rendered_step6.contains("[QUEST] Surface Extraction: carbon ore"),
+            "expected Step 6 surface extraction banner:\n{rendered_step6}"
+        );
+        assert!(
+            rendered_step6.contains("[Q] Freeport Commons"),
+            "expected [Q] Freeport Commons row:\n{rendered_step6}"
+        );
+
+        let key_out = st.handle_drawer_key(Key::Char('c'), &[], now);
+        assert!(
+            key_out.commands.iter().any(|c| c == "+chart/ground"),
+            "expected 'c' in Sailing drawer to emit +chart/ground, got {:?}",
+            key_out.commands
+        );
     }
 }
