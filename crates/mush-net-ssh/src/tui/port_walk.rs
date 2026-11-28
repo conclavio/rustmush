@@ -449,6 +449,16 @@ const DOC48_INDUSTRY_ACTIONS: [(&str, &str); 10] = [
 ];
 
 /// Per-connection spatial walk + port services state.
+/// Ready-to-turn-in quest handoff shown in the Trade drawer once Step 2/3/4/7 trade objectives complete.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuestReadyTurnIn {
+    pub quest_title: String,
+    pub turn_in_name: String,
+    pub next_room_name: String,
+    pub can_finish_now: bool,
+    pub finish_cmd: String,
+}
+
 pub struct PortWalkState {
     camera: WalkCamera,
     pack_id: String,
@@ -517,6 +527,7 @@ pub struct PortWalkState {
     quest_coop_action: Option<QuestSuggestedAction>,
     quest_mining_status: Option<QuestSurfaceMiningStatus>,
     quest_step_badge: String,
+    quest_ready_turn_in: Option<QuestReadyTurnIn>,
     speech_bubbles: HashMap<String, (String, Instant)>,
     interactables: Vec<InteractableTarget>,
     focus_idx: usize,
@@ -629,6 +640,7 @@ impl PortWalkState {
             quest_coop_action: None,
             quest_mining_status: None,
             quest_step_badge: String::new(),
+            quest_ready_turn_in: None,
             speech_bubbles: HashMap::new(),
             interactables: Vec::new(),
             focus_idx: 0,
@@ -995,6 +1007,11 @@ impl PortWalkState {
     /// Sync active tracked guided quest step badge (e.g., `" [Step 3/7]"`).
     pub fn observe_quest_step_badge(&mut self, badge: String) {
         self.quest_step_badge = badge;
+    }
+
+    /// Sync ready-to-turn-in quest handoff for post-trade Exchange guidance (Steps 2, 3, 4, 7).
+    pub fn observe_quest_ready_turn_in(&mut self, ready: Option<QuestReadyTurnIn>) {
+        self.quest_ready_turn_in = ready;
     }
 
     /// Active quest corridor destination hint (e.g., Stickney Yards), if any.
@@ -4068,6 +4085,17 @@ impl PortWalkState {
                             self.drawer_log_scroll = 0;
                         }
                     }
+                    Key::Char('f' | 'F') => {
+                        if self.effective_quest_trade_need().is_none()
+                            && let Some(ref ready) = self.quest_ready_turn_in
+                            && ready.can_finish_now
+                            && !ready.finish_cmd.is_empty()
+                        {
+                            out.commands.push(ready.finish_cmd.clone());
+                            self.push_drawer_log(format!("> {}", ready.finish_cmd));
+                            self.drawer = None;
+                        }
+                    }
                     Key::Char('d' | 'D') => {
                         if self.quest_dest_port.is_some() {
                             self.drawer = Some(PortDrawerKind::Sailing);
@@ -5750,6 +5778,33 @@ impl PortWalkState {
                         (
                             format!(
                                 "[QUEST] [REFIT PREP] Empty hold: {rem} (g:Bids | propellant OK){step_suffix}"
+                            ),
+                            Color::Yellow,
+                        )
+                    };
+                    lines.push(Line::from(Span::styled(
+                        truncate_str(&banner, inner_w),
+                        Style::default().fg(col).add_modifier(Modifier::BOLD),
+                    )));
+                } else if let Some(ref ready) = self.quest_ready_turn_in {
+                    let (banner, col) = if ready.can_finish_now && !ready.finish_cmd.is_empty() {
+                        (
+                            format!(
+                                "[QUEST READY] {} -> f:Turn In to {} (+quest/finish){step_suffix}",
+                                ready.quest_title, ready.turn_in_name
+                            ),
+                            Color::Green,
+                        )
+                    } else {
+                        let room_part = if ready.next_room_name.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" ({})", ready.next_room_name)
+                        };
+                        (
+                            format!(
+                                "[QUEST READY] {} -> Return to {}{room_part} (Esc:walk){step_suffix}",
+                                ready.quest_title, ready.turn_in_name
                             ),
                             Color::Yellow,
                         )
@@ -11486,5 +11541,68 @@ mod tests {
             st.resolved_station_quest_target(),
             Some(("room.c01_berth_gallery".into(), true))
         );
+    }
+
+    #[test]
+    fn trade_drawer_shows_quest_ready_turnin_banner_and_f_hotkey_when_trade_done() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let mut st = PortWalkState::new();
+        st.drawer = Some(PortDrawerKind::Trade);
+        st.observe_quest_step_badge(" [Step 3/7]".into());
+        st.observe_quest_ready_turn_in(Some(QuestReadyTurnIn {
+            quest_title: "Metals to Stickney".into(),
+            turn_in_name: "Jonas Achterberg-Nkemelu".into(),
+            next_room_name: "Receiving Counter".into(),
+            can_finish_now: true,
+            finish_cmd: "+quest/finish #77=tok-step3".into(),
+        }));
+
+        let render_trade = |st: &mut PortWalkState| -> String {
+            let backend = TestBackend::new(120, 20);
+            let mut term = Terminal::new(backend).expect("terminal");
+            term.draw(|f| st.draw_drawer_box(f, f.area(), true))
+                .expect("draw");
+            let buf = term.backend().buffer();
+            (0..buf.area.height)
+                .map(|y| {
+                    (0..buf.area.width)
+                        .map(|x| buf[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let here_txt = render_trade(&mut st);
+        assert!(
+            here_txt.contains(
+                "[QUEST READY] Metals to Stickney -> f:Turn In to Jonas Achterberg-Nkemelu"
+            ),
+            "expected same-room turn-in banner:\n{here_txt}"
+        );
+        let out = st.handle_drawer_key(Key::Char('f'), &[], Instant::now());
+        assert_eq!(out.commands, vec!["+quest/finish #77=tok-step3"]);
+        assert_eq!(st.drawer, None);
+
+        // Remote turn-in (Step 2 return to Ilse at Co-op Registry): shows Return banner and `f` does not submit
+        st.drawer = Some(PortDrawerKind::Trade);
+        st.observe_quest_step_badge(" [Step 2/7]".into());
+        st.observe_quest_ready_turn_in(Some(QuestReadyTurnIn {
+            quest_title: "Stock the Dray".into(),
+            turn_in_name: "Ilse Oduya-Brandt".into(),
+            next_room_name: "Co-op Registry".into(),
+            can_finish_now: false,
+            finish_cmd: String::new(),
+        }));
+        let remote_txt = render_trade(&mut st);
+        assert!(
+            remote_txt.contains(
+                "[QUEST READY] Stock the Dray -> Return to Ilse Oduya-Brandt (Co-op Registry)"
+            ),
+            "expected remote turn-in banner:\n{remote_txt}"
+        );
+        let out2 = st.handle_drawer_key(Key::Char('f'), &[], Instant::now());
+        assert!(out2.commands.is_empty());
+        assert_eq!(st.drawer, Some(PortDrawerKind::Trade));
     }
 }
