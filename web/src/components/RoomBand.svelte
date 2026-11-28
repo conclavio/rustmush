@@ -148,7 +148,7 @@
         type="button"
         class="qmarker"
         data-marker={qm.marker}
-        title="{qm.npcName} — {qm.questTitle}"
+        title="{qm.npcName} — {qm.questTitle}{qm.questCount > 1 ? ` (+${qm.questCount - 1} more)` : ''}"
         onclick={() => app.quests?.openNpcDialog(qm.npcId)}
       >
         <span class="qsym" aria-hidden="true">{qm.symbol}</span>{qm.npcName}
@@ -176,7 +176,11 @@
       !hasMatchedRoomExit && questBreadcrumb?.nextExitCommand === "+ship/board"}
     {@const showLeaveChip =
       !hasMatchedRoomExit && questBreadcrumb?.nextExitCommand === "+ship/leave"}
-    {#if band.exits.length > 0 || showBoardChip || showLeaveChip}
+    {@const showBayChip =
+      !hasMatchedRoomExit &&
+      (questBreadcrumb?.nextExitCommand === "+tv/bay in" ||
+        questBreadcrumb?.nextExitCommand === "+tv/bay")}
+    {#if band.exits.length > 0 || showBoardChip || showLeaveChip || showBayChip}
       <span class="exits" aria-label="exits">
         {#each band.exits as exit, i (`${i}\0${exit.name}`)}
           {@const rawAliases = app.roomView?.exits[i]?.aliases}
@@ -216,6 +220,16 @@
             title="Quest route · +ship/leave"
           >
             <span class="qexit-badge" aria-hidden="true">★</span>Cycle Ashore
+          </button>
+        {:else if showBayChip}
+          <button
+            type="button"
+            class="exit quest-exit"
+            data-quest-exit="true"
+            onclick={() => onCmd("+tv/bay in")}
+            title="Quest route · +tv/bay in"
+          >
+            <span class="qexit-badge" aria-hidden="true">★</span>Enter Vehicle Bay
           </button>
         {/if}
       </span>

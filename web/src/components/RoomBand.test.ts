@@ -399,6 +399,76 @@ describe("room band exit buttons submit safe goto commands", () => {
     expect(boardBtn.getAttribute("data-quest-exit")).toBe("true");
     await fireEvent.click(boardBtn);
     expect(onCmd).toHaveBeenCalledWith("+ship/board");
+    expect(markerBtns[0]!.getAttribute("title")).toContain("(+2 more)");
+  });
+
+  it("renders a clickable ★ Enter Vehicle Bay (+tv/bay in) exit chip when in Hold on Step 6 surface mining", async () => {
+    const onCmd = vi.fn();
+    const holdView: RoomView = {
+      id: "#70",
+      name: "Cargo Hold",
+      zone: null,
+      desc: [],
+      exits: [{ name: "Passage", aliases: ["passage", "up"] }],
+      contents: [],
+      ambient: {},
+    };
+    const app = {
+      roomView: holdView,
+      screens: { exits: new Map() },
+      presence: { prune: vi.fn(), thinking: [], composing: [] },
+      quests: {
+        roomMarkers: [],
+        active: [
+          {
+            key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+            title: "Scan, Sound, and Mine a Landing Site",
+            nextRoomEntry: "room.c07_exchange",
+            checkpoints: [
+              {
+                id: "scan_landing_site",
+                title: "Surface scan",
+                instructions: "Run +tv/1 scan go.",
+                roomEntry: "",
+                checked: false,
+                liveReady: false,
+              },
+            ],
+          },
+        ],
+        trackedKey: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+        openNpcDialog: vi.fn(),
+      },
+      tacsim: {
+        isAboardShip: true,
+        seatedAtBridgeHelm: false,
+        view3dOpen: false,
+        physicalLocationKey: null,
+        serverShipCompartment: "hold",
+        ambient: { docked: false, port: "", settledPad: true },
+        shipTemplate: {
+          compartments: new Map([
+            ["hold", { id: "hold", name: "Cargo Hold" }],
+            ["bay", { id: "bay", name: "Vehicle Bay" }],
+          ]),
+          exits: [
+            {
+              from: "hold",
+              to: "bay",
+              forwardCommand: "+tv/bay in",
+              reverseCommand: "+tv/bay out",
+              isStaticAction: true,
+            },
+          ],
+        },
+      },
+    } as unknown as GameApp;
+
+    render(RoomBand, { props: { app, onCmd } });
+    const bayBtn = screen.getByRole("button", { name: /Enter Vehicle Bay/i });
+    expect(bayBtn.getAttribute("data-quest-exit")).toBe("true");
+    await fireEvent.click(bayBtn);
+    expect(onCmd).toHaveBeenCalledWith("+tv/bay in");
   });
 });
 
