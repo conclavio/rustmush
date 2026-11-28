@@ -2802,6 +2802,14 @@ namespace TacSim.UI
                         return true;
                     }
                 }
+                if (ActiveQuestSubTab == "active" &&
+                    TryGetGuidedTourProgress(out _, out _, out _, out bool allTourDone) &&
+                    allTourDone)
+                {
+                    SetOpen(false);
+                    OnPrefillCommandRequested?.Invoke("+market/jobs");
+                    return true;
+                }
                 return false;
             }
             var active = LatestPanel.Active[_selectedQuestIndex % LatestPanel.Active.Count];
@@ -2985,7 +2993,16 @@ namespace TacSim.UI
             {
                 SelectQuestSubTab("available");
             }
+            else if (ActiveQuestSubTab == "active" &&
+                     LatestPanel.Active.Count == 0 &&
+                     TryGetGuidedTourProgress(out _, out _, out _, out bool allTourDone) &&
+                     allTourDone)
+            {
+                SelectQuestSubTab("completed");
+            }
         }
+
+        public void TriggerJournalPrimaryActionForTests() => TriggerJournalPrimaryAction();
 
         public void TriggerJournalWayfinder()
         {
@@ -3132,6 +3149,7 @@ namespace TacSim.UI
                     {
                         bool showPrefill = false;
                         bool showWayfinder = false;
+                        bool tourMastered = false;
                         if (TryGetNextGuidedOffer(out var nextOffer))
                         {
                             sb.Append($"<color=#88AAC8>No active quests. <b><color=#FFDD44>Next Guided Step ({nextOffer.Step}/7): {MushProtocol.EscapeUnityRichText(nextOffer.ShortLabel)}</color></b> — speak with <b>{MushProtocol.EscapeUnityRichText(nextOffer.GiverLabel)}</b> in <color=#77DDFF>{MushProtocol.EscapeUnityRichText(nextOffer.GiverRoomName)}</color> ({MushProtocol.EscapeUnityRichText(nextOffer.LocationLabel)}).</color>");
@@ -3150,18 +3168,32 @@ namespace TacSim.UI
                                     _qPrefillLbl.text = $"SAIL {sailDest.PortId.ToUpperInvariant()}";
                             }
                         }
+                        else if (TryGetGuidedTourProgress(out int tourDone, out int tourTotal, out _, out bool allTourDone) && allTourDone)
+                        {
+                            tourMastered = true;
+                            sb.Append($"<color=#55EE99><b>★ CORRIDOR CAPTAIN — GUIDED TOUR COMPLETE ({tourDone}/{tourTotal}) ★</b></color>\n");
+                            sb.Append("<color=#88AAC8>All 7 guided onboarding steps complete. Browse corridor haulage, survey commissions (+market/jobs), or optional NPC contracts next.</color>");
+                            showPrefill = true;
+                            if (_qPrefillLbl != null)
+                                _qPrefillLbl.text = "JOBS BOARD";
+                        }
                         else
                         {
                             sb.Append("<color=#88AAC8>No active quests. Look for NPCs with a floating golden <b>!</b> marker (such as Maren Halvorsen in Port Watch Arrivals).</color>");
                         }
                         bool showViewOffers = LatestPanel.Available.Count > 0;
+                        bool showPrimary = showViewOffers || tourMastered;
                         if (showViewOffers)
                         {
                             sb.Append($"\n<color=#FFDD44><b>[!] {LatestPanel.Available.Count} {(LatestPanel.Available.Count == 1 ? "offer" : "offers")} available here</b></color>");
                             if (_qPrimaryLbl != null)
                                 _qPrimaryLbl.text = $"VIEW OFFERS ({LatestPanel.Available.Count})";
                         }
-                        if (_qPrimaryBtn != null) _qPrimaryBtn.gameObject.SetActive(showViewOffers);
+                        else if (tourMastered && _qPrimaryLbl != null)
+                        {
+                            _qPrimaryLbl.text = $"COMPLETED ({LatestPanel.Completed.Count})";
+                        }
+                        if (_qPrimaryBtn != null) _qPrimaryBtn.gameObject.SetActive(showPrimary);
                         if (_qPrefillBtn != null) _qPrefillBtn.gameObject.SetActive(showPrefill);
                         if (_qWayfinderBtn != null) _qWayfinderBtn.gameObject.SetActive(showWayfinder);
                         if (_qAbandonBtn != null) _qAbandonBtn.gameObject.SetActive(false);
