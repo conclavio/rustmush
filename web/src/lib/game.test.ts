@@ -3267,4 +3267,78 @@ describe("quest command palette route, step and cycle shortcuts", () => {
     expect(sent.length).toBe(beforeSent + 1);
     expect(sent[sent.length - 1]).toEqual({ t: "line", d: "+quest/finish #50=tok2" });
   });
+
+  it("command palette prioritizes guided offers first, appends [Step n/7] badges, and labels +tv/bay as Enter Vehicle Bay", () => {
+    const { app } = boot();
+    app.quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+          title: "Scan, Sound, and Mine a Landing Site",
+          next_step: "Enter the vehicle bay",
+          checkpoints: [
+            { id: "scan_landing_site", title: "Surface scan", checked: false, live_ready: false },
+          ],
+        },
+      ],
+      available: [
+        {
+          key: "quest.side_barge",
+          title: "Side Barge Audit",
+          category: "optional",
+          giver_id: "#40",
+          giver_name: "Harbor Clerk",
+          accept_cmd: "+quest/accept #40=side1",
+        },
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+          title: "First Papers at the Registry",
+          category: "guided",
+          giver_id: "#18",
+          giver_name: "Maren Halvorsen",
+          accept_cmd: "+quest/accept #18=guide1",
+        },
+      ],
+      completed: [],
+    });
+
+    // Aboard ship in hold with Step 6 active -> +tv/bay route labeled "Enter Vehicle Bay"
+    app.tacsim.isAboardShip = true;
+    app.tacsim.seatedAtBridgeHelm = false;
+    app.tacsim.serverShipCompartment = "hold";
+    app.tacsim.ambient = {
+      docked: false,
+      port: "",
+      settledPad: true,
+      ownStowage: null,
+      stowage: null,
+    } as unknown as typeof app.tacsim.ambient;
+    app.tacsim.shipTemplate = {
+      compartments: new Map([
+        ["hold", { id: "hold", name: "Cargo Hold" }],
+        ["bay", { id: "bay", name: "Vehicle Bay" }],
+      ]),
+      exits: [
+        {
+          from: "hold",
+          to: "bay",
+          forwardCommand: "+tv/bay in",
+          reverseCommand: "+tv/bay out",
+          isStaticAction: true,
+        },
+      ],
+    } as unknown as typeof app.tacsim.shipTemplate;
+
+    app.paletteQuery("/quest");
+    const labels = app.paletteEntries.map((e) => e.label);
+    const bayIdx = labels.findIndex((l) => l.includes("Enter Vehicle Bay"));
+    const step6Idx = labels.findIndex((l) => l.includes("Scan, Sound, and Mine a Landing Site [Step 6/7]"));
+    const guidedOfferIdx = labels.findIndex((l) => l.includes("[!] First Papers at the Registry [Step 1/7]"));
+    const sideOfferIdx = labels.findIndex((l) => l.includes("[!] Side Barge Audit"));
+    expect(bayIdx).toBeGreaterThanOrEqual(0);
+    expect(step6Idx).toBeGreaterThanOrEqual(0);
+    expect(guidedOfferIdx).toBeGreaterThanOrEqual(0);
+    expect(sideOfferIdx).toBeGreaterThan(guidedOfferIdx);
+  });
 });
