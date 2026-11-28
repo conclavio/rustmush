@@ -16636,5 +16636,242 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        private static string ReadCanonicalGuidedOnboardingJson()
+        {
+            string dir = System.IO.Directory.GetCurrentDirectory();
+            for (int depth = 0; depth < 8 && !string.IsNullOrEmpty(dir); depth++)
+            {
+                string candidate = System.IO.Path.Combine(dir, "crates", "tacsim", "content", "quests", "guided_onboarding.json");
+                if (System.IO.File.Exists(candidate))
+                    return System.IO.File.ReadAllText(candidate);
+                dir = System.IO.Directory.GetParent(dir)?.FullName;
+            }
+            throw new System.IO.FileNotFoundException("Missing canonical crates/tacsim/content/quests/guided_onboarding.json");
+        }
+
+        [Test]
+        public void CanonicalGuidedOnboardingPack_7StepEndToEndWalkthrough()
+        {
+            var pack = JsonNode.Parse(ReadCanonicalGuidedOnboardingJson());
+            string packId = pack["manifest"]["id"].AsString();
+            Assert.AreEqual("tacsim.quests.guided_onboarding", packId);
+
+            var entries = pack["entries"];
+            Assert.AreEqual("Maren Halvorsen", entries["npc.maren_halvorsen"]["def"]["name"].AsString());
+            Assert.AreEqual("room.c03_arrivals", entries["npc.maren_halvorsen"]["def"]["room"].AsString());
+
+            string[] entryNames =
+            {
+                "quest.guide_01_coop_enroll",
+                "quest.guide_02_provisions_fuel",
+                "quest.guide_03_metals_delivery",
+                "quest.guide_04_return_haul",
+                "quest.guide_05_refit_prospector",
+                "quest.guide_06_surface_mining",
+                "quest.guide_07_sell_mined_ore",
+            };
+
+            for (int i = 0; i < entryNames.Length; i++)
+            {
+                string fullKey = $"{packId}/{entryNames[i]}";
+                Assert.AreEqual(i + 1, TacSim.UI.TacSimQuestJournal.GuidedStepNumber(fullKey));
+                var def = entries[entryNames[i]]["def"];
+                Assert.AreEqual("guided", def["category"].AsString());
+                Assert.IsTrue(def["allow_restart"].AsBool());
+            }
+
+            JsonNode BuildActiveNode(string entryName, string giver, string turnIn, System.Collections.Generic.HashSet<string> checkedIds, bool ready, bool canFinish)
+            {
+                var def = entries[entryName]["def"];
+                var rawCps = def["checkpoints"].AsArray();
+                var cpsArr = JsonNode.NewArray();
+                string nextRoom = string.Empty;
+                for (int i = 0; i < rawCps.Count; i++)
+                {
+                    var rcp = rawCps[i];
+                    string cpId = rcp["id"].AsString();
+                    bool done = checkedIds != null && checkedIds.Contains(cpId);
+                    string rEntry = rcp["room_entry"]?.AsString() ?? string.Empty;
+                    if (!done && string.IsNullOrEmpty(nextRoom)) nextRoom = rEntry;
+                    var cObj = JsonNode.NewObject();
+                    cObj["id"] = JsonNode.FromString(cpId);
+                    cObj["title"] = JsonNode.FromString(rcp["title"].AsString());
+                    cObj["instructions"] = JsonNode.FromString(rcp["instructions"]?.AsString() ?? string.Empty);
+                    cObj["room_entry"] = JsonNode.FromString(rEntry);
+                    cObj["checked"] = JsonNode.FromBool(done);
+                    cObj["live_ready"] = JsonNode.FromBool(done);
+                    cpsArr.Add(cObj);
+                }
+                if (string.IsNullOrEmpty(nextRoom) && rawCps.Count > 0)
+                    nextRoom = rawCps[rawCps.Count - 1]["room_entry"]?.AsString() ?? string.Empty;
+
+                var qObj = JsonNode.NewObject();
+                qObj["key"] = JsonNode.FromString($"{packId}/{entryName}");
+                qObj["title"] = JsonNode.FromString(def["title"].AsString());
+                qObj["category"] = JsonNode.FromString("guided");
+                qObj["introduction"] = JsonNode.FromString(def["introduction"].AsString());
+                qObj["reward_summary"] = JsonNode.FromString(def["reward_summary"].AsString());
+                qObj["giver_name"] = JsonNode.FromString(giver);
+                qObj["turn_in_name"] = JsonNode.FromString(turnIn);
+                qObj["allow_restart"] = JsonNode.FromBool(true);
+                qObj["ready_to_finish"] = JsonNode.FromBool(ready);
+                qObj["can_finish_now"] = JsonNode.FromBool(canFinish);
+                qObj["turn_in_here"] = JsonNode.FromBool(canFinish);
+                qObj["next_room_entry"] = JsonNode.FromString(nextRoom);
+                qObj["checkpoints"] = cpsArr;
+                return qObj;
+            }
+
+            var rootGo = new UnityEngine.GameObject("Canonical7StepGuidedTourE2ETest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                var tradeState = new TacSimTradeAndShipState();
+                hud.BindTradeState(tradeState);
+                var milestones = new System.Collections.Generic.List<(string kind, string title)>();
+                hud.QuestJournal.OnQuestMilestoneReached += (k, t) => milestones.Add((k, t));
+
+                var completedArr = JsonNode.NewArray();
+                void ApplyPanel(JsonNode activeOrNull, JsonNode availOrNull)
+                {
+                    var p = JsonNode.NewObject();
+                    p["schema"] = JsonNode.FromDouble(1);
+                    var actArr = JsonNode.NewArray();
+                    if (activeOrNull != null) actArr.Add(activeOrNull);
+                    var avArr = JsonNode.NewArray();
+                    if (availOrNull != null) avArr.Add(availOrNull);
+                    p["active"] = actArr;
+                    p["available"] = avArr;
+                    p["completed"] = completedArr;
+                    hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(p));
+                }
+
+                // 0. Initial spawn at Ceres Arrivals -> Maren offers Step 1 (0 milestones on hydration)
+                var avail1 = JsonNode.NewObject();
+                avail1["key"] = JsonNode.FromString($"{packId}/{entryNames[0]}");
+                avail1["title"] = JsonNode.FromString(entries[entryNames[0]]["def"]["title"].AsString());
+                avail1["category"] = JsonNode.FromString("guided");
+                avail1["giver_name"] = JsonNode.FromString("Maren Halvorsen");
+                avail1["allow_restart"] = JsonNode.FromBool(true);
+                avail1["accept_cmd"] = JsonNode.FromString("+quest/accept #42=tok1");
+                ApplyPanel(null, avail1);
+                Assert.AreEqual(0, milestones.Count);
+
+                // 1. Step 1: accept -> abandon (restartable) -> re-accept -> complete
+                var s1 = BuildActiveNode(entryNames[0], "Maren Halvorsen", "Ilse Oduya-Brandt", null, false, false);
+                ApplyPanel(s1, null);
+                Assert.IsTrue(milestones.Exists(m => m.kind == "accepted"));
+                milestones.Clear();
+                ApplyPanel(null, null);
+                Assert.IsTrue(milestones.Exists(m => m.kind == "abandoned" && m.title.Contains("restartable")));
+                Assert.IsFalse(hud.QuestJournal.TryGetNextGuidedOffer(out _), "Opting out at 0/7 must keep HUD clean");
+                ApplyPanel(s1, null);
+                var c1 = JsonNode.NewObject();
+                c1["key"] = JsonNode.FromString($"{packId}/{entryNames[0]}");
+                c1["title"] = JsonNode.FromString(entries[entryNames[0]]["def"]["title"].AsString());
+                completedArr.Add(c1);
+                ApplyPanel(null, null);
+                Assert.IsTrue(hud.QuestJournal.TryGetNextGuidedOffer(out var next2) && next2.Step == 2);
+
+                // 2. Step 2: provisions + propellant
+                var s2 = BuildActiveNode(entryNames[1], "Ilse Oduya-Brandt", "Ilse Oduya-Brandt", null, false, false);
+                ApplyPanel(s2, null);
+                var s2Needs = hud.QuestJournal.GetActiveTradeNeeds();
+                Assert.AreEqual(2, s2Needs.Count);
+                Assert.AreEqual("provisions", s2Needs[0].CommoditySlug);
+                Assert.AreEqual("propellant", s2Needs[1].CommoditySlug);
+                var c2 = JsonNode.NewObject();
+                c2["key"] = JsonNode.FromString($"{packId}/{entryNames[1]}");
+                c2["title"] = JsonNode.FromString(entries[entryNames[1]]["def"]["title"].AsString());
+                completedArr.Add(c2);
+
+                // 3. Step 3: deliver_metals MUST extract "metals" (NOT shadowed by "provisions" in instructions!)
+                var s3 = BuildActiveNode(entryNames[2], "Ilse Oduya-Brandt", "Jonas Achterberg-Nkemelu", null, false, false);
+                ApplyPanel(s3, null);
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveTradeNeed(out var s3Need));
+                Assert.AreEqual("metals", s3Need.CommoditySlug, "Step 3 deliver_metals must resolve metals, not provisions");
+                Assert.AreEqual(5, s3Need.TargetQuantity);
+                Assert.IsTrue(s3Need.WantsBuy && s3Need.WantsSell);
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveDestinationPort(out var s3Dest));
+                Assert.AreEqual("stickney", s3Dest.PortId);
+                var c3 = JsonNode.NewObject();
+                c3["key"] = JsonNode.FromString($"{packId}/{entryNames[2]}");
+                c3["title"] = JsonNode.FromString(entries[entryNames[2]]["def"]["title"].AsString());
+                completedArr.Add(c3);
+
+                // 4. Step 4: industrial_parts Stickney -> Ceres
+                var s4 = BuildActiveNode(entryNames[3], "Jonas Achterberg-Nkemelu", "Ilse Oduya-Brandt", null, false, false);
+                ApplyPanel(s4, null);
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveTradeNeed(out var s4Need));
+                Assert.AreEqual("industrial_parts", s4Need.CommoditySlug);
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveDestinationPort(out var s4Dest));
+                Assert.AreEqual("ceres", s4Dest.PortId);
+                var c4 = JsonNode.NewObject();
+                c4["key"] = JsonNode.FromString($"{packId}/{entryNames[3]}");
+                c4["title"] = JsonNode.FromString(entries[entryNames[3]]["def"]["title"].AsString());
+                completedArr.Add(c4);
+
+                // 5. Step 5: Dray-P refit empty-hold check (propellant OK)
+                var s5 = BuildActiveNode(entryNames[4], "Ilse Oduya-Brandt", "Rosalind Qureshi-Mbeki", null, false, false);
+                ApplyPanel(s5, null);
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{""enabled"":true,""venue"":""ceres"",""listings"":[],""ship"":{""hull_id"":""#99"",""stowage"":{""cargo_kg"":2000,""cargo_limit_kg"":100000,""tank_kg"":15000,""tank_limit_kg"":80000,""stores_days"":8,""stores_limit_days"":120,""items"":[{""good"":""tacsim:metals"",""label"":""Metals"",""qty"":2}]}}}"));
+                Assert.IsTrue(hud.QuestJournal.TryGetRefitHoldReadiness(tradeState, out var rBlocked) && !rBlocked.Ready);
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{""enabled"":true,""venue"":""ceres"",""listings"":[],""ship"":{""hull_id"":""#99"",""stowage"":{""cargo_kg"":0,""cargo_limit_kg"":100000,""tank_kg"":15000,""tank_limit_kg"":80000,""stores_days"":0,""stores_limit_days"":120,""items"":[]}}}"));
+                Assert.IsTrue(hud.QuestJournal.TryGetRefitHoldReadiness(tradeState, out var rClear) && rClear.Ready);
+                var c5 = JsonNode.NewObject();
+                c5["key"] = JsonNode.FromString($"{packId}/{entryNames[4]}");
+                c5["title"] = JsonNode.FromString(entries[entryNames[4]]["def"]["title"].AsString());
+                completedArr.Add(c5);
+
+                // 6. Step 6: Surface mining prep -> post-mine Ceres return -> [ORE HOLD READY]
+                var s6Pre = BuildActiveNode(entryNames[5], "Rosalind Qureshi-Mbeki", "Rosalind Qureshi-Mbeki", null, false, false);
+                ApplyPanel(s6Pre, null);
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveSurfaceMiningStatus(out var m6));
+                Assert.AreEqual("carbon_ore", m6.TargetOreSlug);
+                StringAssert.Contains("Prep: +license  |  +tv/lease  |  +chart/ground", hud.QuestJournal.TrackerDetailSnapshot);
+
+                var s6Post = BuildActiveNode(entryNames[5], "Rosalind Qureshi-Mbeki", "Rosalind Qureshi-Mbeki",
+                    new System.Collections.Generic.HashSet<string> { "scan_landing_site", "sound_mineral_pocket", "mine_carbon_ore" }, true, false);
+                ApplyPanel(s6Post, null);
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{""enabled"":true,""venue"":""ceres"",""listings"":[],""ship"":{""hull_id"":""#99"",""stowage"":{""cargo_kg"":1000,""cargo_limit_kg"":100000,""tank_kg"":10000,""tank_limit_kg"":80000,""stores_days"":6,""stores_limit_days"":120,""items"":[{""good"":""tacsim:carbon_ore"",""label"":""Carbon Ore"",""qty"":1}]}}}"));
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveDestinationPort(out var s6Ret) && s6Ret.PortId == "ceres");
+                StringAssert.Contains("[ORE HOLD READY]", hud.QuestJournal.TrackerDetailSnapshot);
+                var c6 = JsonNode.NewObject();
+                c6["key"] = JsonNode.FromString($"{packId}/{entryNames[5]}");
+                c6["title"] = JsonNode.FromString(entries[entryNames[5]]["def"]["title"].AsString());
+                completedArr.Add(c6);
+
+                // 7. Step 7: Sell carbon_ore at Stickney Yards -> Corridor Captain (7/7)
+                var s7 = BuildActiveNode(entryNames[6], "Rosalind Qureshi-Mbeki", "Wren Castillo-Haugen", null, false, false);
+                ApplyPanel(s7, null);
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveTradeNeed(out var s7Need));
+                Assert.AreEqual("carbon_ore", s7Need.CommoditySlug);
+                Assert.IsTrue(!s7Need.WantsBuy && s7Need.WantsSell);
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveDestinationPort(out var s7Dest) && s7Dest.PortId == "stickney");
+
+                var c7 = JsonNode.NewObject();
+                c7["key"] = JsonNode.FromString($"{packId}/{entryNames[6]}");
+                c7["title"] = JsonNode.FromString(entries[entryNames[6]]["def"]["title"].AsString());
+                completedArr.Add(c7);
+                ApplyPanel(null, null);
+
+                Assert.IsTrue(hud.QuestJournal.TryGetGuidedTourProgress(out int done, out int total, out _, out bool allDone));
+                Assert.AreEqual(7, done);
+                Assert.AreEqual(7, total);
+                Assert.IsTrue(allDone);
+                Assert.IsFalse(hud.QuestJournal.TryGetNextGuidedOffer(out _));
+                StringAssert.Contains("CORRIDOR CAPTAIN", hud.QuestJournal.TrackerDetailSnapshot);
+                StringAssert.Contains("+market/jobs", hud.QuestJournal.TrackerDetailSnapshot);
+                hud.CharacterSheet.SetOpen(true);
+                hud.CharacterSheet.RefreshContents();
+                StringAssert.Contains("CORRIDOR CAPTAIN (7/7)", hud.CharacterSheet.PilotSummarySnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
