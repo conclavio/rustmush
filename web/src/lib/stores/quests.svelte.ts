@@ -375,7 +375,7 @@ export function needsOriginPortProcurement(
   if (!stowage) return false;
   const tracked = orderedActiveQuests(active, trackedKey)[0] ?? null;
   if (!tracked || tracked.readyToFinish || tracked.canFinishNow) return false;
-  const need = extractActiveTradeNeed(active, trackedKey);
+  const need = extractActiveTradeNeed([tracked], tracked.key);
   if (!need || !need.wantsBuy || !need.wantsSell) return false;
   if (need.commoditySlug === "propellant" || need.commoditySlug === "provisions") return false;
   const readiness = evaluateQuestStowageReadiness(need, stowage);
@@ -899,7 +899,7 @@ export function needsSurfaceExpeditionBoarding(
 ): boolean {
   const tracked = orderedActiveQuests(active, trackedKey)[0] ?? null;
   if (!tracked || tracked.readyToFinish || tracked.canFinishNow) return false;
-  const mining = extractActiveSurfaceMiningStatus(active, trackedKey);
+  const mining = extractActiveSurfaceMiningStatus([tracked], tracked.key);
   return mining !== null && !mining.mineDone;
 }
 
@@ -910,11 +910,12 @@ export function resolveQuestShipTargetCompartment(
   settledPad = false,
   nextGuidedOffer: GuidedTourRoadmapStep | null = null,
 ): "airlock" | "bay" | "bridge" | null {
-  const mining = extractActiveSurfaceMiningStatus(active, trackedKey);
+  const tracked = orderedActiveQuests(active, trackedKey)[0] ?? null;
+  const trackedOnly = tracked ? [tracked] : [];
+  const mining = tracked ? extractActiveSurfaceMiningStatus(trackedOnly, tracked.key) : null;
   const dockedNorm = dockedPortId?.trim().toLowerCase() ?? "";
-  if (dockedNorm && !settledPad) {
-    const tracked = orderedActiveQuests(active, trackedKey)[0] ?? null;
-    if (tracked && (!mining || mining.mineDone || tracked.readyToFinish || tracked.canFinishNow)) {
+  if (dockedNorm && !settledPad && tracked) {
+    if (!mining || mining.mineDone || tracked.readyToFinish || tracked.canFinishNow) {
       const targetEntry =
         tracked.nextRoomEntry ||
         tracked.checkpoints.find((c) => !c.checked && !c.liveReady && c.roomEntry)?.roomEntry ||
@@ -934,7 +935,7 @@ export function resolveQuestShipTargetCompartment(
     // Mining done, not yet docked at turn-in station -> head to Bridge to lift off & return to port.
     return "bridge";
   }
-  const dest = extractActiveDestinationPort(active, trackedKey);
+  const dest = tracked ? extractActiveDestinationPort(trackedOnly, tracked.key) : null;
   if (dest) {
     return "bridge";
   }
@@ -1191,6 +1192,12 @@ function parseCompleted(raw: unknown): CompletedQuestView[] {
   return out;
 }
 
+function pickDefaultTrackedKey(active: readonly ActiveQuestView[]): string | null {
+  if (active.length === 0) return null;
+  const guided = active.find((q) => GUIDED_TOUR_KEYS.includes(q.key) || q.category === "guided");
+  return (guided ?? active[0])?.key ?? null;
+}
+
 export class QuestsStore {
   loaded = $state(false);
   roomId = $state("");
@@ -1219,7 +1226,8 @@ export class QuestsStore {
       const found = this.active.find((q) => q.key === this.trackedKey);
       if (found) return found;
     }
-    return this.active[0] ?? null;
+    const defKey = pickDefaultTrackedKey(this.active);
+    return (defKey ? this.active.find((q) => q.key === defKey) : null) ?? this.active[0] ?? null;
   }
 
   get badgeCount(): number {
@@ -1323,9 +1331,9 @@ export class QuestsStore {
     this.completed = nextCompleted;
 
     if (this.trackedKey !== null && !this.active.some((q) => q.key === this.trackedKey)) {
-      this.trackedKey = this.active[0]?.key ?? null;
+      this.trackedKey = pickDefaultTrackedKey(this.active);
     } else if (this.trackedKey === null && this.active.length > 0) {
-      this.trackedKey = this.active[0]?.key ?? null;
+      this.trackedKey = pickDefaultTrackedKey(this.active);
     }
     return milestones;
   }
