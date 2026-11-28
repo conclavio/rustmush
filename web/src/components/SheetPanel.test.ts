@@ -63,4 +63,103 @@ describe("SheetPanel guided corridor tour summary", () => {
     expect(screen.getByText(/Next Guided \(4\/7\):/i)).toBeTruthy();
     expect(screen.getByText(/Jonas Achterberg-Nkemelu/i)).toBeTruthy();
   });
+
+  it("clicks completed roadmap step to Completed log, shows Step n/7, secondary turn-in alert, and guided offer priority", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      completed: [{ key: GUIDED_TOUR_KEYS[0], title: "First Papers" }],
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[1],
+          title: "Stock the Locker",
+          next_step: "Buy 10 provisions at Chandlery",
+          can_finish_now: false,
+          checkpoints: [{ id: "buy_prov", title: "Buy 10 provisions", checked: false, live_ready: false }],
+        },
+        {
+          key: "quest.side_ready",
+          title: "Dockside Ledger Check",
+          next_step: "Turn in here",
+          can_finish_now: true,
+          ready_to_finish: true,
+          checkpoints: [{ id: "check", title: "Check", checked: true, live_ready: true }],
+        },
+      ],
+      available: [
+        {
+          key: "quest.side_offer",
+          title: "Barge Sweeping",
+          category: "side",
+          giver_name: "Dock Clerk",
+        },
+        {
+          key: GUIDED_TOUR_KEYS[2],
+          title: "Metals Down the Corridor",
+          category: "guided",
+          giver_name: "Ilse Oduya-Brandt",
+        },
+      ],
+    });
+    quests.track(GUIDED_TOUR_KEYS[1]!);
+
+    const app = {
+      sheet: {
+        loaded: true,
+        unavailable: false,
+        approval: null,
+        schema: { sections: [] },
+        data: {},
+      },
+      quests,
+      refreshSheet: vi.fn(),
+    } as unknown as GameApp;
+
+    const first = render(SheetPanel, { props: { app } });
+    expect(screen.getByText(/Step 2\/7/i)).toBeTruthy();
+
+    // Clicking completed Step 1 opens the Completed tab of the Quest Log
+    const step1Btn = screen.getByRole("button", { name: /1\. Co-op Charter/i });
+    await fireEvent.click(step1Btn);
+    expect(quests.logOpen).toBe(true);
+    expect(quests.logTab).toBe("completed");
+
+    // Secondary ready turn-in alert opens that quest's dialog directly
+    const readyBtn = screen.getByRole("button", { name: /\[\?\] Ready to turn in: Dockside Ledger Check/i });
+    await fireEvent.click(readyBtn);
+    expect(quests.dialogOpen).toBe(true);
+    expect(quests.dialogQuestKey).toBe("quest.side_ready");
+
+    // Room offers badge while active
+    expect(screen.getByRole("button", { name: /\[!\] 2 quest offers here/i })).toBeTruthy();
+    first.unmount();
+
+    // Idle with multiple offers prioritizes the guided offer with (+1 more)
+    quests.applyFrame({
+      schema: 1,
+      completed: [{ key: GUIDED_TOUR_KEYS[0], title: "First Papers" }],
+      active: [],
+      available: [
+        {
+          key: "quest.side_offer",
+          title: "Barge Sweeping",
+          category: "side",
+          giver_name: "Dock Clerk",
+        },
+        {
+          key: GUIDED_TOUR_KEYS[2],
+          title: "Metals Down the Corridor",
+          category: "guided",
+          giver_name: "Ilse Oduya-Brandt",
+        },
+      ],
+    });
+    render(SheetPanel, { props: { app } });
+    const offerBtn = screen.getByRole("button", {
+      name: /\[!\] Ilse Oduya-Brandt offers: Metals Down the Corridor \(\+1 more\)/i,
+    });
+    await fireEvent.click(offerBtn);
+    expect(quests.dialogOpen).toBe(true);
+    expect(quests.dialogQuestKey).toBe(GUIDED_TOUR_KEYS[2]);
+  });
 });
