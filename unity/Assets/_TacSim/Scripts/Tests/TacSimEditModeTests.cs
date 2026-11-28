@@ -17318,5 +17318,70 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void SailingTab_ShowsQuestArrivedStepAshoreAndOpenExchangeHandoff()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave99PR3_SailingArrivedHandoffTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                var tradeState = new TacSimTradeAndShipState();
+                hud.BindTradeState(tradeState);
+                hud.QuestJournal.BindTradeState(tradeState);
+
+                var submitted = new System.Collections.Generic.List<string>();
+                hud.OnCommandSubmitted += submitted.Add;
+
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"",
+                        ""title"": ""Metals Down the Corridor"",
+                        ""next_room_entry"": ""room.p07_receiving"",
+                        ""next_room_name"": ""Receiving Counter"",
+                        ""checkpoints"": [{
+                            ""id"": ""deliver_metals"",
+                            ""title"": ""Buy 5 tonnes of metals at Ceres and deliver them to Stickney Yards"",
+                            ""instructions"": ""Sell 5t metals at Stickney Yards."",
+                            ""room_entry"": ""room.p07_receiving"",
+                            ""room_name"": ""Receiving Counter"",
+                            ""checked"": false
+                        }]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+
+                // 1. Aboard ship docked at Stickney Yards -> [QUEST ARRIVED] + STEP ASHORE (+ship/leave) & suppresses pre-flight
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{""enabled"":true,""venue"":"""",""aboard_docked_port"":""stickney"",""listings"":[],""ship"":{""hull_id"":""#99"",""stowage"":{""cargo_kg"":5000,""cargo_limit_kg"":100000,""tank_kg"":0,""tank_limit_kg"":80000,""stores_days"":0,""stores_limit_days"":120,""items"":[{""good"":""tacsim:metals"",""label"":""Metals"",""qty"":5}]}}}"));
+                hud.OpenTradeAndSailingModal("STICKNEY SAILING", openSailingTab: true);
+
+                Assert.IsTrue(hud.IsSailingQuestBannerVisible);
+                StringAssert.Contains("[QUEST ARRIVED]", hud.SailingQuestBannerText);
+                StringAssert.Contains("DOCKED AT STICKNEY YARDS", hud.SailingQuestBannerText);
+                Assert.AreEqual(string.Empty, hud.SailingPreflightSummarySnapshot);
+                Assert.IsFalse(hud.IsSailingExchangeJumpVisible);
+                Assert.AreEqual("STEP ASHORE", hud.SailingQuestActionLabelSnapshot);
+                Assert.IsTrue(hud.TriggerSailingQuestAction());
+                CollectionAssert.AreEqual(new[] { "+ship/leave" }, submitted);
+
+                // 2. Ashore at Stickney Yards -> OPEN EXCHANGE switches straight to Exchange tab
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{""enabled"":true,""venue"":""stickney"",""aboard_docked_port"":"""",""listings"":[],""ship"":{""hull_id"":""#99"",""stowage"":{""cargo_kg"":5000,""cargo_limit_kg"":100000,""tank_kg"":0,""tank_limit_kg"":80000,""stores_days"":0,""stores_limit_days"":120,""items"":[{""good"":""tacsim:metals"",""label"":""Metals"",""qty"":5}]}}}"));
+                hud.OpenTradeAndSailingModal("STICKNEY SAILING", openSailingTab: true);
+
+                StringAssert.Contains("[QUEST ARRIVED]", hud.SailingQuestBannerText);
+                StringAssert.Contains("AT STICKNEY YARDS", hud.SailingQuestBannerText);
+                StringAssert.Contains("Sell 5 × METALS at Exchange", hud.SailingQuestBannerText);
+                Assert.AreEqual("OPEN EXCHANGE", hud.SailingQuestActionLabelSnapshot);
+                Assert.IsTrue(hud.TriggerSailingQuestAction());
+                Assert.AreEqual(TacSim.UI.TradeTerminalTab.Exchange, hud.ActiveTradeTab);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

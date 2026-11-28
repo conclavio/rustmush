@@ -332,6 +332,11 @@ namespace TacSim.UI
         private GameObject _sailingQuestBanner;
         private Text _sailingQuestBannerText;
         private Button _sailingExchangeJumpBtn;
+        private Button _sailingQuestActionBtn;
+        private Text _sailingQuestActionBtnLbl;
+        private enum SailingQuestActionMode { SelectPort, StepAshore, OpenExchange, TurnInNow, Wayfinder }
+        private SailingQuestActionMode _sailingActionMode;
+        private string _sailingTurnInCmd = string.Empty;
         private RectTransform _sailingOrderRow1Rect;
         private RectTransform _sailingOrderRow2Rect;
         private RectTransform _sailingOutputViewportRect;
@@ -348,6 +353,7 @@ namespace TacSim.UI
         public string SailingQuestBannerText => _sailingQuestBannerText != null ? _sailingQuestBannerText.text : string.Empty;
         public string SailingPreflightSummarySnapshot { get; private set; } = string.Empty;
         public bool IsSailingExchangeJumpVisible => _sailingExchangeJumpBtn != null && _sailingExchangeJumpBtn.gameObject.activeSelf;
+        public string SailingQuestActionLabelSnapshot => _sailingQuestActionBtnLbl != null ? _sailingQuestActionBtnLbl.text : string.Empty;
         public int HighlightedQuestPortIndex { get; private set; } = -1;
         public int CurrentVenuePortIndex { get; private set; } = -1;
         public string QuestHighlightedPortLabelSnapshot =>
@@ -1167,8 +1173,9 @@ namespace TacSim.UI
             _sailingExchangeJumpBtn = CreateButton(_sailingQuestBanner.transform, "EXCHANGE", new Color(0.20f, 0.44f, 0.56f), () => JumpFromSailingToExchange());
             SetRect(_sailingExchangeJumpBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-264f, 3f), new Vector2(-178f, -3f));
             _sailingExchangeJumpBtn.gameObject.SetActive(false);
-            var selQuestPortBtn = CreateButton(_sailingQuestBanner.transform, "SELECT QUEST PORT", new Color(0.56f, 0.40f, 0.10f), () => ApplyQuestDestinationPort());
-            SetRect(selQuestPortBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-172f, 3f), new Vector2(-6f, -3f));
+            _sailingQuestActionBtn = CreateButton(_sailingQuestBanner.transform, "SELECT QUEST PORT", new Color(0.56f, 0.40f, 0.10f), () => TriggerSailingQuestAction());
+            SetRect(_sailingQuestActionBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-172f, 3f), new Vector2(-6f, -3f));
+            _sailingQuestActionBtnLbl = _sailingQuestActionBtn.GetComponentInChildren<Text>();
             _sailingQuestBanner.SetActive(false);
 
             // 2 rows of 1-click Captain's Standing Order & Passage Actions (exact crates/tacsim/src/port/orders.rs syntax)
@@ -2842,6 +2849,31 @@ namespace TacSim.UI
             SwitchTradeTerminalTab(TradeTerminalTab.Exchange, autoQuery: false);
         }
 
+        public bool TriggerSailingQuestAction()
+        {
+            switch (_sailingActionMode)
+            {
+                case SailingQuestActionMode.StepAshore:
+                    if (_tradePanel != null) _tradePanel.SetActive(false);
+                    OnCommandSubmitted?.Invoke("+ship/leave");
+                    return true;
+                case SailingQuestActionMode.OpenExchange:
+                    JumpFromSailingToExchange();
+                    return true;
+                case SailingQuestActionMode.TurnInNow:
+                    if (string.IsNullOrEmpty(_sailingTurnInCmd)) return false;
+                    string finishCmd = _sailingTurnInCmd;
+                    if (_tradePanel != null) _tradePanel.SetActive(false);
+                    OnCommandSubmitted?.Invoke(finishCmd);
+                    return true;
+                case SailingQuestActionMode.Wayfinder:
+                    if (_tradePanel != null) _tradePanel.SetActive(false);
+                    return QuestJournal != null && QuestJournal.TriggerTrackerWayfinder();
+                default:
+                    return ApplyQuestDestinationPort();
+            }
+        }
+
         private bool TryResolveExchangeHaulDestination(QuestTradeNeed questNeed, out QuestDestinationHint haulDest)
         {
             haulDest = default;
@@ -2919,12 +2951,25 @@ namespace TacSim.UI
             bool hasDest = TryResolveSailingQuestDestination(out hint);
             HighlightedQuestPortIndex = hasDest ? CorridorDestinationIndex(hint.PortId) : -1;
 
+            string curPort = _boundTradeState != null && !string.IsNullOrEmpty(_boundTradeState.ActiveVenue)
+                ? _boundTradeState.ActiveVenue
+                : (_boundTradeState != null && !string.IsNullOrEmpty(_boundTradeState.AboardDockedPortHint)
+                    ? _boundTradeState.AboardDockedPortHint
+                    : _activePortHint);
+            int curPortIdx = CorridorDestinationIndex(curPort);
+            bool isAboardDocked = _boundTradeState != null && !string.IsNullOrEmpty(_boundTradeState.AboardDockedPortHint);
+            bool miningPending = QuestJournal != null &&
+                QuestJournal.TryGetActiveSurfaceMiningStatus(out var qMine) && !qMine.MineDone;
+            bool arrivedAtDest = hasDest && curPortIdx >= 0 && curPortIdx == HighlightedQuestPortIndex && !miningPending;
+
+            _sailingActionMode = SailingQuestActionMode.SelectPort;
+            _sailingTurnInCmd = string.Empty;
             QuestSailingPreflightReadiness preflight = default;
-            bool hasPreflight = hasDest && _boundTradeState != null &&
+            bool hasPreflight = !arrivedAtDest && hasDest && _boundTradeState != null &&
                 QuestJournal.TryGetSailingPreflightReadiness(_boundTradeState, out preflight);
             SailingPreflightSummarySnapshot = hasPreflight ? preflight.FormatInlineSummary() : string.Empty;
 
-            bool showExchangeJump = hasPreflight && !preflight.Ready;
+            bool showExchangeJump = !arrivedAtDest && hasPreflight && !preflight.Ready;
             if (_sailingExchangeJumpBtn != null)
                 _sailingExchangeJumpBtn.gameObject.SetActive(showExchangeJump);
 
@@ -2936,9 +2981,53 @@ namespace TacSim.UI
                     new Vector2(10f, 0f), new Vector2(showExchangeJump ? -270f : -180f, 0f));
                 string stepTag = ResolveActiveQuestStepTag();
                 string stepSuffix = string.IsNullOrEmpty(stepTag) ? string.Empty : $" {stepTag}";
-                _sailingQuestBannerText.text = hasPreflight
-                    ? $"[QUEST] Dest: {hint.PortLabel.ToUpperInvariant()}  |  {SailingPreflightSummarySnapshot}{stepSuffix}"
-                    : $"[QUEST] Destination: {hint.PortLabel.ToUpperInvariant()} — {hint.QuestTitle}{stepSuffix}";
+                if (arrivedAtDest)
+                {
+                    var tracked = QuestJournal?.GetTrackedActiveQuest();
+                    if (isAboardDocked)
+                    {
+                        _sailingActionMode = SailingQuestActionMode.StepAshore;
+                        if (_sailingQuestActionBtnLbl != null) _sailingQuestActionBtnLbl.text = "STEP ASHORE";
+                        _sailingQuestBannerText.text = $"[QUEST ARRIVED] DOCKED AT {hint.PortLabel.ToUpperInvariant()} — Step ashore (+ship/leave){stepSuffix}";
+                    }
+                    else if (tracked != null && tracked.CanFinishNow && !string.IsNullOrEmpty(tracked.FinishCmd))
+                    {
+                        _sailingActionMode = SailingQuestActionMode.TurnInNow;
+                        _sailingTurnInCmd = tracked.FinishCmd;
+                        string npc = string.IsNullOrEmpty(tracked.TurnInName) ? "quest contact" : tracked.TurnInName;
+                        if (_sailingQuestActionBtnLbl != null) _sailingQuestActionBtnLbl.text = "TURN IN (?)";
+                        _sailingQuestBannerText.text = $"[QUEST ARRIVED] AT {hint.PortLabel.ToUpperInvariant()} — Turn in to {npc} here{stepSuffix}";
+                    }
+                    else if (tracked != null && tracked.ReadyToFinish)
+                    {
+                        _sailingActionMode = SailingQuestActionMode.Wayfinder;
+                        string npc = string.IsNullOrEmpty(tracked.TurnInName) ? "quest contact" : tracked.TurnInName;
+                        string roomPart = string.IsNullOrEmpty(tracked.NextRoomName) ? string.Empty : $" ({tracked.NextRoomName})";
+                        if (_sailingQuestActionBtnLbl != null) _sailingQuestActionBtnLbl.text = "WAYFINDER";
+                        _sailingQuestBannerText.text = $"[QUEST ARRIVED] AT {hint.PortLabel.ToUpperInvariant()} — Return to {npc}{roomPart}{stepSuffix}";
+                    }
+                    else if (QuestJournal != null && QuestJournal.TryResolveContextualTradeNeed(_boundTradeState, out var need, out _))
+                    {
+                        _sailingActionMode = SailingQuestActionMode.OpenExchange;
+                        string verb = need.WantsSell ? "Sell" : "Buy";
+                        string itemLabel = need.CommoditySlug.Replace('_', ' ').ToUpperInvariant();
+                        if (_sailingQuestActionBtnLbl != null) _sailingQuestActionBtnLbl.text = "OPEN EXCHANGE";
+                        _sailingQuestBannerText.text = $"[QUEST ARRIVED] AT {hint.PortLabel.ToUpperInvariant()} — {verb} {need.TargetQuantity} × {itemLabel} at Exchange{stepSuffix}";
+                    }
+                    else
+                    {
+                        _sailingActionMode = SailingQuestActionMode.Wayfinder;
+                        if (_sailingQuestActionBtnLbl != null) _sailingQuestActionBtnLbl.text = "WAYFINDER";
+                        _sailingQuestBannerText.text = $"[QUEST ARRIVED] AT {hint.PortLabel.ToUpperInvariant()} — {hint.QuestTitle}{stepSuffix}";
+                    }
+                }
+                else
+                {
+                    if (_sailingQuestActionBtnLbl != null) _sailingQuestActionBtnLbl.text = "SELECT QUEST PORT";
+                    _sailingQuestBannerText.text = hasPreflight
+                        ? $"[QUEST] Dest: {hint.PortLabel.ToUpperInvariant()}  |  {SailingPreflightSummarySnapshot}{stepSuffix}"
+                        : $"[QUEST] Destination: {hint.PortLabel.ToUpperInvariant()} — {hint.QuestTitle}{stepSuffix}";
+                }
             }
 
             float shift = hasDest ? -32f : 0f;
