@@ -1232,8 +1232,10 @@ namespace TacSim.UI
                 hasIncompleteQuestMine = !qMine.MineDone;
                 HasSurfaceQuestChecklist = true;
                 Color questGold = new Color(0.72f, 0.54f, 0.12f);
+                bool hasStowage = _tradeState != null && !string.IsNullOrEmpty(_tradeState.ShipHullId);
                 int holdOre = _tradeState != null ? _tradeState.GetHoldCommodityQuantity(qMine.TargetOreSlug) : 0;
                 bool oreStowedInHold = qMine.MineDone && holdOre > 0 && _surface.HopperLoadedTonnes <= 0;
+                bool needsRigRecovery = qMine.MineDone && !oreStowedInHold && (hasStowage || _surface.HopperLoadedTonnes > 0);
                 if (!qMine.ScanDone)
                 {
                     HighlightedSurfaceQuestStepForTests = "scan";
@@ -1276,8 +1278,9 @@ namespace TacSim.UI
                 sb.AppendLine($"<color=#FFDD44><b>[QUEST]{stepTag} {MushProtocol.EscapeUnityRichText(qMine.QuestTitle)}</b></color>");
                 sb.AppendLine($"{scanMark} Scan Site   {soundMark} Sound Pocket   {mineMark} Mine {MushProtocol.EscapeUnityRichText(qMine.TargetOreSlug)}");
                 sb.AppendLine($"<color=#FFEE88>Hold: {holdOre}t {MushProtocol.EscapeUnityRichText(oreName)}   |   Hopper: {_surface.HopperLoadedTonnes}t</color>{holdStatusBadge}");
-                sb.AppendLine($"<color=#77DDFF>{MushProtocol.EscapeUnityRichText(qMine.FormatPrepHintLine())}</color>");
-                if (TryResolvePostMineReturnPort(qMine, out string retPortId, out string retPortLabel))
+                if (!oreStowedInHold)
+                    sb.AppendLine($"<color=#77DDFF>{MushProtocol.EscapeUnityRichText(qMine.FormatPrepHintLine())}</color>");
+                if (!needsRigRecovery && TryResolvePostMineReturnPort(qMine, out string retPortId, out string retPortLabel))
                 {
                     _surfReturnPortId = retPortId;
                     if (_surfReturnPortBtnLbl != null)

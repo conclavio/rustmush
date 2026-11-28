@@ -17524,11 +17524,14 @@ namespace TacSim.Tests
                     ""completed"": []
                 }")));
 
-                // Mined ore still in rig hopper (hold 0t, hopper 1t) -> [RECOVER RIG FIRST] & recover highlighted
+                // Mined ore still in rig hopper (hold 0t, hopper 1t) -> [RECOVER RIG FIRST] & recover highlighted, premature RETURN hidden
                 StringAssert.Contains("[RECOVER RIG FIRST]", hud.Overlays.SurfaceReadingsTextForTests);
+                StringAssert.Contains("Recover: +tv/1 recover go", hud.Overlays.SurfaceReadingsTextForTests);
+                StringAssert.DoesNotContain("<b>Return:</b> Ceres Freeport", hud.Overlays.SurfaceReadingsTextForTests);
+                Assert.IsFalse(hud.Overlays.IsSurfaceReturnPortButtonVisible);
                 Assert.AreEqual("recover", hud.Overlays.HighlightedSurfaceQuestStepForTests);
 
-                // Rig recovered -> hopper 0t, ship hold 1t carbon_ore -> [ORE HOLD READY] & return highlighted
+                // Rig recovered -> hopper 0t, ship hold 1t carbon_ore -> [ORE HOLD READY], return visible, redundant Recover hint hidden
                 surface.ApplySiteMapFrame(JsonNode.Parse(@"{
                     ""site"": {
                         ""title"": ""Freeport Commons"",
@@ -17548,6 +17551,9 @@ namespace TacSim.Tests
                 });
                 hud.Overlays.RefreshSurfaceHud();
                 StringAssert.Contains("[ORE HOLD READY]", hud.Overlays.SurfaceReadingsTextForTests);
+                StringAssert.Contains("<b>Return:</b> Ceres Freeport", hud.Overlays.SurfaceReadingsTextForTests);
+                StringAssert.DoesNotContain("Recover: +tv/1 recover go", hud.Overlays.SurfaceReadingsTextForTests);
+                Assert.IsTrue(hud.Overlays.IsSurfaceReturnPortButtonVisible);
                 Assert.AreEqual("return", hud.Overlays.HighlightedSurfaceQuestStepForTests);
             }
             finally

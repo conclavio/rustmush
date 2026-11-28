@@ -898,7 +898,12 @@ namespace TacSim.UI
             {
                 sb.AppendLine($"<color=#FFDD44><b>[QUEST TARGET SITE]</b> Recommended for {MushProtocol.EscapeUnityRichText(qMineRow.TargetOreSlug)} (+ship/plan {MushProtocol.EscapeUnityRichText(active.Venue)})</color>");
             }
-            if (hasQuestMining)
+            bool oreAlreadyStowed = hasQuestMining &&
+                                    qMineRow.MineDone &&
+                                    _tradeState != null &&
+                                    !string.IsNullOrEmpty(_tradeState.ShipHullId) &&
+                                    _tradeState.GetHoldCommodityQuantity(qMineRow.TargetOreSlug) >= 1;
+            if (hasQuestMining && !oreAlreadyStowed)
                 sb.AppendLine($"<color=#FFDD44>[PROSPECTING]</color> <color=#77DDFF>{MushProtocol.EscapeUnityRichText(qMineRow.FormatPrepHintLine())}</color>");
             _dossierText.text = sb.ToString();
         }
