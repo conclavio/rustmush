@@ -15840,5 +15840,75 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void SolarMap_HighlightsCeresDuringStep6MiningAndTransitionsToPostMineReturnPort()
+        {
+            var rootGo = new UnityEngine.GameObject("SolarMapStep6ReturnTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                var chart = TacSim.Space.TacSimSolarChartFrame.FromJson(JsonNode.Parse(@"{
+                    ""ic_time"": ""2350-05-01"",
+                    ""vantage"": { ""body"": ""ceres"", ""port"": ""commons"" },
+                    ""scale"": { ""r0_au"": 1.5, ""au_max"": 12.0 },
+                    ""bodies"": [
+                        { ""id"": ""mars"", ""label"": ""Mars"", ""r_au"": 1.52, ""lon_deg"": 110.0, ""lat_deg"": 1.8, ""here"": false },
+                        { ""id"": ""ceres"", ""label"": ""Ceres"", ""r_au"": 2.77, ""lon_deg"": 230.0, ""lat_deg"": 10.6, ""here"": true }
+                    ],
+                    ""routes"": [
+                        { ""to"": ""ceres"", ""venue"": ""ceres"", ""body"": ""ceres"", ""loaded"": { ""total_seconds"": 1800, ""burn_tonnes"": 0.4 } },
+                        { ""to"": ""stickney"", ""venue"": ""stickney"", ""body"": ""mars"", ""loaded"": { ""total_seconds"": 180000, ""burn_tonnes"": 12.5 } }
+                    ]
+                }"));
+                hud.SolarMap.ApplyChartFrame(chart);
+
+                // 1. Pre-mine Step 6 -> golden ring around Ceres + GROUND [G]: CARBON
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""next_room_entry"": ""room.c07_exchange"",
+                        ""checkpoints"": [
+                            { ""id"": ""scan"", ""title"": ""Scan site"", ""instructions"": ""+tv/1 scan go"", ""checked"": false, ""live_ready"": false },
+                            { ""id"": ""mine"", ""title"": ""Mine 1t carbon_ore"", ""instructions"": ""+tv/1 mine go"", ""checked"": false, ""live_ready"": false }
+                        ]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                Assert.AreEqual("ceres", hud.SolarMap.QuestMiningBodyId);
+                Assert.IsTrue(hud.SolarMap.LastOrreryHasQuestDestinationRing, "Pre-mine Step 6 must ring Ceres on the Holo-Orrery");
+
+                // 2. Post-mine Step 6 -> transitions to Ceres return destination with Step 6/7 focus button
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""next_room_entry"": ""room.c07_exchange"",
+                        ""checkpoints"": [
+                            { ""id"": ""scan"", ""title"": ""Scan site"", ""instructions"": ""+tv/1 scan go"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""sound"", ""title"": ""Sound pocket"", ""instructions"": ""+tv/1 sound go"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""mine"", ""title"": ""Mine 1t carbon_ore"", ""instructions"": ""+tv/1 mine go"", ""checked"": true, ""live_ready"": true }
+                        ]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                Assert.AreEqual("ceres", hud.SolarMap.QuestDestinationPortId);
+                Assert.AreEqual("Ceres Freeport", hud.SolarMap.QuestDestinationPortLabel);
+                Assert.AreEqual("QUEST [6/7]: CERES", hud.SolarMap.QuestFocusButtonLabelSnapshot);
+                Assert.IsTrue(hud.SolarMap.FocusQuestDestinationPort());
+                Assert.AreEqual("ceres", hud.SolarMap.SelectedPortId);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
