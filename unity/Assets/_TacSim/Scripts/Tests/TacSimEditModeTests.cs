@@ -12393,5 +12393,60 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestGuidedTourRoadmap_TracksAllSevenStepsAndRendersJournalHeader()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestGuidedTourRoadmapTestRoot");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                var json = JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#18"",
+                    ""room_name"": ""Registry & Co-op Desk"",
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""Step 1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""Step 2"" }
+                    ],
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"",
+                        ""title"": ""Metals Down the Corridor"",
+                        ""ready_to_finish"": true,
+                        ""checkpoints"": []
+                    }],
+                    ""available"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_04_return_haul"",
+                        ""title"": ""A Return Load for Ceres"",
+                        ""checkpoints"": []
+                    }]
+                }");
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(json));
+
+                var steps = new List<TacSim.UI.GuidedTourRoadmapStep>();
+                Assert.IsTrue(hud.QuestJournal.TryGetGuidedTourRoadmap(steps));
+                Assert.AreEqual(7, steps.Count);
+                Assert.AreEqual(TacSim.UI.GuidedTourStepStatus.Completed, steps[0].Status);
+                Assert.AreEqual("Co-op Charter", steps[0].ShortLabel);
+                Assert.AreEqual(TacSim.UI.GuidedTourStepStatus.Completed, steps[1].Status);
+                Assert.AreEqual(TacSim.UI.GuidedTourStepStatus.Active, steps[2].Status);
+                Assert.IsTrue(steps[2].ReadyToTurnIn);
+                Assert.AreEqual(TacSim.UI.GuidedTourStepStatus.Available, steps[3].Status);
+                Assert.AreEqual(TacSim.UI.GuidedTourStepStatus.Upcoming, steps[4].Status);
+                Assert.AreEqual("Sell Mined Ore", steps[6].ShortLabel);
+
+                string snap = hud.QuestJournal.GuidedTourRoadmapSnapshot;
+                Assert.IsTrue(snap.Contains("[✓] 1. Co-op Charter"), snap);
+                Assert.IsTrue(snap.Contains("[?] 3. Metals Haul"), snap);
+                Assert.IsTrue(snap.Contains("[!] 4. Return Load"), snap);
+                Assert.IsTrue(snap.Contains("[○] 7. Sell Mined Ore"), snap);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

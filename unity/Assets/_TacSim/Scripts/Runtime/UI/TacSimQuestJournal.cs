@@ -191,6 +191,43 @@ namespace TacSim.UI
         }
     }
 
+    public enum GuidedTourStepStatus
+    {
+        Completed = 0,
+        Active = 1,
+        Available = 2,
+        Upcoming = 3
+    }
+
+    public readonly struct GuidedTourRoadmapStep
+    {
+        public readonly int Step;
+        public readonly string Key;
+        public readonly string ShortLabel;
+        public readonly string GiverLabel;
+        public readonly string LocationLabel;
+        public readonly GuidedTourStepStatus Status;
+        public readonly bool ReadyToTurnIn;
+
+        public GuidedTourRoadmapStep(
+            int step,
+            string key,
+            string shortLabel,
+            string giverLabel,
+            string locationLabel,
+            GuidedTourStepStatus status,
+            bool readyToTurnIn)
+        {
+            Step = step;
+            Key = key ?? string.Empty;
+            ShortLabel = shortLabel ?? string.Empty;
+            GiverLabel = giverLabel ?? string.Empty;
+            LocationLabel = locationLabel ?? string.Empty;
+            Status = status;
+            ReadyToTurnIn = readyToTurnIn;
+        }
+    }
+
     /// <summary>
     /// WoW-style Quest System for Unity:
     /// 1. Interactive NPC Quest Dialog Modal (narrative, itemized requirements/objectives, rewards,
@@ -346,6 +383,27 @@ namespace TacSim.UI
                 return allDone
                     ? $"CORRIDOR CAPTAIN {bar} {done}/{total}"
                     : $"TOUR {bar} {done}/{total}";
+            }
+        }
+
+        public string GuidedTourRoadmapSnapshot
+        {
+            get
+            {
+                var steps = new List<GuidedTourRoadmapStep>(GuidedTourRoadmapMeta.Length);
+                if (!TryGetGuidedTourRoadmap(steps)) return string.Empty;
+                var sb = new StringBuilder(192);
+                for (int i = 0; i < steps.Count; i++)
+                {
+                    if (i > 0) sb.Append("  ");
+                    var s = steps[i];
+                    string badge = s.Status == GuidedTourStepStatus.Completed ? "[✓]"
+                        : s.Status == GuidedTourStepStatus.Active ? (s.ReadyToTurnIn ? "[?]" : "[▸]")
+                        : s.Status == GuidedTourStepStatus.Available ? "[!]"
+                        : "[○]";
+                    sb.Append(badge).Append(' ').Append(s.Step).Append(". ").Append(s.ShortLabel);
+                }
+                return sb.ToString();
             }
         }
 
@@ -1812,16 +1870,63 @@ namespace TacSim.UI
             return keys;
         }
 
+        private static readonly (string key, string shortLabel, string giverLabel, string locationLabel)[] GuidedTourRoadmapMeta =
+        {
+            ("tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll", "Co-op Charter", "Maren Halvorsen", "Ceres Arrivals -> Registry"),
+            ("tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel", "Locker & Tanks", "Ilse Oduya-Brandt", "Ceres Chandlery & Exchange"),
+            ("tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery", "Metals Haul", "Ilse Oduya-Brandt", "Ceres -> Stickney Receiving"),
+            ("tacsim.quests.guided_onboarding/quest.guide_04_return_haul", "Return Load", "Jonas Achterberg-Nkemelu", "Stickney -> Ceres Chandlery"),
+            ("tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector", "Dray-P Refit", "Ilse Oduya-Brandt", "Ceres Registry -> Exchange"),
+            ("tacsim.quests.guided_onboarding/quest.guide_06_surface_mining", "Surface Mining", "Rosalind Qureshi-Mbeki", "Ceres Surface Landing Site"),
+            ("tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore", "Sell Mined Ore", "Rosalind Qureshi-Mbeki", "Ceres -> Stickney Service")
+        };
+
         private static readonly string[] GuidedTourKeys =
         {
-            "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
-            "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel",
-            "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
-            "tacsim.quests.guided_onboarding/quest.guide_04_return_haul",
-            "tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector",
-            "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
-            "tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore"
+            GuidedTourRoadmapMeta[0].key,
+            GuidedTourRoadmapMeta[1].key,
+            GuidedTourRoadmapMeta[2].key,
+            GuidedTourRoadmapMeta[3].key,
+            GuidedTourRoadmapMeta[4].key,
+            GuidedTourRoadmapMeta[5].key,
+            GuidedTourRoadmapMeta[6].key
         };
+
+        public bool TryGetGuidedTourRoadmap(List<GuidedTourRoadmapStep> dest)
+        {
+            if (dest == null) return false;
+            dest.Clear();
+            if (!TryGetGuidedTourProgress(out _, out _, out _, out _))
+                return false;
+
+            var doneSet = new HashSet<string>(StringComparer.Ordinal);
+            for (int i = 0; i < LatestPanel.Completed.Count; i++)
+                doneSet.Add(LatestPanel.Completed[i].Key);
+
+            var activeMap = new Dictionary<string, MushActiveQuest>(StringComparer.Ordinal);
+            for (int i = 0; i < LatestPanel.Active.Count; i++)
+                activeMap[LatestPanel.Active[i].Key] = LatestPanel.Active[i];
+
+            var availSet = new HashSet<string>(StringComparer.Ordinal);
+            for (int i = 0; i < LatestPanel.Available.Count; i++)
+                availSet.Add(LatestPanel.Available[i].Key);
+
+            for (int i = 0; i < GuidedTourRoadmapMeta.Length; i++)
+            {
+                var m = GuidedTourRoadmapMeta[i];
+                activeMap.TryGetValue(m.key, out var activeMatch);
+                GuidedTourStepStatus status = doneSet.Contains(m.key)
+                    ? GuidedTourStepStatus.Completed
+                    : activeMatch != null
+                        ? GuidedTourStepStatus.Active
+                        : availSet.Contains(m.key)
+                            ? GuidedTourStepStatus.Available
+                            : GuidedTourStepStatus.Upcoming;
+                bool ready = activeMatch != null && (activeMatch.CanFinishNow || activeMatch.ReadyToFinish);
+                dest.Add(new GuidedTourRoadmapStep(i + 1, m.key, m.shortLabel, m.giverLabel, m.locationLabel, status, ready));
+            }
+            return true;
+        }
 
         private static int GuidedStepNumber(string key)
         {
@@ -2170,6 +2275,42 @@ namespace TacSim.UI
                 }
 
                 var sb = new StringBuilder(512);
+                var roadmapSteps = new List<GuidedTourRoadmapStep>(GuidedTourRoadmapMeta.Length);
+                if (TryGetGuidedTourRoadmap(roadmapSteps))
+                {
+                    sb.Append("<b><color=#FFDF77>GUIDED CORRIDOR TOUR:</color></b> ");
+                    for (int i = 0; i < roadmapSteps.Count; i++)
+                    {
+                        if (i > 0) sb.Append("  ");
+                        var s = roadmapSteps[i];
+                        string color;
+                        string badge;
+                        if (s.Status == GuidedTourStepStatus.Completed)
+                        {
+                            color = "#55EE99";
+                            badge = "[✓]";
+                        }
+                        else if (s.Status == GuidedTourStepStatus.Active)
+                        {
+                            color = s.ReadyToTurnIn ? "#55EE99" : "#FFDF77";
+                            badge = s.ReadyToTurnIn ? "[?]" : "[▸]";
+                        }
+                        else if (s.Status == GuidedTourStepStatus.Available)
+                        {
+                            color = "#FFEE55";
+                            badge = "[!]";
+                        }
+                        else
+                        {
+                            color = "#6E859C";
+                            badge = "[○]";
+                        }
+                        sb.Append("<color=").Append(color).Append('>').Append(badge).Append(' ')
+                          .Append(s.Step).Append(". ").Append(MushProtocol.EscapeUnityRichText(s.ShortLabel))
+                          .Append("</color>");
+                    }
+                    sb.Append("\n\n");
+                }
                 if (ActiveQuestSubTab == "active")
                 {
                     if (LatestPanel.Active.Count == 0)
