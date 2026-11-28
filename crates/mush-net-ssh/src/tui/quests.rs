@@ -2252,6 +2252,7 @@ pub fn render_quest_tracker_lines_full(
         } else {
             String::new()
         };
+        let step_badge = guided_step_badge(&q.key);
         lines.push(Line::from(vec![
             Span::styled(
                 format!("{sym} "),
@@ -2266,7 +2267,7 @@ pub fn render_quest_tracker_lines_full(
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!(" ({done}/{}){multi_tag}", q.checkpoints.len()),
+                format!(" ({done}/{}){step_badge}{multi_tag}", q.checkpoints.len()),
                 Style::default().add_modifier(Modifier::DIM),
             ),
         ]));
@@ -2303,6 +2304,8 @@ pub fn render_quest_tracker_lines_full(
                 "+ship/board (Board Ship)".to_string()
             } else if hop.next_exit_command == "+ship/leave" {
                 "+ship/leave (Cycle Ashore)".to_string()
+            } else if hop.next_exit_command == "+tv/bay" {
+                "+tv/bay (Vehicle Bay)".to_string()
             } else {
                 format!("-> {} ({}h)", hop.next_room_name, hop.hops)
             };
@@ -2395,10 +2398,15 @@ pub fn render_quest_tracker_lines_full(
             ),
             Span::styled(offer.giver_name.clone(), Style::default().fg(Color::Yellow)),
         ]));
+        let step_badge = guided_step_badge(&offer.key);
         let offer_title = if snap.available.len() > 1 {
-            format!("{} (+{} more)", offer.title, snap.available.len() - 1)
+            format!(
+                "{} (+{} more){step_badge}",
+                offer.title,
+                snap.available.len() - 1
+            )
         } else {
-            offer.title.clone()
+            format!("{}{step_badge}", offer.title)
         };
         lines.push(Line::from(offer_title));
         lines.push(Line::from(Span::styled(
@@ -4998,6 +5006,41 @@ mod tests {
         assert!(
             idle_txt.contains("Metals Haul (Ilse) (+1 more) [Step 3/7]"),
             "expected prioritized guided offer with [Step 3/7] on idle sheet:\n{idle_txt}"
+        );
+
+        // Tracker also renders [Step n/7] on active & idle guided offers plus +tv/bay route label
+        let bay_hop = QuestExitBreadcrumb {
+            next_room_entry: "bay".into(),
+            next_room_name: "Vehicle Bay".into(),
+            target_room_name: "Vehicle Bay".into(),
+            next_exit_command: "+tv/bay".into(),
+            hops: 1,
+        };
+        let tracker_active = join(render_quest_tracker_lines_full(
+            &snap,
+            Some(GUIDED_TOUR_KEYS[1]),
+            Some(&bay_hop),
+            None,
+            Some("ceres"),
+        ));
+        assert!(
+            tracker_active.contains("Stock the Locker (0/1) [Step 2/7]"),
+            "expected [Step 2/7] on tracker active header:\n{tracker_active}"
+        );
+        assert!(
+            tracker_active.contains("Route: +tv/bay (Vehicle Bay)"),
+            "expected +tv/bay route label on tracker:\n{tracker_active}"
+        );
+        let tracker_idle = join(render_quest_tracker_lines_full(
+            &idle_snap,
+            None,
+            None,
+            None,
+            Some("ceres"),
+        ));
+        assert!(
+            tracker_idle.contains("Metals Haul (+1 more) [Step 3/7]"),
+            "expected [Step 3/7] on idle tracker offer:\n{tracker_idle}"
         );
     }
 }
