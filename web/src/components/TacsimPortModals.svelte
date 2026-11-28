@@ -122,6 +122,25 @@
   );
   const questMining = $derived(app.quests?.surfaceMiningStatus ?? null);
   const questMiningPrep = $derived(extractSurfaceMiningPrepActions(questMining));
+  const questJobGuidance = $derived.by(() => {
+    if (questMining) {
+      return {
+        filterId: "survey" as const,
+        portLabel: "",
+        detail: "Check open survey commissions alongside your guided surface prospecting.",
+        btnLabel: "Filter Surveys (+market/jobs survey)",
+      };
+    }
+    if (questDestPort) {
+      return {
+        filterId: "haul" as const,
+        portLabel: questDestPort.portLabel,
+        detail: `Check open haulage jobs bound for ${questDestPort.portLabel} to stack bonus freight along your route.`,
+        btnLabel: "Filter Haulage (+market/jobs haul)",
+      };
+    }
+    return null;
+  });
   const questRigNextCmd = $derived.by((): { label: string; command: string } | null => {
     if (!questMining) return null;
     if (!questMining.scanDone) return { label: "Scan Site (+tv/1 scan go)", command: "+tv/1 scan go" };
@@ -602,19 +621,50 @@
 
         {:else if modal === "trade" && tradeSubView === "jobs"}
           <div class="econ-pane">
+            {#if questJobGuidance}
+              <div class="quest-banner" role="status" aria-label="active quest jobs guidance">
+                <div class="qb-text">
+                  <span class="qtag">[QUEST]</span>
+                  <strong>
+                    {#if questJobGuidance.filterId === "survey"}
+                      SURFACE SURVEY COMMISSIONS
+                    {:else}
+                      CORRIDOR HAULAGE -&gt; {questJobGuidance.portLabel.toUpperCase()}
+                    {/if}
+                  </strong>
+                  <span class="muted">— {questJobGuidance.detail}</span>
+                </div>
+                <button
+                  type="button"
+                  class="qbtn-gold"
+                  onclick={() => {
+                    activeJobFilter = questJobGuidance.filterId;
+                    onCmd(
+                      questJobGuidance.filterId === "survey"
+                        ? "+market/jobs survey"
+                        : "+market/jobs haul",
+                    );
+                  }}
+                >
+                  {questJobGuidance.btnLabel}
+                </button>
+              </div>
+            {/if}
             <div class="qty-row">
               <span class="muted">Board Filter:</span>
               {#each JOB_BOARD_FILTERS as jf (jf.id)}
+                {@const isQuestFilter = questJobGuidance?.filterId === jf.id}
                 <button
                   type="button"
                   class="qchip"
                   class:on={activeJobFilter === jf.id}
+                  class:quest-match={isQuestFilter}
                   onclick={() => {
                     activeJobFilter = jf.id;
                     onCmd(jf.cmd);
                   }}
                 >
-                  {jf.label}
+                  {isQuestFilter ? `[Q] ${jf.label}` : jf.label}
                 </button>
               {/each}
               <button type="button" class="ghost sm" onclick={() => onCmd("+sortie/crew")}>
