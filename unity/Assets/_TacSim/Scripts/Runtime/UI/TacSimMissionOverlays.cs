@@ -39,6 +39,15 @@ namespace TacSim.UI
 
         public bool HasSurfaceQuestChecklist { get; private set; }
         public string SurfaceReadingsTextForTests => _surfaceReadingsText != null ? _surfaceReadingsText.text : string.Empty;
+        public string HighlightedSurfaceQuestStepForTests { get; private set; } = string.Empty;
+        public bool IsSurfaceReturnPortButtonVisible => _surfReturnPortBtn != null && _surfReturnPortBtn.gameObject.activeSelf;
+        public string SurfaceReturnPortButtonLabel => _surfReturnPortBtnLbl != null ? _surfReturnPortBtnLbl.text : string.Empty;
+        public bool TriggerSurfaceReturnPortForTests()
+        {
+            if (!IsSurfaceReturnPortButtonVisible || string.IsNullOrEmpty(_surfReturnPortId)) return false;
+            OnCommandRequested?.Invoke($"+ship/plan {_surfReturnPortId}");
+            return true;
+        }
         public bool IsOrbitalQuestStripVisible => _orbitalQuestStrip != null && _orbitalQuestStrip.activeSelf;
         public string OrbitalQuestBannerSnapshot => _orbitalQuestText != null ? _orbitalQuestText.text : string.Empty;
         public string OrbitalQuestButtonLabel => _orbitalQuestBtnLbl != null ? _orbitalQuestBtnLbl.text : string.Empty;
@@ -108,6 +117,15 @@ namespace TacSim.UI
         private readonly List<Text> _surfaceRigBtnLabels = new List<Text>();
         private readonly List<int> _surfaceRigBtnSlots = new List<int>();
         private readonly List<Image> _familyBtnImages = new List<Image>();
+        private readonly List<Text> _familyBtnLabels = new List<Text>();
+        private Image _surfScanBtnBg;
+        private Image _surfSoundBtnBg;
+        private Image _surfMineBtnBg;
+        private Image _surfRecoverBtnBg;
+        private Button _surfReturnPortBtn;
+        private Text _surfReturnPortBtnLbl;
+        private string _surfReturnPortId = string.Empty;
+        private static readonly string[] SurfaceFamilyNames = { "volatiles", "metals", "strategic", "carbon" };
 
         // Diegetic OOC Simulator Selector Console Modal (`room.simulator_lobby`)
         private GameObject _arenaLobbyModal;
@@ -404,6 +422,7 @@ namespace TacSim.UI
         {
             _font = sharedFont != null ? sharedFont : Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
             _familyBtnImages.Clear();
+            _familyBtnLabels.Clear();
             _teamBtnImages.Clear();
             _unitBtnImages.Clear();
             _aiFillBtnImages.Clear();
@@ -496,8 +515,11 @@ namespace TacSim.UI
             _dismissedDebriefMatchId = 0;
             _orbitalQuestPlanPort = string.Empty;
             _orbitalQuestOpenGround = false;
+            _surfReturnPortId = string.Empty;
+            HighlightedSurfaceQuestStepForTests = string.Empty;
             if (_orbitalOpsBar != null) _orbitalOpsBar.SetActive(false);
             if (_orbitalQuestStrip != null) _orbitalQuestStrip.SetActive(false);
+            if (_surfReturnPortBtn != null) _surfReturnPortBtn.gameObject.SetActive(false);
             if (_spaceFireCard != null) _spaceFireCard.SetActive(false);
             if (_surfaceHudRoot != null) _surfaceHudRoot.SetActive(false);
             if (_arenaLobbyModal != null) _arenaLobbyModal.SetActive(false);
@@ -954,11 +976,10 @@ namespace TacSim.UI
             var fHlg = famRow.AddComponent<HorizontalLayoutGroup>();
             fHlg.spacing = 6f; fHlg.childControlWidth = true; fHlg.childControlHeight = true; fHlg.childForceExpandWidth = true;
 
-            string[] families = { "volatiles", "metals", "strategic", "carbon" };
-            for (int i = 0; i < families.Length; i++)
+            for (int i = 0; i < SurfaceFamilyNames.Length; i++)
             {
                 int idx = i;
-                string fam = families[i];
+                string fam = SurfaceFamilyNames[i];
                 var b = CreateBtn(famRow.transform, fam.ToUpperInvariant(), new Color(0.14f, 0.28f, 0.38f), () =>
                 {
                     _surface?.SetOreFamilyFilter(fam);
@@ -966,6 +987,7 @@ namespace TacSim.UI
                     OnCommandRequested?.Invoke($"surface:family:{fam}");
                 });
                 _familyBtnImages.Add(b.GetComponent<Image>());
+                _familyBtnLabels.Add(b.GetComponentInChildren<Text>());
             }
             HighlightPillGroup(_familyBtnImages, 0, new Color(0.22f, 0.65f, 0.85f));
 
@@ -978,12 +1000,19 @@ namespace TacSim.UI
             aHlg.spacing = 5f; aHlg.padding = new RectOffset(8, 8, 6, 6);
             aHlg.childControlWidth = true; aHlg.childControlHeight = true; aHlg.childForceExpandWidth = true;
 
-            CreateBtn(actionBar.transform, "SCAN 9 FIELDS", new Color(0.14f, 0.44f, 0.54f), () => OnCommandRequested?.Invoke("surface:scan"));
-            CreateBtn(actionBar.transform, "SOUND POCKETS", new Color(0.52f, 0.36f, 0.12f), () => OnCommandRequested?.Invoke("surface:sound"));
-            CreateBtn(actionBar.transform, "CORE / DRILL", new Color(0.14f, 0.52f, 0.34f), () => OnCommandRequested?.Invoke("surface:mine"));
+            _surfScanBtnBg = CreateBtn(actionBar.transform, "SCAN 9 FIELDS", new Color(0.14f, 0.44f, 0.54f), () => OnCommandRequested?.Invoke("surface:scan")).GetComponent<Image>();
+            _surfSoundBtnBg = CreateBtn(actionBar.transform, "SOUND POCKETS", new Color(0.52f, 0.36f, 0.12f), () => OnCommandRequested?.Invoke("surface:sound")).GetComponent<Image>();
+            _surfMineBtnBg = CreateBtn(actionBar.transform, "CORE / DRILL", new Color(0.14f, 0.52f, 0.34f), () => OnCommandRequested?.Invoke("surface:mine")).GetComponent<Image>();
             CreateBtn(actionBar.transform, "STAKE CLAIM", new Color(0.32f, 0.42f, 0.18f), () => OnCommandRequested?.Invoke("surface:claim_stake"));
             CreateBtn(actionBar.transform, "UNLOAD HOPPER", new Color(0.22f, 0.40f, 0.48f), () => OnCommandRequested?.Invoke("surface:unload"));
-            CreateBtn(actionBar.transform, "RECOVER RAMP", new Color(0.28f, 0.28f, 0.44f), () => OnCommandRequested?.Invoke("surface:recover"));
+            _surfRecoverBtnBg = CreateBtn(actionBar.transform, "RECOVER RAMP", new Color(0.28f, 0.28f, 0.44f), () => OnCommandRequested?.Invoke("surface:recover")).GetComponent<Image>();
+            _surfReturnPortBtn = CreateBtn(actionBar.transform, "RETURN: CERES", new Color(0.18f, 0.54f, 0.32f), () =>
+            {
+                if (!string.IsNullOrEmpty(_surfReturnPortId))
+                    OnCommandRequested?.Invoke($"+ship/plan {_surfReturnPortId}");
+            });
+            _surfReturnPortBtnLbl = _surfReturnPortBtn.GetComponentInChildren<Text>();
+            _surfReturnPortBtn.gameObject.SetActive(false);
             CreateBtn(actionBar.transform, "PLANET CHART [G]", new Color(0.14f, 0.38f, 0.44f), () => OnOpenGroundChartRequested?.Invoke());
             CreateBtn(actionBar.transform, "CAB / CHASE CAM", new Color(0.24f, 0.32f, 0.42f), () => OnToggleVehicleCameraViewRequested?.Invoke());
             CreateBtn(actionBar.transform, "RETURN TO BAY", new Color(0.48f, 0.18f, 0.20f), () =>
@@ -1036,15 +1065,64 @@ namespace TacSim.UI
 
             var sb = new StringBuilder(384);
             HasSurfaceQuestChecklist = false;
+            HighlightedSurfaceQuestStepForTests = string.Empty;
+            _surfReturnPortId = string.Empty;
+            if (_surfScanBtnBg != null) _surfScanBtnBg.color = new Color(0.14f, 0.44f, 0.54f);
+            if (_surfSoundBtnBg != null) _surfSoundBtnBg.color = new Color(0.52f, 0.36f, 0.12f);
+            if (_surfMineBtnBg != null) _surfMineBtnBg.color = new Color(0.14f, 0.52f, 0.34f);
+            if (_surfRecoverBtnBg != null) _surfRecoverBtnBg.color = new Color(0.28f, 0.28f, 0.44f);
+            if (_surfReturnPortBtn != null) _surfReturnPortBtn.gameObject.SetActive(false);
+            string recommendedFam = string.Empty;
             if (_questJournal != null && _questJournal.TryGetActiveSurfaceMiningStatus(out var qMine))
             {
                 HasSurfaceQuestChecklist = true;
+                Color questGold = new Color(0.72f, 0.54f, 0.12f);
+                if (!qMine.ScanDone)
+                {
+                    HighlightedSurfaceQuestStepForTests = "scan";
+                    if (_surfScanBtnBg != null) _surfScanBtnBg.color = questGold;
+                }
+                else if (!qMine.SoundDone)
+                {
+                    HighlightedSurfaceQuestStepForTests = "sound";
+                    if (_surfSoundBtnBg != null) _surfSoundBtnBg.color = questGold;
+                }
+                else if (!qMine.MineDone)
+                {
+                    HighlightedSurfaceQuestStepForTests = "mine";
+                    if (_surfMineBtnBg != null) _surfMineBtnBg.color = questGold;
+                }
+                else
+                {
+                    HighlightedSurfaceQuestStepForTests = "recover";
+                    if (_surfRecoverBtnBg != null) _surfRecoverBtnBg.color = questGold;
+                }
+                if (!qMine.MineDone)
+                    recommendedFam = qMine.RecommendedFamily ?? string.Empty;
+
                 string scanMark = qMine.ScanDone ? "<color=#55EE99>[✓]</color>" : "<color=#99BBCC>[ ]</color>";
                 string soundMark = qMine.SoundDone ? "<color=#55EE99>[✓]</color>" : "<color=#99BBCC>[ ]</color>";
                 string mineMark = qMine.MineDone ? "<color=#55EE99>[✓]</color>" : "<color=#99BBCC>[ ]</color>";
                 sb.AppendLine($"<color=#FFDD44><b>[QUEST] {MushProtocol.EscapeUnityRichText(qMine.QuestTitle)}</b></color>");
                 sb.AppendLine($"{scanMark} Scan Site   {soundMark} Sound Pocket   {mineMark} Mine {MushProtocol.EscapeUnityRichText(qMine.TargetOreSlug)}");
                 sb.AppendLine($"<color=#77DDFF>{MushProtocol.EscapeUnityRichText(qMine.FormatPrepHintLine())}</color>");
+                if (qMine.MineDone && _questJournal.TryGetActiveDestinationPort(out var retDest))
+                {
+                    _surfReturnPortId = retDest.PortId;
+                    if (_surfReturnPortBtnLbl != null)
+                        _surfReturnPortBtnLbl.text = $"RETURN: {retDest.PortId.ToUpperInvariant()}";
+                    if (_surfReturnPortBtn != null)
+                        _surfReturnPortBtn.gameObject.SetActive(true);
+                    sb.AppendLine($"<color=#66FFAA><b>Return:</b> {MushProtocol.EscapeUnityRichText(retDest.PortLabel)} (+ship/plan {MushProtocol.EscapeUnityRichText(retDest.PortId)})</color>");
+                }
+            }
+            for (int i = 0; i < _familyBtnLabels.Count && i < SurfaceFamilyNames.Length; i++)
+            {
+                if (_familyBtnLabels[i] == null) continue;
+                string famUp = SurfaceFamilyNames[i].ToUpperInvariant();
+                bool isQuestFam = !string.IsNullOrEmpty(recommendedFam) &&
+                                  string.Equals(SurfaceFamilyNames[i], recommendedFam, StringComparison.OrdinalIgnoreCase);
+                _familyBtnLabels[i].text = isQuestFam ? $"[Q] {famUp}" : famUp;
             }
             sb.AppendLine($"<color=#FFEE77>{MushProtocol.EscapeUnityRichText(_surface.StatusSummaryLine)}</color>");
             if (!string.IsNullOrEmpty(_surface.ActiveRunSummary))

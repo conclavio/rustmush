@@ -13309,5 +13309,100 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void SurfaceRoverHud_HighlightsActiveStep6ActionWashFamilyAndPostMineReturnButton()
+        {
+            var rootGo = new UnityEngine.GameObject("SurfaceRoverHudStep6TestRoot");
+            try
+            {
+                var surfGo = new UnityEngine.GameObject("SurfaceStage");
+                surfGo.transform.SetParent(rootGo.transform, false);
+                var surface = surfGo.AddComponent<TacSim.Surface.SurfaceMiningController>();
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.Overlays.BindControllers(surface, null, null);
+                surface.EnterSurfaceMode();
+
+                string emitted = string.Empty;
+                hud.Overlays.OnCommandRequested += c => emitted = c;
+
+                // 1. Scan pending -> SCAN highlighted, Return button hidden
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""next_room_entry"": ""room.c07_exchange"",
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Surface scan"", ""instructions"": ""+tv/1 scan go"", ""checked"": false, ""live_ready"": false },
+                            { ""id"": ""sound_mineral_pocket"", ""title"": ""Sound pocket"", ""instructions"": ""+tv/1 sound go"", ""checked"": false, ""live_ready"": false },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""instructions"": ""+tv/1 mine go"", ""checked"": false, ""live_ready"": false }
+                        ]
+                    }]
+                }")));
+                Assert.AreEqual("scan", hud.Overlays.HighlightedSurfaceQuestStepForTests);
+                Assert.IsFalse(hud.Overlays.IsSurfaceReturnPortButtonVisible);
+
+                // 2. Scan done, Sound pending -> SOUND highlighted
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""next_room_entry"": ""room.c07_exchange"",
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Surface scan"", ""instructions"": ""+tv/1 scan go"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""sound_mineral_pocket"", ""title"": ""Sound pocket"", ""instructions"": ""+tv/1 sound go"", ""checked"": false, ""live_ready"": false },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""instructions"": ""+tv/1 mine go"", ""checked"": false, ""live_ready"": false }
+                        ]
+                    }]
+                }")));
+                Assert.AreEqual("sound", hud.Overlays.HighlightedSurfaceQuestStepForTests);
+
+                // 3. Scan+Sound done, Mine pending -> MINE highlighted
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""next_room_entry"": ""room.c07_exchange"",
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Surface scan"", ""instructions"": ""+tv/1 scan go"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""sound_mineral_pocket"", ""title"": ""Sound pocket"", ""instructions"": ""+tv/1 sound go"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""instructions"": ""+tv/1 mine go"", ""checked"": false, ""live_ready"": false }
+                        ]
+                    }]
+                }")));
+                Assert.AreEqual("mine", hud.Overlays.HighlightedSurfaceQuestStepForTests);
+
+                // 4. Mine done -> RECOVER highlighted & 1-click RETURN: CERES button visible (+ship/plan ceres)
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""next_room_entry"": ""room.c07_exchange"",
+                        ""ready_to_finish"": true,
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Surface scan"", ""instructions"": ""+tv/1 scan go"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""sound_mineral_pocket"", ""title"": ""Sound pocket"", ""instructions"": ""+tv/1 sound go"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""instructions"": ""+tv/1 mine go"", ""checked"": true, ""live_ready"": true }
+                        ]
+                    }]
+                }")));
+                Assert.AreEqual("recover", hud.Overlays.HighlightedSurfaceQuestStepForTests);
+                Assert.IsTrue(hud.Overlays.IsSurfaceReturnPortButtonVisible);
+                Assert.AreEqual("RETURN: CERES", hud.Overlays.SurfaceReturnPortButtonLabel);
+                StringAssert.Contains("Ceres Freeport", hud.Overlays.SurfaceReadingsTextForTests);
+                Assert.IsTrue(hud.Overlays.TriggerSurfaceReturnPortForTests());
+                Assert.AreEqual("+ship/plan ceres", emitted);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
