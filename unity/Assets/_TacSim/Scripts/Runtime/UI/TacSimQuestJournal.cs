@@ -131,6 +131,52 @@ namespace TacSim.UI
         }
     }
 
+    public readonly struct QuestSailingPreflightReadiness
+    {
+        public readonly int PropellantTonnes;
+        public readonly bool PropellantOk;
+        public readonly int ProvisionsDays;
+        public readonly bool ProvisionsOk;
+        public readonly bool CargoRequired;
+        public readonly string CargoLabel;
+        public readonly int CargoQty;
+        public readonly int CargoTarget;
+        public readonly bool CargoOk;
+        public readonly bool Ready;
+
+        public QuestSailingPreflightReadiness(
+            int propellantTonnes,
+            int provisionsDays,
+            bool cargoRequired,
+            string cargoLabel,
+            int cargoQty,
+            int cargoTarget)
+        {
+            PropellantTonnes = Mathf.Max(0, propellantTonnes);
+            PropellantOk = PropellantTonnes > 0;
+            ProvisionsDays = Mathf.Max(0, provisionsDays);
+            ProvisionsOk = ProvisionsDays > 0;
+            CargoRequired = cargoRequired;
+            CargoLabel = cargoLabel ?? string.Empty;
+            CargoQty = Mathf.Max(0, cargoQty);
+            CargoTarget = Mathf.Max(0, cargoTarget);
+            CargoOk = !cargoRequired || CargoQty >= Mathf.Max(1, CargoTarget);
+            Ready = PropellantOk && ProvisionsOk && CargoOk;
+        }
+
+        public string FormatInlineSummary()
+        {
+            string cargoPart = CargoRequired
+                ? $" | {CargoLabel} {CargoQty}/{CargoTarget}" + (CargoOk ? " OK" : "!")
+                : string.Empty;
+            if (Ready)
+                return $"[PRE-FLIGHT OK] Fuel {PropellantTonnes}t | Stores {ProvisionsDays}d{cargoPart}";
+            string fuelTxt = PropellantOk ? $"{PropellantTonnes}t OK" : "0t!";
+            string storesTxt = ProvisionsOk ? $"{ProvisionsDays}d OK" : "0d!";
+            return $"[CHECK BEFORE UNDOCK] Fuel {fuelTxt} | Stores {storesTxt}{cargoPart}";
+        }
+    }
+
     public readonly struct QuestDestinationHint
     {
         public readonly string QuestTitle;
@@ -347,6 +393,37 @@ namespace TacSim.UI
                 trade.HoldMassTonnes,
                 trade.StoresCrewDays,
                 trade.TankTonnes);
+            return true;
+        }
+
+        public bool TryGetSailingPreflightReadiness(TacSimTradeAndShipState trade, out QuestSailingPreflightReadiness readiness)
+        {
+            readiness = default;
+            if (trade == null) return false;
+            if (!TryGetActiveDestinationPort(out _)) return false;
+
+            bool cargoRequired = false;
+            string cargoLabel = string.Empty;
+            int cargoQty = 0;
+            int cargoTarget = 0;
+            QuestTradeNeed need = default;
+            if (TryGetActiveTradeNeed(out need) &&
+                !string.Equals(need.CommoditySlug, "propellant", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(need.CommoditySlug, "provisions", StringComparison.OrdinalIgnoreCase))
+            {
+                cargoRequired = true;
+                cargoLabel = need.CommoditySlug.Replace('_', ' ');
+                cargoTarget = Mathf.Max(1, need.TargetQuantity);
+                cargoQty = trade.GetHoldCommodityQuantity(need.CommoditySlug);
+            }
+
+            readiness = new QuestSailingPreflightReadiness(
+                trade.TankTonnes,
+                trade.StoresCrewDays,
+                cargoRequired,
+                cargoLabel,
+                cargoQty,
+                cargoTarget);
             return true;
         }
 

@@ -316,6 +316,7 @@ namespace TacSim.UI
         private RectTransform _listingsViewportRect;
         private GameObject _sailingQuestBanner;
         private Text _sailingQuestBannerText;
+        private Button _sailingExchangeJumpBtn;
         private RectTransform _sailingOrderRow1Rect;
         private RectTransform _sailingOrderRow2Rect;
         private RectTransform _sailingOutputViewportRect;
@@ -327,6 +328,8 @@ namespace TacSim.UI
         public string ExchangeQuestBannerText => _exchangeQuestBannerText != null ? _exchangeQuestBannerText.text : string.Empty;
         public bool IsSailingQuestBannerVisible => _sailingQuestBanner != null && _sailingQuestBanner.activeSelf;
         public string SailingQuestBannerText => _sailingQuestBannerText != null ? _sailingQuestBannerText.text : string.Empty;
+        public string SailingPreflightSummarySnapshot { get; private set; } = string.Empty;
+        public bool IsSailingExchangeJumpVisible => _sailingExchangeJumpBtn != null && _sailingExchangeJumpBtn.gameObject.activeSelf;
         public int HighlightedQuestPortIndex { get; private set; } = -1;
 
         // Modal dialog
@@ -1092,7 +1095,13 @@ namespace TacSim.UI
             _sailingQuestBanner = CreatePanel(_sailingTabBody.transform, "SailingQuestBanner", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -72f), new Vector2(0f, -44f), new Color(0.24f, 0.18f, 0.05f, 0.96f));
             CreatePanel(_sailingQuestBanner.transform, "QuestAccent", new Vector2(0f, 0f), new Vector2(0f, 1f), Vector2.zero, new Vector2(3f, 0f), new Color(1f, 0.84f, 0.24f, 1f));
             _sailingQuestBannerText = CreateText(_sailingQuestBanner.transform, "[QUEST] Destination", 12, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(1f, 0.90f, 0.45f));
+            _sailingQuestBannerText.resizeTextForBestFit = true;
+            _sailingQuestBannerText.resizeTextMinSize = 9;
+            _sailingQuestBannerText.resizeTextMaxSize = 12;
             SetRect(_sailingQuestBannerText.rectTransform, new Vector2(0f, 0f), new Vector2(1f, 1f), new Vector2(10f, 0f), new Vector2(-180f, 0f));
+            _sailingExchangeJumpBtn = CreateButton(_sailingQuestBanner.transform, "EXCHANGE", new Color(0.20f, 0.44f, 0.56f), () => JumpFromSailingToExchange());
+            SetRect(_sailingExchangeJumpBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-264f, 3f), new Vector2(-178f, -3f));
+            _sailingExchangeJumpBtn.gameObject.SetActive(false);
             var selQuestPortBtn = CreateButton(_sailingQuestBanner.transform, "SELECT QUEST PORT", new Color(0.56f, 0.40f, 0.10f), () => ApplyQuestDestinationPort());
             SetRect(selQuestPortBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-172f, 3f), new Vector2(-6f, -3f));
             _sailingQuestBanner.SetActive(false);
@@ -2508,16 +2517,36 @@ namespace TacSim.UI
             return true;
         }
 
+        public void JumpFromSailingToExchange()
+        {
+            SwitchTradeTerminalTab(TradeTerminalTab.Exchange, autoQuery: false);
+        }
+
         private void RefreshSailingQuestGuidance()
         {
             QuestDestinationHint hint = default;
             bool hasDest = QuestJournal != null && QuestJournal.TryGetActiveDestinationPort(out hint);
             HighlightedQuestPortIndex = hasDest ? CorridorDestinationIndex(hint.PortId) : -1;
 
+            QuestSailingPreflightReadiness preflight = default;
+            bool hasPreflight = hasDest && _boundTradeState != null &&
+                QuestJournal.TryGetSailingPreflightReadiness(_boundTradeState, out preflight);
+            SailingPreflightSummarySnapshot = hasPreflight ? preflight.FormatInlineSummary() : string.Empty;
+
+            bool showExchangeJump = hasPreflight && !preflight.Ready;
+            if (_sailingExchangeJumpBtn != null)
+                _sailingExchangeJumpBtn.gameObject.SetActive(showExchangeJump);
+
             if (_sailingQuestBanner != null)
                 _sailingQuestBanner.SetActive(hasDest);
             if (hasDest && _sailingQuestBannerText != null)
-                _sailingQuestBannerText.text = $"[QUEST] Destination: {hint.PortLabel.ToUpperInvariant()} — {hint.QuestTitle}";
+            {
+                SetRect(_sailingQuestBannerText.rectTransform, new Vector2(0f, 0f), new Vector2(1f, 1f),
+                    new Vector2(10f, 0f), new Vector2(showExchangeJump ? -270f : -180f, 0f));
+                _sailingQuestBannerText.text = hasPreflight
+                    ? $"[QUEST] Dest: {hint.PortLabel.ToUpperInvariant()}  |  {SailingPreflightSummarySnapshot}"
+                    : $"[QUEST] Destination: {hint.PortLabel.ToUpperInvariant()} — {hint.QuestTitle}";
+            }
 
             float shift = hasDest ? -32f : 0f;
             if (_sailingOrderRow1Rect != null)
