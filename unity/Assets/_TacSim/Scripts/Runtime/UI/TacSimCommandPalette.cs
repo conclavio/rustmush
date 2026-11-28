@@ -695,35 +695,48 @@ namespace TacSim.UI
                 if (tracked != null)
                 {
                     string pushedSuggestedCmd = string.Empty;
+                    string routeCmdTrimmed = string.Empty;
+                    string trackedStepSfx = FormatQuestStepSuffix(tracked.Key);
+                    string trackedTag = FormatQuestReadinessTag(tracked);
+                    string tagPfx = !string.IsNullOrEmpty(trackedTag) ? $"{trackedTag} " : string.Empty;
                     if (_quests.TrackerRouteHops > 0 && !string.IsNullOrEmpty(_quests.TrackerRouteCommand))
                     {
                         string rCmd = _quests.TrackerRouteCommand;
+                        routeCmdTrimmed = rCmd.Trim();
                         string rRoom = _quests.TrackerRouteRoomName;
                         int rHops = _quests.TrackerRouteHops;
                         string rTitle = FormatQuestRouteTitle(rCmd, rRoom, rHops);
                         string hopWord = rHops == 1 ? "hop" : "hops";
                         _allEntries.Add(new PaletteEntry(
                             "QUEST ROUTE",
-                            rTitle,
-                            $"{rHops} {hopWord} · {rCmd}",
+                            $"{rTitle}{trackedStepSfx}",
+                            $"{tagPfx}{rHops} {hopWord} · {rCmd}",
                             () => OnCommandRequested?.Invoke(rCmd),
                             $"quest route walk board ashore vehicle bay {rRoom} {rCmd} {tracked.Title}"));
                     }
-                    else if (_quests.TryGetStowageAwareSuggestedCommand(tracked, out string sugLbl, out string sugCmd))
+                    if (_quests.TryGetStowageAwareSuggestedCommand(tracked, out string sugLbl, out string sugCmd))
                     {
                         string cmdCopy = sugCmd;
-                        pushedSuggestedCmd = (cmdCopy ?? string.Empty).Trim();
-                        string trackedTag = FormatQuestReadinessTag(tracked);
-                        string tagPfx = !string.IsNullOrEmpty(trackedTag) ? $"{trackedTag} " : string.Empty;
-                        string sub = !string.IsNullOrEmpty(tracked.NextStep)
-                            ? $"{tagPfx}{cmdCopy} — {tracked.NextStep}"
-                            : $"{tagPfx}{cmdCopy}";
-                        _allEntries.Add(new PaletteEntry(
-                            "QUEST STEP",
-                            $"Next: {sugLbl}",
-                            sub,
-                            () => OnPrefillCommandRequested?.Invoke(cmdCopy),
-                            $"quest next step action {sugLbl} {cmdCopy} {tracked.Title}"));
+                        string sugTrimmed = (cmdCopy ?? string.Empty).Trim();
+                        bool dupRoute = !string.IsNullOrEmpty(routeCmdTrimmed) &&
+                                        string.Equals(sugTrimmed, routeCmdTrimmed, StringComparison.OrdinalIgnoreCase);
+                        bool dupFinish = tracked.CanFinishNow &&
+                                         string.Equals(sugTrimmed, (tracked.FinishCmd ?? string.Empty).Trim(), StringComparison.OrdinalIgnoreCase);
+                        bool dupCheck = tracked.CanCheckNow &&
+                                        string.Equals(sugTrimmed, (tracked.CheckCmd ?? string.Empty).Trim(), StringComparison.OrdinalIgnoreCase);
+                        if (!dupRoute && !dupFinish && !dupCheck)
+                        {
+                            pushedSuggestedCmd = sugTrimmed;
+                            string sub = !string.IsNullOrEmpty(tracked.NextStep)
+                                ? $"{tagPfx}{cmdCopy} — {tracked.NextStep}"
+                                : $"{tagPfx}{cmdCopy}";
+                            _allEntries.Add(new PaletteEntry(
+                                "QUEST STEP",
+                                $"Next: {sugLbl}{trackedStepSfx}",
+                                sub,
+                                () => OnPrefillCommandRequested?.Invoke(cmdCopy),
+                                $"quest next step action {sugLbl} {cmdCopy} {tracked.Title}"));
+                        }
                     }
 
                     if (TacSimQuestJournal.TryGetSurfaceMiningStatusForQuest(tracked, out var mining))
@@ -831,6 +844,7 @@ namespace TacSim.UI
                 }
                 else if (_quests.TryGetNextGuidedOffer(out var nextGuided))
                 {
+                    string nextStepSfx = $" [Step {nextGuided.Step}/7]";
                     if (_quests.TrackerRouteHops > 0 && !string.IsNullOrEmpty(_quests.TrackerRouteCommand))
                     {
                         string rCmd = _quests.TrackerRouteCommand;
@@ -840,7 +854,7 @@ namespace TacSim.UI
                         string hopWord = rHops == 1 ? "hop" : "hops";
                         _allEntries.Add(new PaletteEntry(
                             "QUEST ROUTE",
-                            rTitle,
+                            $"{rTitle}{nextStepSfx}",
                             $"{rHops} {hopWord} to {nextGuided.GiverRoomName} · {rCmd}",
                             () => OnCommandRequested?.Invoke(rCmd),
                             $"quest route walk board ashore vehicle bay {rRoom} {nextGuided.GiverRoomName} {rCmd} next guided"));
@@ -849,12 +863,14 @@ namespace TacSim.UI
                     string curPort = _station != null
                         ? TacSimQuestJournal.InferStationPortFromRoomEntry(_station.ActiveRoomEntryId)
                         : null;
+                    if (string.IsNullOrEmpty(curPort) && _trade != null)
+                        curPort = !string.IsNullOrEmpty(_trade.AboardDockedPortHint) ? _trade.AboardDockedPortHint : _trade.ActiveVenue;
                     if (_quests.TryGetNextGuidedOfferDestination(curPort, out var nextDest))
                     {
                         string planCmd = $"+ship/plan {nextDest.PortId}";
                         _allEntries.Add(new PaletteEntry(
                             "QUEST SAIL",
-                            $"Sail -> {nextDest.PortLabel}",
+                            $"Sail -> {nextDest.PortLabel}{nextStepSfx}",
                             $"{planCmd} — {nextDest.QuestTitle}",
                             () => OnPrefillCommandRequested?.Invoke(planCmd),
                             $"quest sail plan {nextDest.PortId} {nextDest.PortLabel} next guided"));
