@@ -116,7 +116,9 @@ namespace TacSim.UI
         public int VisibleDirectoryRowCount { get; private set; }
         public int VisiblePresenceRowCount { get; private set; }
         public int HighlightedQuestDirectoryRowIndex { get; private set; } = -1;
+        public string HighlightedQuestDirectoryRoomId { get; private set; } = string.Empty;
         public int HighlightedQuestPresenceRowCount { get; private set; }
+        public string FirstPresenceRowLabel => _presPool.Count > 0 && _presPool[0].Root.activeSelf && _presPool[0].Label != null ? _presPool[0].Label.text : string.Empty;
         public string OpsSummarySnapshot => _opsSummaryText != null ? _opsSummaryText.text : string.Empty;
 
         public void BuildUi(Transform hudRoot, Font sharedFont)
@@ -593,6 +595,7 @@ namespace TacSim.UI
                 }
 
                 HighlightedQuestDirectoryRowIndex = -1;
+                HighlightedQuestDirectoryRoomId = string.Empty;
                 for (int i = 0; i < comps.Count && used < MaxDirectoryRows; i++)
                 {
                     var c = comps[i];
@@ -605,7 +608,11 @@ namespace TacSim.UI
                     row.BoundId = c.Id;
                     row.BoundIsShip = true;
                     row.BoundIsArenaSpot = false;
-                    if (isQuestComp) HighlightedQuestDirectoryRowIndex = rowIdx;
+                    if (isQuestComp)
+                    {
+                        HighlightedQuestDirectoryRowIndex = rowIdx;
+                        HighlightedQuestDirectoryRoomId = c.Id;
+                    }
                     string questBadge = isQuestComp ? " <color=#FFDD44>[QUEST !]</color>" : string.Empty;
                     string tag = isHere ? "<color=#66FFAA>[HERE]</color>" : $"<color=#88CCFF>{hops} hop{(hops == 1 ? "" : "s")}</color>";
                     row.Label.text = $"[DECK] <b>{MushProtocol.EscapeUnityRichText(string.IsNullOrEmpty(c.Name) ? c.Id.ToUpperInvariant() : c.Name)}</b>{questBadge}   {tag}";
@@ -631,10 +638,24 @@ namespace TacSim.UI
 
                 string questRoomEntry = string.Empty;
                 bool questTurnIn = false;
+                bool questIsBoarding = false;
                 if (_questJournal != null)
-                    _questJournal.TryGetMinimapObjective(out questRoomEntry, out questTurnIn, out _);
+                {
+                    bool hasObjective = _questJournal.TryGetMinimapObjective(out string rawQuestRoom, out bool rawTurnIn, out _);
+                    bool needsOriginProcurement = _questJournal.NeedsOriginPortProcurement(_trade);
+                    bool needsExpedition = _questJournal.NeedsSurfaceExpeditionBoarding();
+                    if ((hasObjective || needsExpedition) &&
+                        _station.TryResolveLocalQuestRoom(rawQuestRoom, needsOriginProcurement, needsExpedition, out string localRoom, out bool isBoarding))
+                    {
+                        questRoomEntry = localRoom;
+                        questIsBoarding = isBoarding;
+                        bool redirected = !string.Equals(localRoom, rawQuestRoom, StringComparison.OrdinalIgnoreCase);
+                        questTurnIn = rawTurnIn && !redirected && !isBoarding;
+                    }
+                }
 
                 HighlightedQuestDirectoryRowIndex = -1;
+                HighlightedQuestDirectoryRoomId = string.Empty;
                 for (int i = 0; i < rooms.Count && used < MaxDirectoryRows; i++)
                 {
                     var r = rooms[i];
@@ -649,10 +670,16 @@ namespace TacSim.UI
                     row.BoundId = r.EntryId;
                     row.BoundIsShip = false;
                     row.BoundIsArenaSpot = false;
-                    if (isQuestRoom) HighlightedQuestDirectoryRowIndex = rowIdx;
+                    if (isQuestRoom)
+                    {
+                        HighlightedQuestDirectoryRowIndex = rowIdx;
+                        HighlightedQuestDirectoryRoomId = r.EntryId;
+                    }
                     string roleBadge = ClassifyRoomBadge(r.EntryId, r.Kind);
                     string questBadge = isQuestRoom
-                        ? (questTurnIn ? " <color=#FFDD44>[QUEST ?]</color>" : " <color=#FFDD44>[QUEST !]</color>")
+                        ? (questIsBoarding
+                            ? " <color=#FFDD44>[BOARD !]</color>"
+                            : (questTurnIn ? " <color=#FFDD44>[QUEST ?]</color>" : " <color=#FFDD44>[QUEST !]</color>"))
                         : string.Empty;
                     string hopStr = isHere ? "<color=#66FFAA>[HERE]</color>" : $"<color=#88CCFF>{hops} hop{(hops == 1 ? "" : "s")}</color>";
                     row.Label.text = $"<color=#FFCC66>[FL {r.FloorIndex + 1}]</color> <b>{MushProtocol.EscapeUnityRichText(r.Name ?? r.EntryId)}</b> {roleBadge}{questBadge}   {hopStr}";
@@ -673,19 +700,29 @@ namespace TacSim.UI
             if (_dirEmptyText != null) _dirEmptyText.gameObject.SetActive(used == 0);
         }
 
+        private static int QuestMarkerPriority(MushNpcQuestMarker marker)
+        {
+            if (marker == null) return 3;
+            if (string.Equals(marker.Marker, "turn_in", StringComparison.OrdinalIgnoreCase)) return 0;
+            if (string.Equals(marker.Marker, "available", StringComparison.OrdinalIgnoreCase)) return 1;
+            return 2;
+        }
+
         private MushNpcQuestMarker FindQuestMarkerForNpc(string npcId, string npcName)
         {
             var panel = _questJournal?.LatestPanel;
             if (panel == null || panel.RoomMarkers == null) return null;
+            MushNpcQuestMarker best = null;
             for (int i = 0; i < panel.RoomMarkers.Count; i++)
             {
                 var m = panel.RoomMarkers[i];
-                if (!string.IsNullOrEmpty(npcId) && string.Equals(m.NpcId, npcId, StringComparison.Ordinal))
-                    return m;
-                if (!string.IsNullOrEmpty(npcName) && string.Equals(m.NpcName, npcName, StringComparison.OrdinalIgnoreCase))
-                    return m;
+                if (m == null) continue;
+                bool matches = (!string.IsNullOrEmpty(npcId) && string.Equals(m.NpcId, npcId, StringComparison.Ordinal)) ||
+                               (!string.IsNullOrEmpty(npcName) && string.Equals(m.NpcName, npcName, StringComparison.OrdinalIgnoreCase));
+                if (matches && (best == null || QuestMarkerPriority(m) < QuestMarkerPriority(best)))
+                    best = m;
             }
-            return null;
+            return best;
         }
 
         private void RefreshPresenceTab()

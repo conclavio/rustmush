@@ -1998,9 +1998,18 @@ namespace TacSim.World
             ApplyQuestMarkers(rv.QuestMarkers);
         }
 
+        private static int QuestMarkerPriority(MushNpcQuestMarker marker)
+        {
+            if (marker == null) return 3;
+            if (string.Equals(marker.Marker, "turn_in", StringComparison.OrdinalIgnoreCase)) return 0;
+            if (string.Equals(marker.Marker, "available", StringComparison.OrdinalIgnoreCase)) return 1;
+            return 2;
+        }
+
         /// <summary>
         /// Renders or clears floating WoW-style 3D overhead quest markers above live NPCs:
         /// Gold '!' (available), Gold '?' (ready for turn-in), Silver '?' (in progress).
+        /// Prioritizes `turn_in` -> `available` -> `in_progress` when an NPC has multiple quests.
         /// Also updates the NPC's `[E]` interaction banner prompt so players immediately see quest actions.
         /// </summary>
         public void ApplyQuestMarkers(IReadOnlyList<MushNpcQuestMarker> markers)
@@ -2012,7 +2021,10 @@ namespace TacSim.World
                 {
                     var m = markers[i];
                     if (m != null && !string.IsNullOrEmpty(m.NpcId))
-                        incoming[m.NpcId] = m;
+                    {
+                        if (!incoming.TryGetValue(m.NpcId, out var existing) || QuestMarkerPriority(m) < QuestMarkerPriority(existing))
+                            incoming[m.NpcId] = m;
+                    }
                 }
             }
 
@@ -2027,10 +2039,12 @@ namespace TacSim.World
                 {
                     for (int i = 0; i < markers.Count; i++)
                     {
-                        if (markers[i] != null && string.Equals(markers[i].NpcName, dispName, StringComparison.OrdinalIgnoreCase))
+                        var candidate = markers[i];
+                        if (candidate != null &&
+                            string.Equals(candidate.NpcName, dispName, StringComparison.OrdinalIgnoreCase) &&
+                            (marker == null || QuestMarkerPriority(candidate) < QuestMarkerPriority(marker)))
                         {
-                            marker = markers[i];
-                            break;
+                            marker = candidate;
                         }
                     }
                 }
