@@ -2365,6 +2365,12 @@ pub fn render_quest_overlay_with_stowage(
                     ),
                     Span::raw(q.reward_summary.clone()),
                 ]));
+                if q.allow_restart {
+                    detail_lines.push(Line::from(Span::styled(
+                        "Optional · Restartable (abandon & restart any time without penalty)",
+                        Style::default().add_modifier(Modifier::DIM),
+                    )));
+                }
                 if let Some(act) = QuestsSnapshot::suggested_action_for(q) {
                     detail_lines.push(Line::from(vec![
                         Span::styled(
@@ -2472,12 +2478,32 @@ pub fn render_quest_overlay_with_stowage(
                     ),
                     Span::raw(q.reward_summary.clone()),
                 ]));
+                if q.allow_restart {
+                    detail_lines.push(Line::from(Span::styled(
+                        "Optional · Restartable (abandon & restart any time without penalty)",
+                        Style::default().add_modifier(Modifier::DIM),
+                    )));
+                }
             }
         }
         QuestTab::Completed => {
-            if let Some(q) = snap.completed.get(state.selected) {
+            if snap.guided_tour_progress().is_some_and(|t| t.all_done) {
                 detail_lines.push(Line::from(Span::styled(
-                    format!("[x] {}", q.title),
+                    "* Guided Corridor Tour Complete (7/7) — Corridor Captain *",
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                detail_lines.push(Line::from(""));
+            }
+            if let Some(q) = snap.completed.get(state.selected) {
+                let step_tag = GUIDED_TOUR_KEYS
+                    .iter()
+                    .position(|&k| k == q.key)
+                    .map(|i| format!(" [Step {}/7]", i + 1))
+                    .unwrap_or_default();
+                detail_lines.push(Line::from(Span::styled(
+                    format!("[x] {}{step_tag}", q.title),
                     Style::default()
                         .fg(Color::Green)
                         .add_modifier(Modifier::BOLD),
@@ -3410,5 +3436,70 @@ mod tests {
             snap.next_guided_offer_destination(Some("stickney"))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn overlay_shows_optional_restartable_and_completed_tour_mastery() {
+        let mut completed_json = Vec::new();
+        for (idx, key) in GUIDED_TOUR_KEYS.iter().enumerate() {
+            completed_json.push(json!({
+                "key": key,
+                "title": format!("Guided Step {}", idx + 1),
+                "turn_in_name": "Corridor Host",
+                "completion": format!("Finished step {}.", idx + 1),
+                "reward_summary": format!("Tour Step {}/7", idx + 1)
+            }));
+        }
+        let snap = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[0],
+                "title": "First Papers at the Registry",
+                "giver_name": "Maren Halvorsen",
+                "turn_in_name": "Ilse Oduya-Brandt",
+                "allow_restart": true,
+                "reward_summary": "Guided Tour Step 1/7",
+                "next_step": "Enroll with Ilse"
+            }],
+            "available": [{
+                "key": GUIDED_TOUR_KEYS[1],
+                "title": "Stock the Locker and Tanks",
+                "giver_name": "Ilse Oduya-Brandt",
+                "turn_in_name": "Ilse Oduya-Brandt",
+                "allow_restart": true,
+                "reward_summary": "Guided Tour Step 2/7"
+            }],
+            "completed": completed_json
+        }));
+
+        let render_tab = |tab: QuestTab| -> String {
+            let mut st = QuestOverlayState::default();
+            st.open_tab_index(tab, 0);
+            let backend = ratatui::backend::TestBackend::new(100, 28);
+            let mut term = ratatui::Terminal::new(backend).expect("test terminal");
+            term.draw(|f| render_quest_overlay(f, f.area(), &st, &snap))
+                .expect("render overlay");
+            term.backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect()
+        };
+
+        let active_txt = render_tab(QuestTab::Active);
+        assert!(
+            active_txt.contains("Optional · Restartable"),
+            "{active_txt}"
+        );
+        let avail_txt = render_tab(QuestTab::Available);
+        assert!(avail_txt.contains("Optional · Restartable"), "{avail_txt}");
+        let done_txt = render_tab(QuestTab::Completed);
+        assert!(
+            done_txt.contains("Guided Corridor Tour Complete (7/7) — Corridor Captain"),
+            "{done_txt}"
+        );
+        assert!(done_txt.contains("[Step 1/7]"), "{done_txt}");
+        assert!(done_txt.contains("Tour Step 1/7"), "{done_txt}");
     }
 }
