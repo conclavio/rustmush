@@ -1064,10 +1064,12 @@ namespace TacSim.UI
             for (int qIdx = 0; qIdx < ordered.Count; qIdx++)
             {
                 var q = ordered[qIdx];
+                bool hasPendingCp = false;
                 for (int cIdx = 0; cIdx < q.Checkpoints.Count; cIdx++)
                 {
                     var cp = q.Checkpoints[cIdx];
                     if (cp.Checked || cp.LiveReady) continue;
+                    hasPendingCp = true;
 
                     string combined = $"{cp.Instructions} {cp.Title} {q.NextStep} {q.Introduction}".ToLowerInvariant();
                     for (int pIdx = 0; pIdx < cmdPrefixes.Length; pIdx++)
@@ -1098,6 +1100,37 @@ namespace TacSim.UI
                         for (int k = 0; k < pats.Length; k++)
                         {
                             if (combined.Contains(pats[k], StringComparison.Ordinal))
+                            {
+                                hint = new QuestDestinationHint(q.Title, KnownDestinations[d].portId, KnownDestinations[d].portLabel);
+                                return true;
+                            }
+                        }
+                    }
+                }
+
+                // Once all objectives are satisfied (e.g. post-mine Step 6 on a surface landing pad),
+                // fall back to the turn-in room's station port so the Space HUD, Solar Orrery, and
+                // Sailing Plan guide the pilot home unless they are already at the turn-in room.
+                if (!q.CanFinishNow && !q.TurnInHere && (q.ReadyToFinish || (!hasPendingCp && q.Checkpoints.Count > 0)))
+                {
+                    string roomEntry = q.NextRoomEntry;
+                    if (string.IsNullOrEmpty(roomEntry))
+                    {
+                        for (int cIdx = q.Checkpoints.Count - 1; cIdx >= 0; cIdx--)
+                        {
+                            if (!string.IsNullOrEmpty(q.Checkpoints[cIdx].RoomEntry))
+                            {
+                                roomEntry = q.Checkpoints[cIdx].RoomEntry;
+                                break;
+                            }
+                        }
+                    }
+                    string turnInPort = InferStationPortFromRoomEntry(roomEntry);
+                    if (!string.IsNullOrEmpty(turnInPort))
+                    {
+                        for (int d = 0; d < KnownDestinations.Length; d++)
+                        {
+                            if (string.Equals(KnownDestinations[d].portId, turnInPort, StringComparison.OrdinalIgnoreCase))
                             {
                                 hint = new QuestDestinationHint(q.Title, KnownDestinations[d].portId, KnownDestinations[d].portLabel);
                                 return true;
