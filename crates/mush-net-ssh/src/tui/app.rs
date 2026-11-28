@@ -5585,7 +5585,8 @@ impl TuiApp {
                     "[ ]"
                 }
             };
-            let line = Line::from(vec![
+            let tracked_q = self.quests_overlay.tracked_key.as_deref();
+            let mut spans = vec![
                 Span::styled(
                     " [QUEST] ",
                     Style::default()
@@ -5626,8 +5627,41 @@ impl TuiApp {
                     format!(" (l: {} wash)  |  ", qm.recommended_family),
                     Style::default().fg(Color::Cyan),
                 ),
-                Span::styled(qm.prep_hint_line(), Style::default().fg(Color::Yellow)),
-            ]);
+            ];
+            if qm.mine_done
+                && let Some(dest) = self.quests_snap.active_destination_port(tracked_q)
+            {
+                spans.push(Span::styled(
+                    format!(
+                        "Return: {} (+ship/plan {})  |  ",
+                        dest.port_label, dest.port_id
+                    ),
+                    Style::default()
+                        .fg(Color::Green)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            } else if !qm.mine_done
+                && let Some(site_rec) = self
+                    .panels
+                    .get(BODY_GROUND_FEED)
+                    .and_then(|f| qm.recommended_ground_site(f))
+                && !site_rec.here
+            {
+                spans.push(Span::styled(
+                    format!(
+                        "Site: [!] {} (+ship/plan {})  |  ",
+                        site_rec.site_name, site_rec.venue
+                    ),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+            spans.push(Span::styled(
+                qm.prep_hint_line(),
+                Style::default().fg(Color::Yellow),
+            ));
+            let line = Line::from(spans);
             frame.render_widget(Paragraph::new(line), quest_bar);
             rest
         } else if self.active == CHART_SCREEN

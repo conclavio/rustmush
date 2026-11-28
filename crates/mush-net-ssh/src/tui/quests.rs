@@ -148,7 +148,102 @@ pub struct QuestSurfaceMiningStatus {
     pub mine_done: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuestGroundSiteRecommendation {
+    pub venue: String,
+    pub site_name: String,
+    pub here: bool,
+}
+
 impl QuestSurfaceMiningStatus {
+    /// True when a reading/site text mentions the quest's target ore or recommended wash family.
+    #[must_use]
+    pub fn matches_ore_text(&self, text: &str) -> bool {
+        if text.is_empty() {
+            return false;
+        }
+        let low = text.to_ascii_lowercase();
+        let slug = self.target_ore_slug.to_ascii_lowercase();
+        let spaced = slug.replace('_', " ");
+        let fam = self.recommended_family.to_ascii_lowercase();
+        (!slug.is_empty() && (low.contains(&slug) || low.contains(&spaced)))
+            || (!fam.is_empty() && low.contains(&fam))
+    }
+
+    /// Pick the best non-`here` landing site from a live `body.ground` frame:
+    /// prefers a site with matching ore readings, falling back to open Step 6 starter sites
+    /// (`commons` / `ahuna`) or the first open site before the pilot has scanned any ground.
+    #[must_use]
+    pub fn recommended_ground_site(
+        &self,
+        ground_frame: &Value,
+    ) -> Option<QuestGroundSiteRecommendation> {
+        let sites = ground_frame.pointer("/ground/sites")?.as_array()?;
+        let parse_site = |item: &Value| -> Option<(String, String, bool, String, String, String)> {
+            let venue = str_field(item, "venue");
+            if venue.is_empty() {
+                return None;
+            }
+            let site_name = str_field(item, "site");
+            let here = bool_field(item, "here");
+            let best = str_field(item, "best");
+            let best_line = str_field(item, "best_line");
+            let tenure = str_field(item, "tenure");
+            Some((venue, site_name, here, best, best_line, tenure))
+        };
+        let parsed: Vec<_> = sites.iter().filter_map(parse_site).collect();
+
+        if let Some((venue, site_name, here, _, _, _)) =
+            parsed.iter().find(|(_, _, here, best, best_line, _)| {
+                !*here && (self.matches_ore_text(best_line) || self.matches_ore_text(best))
+            })
+        {
+            return Some(QuestGroundSiteRecommendation {
+                venue: venue.clone(),
+                site_name: if site_name.is_empty() {
+                    venue.clone()
+                } else {
+                    site_name.clone()
+                },
+                here: *here,
+            });
+        }
+
+        for preferred in ["commons", "ahuna"] {
+            if let Some((venue, site_name, here, _, _, _)) = parsed
+                .iter()
+                .find(|(v, _, here, _, _, _)| !*here && v.eq_ignore_ascii_case(preferred))
+            {
+                return Some(QuestGroundSiteRecommendation {
+                    venue: venue.clone(),
+                    site_name: if site_name.is_empty() {
+                        venue.clone()
+                    } else {
+                        site_name.clone()
+                    },
+                    here: *here,
+                });
+            }
+        }
+
+        parsed
+            .into_iter()
+            .find(|(_, _, here, _, _, tenure)| {
+                !*here && tenure.to_ascii_lowercase().contains("open")
+            })
+            .map(
+                |(venue, site_name, here, _, _, _)| QuestGroundSiteRecommendation {
+                    site_name: if site_name.is_empty() {
+                        venue.clone()
+                    } else {
+                        site_name
+                    },
+                    venue,
+                    here,
+                },
+            )
+    }
+
     /// Compact verified prospecting prep & rig recovery hint for Quarry HUD and Quest Overlay.
     #[must_use]
     pub fn prep_hint_line(&self) -> String {
@@ -2995,5 +3090,48 @@ mod tests {
             parse_frame(&json!({ "schema": 1, "completed": [], "active": [], "available": [] }));
         assert!(empty.next_guided_offer().is_none());
         assert!(empty.active_objective_room(None).is_none());
+    }
+
+    #[test]
+    fn recommended_ground_site_prefers_matching_ore_then_open_starter_site() {
+        let qm = QuestSurfaceMiningStatus {
+            quest_title: "Scan, Sound, and Mine a Landing Site".into(),
+            target_ore_slug: "carbon_ore".into(),
+            recommended_family: "carbon".into(),
+            scan_done: false,
+            sound_done: false,
+            mine_done: false,
+        };
+
+        // 1. Explicit carbon_ore reading wins over commons fallback
+        let scanned_ground = json!({
+            "ground": {
+                "sites": [
+                    { "venue": "commons", "site": "Freeport Commons", "here": false, "tenure": "open", "best": "", "best_line": "Your readings: none." },
+                    { "venue": "ahuna", "site": "Ahuna Flank", "here": false, "tenure": "open", "best": "carbon_ore", "best_line": "Your readings: carbon_ore rich." }
+                ]
+            }
+        });
+        let rec = qm
+            .recommended_ground_site(&scanned_ground)
+            .expect("expected Ahuna Flank carbon match");
+        assert_eq!(rec.venue, "ahuna");
+        assert_eq!(rec.site_name, "Ahuna Flank");
+        assert!(!rec.here);
+
+        // 2. Unscanned ground chart falls back to open starter site Freeport Commons
+        let unscanned_ground = json!({
+            "ground": {
+                "sites": [
+                    { "venue": "occator", "site": "Occator Rim", "here": false, "tenure": "open", "best": "", "best_line": "Your readings: none." },
+                    { "venue": "commons", "site": "Freeport Commons", "here": false, "tenure": "open", "best": "", "best_line": "Your readings: none." }
+                ]
+            }
+        });
+        let starter = qm
+            .recommended_ground_site(&unscanned_ground)
+            .expect("expected Freeport Commons starter site");
+        assert_eq!(starter.venue, "commons");
+        assert_eq!(starter.site_name, "Freeport Commons");
     }
 }
