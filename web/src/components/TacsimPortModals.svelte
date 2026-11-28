@@ -6,10 +6,12 @@
 
   import type { GameApp } from "$lib/game.svelte";
   import {
+    GUIDED_TOUR_KEYS,
     evaluateQuestStowageReadiness,
     evaluateRefitHoldReadiness,
     evaluateSailingPreflightReadiness,
     extractSurfaceMiningPrepActions,
+    inferStationPortFromRoomEntry,
     matchesQuestTradeRow,
     normalizeGoodSlug,
     resolveContextualTradeNeed,
@@ -187,6 +189,30 @@
     if (!questMining.soundDone) return { label: "Sound Pocket (+tv/1 sound go)", command: "+tv/1 sound go" };
     if (!questMining.mineDone) return { label: "Mine Ore (+tv/1 mine go)", command: "+tv/1 mine go" };
     return { label: "Recover Rig (+tv/1 recover go)", command: "+tv/1 recover go" };
+  });
+  const questMiningStep = $derived.by((): number | null => {
+    const key = app.quests?.trackedQuest?.key;
+    if (!key) return null;
+    const idx = GUIDED_TOUR_KEYS.indexOf(key);
+    return idx >= 0 ? idx + 1 : null;
+  });
+  const questMiningHoldQty = $derived.by((): number => {
+    if (!questMining || !st?.cargoLines) return 0;
+    const want = normalizeGoodSlug(questMining.targetOreSlug);
+    let total = 0;
+    for (const line of st.cargoLines) {
+      if (normalizeGoodSlug(line.good) === want || normalizeGoodSlug(line.label) === want) {
+        total += Math.max(0, line.qty);
+      }
+    }
+    return total;
+  });
+  const questMiningReturnDest = $derived.by((): { portId: string; portLabel: string } | null => {
+    if (!questMining?.mineDone) return null;
+    if (questDestPort) return { portId: questDestPort.portId, portLabel: questDestPort.portLabel };
+    const inferred = inferStationPortFromRoomEntry(app.quests?.trackedQuest?.nextRoomEntry) ?? "ceres";
+    const dest = CORRIDOR_DESTINATIONS.find((d) => d.id === inferred);
+    return { portId: inferred, portLabel: dest?.label ?? "Ceres Freeport" };
   });
   const stowageReadiness = $derived(evaluateQuestStowageReadiness(questTradeNeed, st));
   const sailingPreflight = $derived(
@@ -1360,21 +1386,33 @@
         {#if questMining}
           <div class="quest-banner" role="status" aria-label="active quest rig bay guidance">
             <div class="qb-text">
-              <span class="qtag">[QUEST]</span>
+              <span class="qtag">[QUEST]{#if questMiningStep !== null} Step {questMiningStep}/7{/if}</span>
               <strong>{questMining.questTitle}</strong>
               <span class="muted">
                 {questMining.scanDone ? "[✓]" : "[ ]"} Scan · {questMining.soundDone ? "[✓]" : "[ ]"} Sound · {questMining.mineDone ? "[✓]" : "[ ]"} Mine {questMining.targetOreSlug}
+                · Hold: {questMiningHoldQty}t {questMining.targetOreSlug.replaceAll("_", " ")}
               </span>
             </div>
-            {#if questRigNextCmd}
-              <button
-                type="button"
-                class="qbtn-gold"
-                onclick={() => onCmd(questRigNextCmd.command)}
-              >
-                {questRigNextCmd.label}
-              </button>
-            {/if}
+            <div class="act-row">
+              {#if questRigNextCmd}
+                <button
+                  type="button"
+                  class="qbtn-gold"
+                  onclick={() => onCmd(questRigNextCmd.command)}
+                >
+                  {questRigNextCmd.label}
+                </button>
+              {/if}
+              {#if questMiningReturnDest}
+                <button
+                  type="button"
+                  class="buybtn sm"
+                  onclick={() => onCmd(`+ship/plan ${questMiningReturnDest.portId}`)}
+                >
+                  Return → {questMiningReturnDest.portLabel} (+ship/plan {questMiningReturnDest.portId})
+                </button>
+              {/if}
+            </div>
           </div>
           {#if questMiningPrep.length > 0}
             <div class="act-row" aria-label="rig bay prospecting prep actions">

@@ -794,4 +794,39 @@ describe("TacsimPortModals Dray-P Vehicle Bay and Co-op Refit quest guidance", (
     await fireEvent.click(screen.getByRole("button", { name: /Ground Chart \(\+chart\/ground\)/i }));
     expect(onCmd).toHaveBeenCalledWith("+chart/ground");
   });
+
+  it("shows Step 6/7 badge, live carbon ore hold progress, and post-mine Return button in Rig Bay modal", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[5],
+          title: "Scan, Sound, and Mine a Landing Site",
+          next_room_entry: "room.c07_exchange",
+          checkpoints: [
+            { id: "scan_landing_site", title: "Surface scan", instructions: "+tv/1 scan go", checked: true, live_ready: true },
+            { id: "sound_pocket", title: "Sound pocket", instructions: "+tv/1 sound go", checked: true, live_ready: true },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", instructions: "+tv/1 mine go", checked: true, live_ready: true },
+          ],
+        },
+      ],
+    });
+
+    const app = makeApp(quests, "rig");
+    app.tacsim.trade.stowage = {
+      ...app.tacsim.trade.stowage,
+      cargoKg: 2000,
+      cargoLines: [{ good: "tacsim:carbon_ore", label: "Carbon Ore", qty: 2, unit: "t", massKg: 2000 }],
+    };
+    const onCmd = vi.fn();
+    render(TacsimPortModals, { props: { app, onCmd } });
+
+    const banner = screen.getByRole("status", { name: "active quest rig bay guidance" });
+    expect(banner.textContent).toContain("Step 6/7");
+    expect(banner.textContent).toContain("Hold: 2t carbon ore");
+    const retBtn = screen.getByRole("button", { name: /Return → Ceres Freeport \(\+ship\/plan ceres\)/i });
+    await fireEvent.click(retBtn);
+    expect(onCmd).toHaveBeenCalledWith("+ship/plan ceres");
+  });
 });
