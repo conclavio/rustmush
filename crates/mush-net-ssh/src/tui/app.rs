@@ -52,8 +52,7 @@ use super::port_walk::{PORT_TRADE_FEED, PortWalkState, TACSIM_CONTENT_FEED};
 use super::quests::{
     QUESTS_FEED, QuestMilestoneKind, QuestMilestoneTracker, QuestOverlayAction, QuestOverlayState,
     QuestTab, QuestsSnapshot, parse_frame as parse_quests_frame, parse_room_markers,
-    render_quest_overlay_with_stowage, render_quest_sheet_lines,
-    render_quest_tracker_lines_with_route_and_stowage,
+    render_quest_overlay_with_stowage, render_quest_sheet_lines, render_quest_tracker_lines_full,
 };
 use super::render::{
     BODY_GROUND_FEED, CHART_FEED, Entry, GUTTER_W, PaneRow, PaneRows, RenderCtx, SITE_MAP_FEED,
@@ -6720,11 +6719,24 @@ impl TuiApp {
                 };
                 let route_hop = self.port_walk.next_quest_hop();
                 let stowage = self.port_walk.quest_stowage_telemetry();
-                let tracker_lines = render_quest_tracker_lines_with_route_and_stowage(
+                let cur_port = self.port_walk.current_port_slug().or_else(|| {
+                    self.panels.get(CHART_FEED).and_then(|v| {
+                        v.pointer("/chart/vantage/port")
+                            .and_then(Value::as_str)
+                            .filter(|s| !s.is_empty())
+                            .or_else(|| {
+                                v.pointer("/chart/vantage/body")
+                                    .and_then(Value::as_str)
+                                    .filter(|s| !s.is_empty())
+                            })
+                    })
+                });
+                let tracker_lines = render_quest_tracker_lines_full(
                     &self.quests_snap,
                     self.quests_overlay.tracked_key.as_deref(),
                     route_hop.as_ref(),
                     stowage.as_ref(),
+                    cur_port,
                 );
                 if !tracker_lines.is_empty() && inner.height >= 5 {
                     let max_tracker = inner.height.saturating_sub(2);

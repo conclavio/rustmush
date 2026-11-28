@@ -1498,6 +1498,19 @@ impl QuestsSnapshot {
         out
     }
 
+    /// Pick the highest-priority available quest offer in the current room, preferring
+    /// Guided Captain's Tour steps ahead of optional side offers.
+    #[must_use]
+    pub fn prioritized_available_offer(&self) -> Option<&AvailableQuest> {
+        self.available
+            .iter()
+            .find(|a| {
+                a.category.eq_ignore_ascii_case("guided")
+                    || GUIDED_TOUR_KEYS.contains(&a.key.as_str())
+            })
+            .or_else(|| self.available.first())
+    }
+
     /// Concise persistent status-bar badge when a quest can be turned in or accepted
     /// right here in the player's current room (`[?] Turn-In (F11)` / `[!] Offer (F11)`).
     #[must_use]
@@ -1533,7 +1546,7 @@ impl QuestsSnapshot {
             };
             return Some((text, Color::Yellow));
         }
-        if let Some(offer) = self.available.first() {
+        if let Some(offer) = self.prioritized_available_offer() {
             let text = if offer.giver_name.is_empty() {
                 "[!] Offer (F11)".to_string()
             } else {
@@ -2158,6 +2171,20 @@ pub fn render_quest_tracker_lines_with_route_and_stowage(
     route_hop: Option<&QuestExitBreadcrumb>,
     stowage: Option<&QuestStowageTelemetry>,
 ) -> Vec<Line<'static>> {
+    render_quest_tracker_lines_full(snap, tracked_key, route_hop, stowage, None)
+}
+
+/// Build compact tracker lines for the Scene screen right rail, including live
+/// ship hold readiness, secondary room turn-in alerts, guided offer priority,
+/// and off-port sail hints for between-steps Guided Tour offers.
+#[must_use]
+pub fn render_quest_tracker_lines_full(
+    snap: &QuestsSnapshot,
+    tracked_key: Option<&str>,
+    route_hop: Option<&QuestExitBreadcrumb>,
+    stowage: Option<&QuestStowageTelemetry>,
+    current_port: Option<&str>,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let tour = snap.guided_tour_progress();
     let tracked = snap.ordered_active(tracked_key).into_iter().next();
@@ -2270,6 +2297,24 @@ pub fn render_quest_tracker_lines_with_route_and_stowage(
                 Span::raw(q.next_step.clone()),
             ]));
         }
+        let other_ready_here: Vec<&ActiveQuest> = snap
+            .active
+            .iter()
+            .filter(|item| item.key != q.key && item.can_finish_now)
+            .collect();
+        if !other_ready_here.is_empty() {
+            let ready_txt = if other_ready_here.len() == 1 {
+                format!("[?] Ready here: {} (F11)", other_ready_here[0].title)
+            } else {
+                format!("[?] {} ready to turn in here (F11)", other_ready_here.len())
+            };
+            lines.push(Line::from(Span::styled(
+                ready_txt,
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )));
+        }
         if !snap.available.is_empty() {
             let offer_txt = if snap.available.len() == 1 {
                 "[!] 1 offer here (F11 -> a)".to_string()
@@ -2309,7 +2354,7 @@ pub fn render_quest_tracker_lines_with_route_and_stowage(
             ))
         };
         lines.push(hint_line);
-    } else if let Some(offer) = snap.available.first() {
+    } else if let Some(offer) = snap.prioritized_available_offer() {
         if let Some(ref t) = tour {
             lines.push(Line::from(Span::styled(
                 format!("Tour {} {}/{}", t.progress_bar(), t.completed, t.total),
@@ -2325,7 +2370,12 @@ pub fn render_quest_tracker_lines_with_route_and_stowage(
             ),
             Span::styled(offer.giver_name.clone(), Style::default().fg(Color::Yellow)),
         ]));
-        lines.push(Line::from(offer.title.clone()));
+        let offer_title = if snap.available.len() > 1 {
+            format!("{} (+{} more)", offer.title, snap.available.len() - 1)
+        } else {
+            offer.title.clone()
+        };
+        lines.push(Line::from(offer_title));
         lines.push(Line::from(Span::styled(
             "F11 -> a: Accept Quest",
             Style::default()
@@ -2373,6 +2423,22 @@ pub fn render_quest_tracker_lines_with_route_and_stowage(
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(route_text, Style::default().fg(Color::Yellow)),
+            ]));
+        }
+        if current_port.is_some()
+            && let Some(dest) = snap.next_guided_offer_destination(current_port)
+        {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "Sail: ",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("+ship/plan {} ({})", dest.port_id, dest.port_label),
+                    Style::default().fg(Color::Cyan),
+                ),
             ]));
         }
     } else if let Some(t) = tour
@@ -2455,7 +2521,12 @@ pub fn render_quest_sheet_lines(
                 Span::raw(q.next_step.clone()),
             ]));
         }
-    } else if let Some(offer) = snap.available.first() {
+    } else if let Some(offer) = snap.prioritized_available_offer() {
+        let extra = if snap.available.len() > 1 {
+            format!(" (+{} more)", snap.available.len() - 1)
+        } else {
+            String::new()
+        };
         lines.push(Line::from(vec![
             Span::styled(
                 "  Available: [!] ",
@@ -2463,7 +2534,7 @@ pub fn render_quest_sheet_lines(
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(format!("{} ({})", offer.title, offer.giver_name)),
+            Span::raw(format!("{} ({}){extra}", offer.title, offer.giver_name)),
         ]));
     } else if let Some(next) = snap.next_guided_offer() {
         lines.push(Line::from(vec![
@@ -4533,5 +4604,119 @@ mod tests {
             QuestOverlayAction::Submit("+quest/decline #18 tok_side".to_string())
         );
         assert!(!st.confirm_decline);
+    }
+
+    #[test]
+    fn tracker_surfaces_secondary_turn_in_guided_offer_priority_and_off_port_sail_hint() {
+        let join = |lines: Vec<Line<'static>>| -> String {
+            lines
+                .into_iter()
+                .map(|l| {
+                    l.spans
+                        .into_iter()
+                        .map(|s| s.content.into_owned())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        // 1. Secondary non-tracked active quest ready to turn in here
+        let secondary_snap = parse_frame(&json!({
+            "schema": 1,
+            "active": [
+                {
+                    "key": GUIDED_TOUR_KEYS[2],
+                    "title": "Metals Down the Corridor",
+                    "next_step": "Buy 5t metals",
+                    "can_finish_now": false
+                },
+                {
+                    "key": GUIDED_TOUR_KEYS[1],
+                    "title": "Stock the Locker and Tanks",
+                    "next_step": "Turn in to Ilse",
+                    "can_finish_now": true
+                }
+            ]
+        }));
+        let tracked_txt = join(render_quest_tracker_lines_full(
+            &secondary_snap,
+            Some(GUIDED_TOUR_KEYS[2]),
+            None,
+            None,
+            Some("ceres"),
+        ));
+        assert!(
+            tracked_txt.contains("[?] Ready here: Stock the Locker and Tanks (F11)"),
+            "expected secondary turn-in alert, got:\n{tracked_txt}"
+        );
+
+        // 2. Guided offer prioritized ahead of optional offer + (+1 more)
+        let offers_snap = parse_frame(&json!({
+            "schema": 1,
+            "available": [
+                {
+                    "key": "quest.side_patrol",
+                    "title": "Optional Dock Sweep",
+                    "category": "optional",
+                    "giver_name": "Harbor Clerk"
+                },
+                {
+                    "key": GUIDED_TOUR_KEYS[0],
+                    "title": "First Papers at the Registry",
+                    "category": "guided",
+                    "giver_name": "Maren Halvorsen"
+                }
+            ]
+        }));
+        let offers_txt = join(render_quest_tracker_lines_full(
+            &offers_snap,
+            None,
+            None,
+            None,
+            Some("ceres"),
+        ));
+        assert!(
+            offers_txt.contains("Maren Halvorsen")
+                && offers_txt.contains("First Papers at the Registry (+1 more)"),
+            "expected guided offer first with (+1 more), got:\n{offers_txt}"
+        );
+        let sheet_txt = join(render_quest_sheet_lines(&offers_snap, None));
+        assert!(
+            sheet_txt.contains("First Papers at the Registry (Maren Halvorsen) (+1 more)"),
+            "expected guided offer first on sheet, got:\n{sheet_txt}"
+        );
+
+        // 3. Between-steps off-port Sail hint at Ceres for Step 4 (Jonas at Stickney Yards)
+        let between_snap = parse_frame(&json!({
+            "schema": 1,
+            "completed": [
+                { "key": GUIDED_TOUR_KEYS[0], "title": "Step 1" },
+                { "key": GUIDED_TOUR_KEYS[1], "title": "Step 2" },
+                { "key": GUIDED_TOUR_KEYS[2], "title": "Step 3" }
+            ]
+        }));
+        let ceres_txt = join(render_quest_tracker_lines_full(
+            &between_snap,
+            None,
+            None,
+            None,
+            Some("ceres"),
+        ));
+        assert!(
+            ceres_txt.contains("Sail: +ship/plan stickney (Stickney Yards)"),
+            "expected off-port Sail hint at Ceres, got:\n{ceres_txt}"
+        );
+        let stickney_txt = join(render_quest_tracker_lines_full(
+            &between_snap,
+            None,
+            None,
+            None,
+            Some("stickney"),
+        ));
+        assert!(
+            !stickney_txt.contains("Sail: +ship/plan"),
+            "expected no Sail hint when already at Stickney, got:\n{stickney_txt}"
+        );
     }
 }
