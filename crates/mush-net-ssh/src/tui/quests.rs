@@ -147,6 +147,23 @@ pub struct QuestSurfaceMiningStatus {
     pub mine_done: bool,
 }
 
+impl QuestSurfaceMiningStatus {
+    /// Compact verified prospecting prep & rig recovery hint for Quarry HUD and Quest Overlay.
+    #[must_use]
+    pub fn prep_hint_line(&self) -> String {
+        if !self.scan_done {
+            "Prep: +license | +tv/lease | +chart/ground".to_string()
+        } else if !self.mine_done {
+            "Prep: +chart/ground | Recover: +tv/1 recover go".to_string()
+        } else {
+            format!(
+                "Recover: +tv/1 recover go (unload {} into hold)",
+                self.target_ore_slug
+            )
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GuidedTourProgress {
     pub completed: usize,
@@ -736,6 +753,14 @@ impl QuestsSnapshot {
             active: vec![q.clone()],
             ..Default::default()
         };
+        if let Some(mining) = single.surface_mining_status(Some(&q.key))
+            && mining.mine_done
+        {
+            return Some(QuestSuggestedAction {
+                label: "Recover Rig".into(),
+                command: "+tv/1 recover go".into(),
+            });
+        }
         if let Some(dest) = single.active_destination_port(Some(&q.key)) {
             return Some(QuestSuggestedAction {
                 label: format!("Plan {}", dest.port_label),
@@ -1726,6 +1751,21 @@ pub fn render_quest_overlay(
                         ),
                     ]));
                 }
+                let single_for_mine = QuestsSnapshot {
+                    active: vec![q.clone()],
+                    ..Default::default()
+                };
+                if let Some(mine) = single_for_mine.surface_mining_status(Some(&q.key)) {
+                    detail_lines.push(Line::from(vec![
+                        Span::styled(
+                            "[PROSPECTING] ",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(mine.prep_hint_line(), Style::default().fg(Color::Cyan)),
+                    ]));
+                }
                 if state.confirm_abandon {
                     detail_lines.push(Line::from(Span::styled(
                         "Press 'x' again to confirm abandoning this quest.",
@@ -2209,6 +2249,61 @@ mod tests {
         assert!(
             mastered_text.contains("Guided Tour Complete"),
             "{mastered_text}"
+        );
+    }
+
+    #[test]
+    fn surface_mining_prep_hints_and_post_mine_recover_action() {
+        let before_scan = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[5],
+                "title": "Scan, Sound, and Mine a Landing Site",
+                "checkpoints": [
+                    { "id": "scan_landing_site", "title": "Surface scan", "instructions": "Run +tv/1 scan go.", "checked": false, "live_ready": false },
+                    { "id": "sound_mineral_pocket", "title": "Sound pocket", "instructions": "Run +tv/1 sound go.", "checked": false, "live_ready": false },
+                    { "id": "mine_carbon_ore", "title": "Mine 1t carbon_ore", "instructions": "Run +tv/1 mine go.", "checked": false, "live_ready": false }
+                ]
+            }]
+        }));
+        let m0 = before_scan
+            .surface_mining_status(None)
+            .expect("mining status");
+        assert_eq!(
+            m0.prep_hint_line(),
+            "Prep: +license | +tv/lease | +chart/ground"
+        );
+
+        let after_mine = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[5],
+                "title": "Scan, Sound, and Mine a Landing Site",
+                "ready_to_finish": false,
+                "can_check_now": false,
+                "can_finish_now": false,
+                "checkpoints": [
+                    { "id": "scan_landing_site", "title": "Surface scan", "instructions": "Run +tv/1 scan go.", "checked": true, "live_ready": true },
+                    { "id": "sound_mineral_pocket", "title": "Sound pocket", "instructions": "Run +tv/1 sound go.", "checked": true, "live_ready": true },
+                    { "id": "mine_carbon_ore", "title": "Mine 1t carbon_ore", "instructions": "Run +tv/1 mine go.", "checked": true, "live_ready": true }
+                ]
+            }]
+        }));
+        let m1 = after_mine
+            .surface_mining_status(None)
+            .expect("mining status");
+        assert!(m1.prep_hint_line().contains("+tv/1 recover go"));
+        assert!(m1.prep_hint_line().contains("carbon_ore"));
+        let act = QuestsSnapshot::suggested_action_for(&after_mine.active[0])
+            .expect("recover rig suggested action");
+        assert_eq!(act.command, "+tv/1 recover go");
+
+        // Pressing 'p' in overlay prefills +tv/1 recover go
+        let mut overlay = QuestOverlayState::default();
+        overlay.open_for(&after_mine);
+        assert_eq!(
+            overlay.handle_key(Key::Char('p'), &after_mine),
+            QuestOverlayAction::Prefill("+tv/1 recover go".into())
         );
     }
 }
