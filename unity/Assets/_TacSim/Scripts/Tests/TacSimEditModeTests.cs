@@ -15910,5 +15910,100 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void PortServiceModalsAndNpcDetail_DisplayGuidedStepBadges()
+        {
+            var rootGo = new UnityEngine.GameObject("PortModalStepBadgesTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                var tradeState = new TacSimTradeAndShipState();
+                hud.BindTradeState(tradeState);
+
+                // Step 3: Exchange, Sailing, 24-Week History, and Jobs & Crew banners all show [Step 3/7]
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"",
+                        ""title"": ""Metals Down the Corridor"",
+                        ""giver_id"": ""#18"",
+                        ""giver_name"": ""Ilse Oduya-Brandt"",
+                        ""turn_in_id"": ""#40"",
+                        ""turn_in_name"": ""Jonas Achterberg-Nkemelu"",
+                        ""checkpoints"": [{
+                            ""id"": ""buy_metals"",
+                            ""title"": ""Buy 5t metals at Ceres Exchange"",
+                            ""instructions"": ""Buy 5t metals and file +ship/plan stickney."",
+                            ""checked"": false,
+                            ""live_ready"": false
+                        }]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+
+                hud.OpenTradeAndSailingModal("PORT EXCHANGE", openSailingTab: false);
+                hud.RefreshTradeTerminal();
+                Assert.IsTrue(hud.IsExchangeQuestBannerVisible);
+                StringAssert.Contains("[Step 3/7]", hud.ExchangeQuestBannerText);
+
+                hud.SwitchTradeTerminalTab(TacSim.UI.TradeTerminalTab.Sailing, autoQuery: false);
+                Assert.IsTrue(hud.IsSailingQuestBannerVisible);
+                StringAssert.Contains("[Step 3/7]", hud.SailingQuestBannerText);
+
+                Assert.IsTrue(hud.EconomyPanels.IsHistoryQuestBannerVisible);
+                StringAssert.Contains("[Step 3/7]", hud.EconomyPanels.HistoryQuestBannerTextForTests);
+
+                Assert.IsTrue(hud.EconomyPanels.IsJobsQuestBannerVisible);
+                StringAssert.Contains("[Step 3/7]", hud.EconomyPanels.JobsQuestBannerTextForTests);
+
+                // Step 5: Works & Shipyard refit banner shows [Step 5/7]
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"",
+                        ""title"": ""Refit the Dray for Surface Mining"",
+                        ""checkpoints"": [{
+                            ""id"": ""refit"",
+                            ""title"": ""Refit Dray-P Prospector"",
+                            ""instructions"": ""Run +coop/refit prospector at the Registry."",
+                            ""checked"": false,
+                            ""live_ready"": false
+                        }]
+                    }],
+                    ""available"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                        ""title"": ""First Papers at the Registry"",
+                        ""giver_id"": ""#11"",
+                        ""giver_name"": ""Maren Halvorsen"",
+                        ""accept_cmd"": ""+quest/accept #11=tok1""
+                    }],
+                    ""room_markers"": [{
+                        ""npc_id"": ""#11"",
+                        ""npc_name"": ""Maren Halvorsen"",
+                        ""marker"": ""available"",
+                        ""symbol"": ""!"",
+                        ""quest_key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                        ""quest_title"": ""First Papers at the Registry""
+                    }],
+                    ""completed"": []
+                }")));
+
+                Assert.IsTrue(hud.EconomyPanels.IsIndustryQuestBannerVisible);
+                StringAssert.Contains("[Step 5/7]", hud.EconomyPanels.IndustryQuestBannerTextForTests);
+
+                // NPC Detail modal button displays [Step 1/7]
+                hud.ShowDetailModal("MAREN HALVORSEN", "Port Watch Clerk", npcName: "Maren Halvorsen");
+                Assert.IsTrue(
+                    hud.TriggerDetailModalButtonContaining("[!] QUEST DIALOG: First Papers at the Registry [Step 1/7]"),
+                    "NPC detail modal must display [Step 1/7] on guided quest button");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
