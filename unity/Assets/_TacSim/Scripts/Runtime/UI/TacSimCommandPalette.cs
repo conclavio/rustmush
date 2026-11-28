@@ -604,6 +604,59 @@ namespace TacSim.UI
                             $"quest cycle switch tracked next {nextQ.Title}"));
                     }
                 }
+                else if (_quests.TryGetNextGuidedOffer(out var nextGuided))
+                {
+                    if (_quests.TrackerRouteHops > 0 && !string.IsNullOrEmpty(_quests.TrackerRouteCommand))
+                    {
+                        string rCmd = _quests.TrackerRouteCommand;
+                        string rRoom = _quests.TrackerRouteRoomName;
+                        int rHops = _quests.TrackerRouteHops;
+                        string rTitle = string.Equals(rCmd, "+ship/board", StringComparison.OrdinalIgnoreCase)
+                            ? "Board Ship"
+                            : (string.Equals(rCmd, "+ship/leave", StringComparison.OrdinalIgnoreCase)
+                                ? "Cycle Ashore"
+                                : $"Walk -> {rRoom} ({rHops}h)");
+                        string hopWord = rHops == 1 ? "hop" : "hops";
+                        _allEntries.Add(new PaletteEntry(
+                            "QUEST ROUTE",
+                            rTitle,
+                            $"{rHops} {hopWord} to {nextGuided.GiverRoomName} · {rCmd}",
+                            () => OnCommandRequested?.Invoke(rCmd),
+                            $"quest route walk board ashore {rRoom} {nextGuided.GiverRoomName} {rCmd} next guided"));
+                    }
+
+                    string curPort = _station != null
+                        ? TacSimQuestJournal.InferStationPortFromRoomEntry(_station.ActiveRoomEntryId)
+                        : null;
+                    if (_quests.TryGetNextGuidedOfferDestination(curPort, out var nextDest))
+                    {
+                        string planCmd = $"+ship/plan {nextDest.PortId}";
+                        _allEntries.Add(new PaletteEntry(
+                            "QUEST SAIL",
+                            $"Sail -> {nextDest.PortLabel}",
+                            $"{planCmd} — {nextDest.QuestTitle}",
+                            () => OnPrefillCommandRequested?.Invoke(planCmd),
+                            $"quest sail plan {nextDest.PortId} {nextDest.PortLabel} next guided"));
+                    }
+
+                    if (!string.IsNullOrEmpty(nextGuided.GiverRoomEntry))
+                    {
+                        string targetRoom = nextGuided.GiverRoomEntry;
+                        _allEntries.Add(new PaletteEntry(
+                            "QUEST TRAIL",
+                            $"Wayfinder to Next Guided ({nextGuided.Step}/7): {nextGuided.GiverRoomName}",
+                            $"Speak with {nextGuided.GiverLabel} ({nextGuided.LocationLabel})",
+                            () => OnPlotStationRoomRequested?.Invoke(targetRoom),
+                            $"quest trail wayfinder route navigate next guided {nextGuided.GiverRoomName} {nextGuided.GiverLabel}"));
+                    }
+
+                    _allEntries.Add(new PaletteEntry(
+                        "QUEST [!]",
+                        $"Next Guided ({nextGuided.Step}/7): {nextGuided.ShortLabel}",
+                        $"Speak with {nextGuided.GiverLabel} ({nextGuided.GiverRoomName})",
+                        () => _quests?.SetOpen(true, QuestJournalTab.Quests),
+                        $"quest next guided tour offer {nextGuided.ShortLabel} {nextGuided.GiverLabel} {nextGuided.GiverRoomName}"));
+                }
             }
 
             // 1. UI Windows & Quick Controls

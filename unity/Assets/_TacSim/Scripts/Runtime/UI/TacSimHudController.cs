@@ -672,6 +672,7 @@ namespace TacSim.UI
 
             CommandPalette = gameObject.GetComponent<TacSimCommandPalette>() ?? gameObject.AddComponent<TacSimCommandPalette>();
             CommandPalette.BuildModal(_hudRoot.transform, _uiFont);
+            CommandPalette.BindQuestJournal(QuestJournal);
 
             DisplayOptions = gameObject.GetComponent<TacSimDisplayOptions>() ?? gameObject.AddComponent<TacSimDisplayOptions>();
             DisplayOptions.BuildModal(canvasGo.transform, _uiFont);
