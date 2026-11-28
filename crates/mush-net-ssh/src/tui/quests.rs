@@ -1782,12 +1782,14 @@ pub struct QuestOverlayState {
     pub selected: usize,
     pub tracked_key: Option<String>,
     pub confirm_abandon: bool,
+    pub confirm_decline: bool,
 }
 
 impl QuestOverlayState {
     pub fn open_for(&mut self, snap: &QuestsSnapshot) {
         self.open = true;
         self.confirm_abandon = false;
+        self.confirm_decline = false;
         self.selected = 0;
         self.tab = if !snap.available.is_empty() && snap.active.is_empty() {
             QuestTab::Available
@@ -1804,16 +1806,20 @@ impl QuestOverlayState {
     pub fn open_tab_index(&mut self, tab: QuestTab, index: usize) {
         self.open = true;
         self.confirm_abandon = false;
+        self.confirm_decline = false;
         self.tab = tab;
         self.selected = index;
     }
 
-    /// Open the quest dialog focused directly on the quest offered by or turn-in ready at `npc_id` / `npc_name`.
+    /// Open the quest dialog focused directly on the highest-priority quest offered by
+    /// or turn-in ready at `npc_id` / `npc_name` (`turn_in` -> `available` -> `in_progress`).
     pub fn open_for_npc(&mut self, snap: &QuestsSnapshot, npc_id: &str, npc_name: &str) {
         self.open = true;
         self.confirm_abandon = false;
+        self.confirm_decline = false;
 
-        let marker = snap.room_markers.iter().find(|m| {
+        let prioritized = snap.prioritized_room_markers();
+        let marker = prioritized.into_iter().find(|m| {
             (!npc_id.is_empty() && m.npc_id == npc_id)
                 || (!npc_name.is_empty() && m.npc_name.eq_ignore_ascii_case(npc_name))
         });
@@ -1852,6 +1858,15 @@ impl QuestOverlayState {
         }
 
         if !npc_name.is_empty() {
+            if let Some(idx) = snap.active.iter().position(|q| {
+                (q.can_finish_now || q.ready_to_finish || q.can_check_now)
+                    && (q.turn_in_name.eq_ignore_ascii_case(npc_name)
+                        || q.giver_name.eq_ignore_ascii_case(npc_name))
+            }) {
+                self.tab = QuestTab::Active;
+                self.selected = idx;
+                return;
+            }
             if let Some(idx) = snap
                 .available
                 .iter()
@@ -1877,6 +1892,7 @@ impl QuestOverlayState {
     pub fn close(&mut self) {
         self.open = false;
         self.confirm_abandon = false;
+        self.confirm_decline = false;
     }
 
     /// Ensure `tracked_key` points at an active quest, preferring the active Guided Tour
@@ -1938,17 +1954,20 @@ impl QuestOverlayState {
                 self.tab = self.tab.next();
                 self.selected = 0;
                 self.confirm_abandon = false;
+                self.confirm_decline = false;
                 QuestOverlayAction::None
             }
             Key::BackTab | Key::Left => {
                 self.tab = self.tab.prev();
                 self.selected = 0;
                 self.confirm_abandon = false;
+                self.confirm_decline = false;
                 QuestOverlayAction::None
             }
             Key::Up | Key::Char('k') => {
                 self.selected = self.selected.saturating_sub(1);
                 self.confirm_abandon = false;
+                self.confirm_decline = false;
                 QuestOverlayAction::None
             }
             Key::Down | Key::Char('j') => {
@@ -1957,10 +1976,12 @@ impl QuestOverlayState {
                     self.selected += 1;
                 }
                 self.confirm_abandon = false;
+                self.confirm_decline = false;
                 QuestOverlayAction::None
             }
             Key::Char('a') | Key::Enter if self.tab == QuestTab::Available => {
                 self.confirm_abandon = false;
+                self.confirm_decline = false;
                 if let Some(offer) = snap.available.get(self.selected)
                     && !offer.accept_cmd.is_empty()
                 {
@@ -1972,8 +1993,25 @@ impl QuestOverlayState {
                 }
                 QuestOverlayAction::None
             }
+            Key::Char('d') if self.tab == QuestTab::Available => {
+                self.confirm_abandon = false;
+                if let Some(offer) = snap.available.get(self.selected)
+                    && !offer.allow_restart
+                    && !offer.decline_cmd.is_empty()
+                {
+                    if self.confirm_decline {
+                        self.confirm_decline = false;
+                        return QuestOverlayAction::Submit(offer.decline_cmd.clone());
+                    }
+                    self.confirm_decline = true;
+                } else {
+                    self.confirm_decline = false;
+                }
+                QuestOverlayAction::None
+            }
             Key::Enter | Key::Char('c') | Key::Char('f') if self.tab == QuestTab::Active => {
                 self.confirm_abandon = false;
+                self.confirm_decline = false;
                 if let Some(item) = snap.active.get(self.selected) {
                     if item.can_finish_now && !item.finish_cmd.is_empty() {
                         return QuestOverlayAction::Submit(item.finish_cmd.clone());
@@ -1986,6 +2024,7 @@ impl QuestOverlayState {
             }
             Key::Char('t') if self.tab == QuestTab::Active => {
                 self.confirm_abandon = false;
+                self.confirm_decline = false;
                 if let Some(item) = snap.active.get(self.selected) {
                     self.tracked_key = Some(item.key.clone());
                 }
@@ -1993,6 +2032,7 @@ impl QuestOverlayState {
             }
             Key::Char('p') if self.tab == QuestTab::Active => {
                 self.confirm_abandon = false;
+                self.confirm_decline = false;
                 if let Some(item) = snap.active.get(self.selected)
                     && let Some(act) = QuestsSnapshot::suggested_action_for(item)
                 {
@@ -2002,6 +2042,7 @@ impl QuestOverlayState {
                 QuestOverlayAction::None
             }
             Key::Char('x') if self.tab == QuestTab::Active => {
+                self.confirm_decline = false;
                 if let Some(item) = snap.active.get(self.selected)
                     && !item.abandon_cmd.is_empty()
                 {
@@ -2015,6 +2056,7 @@ impl QuestOverlayState {
             }
             _ => {
                 self.confirm_abandon = false;
+                self.confirm_decline = false;
                 QuestOverlayAction::None
             }
         }
@@ -2777,6 +2819,11 @@ pub fn render_quest_overlay_with_stowage(
                         "Optional · Restartable (abandon & restart any time without penalty)",
                         Style::default().add_modifier(Modifier::DIM),
                     )));
+                } else if !q.decline_cmd.is_empty() && state.confirm_decline {
+                    detail_lines.push(Line::from(Span::styled(
+                        "Press 'd' again to permanently decline this optional quest.",
+                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    )));
                 }
             }
         }
@@ -2822,9 +2869,17 @@ pub fn render_quest_overlay_with_stowage(
     );
 
     // Footer legend
+    let can_decline_selected = state.tab == QuestTab::Available
+        && snap
+            .available
+            .get(state.selected)
+            .is_some_and(|q| !q.allow_restart && !q.decline_cmd.is_empty());
     let footer = match state.tab {
         QuestTab::Active => {
             "Enter/c/f: verify/complete  |  p: prefill cmd  |  t: track  |  x: abandon  |  Tab: tab  |  Esc: close"
+        }
+        QuestTab::Available if can_decline_selected => {
+            "Enter/a: accept quest  |  d: decline permanently  |  Tab: switch tab  |  Esc: close"
         }
         QuestTab::Available => "Enter/a: accept quest  |  Tab: switch tab  |  Esc: close",
         QuestTab::Completed => "Up/Down: browse history  |  Tab: switch tab  |  Esc: close",
@@ -4315,5 +4370,103 @@ mod tests {
         assert!(prog.all_done);
         assert_eq!(prog.completed, 7);
         assert!(mastered.next_guided_offer().is_none());
+    }
+
+    #[test]
+    fn quest_overlay_prioritizes_npc_turn_in_and_confirms_permanent_decline() {
+        let snap = parse_frame(&json!({
+            "schema": 1,
+            "room_name": "Registry & Co-op Desk",
+            "room_markers": [
+                {
+                    "npc_id": "#18",
+                    "npc_name": "Ilse Oduya-Brandt",
+                    "marker": "available",
+                    "symbol": "!",
+                    "quest_key": "side.one_shot",
+                    "quest_title": "One-Shot Audit",
+                    "category": "optional"
+                },
+                {
+                    "npc_id": "#18",
+                    "npc_name": "Ilse Oduya-Brandt",
+                    "marker": "turn_in",
+                    "symbol": "?",
+                    "quest_key": GUIDED_TOUR_KEYS[0],
+                    "quest_title": "First Papers at the Registry",
+                    "category": "guided"
+                }
+            ],
+            "active": [
+                {
+                    "key": GUIDED_TOUR_KEYS[0],
+                    "title": "First Papers at the Registry",
+                    "giver_name": "Maren Halvorsen",
+                    "turn_in_name": "Ilse Oduya-Brandt",
+                    "ready_to_finish": true,
+                    "can_finish_now": true,
+                    "finish_cmd": "+quest/finish #18 tok1"
+                }
+            ],
+            "available": [
+                {
+                    "key": GUIDED_TOUR_KEYS[1],
+                    "title": "Stock the Locker and Tanks",
+                    "giver_name": "Ilse Oduya-Brandt",
+                    "turn_in_name": "Ilse Oduya-Brandt",
+                    "allow_restart": true,
+                    "accept_cmd": "+quest/accept #18 tok_g2",
+                    "decline_cmd": "+quest/decline #18 tok_g2"
+                },
+                {
+                    "key": "side.one_shot",
+                    "title": "One-Shot Audit",
+                    "giver_name": "Ilse Oduya-Brandt",
+                    "turn_in_name": "Ilse Oduya-Brandt",
+                    "allow_restart": false,
+                    "accept_cmd": "+quest/accept #18 tok_side",
+                    "decline_cmd": "+quest/decline #18 tok_side"
+                }
+            ]
+        }));
+
+        // 1. Opening for Ilse picks turn-in [?] even when available [!] appears first in room_markers
+        let mut st = QuestOverlayState::default();
+        st.open_for_npc(&snap, "#18", "Ilse Oduya-Brandt");
+        assert_eq!(st.tab, QuestTab::Active);
+        assert_eq!(st.selected, 0);
+
+        // 2. Switch to Available tab: 'd' on restartable guided quest does NOT arm decline
+        st.handle_key(Key::Tab, &snap);
+        assert_eq!(st.tab, QuestTab::Available);
+        assert_eq!(
+            st.handle_key(Key::Char('d'), &snap),
+            QuestOverlayAction::None
+        );
+        assert!(!st.confirm_decline);
+
+        // 3. Move to non-restartable offer: first 'd' arms confirm_decline, moving cancels it,
+        //    then two 'd' presses submit +quest/decline
+        st.handle_key(Key::Down, &snap);
+        assert_eq!(st.selected, 1);
+        assert_eq!(
+            st.handle_key(Key::Char('d'), &snap),
+            QuestOverlayAction::None
+        );
+        assert!(st.confirm_decline);
+
+        st.handle_key(Key::Up, &snap);
+        assert!(!st.confirm_decline);
+        st.handle_key(Key::Down, &snap);
+        assert_eq!(
+            st.handle_key(Key::Char('d'), &snap),
+            QuestOverlayAction::None
+        );
+        assert!(st.confirm_decline);
+        assert_eq!(
+            st.handle_key(Key::Char('d'), &snap),
+            QuestOverlayAction::Submit("+quest/decline #18 tok_side".to_string())
+        );
+        assert!(!st.confirm_decline);
     }
 }
