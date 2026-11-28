@@ -1285,9 +1285,17 @@ namespace TacSim.Core
                     Audio?.PlayMarketChime();
                     Hud?.FloatingCallouts?.ShowCallout($"READY TO TURN IN [?]: {label}", new Color(1f, 0.84f, 0.28f, 1f), 2.8f);
                     break;
+                case "checkpoint":
+                    Audio?.PlayUiClick();
+                    Hud?.FloatingCallouts?.ShowCallout($"OBJECTIVE COMPLETE [✓]: {label}", new Color(0.38f, 0.96f, 0.66f, 1f), 2.5f);
+                    break;
                 case "accepted":
                     Audio?.PlayUiClick();
                     Hud?.FloatingCallouts?.ShowCallout($"QUEST ACCEPTED: {label}", new Color(1f, 0.88f, 0.42f, 1f), 2.4f);
+                    break;
+                case "abandoned":
+                    Audio?.PlayUiClick();
+                    Hud?.FloatingCallouts?.ShowCallout($"QUEST ABANDONED: {label}", new Color(0.86f, 0.72f, 0.44f, 1f), 2.6f);
                     break;
             }
         }

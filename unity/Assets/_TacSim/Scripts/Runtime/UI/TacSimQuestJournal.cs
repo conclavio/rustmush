@@ -252,7 +252,8 @@ namespace TacSim.UI
         public event Action OnQuestsPanelUpdated;
         /// <summary>
         /// Fires on genuine server state transitions after initial hydration:
-        /// kind is "accepted", "ready" (ready to turn in), or "completed", paired with the quest title.
+        /// kind is "accepted", "checkpoint", "ready" (ready to turn in), "completed",
+        /// or "abandoned", paired with the quest or checkpoint title.
         /// </summary>
         public event Action<string, string> OnQuestMilestoneReached;
 
@@ -350,7 +351,9 @@ namespace TacSim.UI
         private bool _hasHydratedPanel;
         private TacSimTradeAndShipState _boundTradeState;
         private readonly HashSet<string> _seenActiveKeys = new HashSet<string>(StringComparer.Ordinal);
+        private readonly Dictionary<string, (string title, bool allowRestart)> _seenActiveMeta = new Dictionary<string, (string, bool)>(StringComparer.Ordinal);
         private readonly HashSet<string> _seenReadyKeys = new HashSet<string>(StringComparer.Ordinal);
+        private readonly HashSet<string> _seenCheckpointKeys = new HashSet<string>(StringComparer.Ordinal);
         private readonly HashSet<string> _seenCompletedKeys = new HashSet<string>(StringComparer.Ordinal);
 
         public void BindTradeState(TacSimTradeAndShipState trade)
@@ -1032,6 +1035,19 @@ namespace TacSim.UI
 
             // Detect genuine server-side quest transitions after initial login hydration
             // so celebration callouts and chimes never spam on reconnect.
+            var currentActiveKeys = new HashSet<string>(StringComparer.Ordinal);
+            var currentCompletedKeys = new HashSet<string>(StringComparer.Ordinal);
+            for (int i = 0; i < panel.Active.Count; i++)
+            {
+                if (!string.IsNullOrEmpty(panel.Active[i].Key))
+                    currentActiveKeys.Add(panel.Active[i].Key);
+            }
+            for (int i = 0; i < panel.Completed.Count; i++)
+            {
+                if (!string.IsNullOrEmpty(panel.Completed[i].Key))
+                    currentCompletedKeys.Add(panel.Completed[i].Key);
+            }
+
             List<(string kind, string title)> milestones = null;
             if (_hasHydratedPanel)
             {
@@ -1048,30 +1064,71 @@ namespace TacSim.UI
                 {
                     var a = panel.Active[i];
                     if (string.IsNullOrEmpty(a.Key)) continue;
+                    bool wasActive = _seenActiveKeys.Contains(a.Key);
                     bool isReady = a.ReadyToFinish || a.CanFinishNow;
-                    if (!_seenActiveKeys.Contains(a.Key))
+                    bool becameReady = isReady && !_seenReadyKeys.Contains(a.Key);
+                    if (!wasActive)
                     {
                         milestones ??= new List<(string, string)>(4);
                         milestones.Add(("accepted", a.Title));
                     }
-                    else if (isReady && !_seenReadyKeys.Contains(a.Key))
+                    else if (!becameReady && a.Checkpoints != null)
+                    {
+                        for (int cIdx = 0; cIdx < a.Checkpoints.Count; cIdx++)
+                        {
+                            var cp = a.Checkpoints[cIdx];
+                            if (!cp.Checked && !cp.LiveReady) continue;
+                            string cpId = string.IsNullOrEmpty(cp.Id) ? cp.Title : cp.Id;
+                            string cpKey = $"{a.Key}:{cpId}";
+                            if (!_seenCheckpointKeys.Contains(cpKey))
+                            {
+                                milestones ??= new List<(string, string)>(4);
+                                milestones.Add(("checkpoint", cp.Title));
+                            }
+                        }
+                    }
+                    if (becameReady)
                     {
                         milestones ??= new List<(string, string)>(4);
                         milestones.Add(("ready", a.Title));
+                    }
+                }
+                foreach (var prev in _seenActiveMeta)
+                {
+                    if (!currentActiveKeys.Contains(prev.Key) && !currentCompletedKeys.Contains(prev.Key))
+                    {
+                        milestones ??= new List<(string, string)>(4);
+                        string abandonedLabel = prev.Value.allowRestart
+                            ? $"{prev.Value.title} (restartable)"
+                            : prev.Value.title;
+                        milestones.Add(("abandoned", abandonedLabel));
                     }
                 }
             }
 
             _hasHydratedPanel = true;
             _seenActiveKeys.Clear();
+            _seenActiveMeta.Clear();
             _seenReadyKeys.Clear();
+            _seenCheckpointKeys.Clear();
             for (int i = 0; i < panel.Active.Count; i++)
             {
                 var a = panel.Active[i];
                 if (string.IsNullOrEmpty(a.Key)) continue;
                 _seenActiveKeys.Add(a.Key);
+                _seenActiveMeta[a.Key] = (a.Title ?? string.Empty, a.AllowRestart);
                 if (a.ReadyToFinish || a.CanFinishNow)
                     _seenReadyKeys.Add(a.Key);
+                if (a.Checkpoints != null)
+                {
+                    for (int cIdx = 0; cIdx < a.Checkpoints.Count; cIdx++)
+                    {
+                        var cp = a.Checkpoints[cIdx];
+                        if (!cp.Checked && !cp.LiveReady) continue;
+                        string cpId = string.IsNullOrEmpty(cp.Id) ? cp.Title : cp.Id;
+                        _seenCheckpointKeys.Add($"{a.Key}:{cpId}");
+                    }
+                }
             }
             for (int i = 0; i < panel.Completed.Count; i++)
             {
@@ -1789,7 +1846,9 @@ namespace TacSim.UI
             _trackerRouteHops = 0;
             _hasHydratedPanel = false;
             _seenActiveKeys.Clear();
+            _seenActiveMeta.Clear();
             _seenReadyKeys.Clear();
+            _seenCheckpointKeys.Clear();
             _seenCompletedKeys.Clear();
             _manualPinActive = false;
             _capturingTab = null;

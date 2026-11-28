@@ -13930,5 +13930,99 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestJournal_EmitsCheckpointAndAbandonedMilestonesPostHydration()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestMilestonesTest");
+            try
+            {
+                var journal = rootGo.AddComponent<TacSim.UI.TacSimQuestJournal>();
+                journal.BuildUi(rootGo.transform, null);
+                var events = new List<(string kind, string label)>();
+                journal.OnQuestMilestoneReached += (kind, label) => events.Add((kind, label));
+
+                // 1. Initial hydration must not emit any milestone
+                journal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"",
+                        ""title"": ""Stock the Locker and Fuel the Tank"",
+                        ""allow_restart"": true,
+                        ""ready_to_finish"": false,
+                        ""checkpoints"": [
+                            { ""id"": ""buy_provisions"", ""title"": ""Buy 10 provisions"", ""checked"": false, ""live_ready"": false },
+                            { ""id"": ""buy_propellant"", ""title"": ""Buy 5t propellant"", ""checked"": false, ""live_ready"": false }
+                        ]
+                    }]
+                }")));
+                Assert.AreEqual(0, events.Count, "Initial hydration must suppress milestone spam");
+
+                // 2. Completing a single checkpoint emits 'checkpoint' without 'ready'
+                journal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"",
+                        ""title"": ""Stock the Locker and Fuel the Tank"",
+                        ""allow_restart"": true,
+                        ""ready_to_finish"": false,
+                        ""checkpoints"": [
+                            { ""id"": ""buy_provisions"", ""title"": ""Buy 10 provisions"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""buy_propellant"", ""title"": ""Buy 5t propellant"", ""checked"": false, ""live_ready"": false }
+                        ]
+                    }]
+                }")));
+                Assert.AreEqual(1, events.Count);
+                Assert.AreEqual("checkpoint", events[0].kind);
+                Assert.AreEqual("Buy 10 provisions", events[0].label);
+
+                // 3. Final checkpoint transitioning quest to ready emits 'ready' only (no duplicate checkpoint)
+                events.Clear();
+                journal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"",
+                        ""title"": ""Stock the Locker and Fuel the Tank"",
+                        ""allow_restart"": true,
+                        ""ready_to_finish"": true,
+                        ""checkpoints"": [
+                            { ""id"": ""buy_provisions"", ""title"": ""Buy 10 provisions"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""buy_propellant"", ""title"": ""Buy 5t propellant"", ""checked"": true, ""live_ready"": true }
+                        ]
+                    }]
+                }")));
+                Assert.AreEqual(1, events.Count);
+                Assert.AreEqual("ready", events[0].kind);
+
+                // 4. Abandoning a restartable quest emits 'abandoned' with restartable cue
+                events.Clear();
+                journal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [],
+                    ""completed"": []
+                }")));
+                Assert.AreEqual(1, events.Count);
+                Assert.AreEqual("abandoned", events[0].kind);
+                StringAssert.Contains("Stock the Locker and Fuel the Tank", events[0].label);
+                StringAssert.Contains("restartable", events[0].label);
+
+                // 5. ResetSessionState suppresses re-hydration milestones
+                events.Clear();
+                journal.ResetSessionState();
+                journal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                        ""title"": ""Enroll in the Freeport Co-op"",
+                        ""ready_to_finish"": false
+                    }]
+                }")));
+                Assert.AreEqual(0, events.Count, "Post-reset hydration must stay silent");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
