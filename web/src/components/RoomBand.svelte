@@ -10,6 +10,7 @@
     computeNextQuestExitBreadcrumb,
     computeShipQuestBreadcrumb,
     exitMatchesQuestBreadcrumb,
+    normalizePortVenueTarget,
   } from "$lib/tacsim/spatial";
   import { resolveQuestShipTargetCompartment } from "$lib/stores/quests.svelte";
 
@@ -30,7 +31,14 @@
     if (!quests || !tacsim) return null;
     if (tacsim.isAboardShip) {
       if (tacsim.seatedAtBridgeHelm) return null;
-      const targetComp = resolveQuestShipTargetCompartment(quests.active, quests.trackedKey);
+      const dockedPortId = tacsim.ambient?.docked
+        ? normalizePortVenueTarget(tacsim.ambient?.port ?? tacsim.trade?.hullPort)
+        : null;
+      const targetComp = resolveQuestShipTargetCompartment(
+        quests.active,
+        quests.trackedKey,
+        dockedPortId,
+      );
       const currentComp =
         (tacsim.view3dOpen ? tacsim.physicalLocationKey : null) ?? tacsim.serverShipCompartment;
       return computeShipQuestBreadcrumb(tacsim.shipTemplate, currentComp, targetComp);
