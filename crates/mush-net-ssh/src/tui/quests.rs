@@ -1613,11 +1613,23 @@ pub fn parse_room_markers(view: &RoomView) -> Vec<QuestMarker> {
     parse_markers_value(view.ambient.get("quest_markers"))
 }
 
-/// Return a compact colored badge (`" [!]"`, `" [?]"`) for an NPC listed in `RoomView`.
+fn marker_priority(marker: &str) -> u8 {
+    match marker {
+        "turn_in" => 0,
+        "available" => 1,
+        _ => 2,
+    }
+}
+
+/// Return a compact colored badge (`" [!]"`, `" [?]"`) for an NPC listed in `RoomView`,
+/// prioritizing `turn_in` -> `available` -> `in_progress` when multiple markers match.
 #[must_use]
 pub fn marker_badge_for_npc(view: &RoomView, npc_id: &str) -> Option<(&'static str, Style)> {
     let markers = parse_room_markers(view);
-    let found = markers.iter().find(|m| m.npc_id == npc_id)?;
+    let found = markers
+        .iter()
+        .filter(|m| m.npc_id == npc_id)
+        .min_by_key(|m| marker_priority(&m.marker))?;
     match found.marker.as_str() {
         "turn_in" => Some((
             " [?]",
@@ -1633,6 +1645,59 @@ pub fn marker_badge_for_npc(view: &RoomView, npc_id: &str) -> Option<(&'static s
         )),
         "in_progress" => Some((
             " [?]",
+            Style::default()
+                .fg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        )),
+        _ => None,
+    }
+}
+
+/// Return a compact colored badge for an NPC listed in `RoomView`, prioritizing
+/// `turn_in` -> `available` -> `in_progress` and appending ` xN` when multiple quests apply.
+#[must_use]
+pub fn marker_badge_with_count_for_npc(view: &RoomView, npc_id: &str) -> Option<(String, Style)> {
+    let markers = parse_room_markers(view);
+    let mut best: Option<&QuestMarker> = None;
+    let mut keys: Vec<String> = Vec::new();
+    for m in &markers {
+        if m.npc_id != npc_id {
+            continue;
+        }
+        let k = if m.quest_key.is_empty() {
+            format!("{}:{}", m.marker, m.quest_title)
+        } else {
+            m.quest_key.clone()
+        };
+        if !keys.contains(&k) {
+            keys.push(k);
+        }
+        if best.is_none_or(|cur| marker_priority(&m.marker) < marker_priority(&cur.marker)) {
+            best = Some(m);
+        }
+    }
+    let found = best?;
+    let count = keys.len();
+    let count_suffix = if count > 1 {
+        format!(" x{count}")
+    } else {
+        String::new()
+    };
+    match found.marker.as_str() {
+        "turn_in" => Some((
+            format!(" [?{count_suffix}]"),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        "available" => Some((
+            format!(" [!{count_suffix}]"),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        "in_progress" => Some((
+            format!(" [?{count_suffix}]"),
             Style::default()
                 .fg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD),

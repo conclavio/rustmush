@@ -498,30 +498,49 @@ fn render_room(w: &mut EntryAcc<'_>, view: &RoomView, quest_exit: Option<&QuestE
                 w.plain(", ");
             }
             w.plain(&flat(&obj.name));
-            if let Some((badge, style)) = super::quests::marker_badge_for_npc(view, &obj.id) {
-                w.write(badge, style);
+            if let Some((badge, style)) =
+                super::quests::marker_badge_with_count_for_npc(view, &obj.id)
+            {
+                w.write(&badge, style);
             }
         }
         w.end_line();
     }
-    if !view.exits.is_empty() {
+    let ship_action_hint = quest_exit.and_then(|c| {
+        if c.next_exit_command == "+ship/board" {
+            Some("[Q] Board Ship (+ship/board)")
+        } else if c.next_exit_command == "+ship/leave" {
+            Some("[Q] Cycle Ashore (+ship/leave)")
+        } else {
+            None
+        }
+    });
+    if !view.exits.is_empty() || ship_action_hint.is_some() {
         w.plain("Exits    ");
+        let mut matched_exit = false;
+        let q_style = if matches!(w.depth, ColorDepth::None) {
+            Style::default()
+        } else {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        };
         for (i, exit) in view.exits.iter().enumerate() {
             if i > 0 {
                 w.plain("  ");
             }
             if quest_exit.is_some_and(|c| c.matches_exit(&exit.name, &exit.aliases)) {
-                let style = if matches!(w.depth, ColorDepth::None) {
-                    Style::default()
-                } else {
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD)
-                };
-                w.write(&format!("[Q] {}", flat(&exit.name)), style);
+                matched_exit = true;
+                w.write(&format!("[Q] {}", flat(&exit.name)), q_style);
             } else {
                 w.tagged("exit", &flat(&exit.name));
             }
+        }
+        if !matched_exit && let Some(hint) = ship_action_hint {
+            if !view.exits.is_empty() {
+                w.plain("  ");
+            }
+            w.write(hint, q_style);
         }
         w.end_line();
     }
@@ -8821,5 +8840,54 @@ mod tests {
             });
             assert_eq!(notice_words(&refused), said);
         }
+    }
+
+    #[test]
+    fn render_room_prioritizes_multi_quest_npc_badge_and_appends_board_ship_exit_hint() {
+        let view = RoomView {
+            id: "#19".into(),
+            name: "Visiting Berth Gallery".into(),
+            desc: RichText::plain("Cradles overlooking the belt."),
+            contents: vec![mush_proto::ObjRef {
+                id: "#50".into(),
+                name: "Ilse Oduya-Brandt".into(),
+            }],
+            exits: vec![mush_proto::ExitRef {
+                name: "Concourse".into(),
+                aliases: vec!["concourse".into()],
+            }],
+            ambient: std::collections::BTreeMap::from([(
+                mush_proto::SmolStr::new_static("quest_markers"),
+                serde_json::json!([
+                    { "npc_id": "#50", "npc_name": "Ilse Oduya-Brandt", "marker": "in_progress", "symbol": "?", "quest_key": "q.wip", "quest_title": "Wip" },
+                    { "npc_id": "#50", "npc_name": "Ilse Oduya-Brandt", "marker": "available", "symbol": "!", "quest_key": "q.offer", "quest_title": "Offer" },
+                    { "npc_id": "#50", "npc_name": "Ilse Oduya-Brandt", "marker": "turn_in", "symbol": "?", "quest_key": "q.turnin", "quest_title": "Turn In" }
+                ]),
+            )]),
+            zone: None,
+        };
+        let crumb = QuestExitBreadcrumb {
+            next_room_entry: "room.c01_berth_gallery".into(),
+            next_room_name: "Visiting Berth Gallery".into(),
+            next_exit_command: "+ship/board".into(),
+            target_room_name: "Visiting Berth Gallery".into(),
+            hops: 1,
+        };
+        let entries = render_event_with_quest_exit(
+            &OutputEvent::Room(view),
+            &caps(ColorDepth::Ansi16),
+            &AnsiTheme::classic(),
+            0,
+            Some(&crumb),
+        );
+        let text = entries.iter().map(body_text).collect::<Vec<_>>().join("\n");
+        assert!(
+            text.contains("Ilse Oduya-Brandt [? x3]"),
+            "Here row must show highest-priority turn_in badge with count:\n{text}"
+        );
+        assert!(
+            text.contains("[Q] Board Ship (+ship/board)"),
+            "Exits row must append Board Ship quest action hint:\n{text}"
+        );
     }
 }
