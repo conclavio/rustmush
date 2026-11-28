@@ -18562,5 +18562,154 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void SolarMap_ShowsCargoPreflightAndStep6RecoverRigFirstGuard()
+        {
+            var rootGo = new UnityEngine.GameObject("SolarMapStep6GuardTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.ShowLoginOverlay(false);
+                var tradeState = new TacSimTradeAndShipState();
+                hud.BindTradeState(tradeState);
+                string sentCmd = string.Empty;
+                hud.SolarMap.OnCommandRequested += c => sentCmd = c;
+
+                var ceresFrame = TacSim.Space.TacSimSolarChartFrame.FromJson(JsonNode.Parse(@"{
+                    ""chart"": {
+                        ""vantage"": { ""port"": ""Ceres Freeport"", ""body"": ""ceres"" },
+                        ""scale_r0_au"": 0.5, ""scale_au_max"": 4.0,
+                        ""bodies"": [
+                            { ""id"": ""ceres"", ""label"": ""Ceres"", ""r_au"": 2.77, ""lon_deg"": 10.0, ""here"": true },
+                            { ""id"": ""mars"", ""label"": ""Mars"", ""r_au"": 1.52, ""lon_deg"": 40.0, ""here"": false }
+                        ],
+                        ""routes"": [
+                            { ""to"": ""stickney"", ""venue"": ""stickney"", ""body"": ""mars"", ""days"": 6.0 },
+                            { ""to"": ""ceres"", ""venue"": ""ceres"", ""body"": ""ceres"", ""days"": 1.0 }
+                        ]
+                    }
+                }"));
+                hud.SolarMap.SetOpen(true);
+                hud.SolarMap.ApplyChartFrame(ceresFrame);
+
+                // 1. Step 3 with fuel & stores OK but 0/5 metals -> [CHECK BEFORE UNDOCK] | metals 0/5!; 5t metals -> [PRE-FLIGHT OK]
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""ceres"", ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 0, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 10000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": []
+                        }
+                    }
+                }"));
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"",
+                        ""title"": ""Metals Down the Corridor"",
+                        ""next_room_entry"": ""room.p07_receiving"",
+                        ""checkpoints"": [{
+                            ""id"": ""deliver_metals"",
+                            ""title"": ""Deliver 5t metals to Stickney Yards"",
+                            ""instructions"": ""Buy 5t metals (+market/buy metals 5) then +ship/plan stickney and sell."",
+                            ""checked"": false, ""live_ready"": false
+                        }]
+                    }],
+                    ""available"": [], ""completed"": []
+                }")));
+                StringAssert.Contains("[CHECK BEFORE UNDOCK]", hud.SolarMap.DossierSnapshot);
+                StringAssert.Contains("metals 0/5!", hud.SolarMap.DossierSnapshot);
+
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""ceres"", ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 5000, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 10000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:metals"", ""label"": ""Metals"", ""qty"": 5 }]
+                        }
+                    }
+                }"));
+                StringAssert.Contains("[PRE-FLIGHT OK]", hud.SolarMap.DossierSnapshot);
+
+                // 2. Step 6 post-mine with 0t ore stowed -> [RECOVER RIG FIRST] + RECOVER RIG [6/7] -> +tv/1 recover go
+                var commonsFrame = TacSim.Space.TacSimSolarChartFrame.FromJson(JsonNode.Parse(@"{
+                    ""chart"": {
+                        ""vantage"": { ""port"": ""Freeport Commons"", ""body"": ""ceres"" },
+                        ""scale_r0_au"": 0.5, ""scale_au_max"": 4.0,
+                        ""bodies"": [
+                            { ""id"": ""ceres"", ""label"": ""Ceres"", ""r_au"": 2.77, ""lon_deg"": 10.0, ""here"": true }
+                        ],
+                        ""routes"": [
+                            { ""to"": ""ceres"", ""venue"": ""ceres"", ""body"": ""ceres"", ""days"": 1.0 }
+                        ]
+                    }
+                }"));
+                hud.SolarMap.ApplyChartFrame(commonsFrame);
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""commons"", ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 0, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 10000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": []
+                        }
+                    }
+                }"));
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""next_room_entry"": ""room.c07_exchange"",
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Scan"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""sound_mineral_pocket"", ""title"": ""Sound"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""checked"": true, ""live_ready"": true }
+                        ]
+                    }],
+                    ""available"": [], ""completed"": []
+                }")));
+                Assert.IsFalse(hud.SolarMap.IsArrivedAtQuestDestination);
+                Assert.AreEqual("RECOVER RIG [6/7]", hud.SolarMap.QuestFocusButtonLabelSnapshot);
+                StringAssert.Contains("[RECOVER RIG FIRST]", hud.SolarMap.DossierSnapshot);
+                Assert.IsTrue(hud.SolarMap.FocusQuestDestinationPort());
+                Assert.AreEqual("+tv/1 recover go", sentCmd);
+                Assert.IsFalse(hud.SolarMap.IsOpen, "RECOVER RIG should close Solar Map");
+
+                // 3. Rig recovered (1t carbon_ore stowed) -> [ORE HOLD READY] Return to Ceres Freeport + RETURN [6/7]: CERES
+                sentCmd = string.Empty;
+                hud.SolarMap.SetOpen(true);
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""commons"", ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 1000, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 10000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:carbon_ore"", ""label"": ""Carbon Ore"", ""qty"": 1 }]
+                        }
+                    }
+                }"));
+                Assert.AreEqual("RETURN [6/7]: CERES", hud.SolarMap.QuestFocusButtonLabelSnapshot);
+                StringAssert.Contains("[ORE HOLD READY] Return to Ceres Freeport", hud.SolarMap.DossierSnapshot);
+                Assert.IsTrue(hud.SolarMap.FocusQuestDestinationPort());
+                Assert.AreEqual("ceres", hud.SolarMap.SelectedPortId);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
