@@ -15444,5 +15444,68 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestJournal_EmptyActiveExposesBetweenStepsSailWayfinderAndViewOffers()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestJournalBetweenStepsTest");
+            try
+            {
+                var tradeState = new TacSim.World.TacSimTradeAndShipState();
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{""enabled"":true,""venue"":""ceres""}"));
+                var journal = rootGo.AddComponent<TacSim.UI.TacSimQuestJournal>();
+                journal.BuildUi(rootGo.transform, null);
+                journal.BindTradeState(tradeState);
+
+                string prefilled = string.Empty;
+                string wayfinderRoom = string.Empty;
+                journal.OnPrefillCommandRequested += cmd => prefilled = cmd;
+                journal.OnWayfinderRoomRequested += room => wayfinderRoom = room;
+
+                // 1. Between Steps 3 & 4 while docked at Ceres -> Journal Active tab shows SAIL STICKNEY & WAYFINDER
+                journal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""S1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""S2"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""S3"" }
+                    ],
+                    ""active"": [],
+                    ""available"": []
+                }")));
+                journal.SetOpen(true, TacSim.UI.QuestJournalTab.Quests);
+                journal.SelectQuestSubTab("active");
+                Assert.IsTrue(journal.IsJournalPrefillVisible);
+                Assert.AreEqual("SAIL STICKNEY", journal.JournalPrefillLabelSnapshot);
+                Assert.IsTrue(journal.IsJournalWayfinderVisible);
+
+                Assert.IsTrue(journal.TriggerJournalSuggestedPrefill());
+                Assert.AreEqual("+ship/plan stickney", prefilled);
+
+                journal.SetOpen(true, TacSim.UI.QuestJournalTab.Quests);
+                journal.SelectQuestSubTab("active");
+                journal.TriggerJournalWayfinder();
+                Assert.AreEqual("room.p07_receiving", wayfinderRoom);
+
+                // 2. Empty Active with room offers present -> shows VIEW OFFERS (1) primary button
+                journal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""completed"": [],
+                    ""active"": [],
+                    ""available"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                        ""title"": ""First Papers at the Registry"",
+                        ""giver_name"": ""Maren Halvorsen""
+                    }]
+                }")));
+                journal.SetOpen(true, TacSim.UI.QuestJournalTab.Quests);
+                journal.SelectQuestSubTab("active");
+                Assert.AreEqual("VIEW OFFERS (1)", journal.JournalPrimaryLabelSnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

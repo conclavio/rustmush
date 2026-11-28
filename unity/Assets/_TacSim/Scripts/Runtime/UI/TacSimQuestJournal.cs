@@ -544,6 +544,9 @@ namespace TacSim.UI
         public bool IsTrackerWayfinderVisible => _trackerNavBtn != null && _trackerNavBtn.gameObject.activeSelf;
         public bool IsTrackerCycleVisible => _trackerCycleBtn != null && _trackerCycleBtn.gameObject.activeSelf;
         public bool IsJournalPrefillVisible => _qPrefillBtn != null && _qPrefillBtn.gameObject.activeSelf;
+        public bool IsJournalWayfinderVisible => _qWayfinderBtn != null && _qWayfinderBtn.gameObject.activeSelf;
+        public string JournalPrefillLabelSnapshot => _qPrefillLbl != null ? _qPrefillLbl.text : string.Empty;
+        public string JournalPrimaryLabelSnapshot => _qPrimaryLbl != null ? _qPrimaryLbl.text : string.Empty;
         public string GuidedTourProgressSnapshot
         {
             get
@@ -2781,7 +2784,26 @@ namespace TacSim.UI
 
         public bool TriggerJournalSuggestedPrefill()
         {
-            if (LatestPanel == null || LatestPanel.Active.Count == 0) return false;
+            if (LatestPanel == null) return false;
+            if (LatestPanel.Active.Count == 0)
+            {
+                if (ActiveQuestSubTab == "active" && TryGetNextGuidedOffer(out _))
+                {
+                    string curPort = _boundTradeState != null
+                        ? (!string.IsNullOrEmpty(_boundTradeState.ActiveVenue)
+                            ? _boundTradeState.ActiveVenue
+                            : _boundTradeState.AboardDockedPortHint)
+                        : string.Empty;
+                    if (!string.IsNullOrEmpty(curPort) &&
+                        TryGetNextGuidedOfferDestination(curPort, out var sailDest))
+                    {
+                        SetOpen(false);
+                        OnPrefillCommandRequested?.Invoke($"+ship/plan {sailDest.PortId}");
+                        return true;
+                    }
+                }
+                return false;
+            }
             var active = LatestPanel.Active[_selectedQuestIndex % LatestPanel.Active.Count];
             if (!TryGetSuggestedCommand(active, out _, out string cmd))
                 return false;
@@ -2959,9 +2981,13 @@ namespace TacSim.UI
                 else
                     TrackQuest(active.Key);
             }
+            else if (ActiveQuestSubTab == "active" && LatestPanel.Active.Count == 0 && LatestPanel.Available.Count > 0)
+            {
+                SelectQuestSubTab("available");
+            }
         }
 
-        private void TriggerJournalWayfinder()
+        public void TriggerJournalWayfinder()
         {
             if (LatestPanel == null) return;
             if (ActiveQuestSubTab == "active" && LatestPanel.Active.Count > 0)
@@ -2972,6 +2998,12 @@ namespace TacSim.UI
                     OnWayfinderRoomRequested?.Invoke(active.NextRoomEntry);
                     SetOpen(false);
                 }
+            }
+            else if (ActiveQuestSubTab == "active" && LatestPanel.Active.Count == 0 &&
+                TryGetNextGuidedOffer(out var nextOffer) && !string.IsNullOrEmpty(nextOffer.GiverRoomEntry))
+            {
+                OnWayfinderRoomRequested?.Invoke(nextOffer.GiverRoomEntry);
+                SetOpen(false);
             }
             else if (ActiveQuestSubTab == "available" && LatestPanel.Available.Count > 0)
             {
@@ -3098,17 +3130,40 @@ namespace TacSim.UI
                 {
                     if (LatestPanel.Active.Count == 0)
                     {
+                        bool showPrefill = false;
+                        bool showWayfinder = false;
                         if (TryGetNextGuidedOffer(out var nextOffer))
                         {
                             sb.Append($"<color=#88AAC8>No active quests. <b><color=#FFDD44>Next Guided Step ({nextOffer.Step}/7): {MushProtocol.EscapeUnityRichText(nextOffer.ShortLabel)}</color></b> — speak with <b>{MushProtocol.EscapeUnityRichText(nextOffer.GiverLabel)}</b> in <color=#77DDFF>{MushProtocol.EscapeUnityRichText(nextOffer.GiverRoomName)}</color> ({MushProtocol.EscapeUnityRichText(nextOffer.LocationLabel)}).</color>");
+                            showWayfinder = !string.IsNullOrEmpty(nextOffer.GiverRoomEntry);
+                            string curPort = _boundTradeState != null
+                                ? (!string.IsNullOrEmpty(_boundTradeState.ActiveVenue)
+                                    ? _boundTradeState.ActiveVenue
+                                    : _boundTradeState.AboardDockedPortHint)
+                                : string.Empty;
+                            if (!string.IsNullOrEmpty(curPort) &&
+                                TryGetNextGuidedOfferDestination(curPort, out var sailDest))
+                            {
+                                sb.Append($"\n<color=#77DDFF>Sail:</color> +ship/plan {MushProtocol.EscapeUnityRichText(sailDest.PortId)} ({MushProtocol.EscapeUnityRichText(sailDest.PortLabel)})");
+                                showPrefill = true;
+                                if (_qPrefillLbl != null)
+                                    _qPrefillLbl.text = $"SAIL {sailDest.PortId.ToUpperInvariant()}";
+                            }
                         }
                         else
                         {
                             sb.Append("<color=#88AAC8>No active quests. Look for NPCs with a floating golden <b>!</b> marker (such as Maren Halvorsen in Port Watch Arrivals).</color>");
                         }
-                        if (_qPrimaryBtn != null) _qPrimaryBtn.gameObject.SetActive(false);
-                        if (_qPrefillBtn != null) _qPrefillBtn.gameObject.SetActive(false);
-                        if (_qWayfinderBtn != null) _qWayfinderBtn.gameObject.SetActive(false);
+                        bool showViewOffers = LatestPanel.Available.Count > 0;
+                        if (showViewOffers)
+                        {
+                            sb.Append($"\n<color=#FFDD44><b>[!] {LatestPanel.Available.Count} {(LatestPanel.Available.Count == 1 ? "offer" : "offers")} available here</b></color>");
+                            if (_qPrimaryLbl != null)
+                                _qPrimaryLbl.text = $"VIEW OFFERS ({LatestPanel.Available.Count})";
+                        }
+                        if (_qPrimaryBtn != null) _qPrimaryBtn.gameObject.SetActive(showViewOffers);
+                        if (_qPrefillBtn != null) _qPrefillBtn.gameObject.SetActive(showPrefill);
+                        if (_qWayfinderBtn != null) _qWayfinderBtn.gameObject.SetActive(showWayfinder);
                         if (_qAbandonBtn != null) _qAbandonBtn.gameObject.SetActive(false);
                         if (_qNextBtn != null) _qNextBtn.gameObject.SetActive(false);
                     }
