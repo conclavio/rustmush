@@ -52,7 +52,7 @@ use super::port_walk::{PORT_TRADE_FEED, PortWalkState, TACSIM_CONTENT_FEED};
 use super::quests::{
     QUESTS_FEED, QuestMilestoneKind, QuestMilestoneTracker, QuestOverlayAction, QuestOverlayState,
     QuestTab, QuestsSnapshot, parse_frame as parse_quests_frame, parse_room_markers,
-    render_quest_overlay, render_quest_sheet_lines, render_quest_tracker_lines,
+    render_quest_overlay, render_quest_sheet_lines, render_quest_tracker_lines_with_route,
 };
 use super::render::{
     BODY_GROUND_FEED, CHART_FEED, Entry, GUTTER_W, PaneRow, PaneRows, RenderCtx, SITE_MAP_FEED,
@@ -6223,9 +6223,11 @@ impl TuiApp {
                 } else {
                     render_who_rail(&self.who, &self.theme, self.caps.color, self.caps.utf8)
                 };
-                let tracker_lines = render_quest_tracker_lines(
+                let route_hop = self.port_walk.next_quest_hop();
+                let tracker_lines = render_quest_tracker_lines_with_route(
                     &self.quests_snap,
                     self.quests_overlay.tracked_key.as_deref(),
+                    route_hop.as_ref(),
                 );
                 if !tracker_lines.is_empty() && inner.height >= 5 {
                     let max_tracker = inner.height.saturating_sub(2);
