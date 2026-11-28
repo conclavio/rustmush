@@ -117,6 +117,40 @@ pub struct WalkKeyOutcome {
     pub open_quest_for_npc: Option<(String, String)>,
 }
 
+/// Immediate next-hop station exit breadcrumb toward the tracked quest's objective room.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuestExitBreadcrumb {
+    pub next_room_entry: String,
+    pub next_room_name: String,
+    pub next_exit_command: String,
+    pub target_room_name: String,
+    pub hops: usize,
+}
+
+impl QuestExitBreadcrumb {
+    /// True when a `RoomView` exit (by name or alias) matches the first hop of this route.
+    #[must_use]
+    pub fn matches_exit(&self, exit_name: &str, aliases: &[String]) -> bool {
+        let want_cmd = self.next_exit_command.trim().to_ascii_lowercase();
+        let want_word = want_cmd.strip_prefix("goto ").unwrap_or(&want_cmd).trim();
+        let want_room = self.next_room_name.trim().to_ascii_lowercase();
+        let name_norm = exit_name.trim().to_ascii_lowercase();
+        if name_norm.is_empty() {
+            return false;
+        }
+        if name_norm == want_word
+            || name_norm == want_room
+            || format!("goto {name_norm}") == want_cmd
+        {
+            return true;
+        }
+        aliases.iter().any(|raw| {
+            let a = raw.trim().to_ascii_lowercase();
+            !a.is_empty() && (a == want_word || a == want_room || format!("goto {a}") == want_cmd)
+        })
+    }
+}
+
 #[derive(Clone, Debug)]
 struct RoomGeom {
     entry_id: String,
@@ -856,6 +890,64 @@ impl PortWalkState {
     /// Sync active Co-op enrollment / Dray-P refit quest action for the Co-op drawer.
     pub fn observe_quest_coop_action(&mut self, action: Option<QuestSuggestedAction>) {
         self.quest_coop_action = action;
+    }
+
+    /// Active quest corridor destination hint (e.g., Stickney Yards), if any.
+    #[must_use]
+    pub fn quest_dest_hint(&self) -> Option<&QuestDestinationHint> {
+        self.quest_dest_port.as_ref()
+    }
+
+    /// Compute the immediate next station exit along the shortest BFS path to the
+    /// tracked quest's objective room (returns `None` aboard ship or when already arrived).
+    #[must_use]
+    pub fn next_quest_hop(&self) -> Option<QuestExitBreadcrumb> {
+        if self.aboard_ship {
+            return None;
+        }
+        let target_id = self.quest_room_entry.as_deref()?;
+        if target_id.is_empty() || self.active_location_key == target_id {
+            return None;
+        }
+        type BfsHop = (String, String);
+        let mut queue: VecDeque<(String, Option<BfsHop>, usize)> = VecDeque::new();
+        let mut visited: HashSet<String> = HashSet::new();
+        queue.push_back((self.active_location_key.clone(), None, 0));
+        visited.insert(self.active_location_key.clone());
+
+        while let Some((cur, first_hop, depth)) = queue.pop_front() {
+            for p in &self.portals {
+                if p.from_room != cur
+                    || visited.contains(&p.to_room)
+                    || !p.command.starts_with("goto ")
+                {
+                    continue;
+                }
+                let hop = first_hop
+                    .clone()
+                    .unwrap_or_else(|| (p.command.clone(), p.to_room.clone()));
+                let next_depth = depth + 1;
+                if p.to_room == target_id {
+                    let (cmd, next_room_entry) = hop;
+                    let next_room_name = self
+                        .find_room(&next_room_entry)
+                        .map_or_else(|| next_room_entry.clone(), |r| r.name.clone());
+                    let target_room_name = self
+                        .find_room(target_id)
+                        .map_or_else(|| target_id.to_string(), |r| r.name.clone());
+                    return Some(QuestExitBreadcrumb {
+                        next_room_entry,
+                        next_room_name,
+                        next_exit_command: cmd,
+                        target_room_name,
+                        hops: next_depth,
+                    });
+                }
+                visited.insert(p.to_room.clone());
+                queue.push_back((p.to_room.clone(), Some(hop), next_depth));
+            }
+        }
+        None
     }
 
     fn active_trade_qty_setting(&self) -> i64 {
@@ -2705,10 +2797,23 @@ impl PortWalkState {
         } else {
             self.balance_text.clone()
         };
-        let top = format!(
+        let mut top = format!(
             "{mode_word} ({cam_name})  |  {}  |  {wallet}  |  drawing {encoder_name}",
             self.room_title,
         );
+        if !self.aboard_ship
+            && let Some(hop) = self.next_quest_hop()
+        {
+            let hop_word = if hop.hops == 1 { "hop" } else { "hops" };
+            top.push_str(&format!(
+                "  |  [QUEST -> {} ({} {hop_word})]",
+                hop.next_room_name, hop.hops
+            ));
+        } else if self.aboard_ship
+            && let Some(dest) = &self.quest_dest_port
+        {
+            top.push_str(&format!("  |  [QUEST] Dest: {}", dest.port_label));
+        }
         let bottom = if self.drawer.is_some() {
             "Tab: tab  Up/Dn: row  [/]: qty  PgUp/PgDn: log  Enter: run  Esc: close".to_string()
         } else {
@@ -8054,6 +8159,62 @@ mod tests {
             out.commands.iter().any(|c| c == "+coop/refit prospector"),
             "pressing p in Co-op drawer must submit '+coop/refit prospector', got {:?}",
             out.commands
+        );
+    }
+
+    #[test]
+    fn quest_exit_breadcrumb_computes_shortest_hop_and_updates_hud_lines() {
+        let mut st = PortWalkState::new();
+        let mut ambient = std::collections::BTreeMap::new();
+        ambient.insert(
+            "atlas".into(),
+            json!({ "pack": "neighborhood.ceres_freeport", "entry": "room.c01_berth_gallery" }),
+        );
+        let rv = RoomView {
+            id: "#10".into(),
+            name: "Visiting Berth Gallery".into(),
+            desc: mush_proto::RichText::plain("Berth gallery."),
+            exits: Vec::new(),
+            contents: Vec::new(),
+            zone: None,
+            ambient,
+        };
+        st.observe_room(&rv, Some("Pilot"));
+        st.observe_quest_objective_room(Some(("room.c05_registry".into(), false)));
+
+        let hop = st
+            .next_quest_hop()
+            .expect("expected BFS breadcrumb from berth gallery to registry");
+        assert_eq!(hop.next_room_entry, "room.c02_pressure");
+        assert_eq!(hop.next_room_name, "Pressure Lobby");
+        assert_eq!(hop.hops, 3);
+        assert!(hop.matches_exit("Pressure Lobby", &[]));
+        assert!(!hop.matches_exit("Cargo Airlock", &[]));
+
+        let (top, _) = st.hud_lines("kitty");
+        assert!(
+            top.contains("[QUEST -> Pressure Lobby (3 hops)]"),
+            "expected station quest hop breadcrumb in HUD top line: {top}"
+        );
+
+        // Arriving at target clears breadcrumb cleanly
+        st.observe_quest_objective_room(Some(("room.c01_berth_gallery".into(), false)));
+        assert!(st.next_quest_hop().is_none());
+
+        // Aboard ship HUD surfaces active destination port
+        st.aboard_ship = true;
+        st.observe_quest_guidance(
+            None,
+            Some(QuestDestinationHint {
+                quest_title: "Run Metals to Stickney Yards".into(),
+                port_id: "stickney".into(),
+                port_label: "Stickney Yards".into(),
+            }),
+        );
+        let (ship_top, _) = st.hud_lines("kitty");
+        assert!(
+            ship_top.contains("[QUEST] Dest: Stickney Yards"),
+            "expected ship HUD quest destination: {ship_top}"
         );
     }
 }
