@@ -73,6 +73,28 @@
     questMining?.mineDone ? (app.quests?.activeDestinationPort ?? null) : null,
   );
 
+  const firstQuestReading = $derived.by(() => {
+    if (!questMining || questMining.mineDone || !block || q.mode === "ground") return null;
+    return (
+      block.readings.find(
+        (r) =>
+          block.family.toLowerCase() === questMining.recommendedFamily.toLowerCase() ||
+          matchesQuestOre(r.line),
+      ) ?? null
+    );
+  });
+
+  function isHighlightedQuestSite(s: {
+    venue: string;
+    best?: string | null;
+    best_line?: string | null;
+  }): boolean {
+    return (
+      matchesQuestSite(s) ||
+      (recommendedQuestSite !== null && recommendedQuestSite.venue === s.venue)
+    );
+  }
+
   function selectQuestWash(): void {
     if (!questMining) return;
     app.quarry.family = questMining.recommendedFamily;
@@ -171,6 +193,16 @@
               Next: {questNextRigCmd.label}
             </button>
           {/if}
+          {#if firstQuestReading}
+            <button
+              type="button"
+              class="qm-plan"
+              title={`Prefill ${rigPrefill(q.selectedRig, `drive ${firstQuestReading.target}`)}`}
+              onclick={() => prefill(rigPrefill(q.selectedRig, `drive ${firstQuestReading.target}`))}
+            >
+              Drive: {firstQuestReading.target}
+            </button>
+          {/if}
           {#if questReturnDest}
             <button
               type="button"
@@ -251,7 +283,7 @@
             {/each}
             {#each groundBlock.sites as s (s.letter)}
               {@const at = groundPoint(s, GW, GH)}
-              {@const isQuestSite = matchesQuestSite(s)}
+              {@const isQuestSite = isHighlightedQuestSite(s)}
               {#if isQuestSite}
                 <circle cx={at.x} cy={at.y} r="8" fill="none" stroke="#f2c94c" stroke-width="2" />
               {/if}
@@ -346,7 +378,7 @@
       {#if groundBlock}
         <ul>
           {#each groundBlock.sites as s (s.letter)}
-            {@const isQuestSite = matchesQuestSite(s)}
+            {@const isQuestSite = isHighlightedQuestSite(s)}
             <li>
               <button
                 type="button"
