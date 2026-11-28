@@ -296,14 +296,20 @@
       {:else if selectedActive}
         {@const activeStepNo = guidedStepNum(selectedActive.key)}
         {@const activeMining = extractActiveSurfaceMiningStatus([selectedActive], selectedActive.key)}
-        {@const miningPrep = extractSurfaceMiningPrepActions(activeMining)}
         {@const activeHoldSummary = formatQuestHoldReadinessSummary(selectedActive, liveStowage)}
+        {@const miningPrep =
+          activeMining?.mineDone && activeHoldSummary?.tag === "[ORE HOLD READY]"
+            ? []
+            : extractSurfaceMiningPrepActions(activeMining)}
         {@const activeDest = extractActiveDestinationPort([selectedActive], selectedActive.key)}
-        {@const activePreflight = evaluateSailingPreflightReadiness(
-          activeDest,
-          extractActiveTradeNeed([selectedActive], selectedActive.key),
-          liveStowage,
-        )}
+        {@const activePreflight =
+          activeHoldSummary?.tag === "[RECOVER RIG FIRST]"
+            ? null
+            : evaluateSailingPreflightReadiness(
+                activeDest,
+                extractActiveTradeNeed([selectedActive], selectedActive.key),
+                liveStowage,
+              )}
         <div class="qbody">
           <div class="row-tags">
             {#if selectedActive.category === "guided"}
@@ -369,6 +375,9 @@
               <span class:ok={activeHoldSummary.primary.ready}>
                 {activeHoldSummary.primary.ready ? "✓" : "○"} {activeHoldSummary.primary.label}: {activeHoldSummary.primary.currentQty}/{activeHoldSummary.primary.targetQty} {activeHoldSummary.primary.unit}
               </span>
+              {#if activeHoldSummary.tag === "[RECOVER RIG FIRST]"}
+                <span class="muted">· recover rig (+tv/1 recover go)</span>
+              {/if}
               {#each activeHoldSummary.secondary ?? [] as extra (extra.commoditySlug)}
                 <span class="muted" class:ok={extra.ready}>
                   | {extra.label} {extra.currentQty}/{extra.targetQty}{extra.unit}{extra.ready ? " OK" : ""}
@@ -391,6 +400,13 @@
                   ? `✓ Provisions ${activePreflight.provisionsDays}d`
                   : "✗ Provisions 0d"}
               </span>
+              {#if activePreflight.cargoRequired}
+                <span class:ok={activePreflight.cargoOk}>
+                  {activePreflight.cargoOk
+                    ? `✓ ${activePreflight.cargoLabel} ${activePreflight.cargoQty}/${activePreflight.cargoTarget}`
+                    : `✗ ${activePreflight.cargoLabel} ${activePreflight.cargoQty}/${activePreflight.cargoTarget}`}
+                </span>
+              {/if}
               <span class="muted">→ {activeDest.portLabel}</span>
             </div>
           {/if}
@@ -702,11 +718,14 @@
               {@const itemSuggested = extractQuestSuggestedAction(item, liveStowage)}
               {@const itemHoldSummary = formatQuestHoldReadinessSummary(item, liveStowage)}
               {@const itemDest = extractActiveDestinationPort([item], item.key)}
-              {@const itemPreflight = evaluateSailingPreflightReadiness(
-                itemDest,
-                extractActiveTradeNeed([item], item.key),
-                liveStowage,
-              )}
+              {@const itemPreflight =
+                itemHoldSummary?.tag === "[RECOVER RIG FIRST]"
+                  ? null
+                  : evaluateSailingPreflightReadiness(
+                      itemDest,
+                      extractActiveTradeNeed([item], item.key),
+                      liveStowage,
+                    )}
               <article class="qcard" class:tracked={q.trackedQuest?.key === item.key}>
                 <div class="qcard-top">
                   <strong>
@@ -758,6 +777,9 @@
                     <span class:ok={itemHoldSummary.primary.ready}>
                       {itemHoldSummary.primary.ready ? "✓" : "○"} {itemHoldSummary.primary.label}: {itemHoldSummary.primary.currentQty}/{itemHoldSummary.primary.targetQty} {itemHoldSummary.primary.unit}
                     </span>
+                    {#if itemHoldSummary.tag === "[RECOVER RIG FIRST]"}
+                      <span class="muted">· recover rig (+tv/1 recover go)</span>
+                    {/if}
                     {#each itemHoldSummary.secondary ?? [] as extra (extra.commoditySlug)}
                       <span class="muted" class:ok={extra.ready}>
                         | {extra.label} {extra.currentQty}/{extra.targetQty}{extra.unit}{extra.ready ? " OK" : ""}
@@ -780,6 +802,13 @@
                         ? `✓ Provisions ${itemPreflight.provisionsDays}d`
                         : "✗ Provisions 0d"}
                     </span>
+                    {#if itemPreflight.cargoRequired}
+                      <span class:ok={itemPreflight.cargoOk}>
+                        {itemPreflight.cargoOk
+                          ? `✓ ${itemPreflight.cargoLabel} ${itemPreflight.cargoQty}/${itemPreflight.cargoTarget}`
+                          : `✗ ${itemPreflight.cargoLabel} ${itemPreflight.cargoQty}/${itemPreflight.cargoTarget}`}
+                      </span>
+                    {/if}
                     <span class="muted">→ {itemDest.portLabel}</span>
                   </div>
                 {/if}

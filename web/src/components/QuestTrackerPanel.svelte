@@ -88,7 +88,7 @@
     tracked ? extractActiveDestinationPort([tracked], tracked.key) : null,
   );
   const trackedPreflight = $derived(
-    tracked && trackedDest
+    tracked && trackedDest && holdReadiness?.tag !== "[RECOVER RIG FIRST]"
       ? evaluateSailingPreflightReadiness(
           trackedDest,
           extractActiveTradeNeed([tracked], tracked.key),
@@ -100,7 +100,10 @@
     tracked ? extractActiveSurfaceMiningStatus([tracked], tracked.key) : null,
   );
   const trackedMiningPrep = $derived(
-    tracked && !tracked.canFinishNow && !tracked.readyToFinish
+    tracked &&
+      !tracked.canFinishNow &&
+      !tracked.readyToFinish &&
+      !(trackedMining?.mineDone && holdReadiness?.tag === "[ORE HOLD READY]")
       ? extractSurfaceMiningPrepActions(trackedMining)
       : [],
   );
@@ -263,7 +266,7 @@
             class:ready={trackedPreflight.ready}
             aria-label="Tracked quest sailing preflight"
           >
-            {trackedPreflight.ready ? "[PRE-FLIGHT OK]" : "[CHECK BEFORE UNDOCK]"} Fuel {trackedPreflight.propellantTonnes}t · Provisions {trackedPreflight.provisionsDays}d → {trackedDest.portLabel}
+            {trackedPreflight.ready ? "[PRE-FLIGHT OK]" : "[CHECK BEFORE UNDOCK]"} Fuel {trackedPreflight.propellantTonnes}t · Provisions {trackedPreflight.provisionsDays}d{#if trackedPreflight.cargoRequired}{" "}· {trackedPreflight.cargoOk ? "✓" : "✗"} {trackedPreflight.cargoLabel} {trackedPreflight.cargoQty}/{trackedPreflight.cargoTarget}{/if} → {trackedDest.portLabel}
           </span>
         {/if}
       {/if}
@@ -348,7 +351,7 @@
               {trackedPreflight.ready ? "[PRE-FLIGHT OK]" : "[CHECK BEFORE UNDOCK]"}
             </span>
             <span>
-              {trackedPreflight.propellantOk ? "✓" : "✗"} Propellant {trackedPreflight.propellantTonnes}t · {trackedPreflight.provisionsOk ? "✓" : "✗"} Provisions {trackedPreflight.provisionsDays}d → {trackedDest.portLabel}
+              {trackedPreflight.propellantOk ? "✓" : "✗"} Propellant {trackedPreflight.propellantTonnes}t · {trackedPreflight.provisionsOk ? "✓" : "✗"} Provisions {trackedPreflight.provisionsDays}d{#if trackedPreflight.cargoRequired}{" "}· {trackedPreflight.cargoOk ? "✓" : "✗"} {trackedPreflight.cargoLabel} {trackedPreflight.cargoQty}/{trackedPreflight.cargoTarget}{/if} → {trackedDest.portLabel}
             </span>
           </div>
         {/if}

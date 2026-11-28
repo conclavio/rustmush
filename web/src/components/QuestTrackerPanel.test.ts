@@ -1066,4 +1066,97 @@ describe("QuestTrackerPanel route step, guided tour pill, and quick-accept", () 
     expect(view.container.textContent).toContain("[STOWED]");
     expect(view.container.textContent).toContain("[3/5t]");
   });
+
+  it("shows cargo status in tracker preflight, suppresses premature preflight during Step 6 rig recovery, and hides Recover Rig prep once ore is stowed", () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#19",
+      room_name: "Exchange Hall",
+      room_markers: [],
+      available: [],
+      completed: [],
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[2],
+          title: "Metals Down the Corridor",
+          next_room_entry: "room.p07_receiving",
+          next_step: "Buy 5t metals and sail to Stickney Yards.",
+          checkpoints: [
+            {
+              id: "deliver_metals",
+              title: "Buy 5t metals and deliver to Stickney Yards",
+              instructions: "Buy 5t metals then +ship/plan stickney and sell.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+        {
+          key: GUIDED_TOUR_KEYS[5],
+          title: "Scan, Sound, and Mine a Landing Site",
+          next_room_entry: "room.c07_exchange",
+          next_step: "Recover rig and return to Ceres Freeport.",
+          checkpoints: [
+            { id: "scan_landing_site", title: "Scan site", instructions: "+tv/1 scan go", checked: true, live_ready: true },
+            { id: "sound_pocket", title: "Sound pocket", instructions: "+tv/1 sound go", checked: true, live_ready: true },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", instructions: "+tv/1 mine go", checked: true, live_ready: true },
+          ],
+        },
+      ],
+    });
+
+    const makeApp = (cargoLines: Array<{ good: string; label: string; qty: number }>) =>
+      ({
+        quests,
+        tacsim: {
+          isAboardShip: false,
+          view3dOpen: false,
+          physicalLocationKey: null,
+          serverStationRoomEntry: "room.c07_exchange",
+          stationPack: buildFallbackFreeport(),
+          ambient: {
+            ownStowage: {
+              cargoKg: cargoLines.reduce((acc, l) => acc + l.qty * 1000, 0),
+              propellantKg: 10_000,
+              provisionsCrewDays: 12,
+              cargoLines,
+            },
+          },
+        },
+        focusComposer: vi.fn(),
+      }) as unknown as GameApp;
+
+    // 1. Step 3 expanded + collapsed show cargo shortfall (✗ metals 0/5)
+    quests.track(GUIDED_TOUR_KEYS[2]!);
+    quests.trackerCollapsed = false;
+    const r3Exp = render(QuestTrackerPanel, { props: { app: makeApp([]), onCmd: vi.fn() } });
+    expect(screen.getByLabelText("Tracked quest sailing preflight").textContent).toContain("✗ metals 0/5");
+    r3Exp.unmount();
+
+    quests.trackerCollapsed = true;
+    const r3Col = render(QuestTrackerPanel, { props: { app: makeApp([]), onCmd: vi.fn() } });
+    expect(screen.getByLabelText("Tracked quest sailing preflight").textContent).toContain("✗ metals 0/5");
+    r3Col.unmount();
+
+    // 2. Step 6 post-mine with 0t ore -> suppresses premature sailing preflight and keeps [PREP] Recover Rig
+    quests.track(GUIDED_TOUR_KEYS[5]!);
+    quests.trackerCollapsed = false;
+    const r6Rec = render(QuestTrackerPanel, { props: { app: makeApp([]), onCmd: vi.fn() } });
+    expect(screen.getByLabelText("Tracked quest hold readiness").textContent).toContain("[RECOVER RIG FIRST]");
+    expect(screen.queryByLabelText("Tracked quest sailing preflight")).toBeNull();
+    expect(screen.getByLabelText("Tracked quest prospecting prep").textContent).toContain("Recover Rig");
+    r6Rec.unmount();
+
+    // 3. Step 6 post-mine with 1t carbon_ore stowed -> shows [PRE-FLIGHT OK] -> Ceres Freeport and hides [PREP]
+    const r6Ready = render(QuestTrackerPanel, {
+      props: { app: makeApp([{ good: "tacsim:carbon_ore", label: "Carbon Ore", qty: 1 }]), onCmd: vi.fn() },
+    });
+    expect(screen.getByLabelText("Tracked quest hold readiness").textContent).toContain("[ORE HOLD READY]");
+    const pf6 = screen.getByLabelText("Tracked quest sailing preflight");
+    expect(pf6.textContent).toContain("[PRE-FLIGHT OK]");
+    expect(pf6.textContent).toContain("→ Ceres Freeport");
+    expect(screen.queryByLabelText("Tracked quest prospecting prep")).toBeNull();
+    r6Ready.unmount();
+  });
 });
