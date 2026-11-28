@@ -858,11 +858,22 @@ namespace TacSim.UI
             return true;
         }
 
+        private bool IsMiningOreStowed(QuestSurfaceMiningStatus status)
+        {
+            return status.MineDone &&
+                   _boundTradeState != null &&
+                   !string.IsNullOrEmpty(_boundTradeState.ShipHullId) &&
+                   _boundTradeState.GetHoldCommodityQuantity(status.TargetOreSlug) >= 1;
+        }
+
         public bool TryGetQuestPreflightReadinessSummary(MushActiveQuest q, out string summary, out bool ready)
         {
             summary = string.Empty;
             ready = false;
             if (q == null || _boundTradeState == null || string.IsNullOrEmpty(_boundTradeState.ShipHullId))
+                return false;
+            if (TryGetSurfaceMiningStatusForQuest(q, out var pm) && pm.MineDone &&
+                _boundTradeState.GetHoldCommodityQuantity(pm.TargetOreSlug) < 1)
                 return false;
             if (!TryGetDestinationPortForQuest(q, out var dest) || string.IsNullOrEmpty(dest.PortLabel))
                 return false;
@@ -2586,7 +2597,8 @@ namespace TacSim.UI
                       .Append("</color>\n");
                 }
                 if (!active.CanFinishNow && !active.ReadyToFinish &&
-                    TryGetSurfaceMiningStatusForQuest(active, out var trkMining))
+                    TryGetSurfaceMiningStatusForQuest(active, out var trkMining) &&
+                    !IsMiningOreStowed(trkMining))
                 {
                     sb.Append("<color=#77DDFF>")
                       .Append(MushProtocol.EscapeUnityRichText(trkMining.FormatPrepHintLine()))
@@ -3486,7 +3498,9 @@ namespace TacSim.UI
                     {
                         sb.Append($"\n<color=#FFDD44><b>SUGGESTED CMD:</b></color> <color=#66EEAA>{MushProtocol.EscapeUnityRichText(sugCmd.Trim())}</color> ({MushProtocol.EscapeUnityRichText(sugLbl)})\n");
                     }
-                    if (TryGetActiveSurfaceMiningStatus(out var dlgMining))
+                    if (!active.CanFinishNow && !active.ReadyToFinish &&
+                        TryGetSurfaceMiningStatusForQuest(active, out var dlgMining) &&
+                        !IsMiningOreStowed(dlgMining))
                     {
                         sb.Append($"<color=#FFDD44><b>PROSPECTING:</b></color> <color=#77DDFF>{MushProtocol.EscapeUnityRichText(dlgMining.FormatPrepHintLine())}</color>\n");
                     }
@@ -3796,6 +3810,12 @@ namespace TacSim.UI
                         {
                             string pfCol = jPfReady ? "#55EE99" : "#FFD166";
                             sb.Append($"\n<color={pfCol}><b>{MushProtocol.EscapeUnityRichText(jPfSummary)}</b></color>");
+                        }
+                        if (!q.CanFinishNow && !q.ReadyToFinish &&
+                            TryGetSurfaceMiningStatusForQuest(q, out var jMining) &&
+                            !IsMiningOreStowed(jMining))
+                        {
+                            sb.Append($"\n<color=#FFDD44><b>PROSPECTING:</b></color> <color=#77DDFF>{MushProtocol.EscapeUnityRichText(jMining.FormatPrepHintLine())}</color>");
                         }
                         sb.Append($"\n<color=#FFDF77><b>REWARD:</b> {MushProtocol.EscapeUnityRichText(q.RewardSummary)}</color>");
                         if (q.AllowRestart)
