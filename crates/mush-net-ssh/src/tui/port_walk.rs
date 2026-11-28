@@ -4321,8 +4321,19 @@ impl PortWalkState {
                     if let Some(ref act) = self.quest_coop_action
                         && act.command.starts_with("+coop/refit")
                     {
-                        out.commands.push(act.command.clone());
-                        self.push_drawer_log(format!("> {}", act.command));
+                        if self.quest_refit_hold_readiness().is_some_and(|r| !r.ready) {
+                            self.drawer = Some(PortDrawerKind::Trade);
+                            self.trade_subtab = 1;
+                            self.cursor_row = 0;
+                            out.commands.push("+market/list".to_string());
+                            self.push_drawer_log(
+                                "[Refit] Hold not empty — opening Exchange SELL (+market/list)"
+                                    .to_string(),
+                            );
+                        } else {
+                            out.commands.push(act.command.clone());
+                            self.push_drawer_log(format!("> {}", act.command));
+                        }
                     }
                 }
                 Key::Char('h') => {
@@ -4463,8 +4474,19 @@ impl PortWalkState {
                     self.push_drawer_log("> +coop/statement".to_string());
                 }
                 Key::Char('p') => {
-                    out.commands.push("+coop/refit prospector".to_string());
-                    self.push_drawer_log("> +coop/refit prospector".to_string());
+                    if self.quest_refit_hold_readiness().is_some_and(|r| !r.ready) {
+                        self.drawer = Some(PortDrawerKind::Trade);
+                        self.trade_subtab = 1;
+                        self.cursor_row = 0;
+                        out.commands.push("+market/list".to_string());
+                        self.push_drawer_log(
+                            "[Refit] Hold not empty — opening Exchange SELL (+market/list)"
+                                .to_string(),
+                        );
+                    } else {
+                        out.commands.push("+coop/refit prospector".to_string());
+                        self.push_drawer_log("> +coop/refit prospector".to_string());
+                    }
                 }
                 Key::Char('f' | 'F') => {
                     if self.quest_coop_action.is_none() {
@@ -6172,18 +6194,32 @@ impl PortWalkState {
                 if let Some(ref act) = self.quest_coop_action
                     && act.command.starts_with("+coop/refit")
                 {
-                    lines.push(Line::from(Span::styled(
-                        truncate_str(
-                            &format!(
+                    let refit_opt = self.quest_refit_hold_readiness();
+                    let (banner, banner_col) = match refit_opt {
+                        Some(ref r) if !r.ready => (
+                            format!(
+                                "[CLEAR HOLD FIRST] Empty cargo/stores before refit (press p: Exchange SELL){step_suffix}"
+                            ),
+                            Color::LightYellow,
+                        ),
+                        Some(_) => (
+                            format!(
+                                "[READY TO REFIT] Refit Dray-P Prospector (press p: +coop/refit prospector){step_suffix}"
+                            ),
+                            Color::Green,
+                        ),
+                        None => (
+                            format!(
                                 "[QUEST] Refit Dray-P Prospector (press p: +coop/refit prospector){step_suffix}"
                             ),
-                            inner_w,
+                            Color::Yellow,
                         ),
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
+                    };
+                    lines.push(Line::from(Span::styled(
+                        truncate_str(&banner, inner_w),
+                        Style::default().fg(banner_col).add_modifier(Modifier::BOLD),
                     )));
-                    if let Some(refit) = self.quest_refit_hold_readiness() {
+                    if let Some(refit) = refit_opt {
                         let (msg, col) = if refit.ready {
                             (
                                 format!(
@@ -6477,22 +6513,41 @@ impl PortWalkState {
             }
             PortDrawerKind::Coop => {
                 if let Some(ref act) = self.quest_coop_action {
-                    let banner = if act.command.starts_with("+coop/refit") {
-                        format!(
-                            "[QUEST] Refit Dray-P Prospector (press p: +coop/refit prospector){step_suffix}"
-                        )
+                    let refit_opt = self.quest_refit_hold_readiness();
+                    let (banner, banner_col) = if act.command.starts_with("+coop/refit") {
+                        match refit_opt {
+                            Some(ref r) if !r.ready => (
+                                format!(
+                                    "[CLEAR HOLD FIRST] Empty cargo/stores before refit (press p: Exchange SELL){step_suffix}"
+                                ),
+                                Color::LightYellow,
+                            ),
+                            Some(_) => (
+                                format!(
+                                    "[READY TO REFIT] Refit Dray-P Prospector (press p: +coop/refit prospector){step_suffix}"
+                                ),
+                                Color::Green,
+                            ),
+                            None => (
+                                format!(
+                                    "[QUEST] Refit Dray-P Prospector (press p: +coop/refit prospector){step_suffix}"
+                                ),
+                                Color::Yellow,
+                            ),
+                        }
                     } else {
-                        format!(
-                            "[QUEST] Enroll Charter Hull (press Enter: +coop/enroll){step_suffix}"
+                        (
+                            format!(
+                                "[QUEST] Enroll Charter Hull (press Enter: +coop/enroll){step_suffix}"
+                            ),
+                            Color::Yellow,
                         )
                     };
                     lines.push(Line::from(Span::styled(
                         truncate_str(&banner, inner_w),
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
+                        Style::default().fg(banner_col).add_modifier(Modifier::BOLD),
                     )));
-                    if let Some(refit) = self.quest_refit_hold_readiness() {
+                    if let Some(refit) = refit_opt {
                         let (msg, col) = if refit.ready {
                             (
                                 format!(
@@ -10096,19 +10151,85 @@ mod tests {
 
         let blocked_txt = draw_text(&st);
         assert!(
+            blocked_txt.contains("[CLEAR HOLD FIRST]"),
+            "expected [CLEAR HOLD FIRST] banner in Co-op drawer: {blocked_txt}"
+        );
+        assert!(
             blocked_txt.contains("[CLEAR HOLD] Cargo: 2t | Stores: 4d (Tank 12t OK)"),
             "expected blocked refit hold line: {blocked_txt}"
         );
 
+        // Pressing 'p' in Co-op drawer while hold is blocked switches to Exchange SELL (+market/list) instead of refit
+        let p_coop_blocked = st.handle_key(Key::Char('p'), false, false, &[], now);
+        assert!(p_coop_blocked.consumed);
+        assert_eq!(st.drawer, Some(PortDrawerKind::Trade));
+        assert_eq!(st.trade_subtab, 1);
+        assert!(
+            p_coop_blocked.commands.iter().any(|c| c == "+market/list"),
+            "expected +market/list, got {:?}",
+            p_coop_blocked.commands
+        );
+        assert!(
+            !p_coop_blocked
+                .commands
+                .iter()
+                .any(|c| c.starts_with("+coop/refit")),
+            "must not emit refit while hold has cargo/stores: {:?}",
+            p_coop_blocked.commands
+        );
+
+        // Industry drawer mirrors the same [CLEAR HOLD FIRST] guard & 'p' -> Exchange SELL handoff
+        st.open_drawer(PortDrawerKind::Industry, &[], &mut queries, now);
+        let ind_blocked_txt = draw_text(&st);
+        assert!(
+            ind_blocked_txt.contains("[CLEAR HOLD FIRST]"),
+            "expected [CLEAR HOLD FIRST] banner in Industry drawer: {ind_blocked_txt}"
+        );
+        let p_ind_blocked = st.handle_key(Key::Char('p'), false, false, &[], now);
+        assert!(p_ind_blocked.consumed);
+        assert_eq!(st.drawer, Some(PortDrawerKind::Trade));
+        assert_eq!(st.trade_subtab, 1);
+        assert!(p_ind_blocked.commands.iter().any(|c| c == "+market/list"));
+
         // Clearing cargo + provisions makes refit READY even with 12t propellant in tank
         st.stowage.cargo_kg = 0;
         st.stowage.stores_days = 0;
+        st.open_drawer(PortDrawerKind::Coop, &[], &mut queries, now);
         let ready = st.quest_refit_hold_readiness().expect("refit ready");
         assert!(ready.ready);
         let ready_txt = draw_text(&st);
         assert!(
+            ready_txt.contains("[READY TO REFIT]"),
+            "expected [READY TO REFIT] banner in Co-op drawer: {ready_txt}"
+        );
+        assert!(
             ready_txt.contains("[READY] Hold empty | Stores empty | Tank 12t OK"),
             "expected ready refit hold line: {ready_txt}"
+        );
+        let p_coop_ready = st.handle_key(Key::Char('p'), false, false, &[], now);
+        assert!(
+            p_coop_ready
+                .commands
+                .iter()
+                .any(|c| c == "+coop/refit prospector"),
+            "expected +coop/refit prospector once hold empty, got {:?}",
+            p_coop_ready.commands
+        );
+
+        st.open_drawer(PortDrawerKind::Industry, &[], &mut queries, now);
+        let ind_ready_txt = draw_text(&st);
+        assert!(
+            ind_ready_txt.contains("[READY TO REFIT]"),
+            "expected [READY TO REFIT] banner in Industry drawer: {ind_ready_txt}"
+        );
+        let p_ind_ready = st.handle_key(Key::Char('p'), false, false, &[], now);
+        assert!(
+            p_ind_ready
+                .commands
+                .iter()
+                .any(|c| c == "+coop/refit prospector"),
+            "expected +coop/refit prospector from Industry once hold empty, got {:?}",
+            p_ind_ready.commands
         );
     }
 
@@ -10263,7 +10384,7 @@ mod tests {
             .map(|c| c.symbol())
             .collect();
         assert!(
-            rendered.contains("[QUEST] Refit Dray-P Prospector"),
+            rendered.contains("[READY TO REFIT] Refit Dray-P Prospector"),
             "expected refit banner in Works drawer: {rendered}"
         );
         assert!(
