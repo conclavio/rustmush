@@ -18988,5 +18988,111 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void NpcTalkDetailModal_ShowsOfferPreviewAndLiveActiveHoldReadiness()
+        {
+            var rootGo = new UnityEngine.GameObject("NpcTalkQuestBriefTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.ShowLoginOverlay(false);
+                var tradeState = new TacSimTradeAndShipState();
+                hud.BindTradeState(tradeState);
+
+                // 1. Available offer from Maren -> NPC Talk modal body includes first OBJECTIVE and REWARD
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_markers"": [{
+                        ""npc_id"": ""#11"",
+                        ""npc_name"": ""Maren Halvorsen"",
+                        ""marker"": ""available"",
+                        ""quest_key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                        ""quest_title"": ""First Papers at the Registry""
+                    }],
+                    ""available"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                        ""title"": ""First Papers at the Registry"",
+                        ""giver_id"": ""#11"",
+                        ""giver_name"": ""Maren Halvorsen"",
+                        ""accept_cmd"": ""+quest/accept #11=tok1"",
+                        ""reward_summary"": ""Guided Tour Step 1/7"",
+                        ""checkpoints"": [{
+                            ""id"": ""enroll_coop"",
+                            ""title"": ""Enroll your Dray hull with Ilse"",
+                            ""instructions"": ""Run +coop/enroll <name>."",
+                            ""checked"": false, ""live_ready"": false
+                        }]
+                    }],
+                    ""active"": [], ""completed"": []
+                }")));
+                hud.ShowDetailModal("MAREN HALVORSEN", "Port Watch clerk.", null, npcName: "Maren Halvorsen");
+                StringAssert.Contains("OBJECTIVE:</b></color> Enroll your Dray hull with Ilse", hud.DetailModalBodySnapshot);
+                StringAssert.Contains("REWARD:</b></color> Guided Tour Step 1/7", hud.DetailModalBodySnapshot);
+
+                // 2. Active Step 5 refit with cargo & stores aboard -> NPC Talk modal body shows NEXT + [REFIT CHECK], then [READY] when cleared
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""ceres"", ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 2000, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 12000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 4, ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:metals"", ""label"": ""Metals"", ""qty"": 2 }]
+                        }
+                    }
+                }"));
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_markers"": [{
+                        ""npc_id"": ""#18"",
+                        ""npc_name"": ""Ilse Oduya-Brandt"",
+                        ""marker"": ""in_progress"",
+                        ""quest_key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"",
+                        ""quest_title"": ""Refit the Dray for Surface Mining""
+                    }],
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"",
+                        ""title"": ""Refit the Dray for Surface Mining"",
+                        ""giver_id"": ""#18"",
+                        ""giver_name"": ""Ilse Oduya-Brandt"",
+                        ""turn_in_id"": ""#31"",
+                        ""turn_in_name"": ""Rosalind Qureshi-Mbeki"",
+                        ""next_step"": ""Empty hold & stores, then run +coop/refit prospector"",
+                        ""checkpoints"": [{
+                            ""id"": ""refit_dray_p"",
+                            ""title"": ""Refit Dray-P"",
+                            ""instructions"": ""Empty hold and run +coop/refit prospector."",
+                            ""checked"": false, ""live_ready"": false
+                        }]
+                    }],
+                    ""available"": [], ""completed"": []
+                }")));
+                hud.ShowDetailModal("ILSE ODUYA-BRANDT", "Co-op Registry factor.", null, npcName: "Ilse Oduya-Brandt");
+                StringAssert.Contains("NEXT:</b></color> Empty hold & stores, then run +coop/refit prospector", hud.DetailModalBodySnapshot);
+                StringAssert.Contains("[REFIT CHECK]", hud.DetailModalBodySnapshot);
+
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""ceres"", ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 0, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 12000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 0, ""stores_limit_days"": 120,
+                            ""items"": []
+                        }
+                    }
+                }"));
+                hud.ShowDetailModal("ILSE ODUYA-BRANDT", "Co-op Registry factor.", null, npcName: "Ilse Oduya-Brandt");
+                StringAssert.Contains("[READY]", hud.DetailModalBodySnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
