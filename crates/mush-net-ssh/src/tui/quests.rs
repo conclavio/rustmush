@@ -884,6 +884,39 @@ pub fn infer_station_port_from_room_entry(room_entry: &str) -> Option<&'static s
     }
 }
 
+fn infer_origin_port_from_trade_quest(
+    q: &ActiveQuest,
+    exclude_dest_port: Option<&str>,
+) -> Option<&'static str> {
+    let cp = q
+        .checkpoints
+        .iter()
+        .find(|c| !c.checked && !c.live_ready)
+        .or_else(|| q.checkpoints.first());
+    let text_low = format!(
+        "{} {} {} {}",
+        q.title,
+        cp.map(|c| c.title.as_str()).unwrap_or(""),
+        cp.map(|c| c.instructions.as_str()).unwrap_or(""),
+        q.next_step
+    )
+    .to_ascii_lowercase();
+    for port in ["ceres", "stickney", "luna", "deimos", "titan"] {
+        if exclude_dest_port.is_some_and(|dp| dp.eq_ignore_ascii_case(port)) {
+            continue;
+        }
+        if text_low.contains(&format!("at {port}"))
+            || text_low.contains(&format!("from {port}"))
+            || text_low.contains(&format!("{port}'s"))
+            || text_low.contains(&format!("{port} exchange"))
+            || text_low.contains(&format!("{port} co-op"))
+        {
+            return Some(port);
+        }
+    }
+    None
+}
+
 impl QuestsSnapshot {
     /// Default tracked quest key: prefers an active Guided Tour quest over unrelated side jobs.
     #[must_use]
@@ -1268,6 +1301,27 @@ impl QuestsSnapshot {
         docked_port: Option<&str>,
         settled_pad: bool,
     ) -> Option<&'static str> {
+        self.active_ship_target_compartment_for_location_with_stowage(
+            tracked_key,
+            docked_port,
+            settled_pad,
+            None,
+        )
+    }
+
+    /// Live-stowage-aware ship compartment resolver:
+    /// - Step 6 post-mine (`mine_done`) on a surface pad with live stowage showing `ore_qty < 1`
+    ///   routes to `"bay"` (`[RECOVER RIG FIRST]`), flipping to `"bridge"` once ore is stowed.
+    /// - Cross-port buy+deliver quests (Steps 3 & 4) while docked at the origin port without the
+    ///   required cargo loaded route to `"airlock"` (`+ship/leave` to buy ashore) before `"bridge"`.
+    #[must_use]
+    pub fn active_ship_target_compartment_for_location_with_stowage(
+        &self,
+        tracked_key: Option<&str>,
+        docked_port: Option<&str>,
+        settled_pad: bool,
+        stowage: Option<&QuestStowageTelemetry>,
+    ) -> Option<&'static str> {
         let tracked_snap = self.tracked_only(tracked_key);
         let mining = tracked_snap
             .as_ref()
@@ -1281,12 +1335,46 @@ impl QuestsSnapshot {
             && let Some(q) = tracked_snap.as_ref().and_then(|s| s.active.first())
         {
             let mining_blocking = mining.as_ref().is_some_and(|m| !m.mine_done);
-            if (!mining_blocking || q.ready_to_finish || q.can_finish_now)
-                && let Some((room_entry, _)) = self.active_objective_room(tracked_key)
-                && let Some(target_port) = infer_station_port_from_room_entry(&room_entry)
-                && target_port.eq_ignore_ascii_case(docked)
-            {
-                return Some("airlock");
+            if !mining_blocking || q.ready_to_finish || q.can_finish_now {
+                let target_port = self
+                    .active_objective_room(tracked_key)
+                    .and_then(|(room_entry, _)| infer_station_port_from_room_entry(&room_entry));
+                if let Some(tp) = target_port
+                    && tp.eq_ignore_ascii_case(docked)
+                {
+                    return Some("airlock");
+                }
+                if !q.ready_to_finish
+                    && !q.can_finish_now
+                    && let Some(st) = stowage
+                    && let Some(need) = tracked_snap
+                        .as_ref()
+                        .and_then(|s| s.active_trade_need(tracked_key))
+                    && need.wants_buy
+                    && need.wants_sell
+                    && need.commodity_slug != "propellant"
+                    && need.commodity_slug != "provisions"
+                {
+                    let have: i64 = st
+                        .cargo_lots
+                        .iter()
+                        .filter(|(g, l, _)| {
+                            normalize_good_slug(g) == need.commodity_slug
+                                || normalize_good_slug(l) == need.commodity_slug
+                        })
+                        .map(|(_, _, qty)| (*qty).max(0))
+                        .sum();
+                    if have < need.target_quantity.max(1) {
+                        let origin_port = infer_origin_port_from_trade_quest(q, target_port);
+                        let at_origin = match origin_port {
+                            Some(op) => op.eq_ignore_ascii_case(docked),
+                            None => target_port.is_none_or(|tp| !tp.eq_ignore_ascii_case(docked)),
+                        };
+                        if at_origin {
+                            return Some("airlock");
+                        }
+                    }
+                }
             }
         }
         if let Some(m) = mining {
@@ -1296,6 +1384,20 @@ impl QuestsSnapshot {
                 } else {
                     Some("bay")
                 };
+            }
+            if let Some(st) = stowage {
+                let want = normalize_good_slug(&m.target_ore_slug);
+                let ore_qty: i64 = st
+                    .cargo_lots
+                    .iter()
+                    .filter(|(g, l, _)| {
+                        normalize_good_slug(g) == want || normalize_good_slug(l) == want
+                    })
+                    .map(|(_, _, qty)| (*qty).max(0))
+                    .sum();
+                if ore_qty < 1 {
+                    return Some("bay");
+                }
             }
             return Some("bridge");
         }
@@ -7351,5 +7453,120 @@ mod tests {
         assert!(ov_ready.contains("[ORE HOLD READY]"), "{ov_ready}");
         assert!(ov_ready.contains("[PRE-FLIGHT OK]"), "{ov_ready}");
         assert!(!ov_ready.contains("[PROSPECTING]"), "{ov_ready}");
+    }
+
+    #[test]
+    fn ship_compartment_wayfinding_respects_step6_rig_recovery_and_origin_port_procurement() {
+        // 1. Step 6 post-mine on surface pad: routes to "bay" while ore is unrecovered (0t in hold),
+        // then flips to "bridge" once 1t carbon_ore is stowed in the hold.
+        let s6_post = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[5],
+                "title": "Scan, Sound, and Mine a Landing Site",
+                "next_room_entry": "room.c07_exchange",
+                "checkpoints": [
+                    { "id": "scan_landing_site", "title": "Surface scan", "instructions": "+tv/1 scan go", "room_entry": "room.c07_exchange", "checked": true, "live_ready": true },
+                    { "id": "mine_carbon_ore", "title": "Mine 1t carbon_ore", "instructions": "+tv/1 mine go", "room_entry": "room.c07_exchange", "checked": true, "live_ready": true }
+                ]
+            }]
+        }));
+        let empty_hold = QuestStowageTelemetry {
+            cargo_kg: 0,
+            propellant_kg: 10_000,
+            provisions_days: 10,
+            cargo_lots: vec![],
+        };
+        let ore_hold = QuestStowageTelemetry {
+            cargo_kg: 1_000,
+            propellant_kg: 10_000,
+            provisions_days: 10,
+            cargo_lots: vec![("tacsim:carbon_ore".into(), "Carbon Ore".into(), 1)],
+        };
+        assert_eq!(
+            s6_post.active_ship_target_compartment_for_location_with_stowage(
+                None,
+                None,
+                true,
+                Some(&empty_hold),
+            ),
+            Some("bay")
+        );
+        assert_eq!(
+            s6_post.active_ship_target_compartment_for_location_with_stowage(
+                None,
+                None,
+                true,
+                Some(&ore_hold),
+            ),
+            Some("bridge")
+        );
+        assert_eq!(
+            s6_post.active_ship_target_compartment_for_location_with_stowage(
+                None,
+                Some("ceres"),
+                false,
+                Some(&ore_hold),
+            ),
+            Some("airlock")
+        );
+
+        // 2. Step 3 (buy 5t metals at Ceres -> Stickney): docked at Ceres without metals -> "airlock",
+        // docked at unrelated Deimos -> "bridge", docked at Ceres with 5t metals -> "bridge".
+        let s3 = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[2],
+                "title": "Metals Down the Corridor",
+                "next_room_entry": "room.p07_receiving",
+                "checkpoints": [{
+                    "id": "deliver_metals",
+                    "title": "Buy 5 tonnes of metals at Ceres and deliver them to Stickney Yards",
+                    "instructions": "At Ceres Exchange Hall, buy at least 5 tonnes of metals, then fly to Stickney and +market/sell.",
+                    "room_entry": "room.p07_receiving",
+                    "checked": false,
+                    "live_ready": false
+                }]
+            }]
+        }));
+        let partial_metals = QuestStowageTelemetry {
+            cargo_kg: 2_000,
+            propellant_kg: 10_000,
+            provisions_days: 10,
+            cargo_lots: vec![("tacsim:metals".into(), "Metals".into(), 2)],
+        };
+        let full_metals = QuestStowageTelemetry {
+            cargo_kg: 5_000,
+            propellant_kg: 10_000,
+            provisions_days: 10,
+            cargo_lots: vec![("tacsim:metals".into(), "Metals".into(), 5)],
+        };
+        assert_eq!(
+            s3.active_ship_target_compartment_for_location_with_stowage(
+                None,
+                Some("ceres"),
+                false,
+                Some(&partial_metals),
+            ),
+            Some("airlock")
+        );
+        assert_eq!(
+            s3.active_ship_target_compartment_for_location_with_stowage(
+                None,
+                Some("deimos"),
+                false,
+                Some(&partial_metals),
+            ),
+            Some("bridge")
+        );
+        assert_eq!(
+            s3.active_ship_target_compartment_for_location_with_stowage(
+                None,
+                Some("ceres"),
+                false,
+                Some(&full_metals),
+            ),
+            Some("bridge")
+        );
     }
 }
