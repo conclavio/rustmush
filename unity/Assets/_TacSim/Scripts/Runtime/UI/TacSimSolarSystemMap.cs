@@ -31,6 +31,8 @@ namespace TacSim.UI
         public bool LastOrreryHasQuestDestinationRing { get; private set; }
         public string QuestDestinationPortId { get; private set; } = string.Empty;
         public string QuestDestinationPortLabel { get; private set; } = string.Empty;
+        public string QuestMiningBodyId { get; private set; } = string.Empty;
+        public string QuestFocusButtonLabelSnapshot => _questFocusBtnLbl != null ? _questFocusBtnLbl.text : string.Empty;
         public bool GroundChartQuestHighlighted { get; private set; }
         public string GroundChartButtonLabel => _groundBtnLbl != null ? _groundBtnLbl.text : string.Empty;
         public string FirstSidebarRouteLabelSnapshot { get; private set; } = string.Empty;
@@ -256,6 +258,22 @@ namespace TacSim.UI
             if (_questJournal == null) return false;
             if (_questJournal.TryGetActiveDestinationPort(out hint))
                 return true;
+            if (_questJournal.TryGetActiveSurfaceMiningStatus(out var qm) && qm.MineDone)
+            {
+                var tracked = _questJournal.GetTrackedActiveQuest();
+                string inferred = TacSimQuestJournal.InferStationPortFromRoomEntry(tracked?.NextRoomEntry);
+                if (string.IsNullOrEmpty(inferred)) inferred = "ceres";
+                string lbl = inferred switch
+                {
+                    "stickney" => "Stickney Yards",
+                    "luna" => "Aitken Basin",
+                    "deimos" => "Voltaire Base",
+                    "titan" => "Ligeia Dock",
+                    _ => "Ceres Freeport"
+                };
+                hint = new QuestDestinationHint(qm.QuestTitle, inferred, lbl);
+                return true;
+            }
             string curVantage = !string.IsNullOrEmpty(CurrentFrame?.Vantage?.Port)
                 ? CurrentFrame.Vantage.Port
                 : CurrentFrame?.Vantage?.Body;
@@ -264,12 +282,19 @@ namespace TacSim.UI
 
         public void RefreshQuestGuidance()
         {
+            var tracked = _questJournal?.GetTrackedActiveQuest();
+            int stepNo = TacSimQuestJournal.GuidedStepNumber(tracked?.Key);
             if (TryResolveQuestDestinationHint(out var hint))
             {
                 QuestDestinationPortId = hint.PortId;
                 QuestDestinationPortLabel = hint.PortLabel;
                 if (_questFocusBtn != null) _questFocusBtn.gameObject.SetActive(true);
-                if (_questFocusBtnLbl != null) _questFocusBtnLbl.text = $"QUEST: {hint.PortId.ToUpperInvariant()}";
+                if (_questFocusBtnLbl != null)
+                {
+                    _questFocusBtnLbl.text = stepNo > 0
+                        ? $"QUEST [{stepNo}/7]: {hint.PortId.ToUpperInvariant()}"
+                        : $"QUEST: {hint.PortId.ToUpperInvariant()}";
+                }
             }
             else
             {
@@ -281,6 +306,9 @@ namespace TacSim.UI
             QuestSurfaceMiningStatus qm = default;
             bool hasMining = _questJournal != null && _questJournal.TryGetActiveSurfaceMiningStatus(out qm) && !qm.MineDone;
             GroundChartQuestHighlighted = hasMining;
+            QuestMiningBodyId = hasMining
+                ? (TacSimQuestJournal.InferStationPortFromRoomEntry(tracked?.NextRoomEntry) ?? "ceres")
+                : string.Empty;
             if (_groundBtnImg != null)
                 _groundBtnImg.color = hasMining ? new Color(0.62f, 0.44f, 0.12f) : new Color(0.14f, 0.44f, 0.38f);
             if (_groundBtnLbl != null)
@@ -307,6 +335,7 @@ namespace TacSim.UI
             LastOrreryHasQuestDestinationRing = false;
             QuestDestinationPortId = string.Empty;
             QuestDestinationPortLabel = string.Empty;
+            QuestMiningBodyId = string.Empty;
             GroundChartQuestHighlighted = false;
             if (_groundBtnImg != null) _groundBtnImg.color = new Color(0.14f, 0.44f, 0.38f);
             if (_groundBtnLbl != null) _groundBtnLbl.text = "GROUND [G]";
@@ -566,7 +595,13 @@ namespace TacSim.UI
 
         private bool IsQuestDestinationBody(SolarChartBody body)
         {
-            if (body == null || string.IsNullOrEmpty(QuestDestinationPortId)) return false;
+            if (body == null) return false;
+            if (!string.IsNullOrEmpty(QuestMiningBodyId) &&
+                string.Equals(body.Id, QuestMiningBodyId, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+            if (string.IsNullOrEmpty(QuestDestinationPortId)) return false;
             if (string.Equals(body.Id, QuestDestinationPortId, StringComparison.OrdinalIgnoreCase))
                 return true;
             if (CurrentFrame != null)
