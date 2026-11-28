@@ -509,4 +509,73 @@ describe("TacsimPortModals Dray-P Vehicle Bay and Co-op Refit quest guidance", (
       "CARBON ORE",
     );
   });
+
+  it("shows corridor haulage and surface survey quest cross-links inside Jobs & Crew board", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[2],
+          title: "Metals Down the Corridor",
+          checkpoints: [
+            {
+              id: "deliver_metals",
+              title: "Buy 5 tonnes of metals at Ceres and deliver them to Stickney Yards",
+              instructions: "Run +ship/plan stickney and sell at Stickney.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    const app3 = makeApp(quests, "trade");
+    const onCmd3 = vi.fn();
+    const first = render(TacsimPortModals, { props: { app: app3, onCmd: onCmd3 } });
+    await fireEvent.click(screen.getByRole("button", { name: "Jobs & Crew" }));
+    const banner3 = screen.getByRole("status", { name: "active quest jobs guidance" });
+    expect(banner3.textContent).toContain("CORRIDOR HAULAGE -> STICKNEY YARDS");
+    expect(screen.getByRole("button", { name: /\[Q\] Haulage/i })).toBeTruthy();
+    await fireEvent.click(screen.getByRole("button", { name: /Filter Haulage/i }));
+    expect(onCmd3).toHaveBeenCalledWith("+market/jobs haul");
+    first.unmount();
+
+    // Step 6 surface prospecting highlights Survey Commissions instead
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[5],
+          title: "Scan, Sound, and Mine a Landing Site",
+          checkpoints: [
+            {
+              id: "scan_landing_site",
+              title: "Run a surface scan at a Ceres landing site",
+              instructions: "Run +tv/1 scan go.",
+              checked: false,
+              live_ready: false,
+            },
+            {
+              id: "mine_carbon_ore",
+              title: "Mine 1t carbon_ore",
+              instructions: "Run +tv/1 mine go.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+    const app6 = makeApp(quests, "trade");
+    const onCmd6 = vi.fn();
+    render(TacsimPortModals, { props: { app: app6, onCmd: onCmd6 } });
+    await fireEvent.click(screen.getByRole("button", { name: "Jobs & Crew" }));
+    const banner6 = screen.getByRole("status", { name: "active quest jobs guidance" });
+    expect(banner6.textContent).toContain("SURFACE SURVEY COMMISSIONS");
+    expect(screen.getByRole("button", { name: /\[Q\] Survey/i })).toBeTruthy();
+    await fireEvent.click(screen.getByRole("button", { name: /Filter Surveys/i }));
+    expect(onCmd6).toHaveBeenCalledWith("+market/jobs survey");
+  });
 });
