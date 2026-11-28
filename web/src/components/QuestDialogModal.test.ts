@@ -838,4 +838,134 @@ describe("QuestDialogModal guided corridor tour roadmap", () => {
     expect(dlg2.container.textContent).not.toContain("[CLEAR HOLD]");
     dlg2.unmount();
   });
+
+  it("adapts suggested quest commands to live stowage on Steps 3, 5, and 6 (Buy Cargo -> Plan, Clear Hold -> Refit, Recover -> Plan Ceres)", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#18",
+      room_name: "Exchange Hall",
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[2],
+          title: "Metals Down the Corridor",
+          next_room_entry: "room.p07_receiving",
+          checkpoints: [
+            {
+              id: "deliver_metals",
+              title: "Buy 5t metals and deliver to Stickney Yards",
+              instructions: "Buy 5t metals then +ship/plan stickney and sell.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+        {
+          key: GUIDED_TOUR_KEYS[4],
+          title: "Refit the Dray for Surface Mining",
+          next_room_entry: "room.c05_registry",
+          checkpoints: [
+            {
+              id: "refit_dray_p",
+              title: "Refit your Dray into a Dray-P prospector",
+              instructions: "Empty hold then +coop/refit prospector.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+        {
+          key: GUIDED_TOUR_KEYS[5],
+          title: "Scan, Sound, and Mine a Landing Site",
+          next_room_entry: "room.c07_exchange",
+          checkpoints: [
+            { id: "scan_landing_site", title: "Scan site", instructions: "+tv/1 scan go", checked: true, live_ready: true },
+            { id: "sound_pocket", title: "Sound pocket", instructions: "+tv/1 sound go", checked: true, live_ready: true },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", instructions: "+tv/1 mine go", checked: true, live_ready: true },
+          ],
+        },
+      ],
+      available: [],
+      completed: [],
+    });
+
+    const focusComposer = vi.fn();
+    const makeAppWith = (stowage: {
+      cargoKg: number;
+      propellantKg: number;
+      provisionsCrewDays: number;
+      cargoLines: Array<{ good: string; label: string; qty: number }>;
+    }) =>
+      ({
+        quests,
+        tacsim: { trade: { hullId: "#99", stowage } },
+        focusComposer,
+      }) as unknown as GameApp;
+
+    // 1. Step 3 with 0t metals -> suggests Buy Cargo (+market/list); with 5t metals -> Plan Stickney Yards
+    quests.openQuestDialog(GUIDED_TOUR_KEYS[2]!);
+    const r3Empty = render(QuestDialogModal, {
+      app: makeAppWith({ cargoKg: 0, propellantKg: 8000, provisionsCrewDays: 10, cargoLines: [] }),
+      onCmd: vi.fn(),
+    });
+    await fireEvent.click(screen.getByRole("button", { name: /Buy Cargo \(\+market\/list\)/i }));
+    expect(focusComposer).toHaveBeenCalledWith("+market/list");
+    r3Empty.unmount();
+
+    quests.openQuestDialog(GUIDED_TOUR_KEYS[2]!);
+    const r3Loaded = render(QuestDialogModal, {
+      app: makeAppWith({
+        cargoKg: 5000,
+        propellantKg: 8000,
+        provisionsCrewDays: 10,
+        cargoLines: [{ good: "tacsim:metals", label: "Metals", qty: 5 }],
+      }),
+      onCmd: vi.fn(),
+    });
+    await fireEvent.click(screen.getByRole("button", { name: /Plan Stickney Yards/i }));
+    expect(focusComposer).toHaveBeenLastCalledWith("+ship/plan stickney");
+    r3Loaded.unmount();
+
+    // 2. Step 5 with 8d provisions -> Clear Hold (+market/list); empty -> Refit Dray-P
+    quests.openQuestDialog(GUIDED_TOUR_KEYS[4]!);
+    const r5Blocked = render(QuestDialogModal, {
+      app: makeAppWith({ cargoKg: 0, propellantKg: 8000, provisionsCrewDays: 8, cargoLines: [] }),
+      onCmd: vi.fn(),
+    });
+    await fireEvent.click(screen.getByRole("button", { name: /Clear Hold \(\+market\/list\)/i }));
+    expect(focusComposer).toHaveBeenLastCalledWith("+market/list");
+    r5Blocked.unmount();
+
+    quests.openQuestDialog(GUIDED_TOUR_KEYS[4]!);
+    const r5Clear = render(QuestDialogModal, {
+      app: makeAppWith({ cargoKg: 0, propellantKg: 8000, provisionsCrewDays: 0, cargoLines: [] }),
+      onCmd: vi.fn(),
+    });
+    await fireEvent.click(screen.getByRole("button", { name: /Refit Dray-P/i }));
+    expect(focusComposer).toHaveBeenLastCalledWith("+coop/refit prospector");
+    r5Clear.unmount();
+
+    // 3. Step 6 post-mine with 0t in hold -> Recover Rig; with 1t carbon_ore stowed -> Plan Ceres Freeport
+    quests.openQuestDialog(GUIDED_TOUR_KEYS[5]!);
+    const r6Hopper = render(QuestDialogModal, {
+      app: makeAppWith({ cargoKg: 0, propellantKg: 8000, provisionsCrewDays: 10, cargoLines: [] }),
+      onCmd: vi.fn(),
+    });
+    await fireEvent.click(screen.getByRole("button", { name: "Recover Rig" }));
+    expect(focusComposer).toHaveBeenLastCalledWith("+tv/1 recover go");
+    r6Hopper.unmount();
+
+    quests.openQuestDialog(GUIDED_TOUR_KEYS[5]!);
+    render(QuestDialogModal, {
+      app: makeAppWith({
+        cargoKg: 1000,
+        propellantKg: 8000,
+        provisionsCrewDays: 10,
+        cargoLines: [{ good: "tacsim:carbon_ore", label: "Carbon Ore", qty: 1 }],
+      }),
+      onCmd: vi.fn(),
+    });
+    await fireEvent.click(screen.getByRole("button", { name: /Plan Ceres Freeport/i }));
+    expect(focusComposer).toHaveBeenLastCalledWith("+ship/plan ceres");
+  });
 });

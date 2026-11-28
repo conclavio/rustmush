@@ -11,6 +11,7 @@
     extractActiveDestinationPort,
     extractActiveSurfaceMiningStatus,
     extractActiveTradeNeed,
+    extractQuestSuggestedAction,
     extractSurfaceMiningPrepActions,
     formatQuestHoldReadinessSummary,
     inferStationPortFromRoomEntry,
@@ -33,7 +34,6 @@
   const trackedStep = $derived(
     tracked ? (GUIDED_TOUR_KEYS.indexOf(tracked.key) >= 0 ? GUIDED_TOUR_KEYS.indexOf(tracked.key) + 1 : null) : null,
   );
-  const suggested = $derived(q.suggestedAction);
   const tour = $derived(q.guidedTourProgress);
   const firstOffer = $derived(
     q.available.find(
@@ -80,6 +80,7 @@
       app.tacsim?.ambient?.stowage ??
       (app.tacsim?.trade?.hullId ? app.tacsim.trade.stowage : null),
   );
+  const suggested = $derived(extractQuestSuggestedAction(tracked, liveStowage));
   const holdReadiness = $derived(
     tracked ? formatQuestHoldReadinessSummary(tracked, liveStowage) : null,
   );
