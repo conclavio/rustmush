@@ -1868,7 +1868,6 @@ impl QuestOverlayState {
         self.open = true;
         self.confirm_abandon = false;
         self.confirm_decline = false;
-        self.selected = 0;
         self.tab = if !snap.available.is_empty() && snap.active.is_empty() {
             QuestTab::Available
         } else if !snap.active.is_empty() {
@@ -1877,6 +1876,32 @@ impl QuestOverlayState {
             QuestTab::Available
         } else {
             QuestTab::Completed
+        };
+        self.selected = match self.tab {
+            QuestTab::Active => snap
+                .active
+                .iter()
+                .position(|q| q.can_finish_now)
+                .or_else(|| {
+                    snap.active
+                        .iter()
+                        .position(|q| q.can_check_now || q.ready_to_finish)
+                })
+                .or_else(|| {
+                    self.tracked_key
+                        .as_deref()
+                        .and_then(|tk| snap.active.iter().position(|q| q.key == tk))
+                })
+                .unwrap_or(0),
+            QuestTab::Available => snap
+                .available
+                .iter()
+                .position(|q| {
+                    q.category.eq_ignore_ascii_case("guided")
+                        || GUIDED_TOUR_KEYS.contains(&q.key.as_str())
+                })
+                .unwrap_or(0),
+            QuestTab::Completed => 0,
         };
     }
 
@@ -2571,6 +2596,14 @@ pub fn render_quest_overlay(
     render_quest_overlay_with_stowage(f, area, state, snap, None);
 }
 
+fn guided_step_badge(key: &str) -> String {
+    GUIDED_TOUR_KEYS
+        .iter()
+        .position(|&k| k == key)
+        .map(|i| format!(" [Step {}/7]", i + 1))
+        .unwrap_or_default()
+}
+
 /// Paint the centered Quest Dialog & Journal overlay with live ship stowage & refit hold telemetry.
 pub fn render_quest_overlay_with_stowage(
     f: &mut Frame<'_>,
@@ -2717,16 +2750,25 @@ pub fn render_quest_overlay_with_stowage(
                 } else {
                     " "
                 };
+                let step_tag = guided_step_badge(&q.key);
                 let style = if selected {
                     Style::default()
                         .fg(Color::Black)
-                        .bg(Color::Yellow)
+                        .bg(if q.can_finish_now {
+                            Color::Green
+                        } else {
+                            Color::Yellow
+                        })
+                        .add_modifier(Modifier::BOLD)
+                } else if q.can_finish_now {
+                    Style::default()
+                        .fg(Color::Green)
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default().fg(Color::White)
                 };
                 list_lines.push(Line::from(Span::styled(
-                    format!("{star}{badge} {}", q.title),
+                    format!("{star}{badge} {}{step_tag}", q.title),
                     style,
                 )));
             }
@@ -2740,6 +2782,7 @@ pub fn render_quest_overlay_with_stowage(
             }
             for (idx, q) in snap.available.iter().enumerate() {
                 let selected = idx == state.selected;
+                let step_tag = guided_step_badge(&q.key);
                 let style = if selected {
                     Style::default()
                         .fg(Color::Black)
@@ -2748,7 +2791,10 @@ pub fn render_quest_overlay_with_stowage(
                 } else {
                     Style::default().fg(Color::Yellow)
                 };
-                list_lines.push(Line::from(Span::styled(format!(" [!] {}", q.title), style)));
+                list_lines.push(Line::from(Span::styled(
+                    format!(" [!] {}{step_tag}", q.title),
+                    style,
+                )));
             }
         }
         QuestTab::Completed => {
@@ -2760,6 +2806,7 @@ pub fn render_quest_overlay_with_stowage(
             }
             for (idx, q) in snap.completed.iter().enumerate() {
                 let selected = idx == state.selected;
+                let step_tag = guided_step_badge(&q.key);
                 let style = if selected {
                     Style::default()
                         .fg(Color::Black)
@@ -2768,7 +2815,10 @@ pub fn render_quest_overlay_with_stowage(
                 } else {
                     Style::default().fg(Color::Green)
                 };
-                list_lines.push(Line::from(Span::styled(format!(" [x] {}", q.title), style)));
+                list_lines.push(Line::from(Span::styled(
+                    format!(" [x] {}{step_tag}", q.title),
+                    style,
+                )));
             }
         }
     }
@@ -2784,12 +2834,21 @@ pub fn render_quest_overlay_with_stowage(
     match state.tab {
         QuestTab::Active => {
             if let Some(q) = snap.active.get(state.selected) {
+                let step_tag = guided_step_badge(&q.key);
                 detail_lines.push(Line::from(Span::styled(
-                    q.title.clone(),
+                    format!("{}{step_tag}", q.title),
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
                 )));
+                if q.can_finish_now {
+                    detail_lines.push(Line::from(Span::styled(
+                        "[?] Ready to complete here (Enter/c/f)",
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                }
                 detail_lines.push(Line::from(Span::styled(
                     format!("Giver: {}  |  Turn in: {}", q.giver_name, q.turn_in_name),
                     Style::default().fg(Color::Cyan),
@@ -2911,8 +2970,9 @@ pub fn render_quest_overlay_with_stowage(
         }
         QuestTab::Available => {
             if let Some(q) = snap.available.get(state.selected) {
+                let step_tag = guided_step_badge(&q.key);
                 detail_lines.push(Line::from(Span::styled(
-                    format!("[!] {}", q.title),
+                    format!("[!] {}{step_tag}", q.title),
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
@@ -2974,11 +3034,7 @@ pub fn render_quest_overlay_with_stowage(
                 detail_lines.push(Line::from(""));
             }
             if let Some(q) = snap.completed.get(state.selected) {
-                let step_tag = GUIDED_TOUR_KEYS
-                    .iter()
-                    .position(|&k| k == q.key)
-                    .map(|i| format!(" [Step {}/7]", i + 1))
-                    .unwrap_or_default();
+                let step_tag = guided_step_badge(&q.key);
                 detail_lines.push(Line::from(Span::styled(
                     format!("[x] {}{step_tag}", q.title),
                     Style::default()
@@ -4717,6 +4773,102 @@ mod tests {
         assert!(
             !stickney_txt.contains("Sail: +ship/plan"),
             "expected no Sail hint when already at Stickney, got:\n{stickney_txt}"
+        );
+    }
+
+    #[test]
+    fn overlay_focuses_ready_turn_in_and_guided_offers_and_renders_step_badges() {
+        let render_text = |st: &QuestOverlayState, snap: &QuestsSnapshot| -> String {
+            let backend = ratatui::backend::TestBackend::new(100, 26);
+            let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+            terminal
+                .draw(|f| render_quest_overlay(f, f.area(), st, snap))
+                .expect("draw");
+            let buf = terminal.backend().buffer();
+            let mut out = String::new();
+            for y in 0..buf.area.height {
+                for x in 0..buf.area.width {
+                    out.push_str(buf[(x, y)].symbol());
+                }
+                out.push('\n');
+            }
+            out
+        };
+
+        // 1. Active tab: ready turn-in Step 2/7 at index 1 auto-focused on open_for
+        let active_snap = parse_frame(&json!({
+            "schema": 1,
+            "active": [
+                {
+                    "key": "side.delivery",
+                    "title": "Side Parcel",
+                    "can_finish_now": false
+                },
+                {
+                    "key": GUIDED_TOUR_KEYS[1],
+                    "title": "Stock the Locker",
+                    "category": "guided",
+                    "can_finish_now": true,
+                    "ready_to_finish": true
+                }
+            ],
+            "completed": [
+                {
+                    "key": GUIDED_TOUR_KEYS[0],
+                    "title": "First Papers",
+                    "turn_in_name": "Ilse"
+                }
+            ]
+        }));
+        let mut st = QuestOverlayState::default();
+        st.open_for(&active_snap);
+        assert_eq!(st.tab, QuestTab::Active);
+        assert_eq!(st.selected, 1);
+        let active_txt = render_text(&st, &active_snap);
+        assert!(
+            active_txt.contains("Stock the Locker [Step 2/7]"),
+            "expected [Step 2/7] in Active overlay:\n{active_txt}"
+        );
+        assert!(
+            active_txt.contains("[?] Ready to complete here"),
+            "expected ready-to-complete cue:\n{active_txt}"
+        );
+
+        // Switch to Completed tab -> left list shows [Step 1/7]
+        st.tab = QuestTab::Completed;
+        st.selected = 0;
+        let done_txt = render_text(&st, &active_snap);
+        assert!(
+            done_txt.contains("[x] First Papers [Step 1/7]"),
+            "expected [Step 1/7] in Completed list:\n{done_txt}"
+        );
+
+        // 2. Available-only snapshot: guided Step 3/7 at index 1 auto-focused on open_for
+        let avail_snap = parse_frame(&json!({
+            "schema": 1,
+            "available": [
+                {
+                    "key": "side.audit",
+                    "title": "Side Audit",
+                    "category": "optional",
+                    "giver_name": "Clerk"
+                },
+                {
+                    "key": GUIDED_TOUR_KEYS[2],
+                    "title": "Metals Haul",
+                    "category": "guided",
+                    "giver_name": "Ilse"
+                }
+            ]
+        }));
+        let mut st_avail = QuestOverlayState::default();
+        st_avail.open_for(&avail_snap);
+        assert_eq!(st_avail.tab, QuestTab::Available);
+        assert_eq!(st_avail.selected, 1);
+        let avail_txt = render_text(&st_avail, &avail_snap);
+        assert!(
+            avail_txt.contains("[!] Metals Haul [Step 3/7]"),
+            "expected [Step 3/7] in Available overlay:\n{avail_txt}"
         );
     }
 }
