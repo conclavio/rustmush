@@ -13013,5 +13013,85 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void NpcTalkDetailModal_InjectsQuestDialogAndDirectAcceptOrCompleteButtons()
+        {
+            var rootGo = new UnityEngine.GameObject("NpcTalkQuestButtonsTestRoot");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                string sentCmd = string.Empty;
+                hud.OnCommandSubmitted += c => sentCmd = c;
+
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_markers"": [{
+                        ""npc_id"": ""#18"",
+                        ""npc_name"": ""Maren Halvorsen"",
+                        ""marker"": ""available"",
+                        ""symbol"": ""!"",
+                        ""quest_key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                        ""quest_title"": ""First Papers at the Registry""
+                    }],
+                    ""available"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                        ""title"": ""First Papers at the Registry"",
+                        ""giver_id"": ""#18"",
+                        ""giver_name"": ""Maren Halvorsen"",
+                        ""turn_in_id"": ""#19"",
+                        ""turn_in_name"": ""Ilse Oduya-Brandt"",
+                        ""accept_cmd"": ""+quest/accept #18=tok1""
+                    }],
+                    ""active"": [],
+                    ""completed"": []
+                }")));
+
+                hud.ShowDetailModal("MAREN HALVORSEN", "Port Watch clerk", npcName: "Maren Halvorsen");
+                Assert.IsTrue(hud.TriggerDetailModalButtonContaining("[!] ACCEPT NOW"));
+                Assert.AreEqual("+quest/accept #18=tok1", sentCmd);
+
+                // Re-open Talk modal and hand off directly to NPC Quest Dialog
+                hud.ShowDetailModal("MAREN HALVORSEN", "Port Watch clerk", npcName: "Maren Halvorsen");
+                Assert.IsTrue(hud.TriggerDetailModalButtonContaining("[!] QUEST DIALOG: First Papers at the Registry"));
+                Assert.IsTrue(hud.QuestJournal.IsQuestDialogOpen);
+                Assert.AreEqual("#18", hud.QuestJournal.DialogNpcId);
+
+                // Ready-to-finish active quest on Ilse -> shows [?] TURN IN QUEST + [?] COMPLETE NOW
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_markers"": [{
+                        ""npc_id"": ""#19"",
+                        ""npc_name"": ""Ilse Oduya-Brandt"",
+                        ""marker"": ""turn_in"",
+                        ""symbol"": ""?"",
+                        ""quest_key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                        ""quest_title"": ""First Papers at the Registry""
+                    }],
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                        ""title"": ""First Papers at the Registry"",
+                        ""giver_id"": ""#18"",
+                        ""giver_name"": ""Maren Halvorsen"",
+                        ""turn_in_id"": ""#19"",
+                        ""turn_in_name"": ""Ilse Oduya-Brandt"",
+                        ""ready_to_finish"": true,
+                        ""can_finish_now"": true,
+                        ""finish_cmd"": ""+quest/finish #19=tok2""
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                hud.ShowDetailModal("ILSE ODUYA-BRANDT", "Co-op Registrar", npcName: "Ilse Oduya-Brandt");
+                Assert.IsTrue(hud.TriggerDetailModalButtonContaining("[?] COMPLETE NOW"));
+                Assert.AreEqual("+quest/finish #19=tok2", sentCmd);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
