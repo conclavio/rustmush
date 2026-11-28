@@ -2610,7 +2610,7 @@ namespace TacSim.UI
                 _tradeCreditsText.text = $"CREDITS: {_boundTradeState.CreditsText}";
 
             QuestTradeNeed qNeed = default;
-            bool hasQuestNeed = QuestJournal != null && QuestJournal.TryGetActiveTradeNeed(out qNeed);
+            bool hasQuestNeed = QuestJournal != null && QuestJournal.TryResolveContextualTradeNeed(_boundTradeState, out qNeed, out _);
             string qGaugeKind = string.Empty;
             int qCurQty = 0;
             int qTargetQty = 1;
@@ -2706,7 +2706,7 @@ namespace TacSim.UI
 
         public bool ApplyQuestTradeQuantity()
         {
-            if (_boundTradeState == null || QuestJournal == null || !QuestJournal.TryGetActiveTradeNeed(out var need))
+            if (_boundTradeState == null || QuestJournal == null || !QuestJournal.TryResolveContextualTradeNeed(_boundTradeState, out var need, out _))
                 return false;
             _boundTradeState.SelectedSellAll = false;
             _boundTradeState.SelectedTradeQuantity = Mathf.Max(1, need.TargetQuantity);
@@ -2749,11 +2749,11 @@ namespace TacSim.UI
               .Append(_boundTradeState.StoresLimitCrewDays).Append('|')
               .Append(_boundTradeState.NextAfterListingId ?? 0UL).Append('|')
               .Append(_boundTradeState.AboardDockedPortHint ?? string.Empty);
-            if (QuestJournal != null && QuestJournal.TryGetActiveTradeNeed(out var qNeed))
+            if (QuestJournal != null && QuestJournal.TryResolveContextualTradeNeed(_boundTradeState, out var qNeed, out var qAllNeeds))
             {
                 sb.Append("|Q:").Append(qNeed.CommoditySlug).Append(':').Append(qNeed.TargetQuantity)
                   .Append(':').Append(qNeed.WantsBuy ? 'B' : '-').Append(qNeed.WantsSell ? 'S' : '-')
-                  .Append(':').Append(qNeed.QuestTitle);
+                  .Append(':').Append(qNeed.QuestTitle).Append(':').Append(qAllNeeds.Count);
             }
             for (int i = 0; i < _boundTradeState.Listings.Count; i++)
             {
@@ -2838,7 +2838,8 @@ namespace TacSim.UI
             EnsureEmptyAndLoadMoreRows();
 
             QuestTradeNeed questNeed = default;
-            bool hasQuestNeed = QuestJournal != null && QuestJournal.TryGetActiveTradeNeed(out questNeed);
+            List<QuestTradeNeed> allQuestNeeds = null;
+            bool hasQuestNeed = QuestJournal != null && QuestJournal.TryResolveContextualTradeNeed(_boundTradeState, out questNeed, out allQuestNeeds);
             if (_exchangeQuestBanner != null)
             {
                 _exchangeQuestBanner.SetActive(hasQuestNeed);
@@ -2853,7 +2854,27 @@ namespace TacSim.UI
                         string holdPart = !string.IsNullOrEmpty(TradeStowageQuestSummarySnapshot)
                             ? $"  |  <color={(TradeStowageQuestSummarySnapshot.StartsWith("[READY]", StringComparison.Ordinal) ? "#55EE99" : "#FFDD44")}>{MushProtocol.EscapeUnityRichText(TradeStowageQuestSummarySnapshot)}</color>"
                             : string.Empty;
-                        _exchangeQuestBannerText.text = $"<color=#FFDD44>[QUEST]</color> {verb} <b>{questNeed.TargetQuantity}</b> × <b>{MushProtocol.EscapeUnityRichText(itemLabel)}</b>  <color=#BBD4E6>— {MushProtocol.EscapeUnityRichText(questNeed.QuestTitle)}</color>{holdPart}";
+                        string extraPart = string.Empty;
+                        if (allQuestNeeds != null && allQuestNeeds.Count > 1)
+                        {
+                            var esb = new StringBuilder(64);
+                            for (int eIdx = 0; eIdx < allQuestNeeds.Count; eIdx++)
+                            {
+                                var ex = allQuestNeeds[eIdx];
+                                if (string.Equals(ex.CommoditySlug, questNeed.CommoditySlug, StringComparison.OrdinalIgnoreCase))
+                                    continue;
+                                bool exOk = _boundTradeState.GetHoldCommodityQuantity(ex.CommoditySlug) >= Mathf.Max(1, ex.TargetQuantity);
+                                string exLabel = ex.CommoditySlug.Replace('_', ' ').ToUpperInvariant();
+                                esb.Append(esb.Length == 0 ? "  |  <color=#A9C6DA>Also: " : ", ");
+                                esb.Append($"{ex.TargetQuantity} {MushProtocol.EscapeUnityRichText(exLabel)}{(exOk ? " [OK]" : string.Empty)}");
+                            }
+                            if (esb.Length > 0)
+                            {
+                                esb.Append("</color>");
+                                extraPart = esb.ToString();
+                            }
+                        }
+                        _exchangeQuestBannerText.text = $"<color=#FFDD44>[QUEST]</color> {verb} <b>{questNeed.TargetQuantity}</b> × <b>{MushProtocol.EscapeUnityRichText(itemLabel)}</b>  <color=#BBD4E6>— {MushProtocol.EscapeUnityRichText(questNeed.QuestTitle)}</color>{holdPart}{extraPart}";
                     }
                     if (_exchangeQuestQtyBtnLbl != null)
                         _exchangeQuestQtyBtnLbl.text = $"SET QUEST QTY ({questNeed.TargetQuantity})";
