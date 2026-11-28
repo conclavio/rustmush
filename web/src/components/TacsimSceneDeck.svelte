@@ -9,6 +9,7 @@
   import { storageGet, storageSet } from "$lib/storage";
   import { tacsimAudio } from "$lib/tacsim/audio";
   import {
+    GUIDED_TOUR_KEYS,
     extractActiveDestinationPort,
     needsOriginPortProcurement,
     needsSurfaceExpeditionBoarding,
@@ -237,6 +238,21 @@
   const trackedQuest = $derived(
     app.quests?.active.find((q) => q.key === app.quests?.trackedKey) ?? app.quests?.active[0] ?? null,
   );
+  const trackedStepNo = $derived.by(() => {
+    if (!trackedQuest) return 0;
+    const idx = (GUIDED_TOUR_KEYS as readonly string[]).indexOf(trackedQuest.key);
+    return idx >= 0 ? idx + 1 : 0;
+  });
+  const shipTargetDeckLabel = $derived.by((): string | null => {
+    if (!app.tacsim.isAboardShip || !resolvedQuestShipTarget) return null;
+    const curComp = (app.tacsim.serverShipCompartment || app.tacsim.physicalLocationKey || "").toLowerCase();
+    const target = resolvedQuestShipTarget.toLowerCase();
+    if (curComp === target) return null;
+    if (target === "bridge") return "Bridge";
+    if (target === "bay") return "Vehicle Bay";
+    if (target === "airlock") return "Airlock";
+    return null;
+  });
   const questDest = $derived(
     app.quests
       ? (extractActiveDestinationPort(app.quests.active, app.quests.trackedKey) ??
@@ -258,6 +274,7 @@
         ) ?? null)
       : null,
   );
+  const roomOfferExtraCount = $derived(Math.max(0, (roomOfferMarker?.questCount ?? 1) - 1));
   const nextGuidedOffer = $derived(
     !trackedQuest && !roomOfferMarker ? (app.quests?.nextGuidedOffer ?? null) : null,
   );
@@ -472,8 +489,12 @@
           >
             <span class="qhud-crest">{trackedQuest.readyToFinish || trackedQuest.canFinishNow ? "?" : "▸"}</span>
             <span class="qhud-body">
-              <strong>{trackedQuest.title}</strong>
-              <span>{trackedQuest.nextStep}</span>
+              <strong>{trackedQuest.title}{#if trackedStepNo > 0} [Step {trackedStepNo}/7]{/if}</strong>
+              {#if shipTargetDeckLabel}
+                <span>Deck: Go to {shipTargetDeckLabel}{#if trackedQuest.nextStep} · {trackedQuest.nextStep}{/if}</span>
+              {:else}
+                <span>{trackedQuest.nextStep}</span>
+              {/if}
             </span>
           </button>
         {:else if roomOfferMarker}
@@ -487,7 +508,7 @@
             <span class="qhud-crest">{roomOfferMarker.symbol}</span>
             <span class="qhud-body">
               <strong>{roomOfferMarker.npcName}</strong>
-              <span>{roomOfferMarker.questTitle}</span>
+              <span>{roomOfferMarker.questTitle}{#if roomOfferExtraCount > 0} (+{roomOfferExtraCount} more){/if}</span>
             </span>
           </button>
         {:else if nextGuidedOffer}
@@ -495,13 +516,15 @@
             type="button"
             class="quest-hud-pill"
             data-ready="false"
-            onclick={() => app.quests?.openLog("active")}
+            onclick={() => app.quests?.openLog("completed")}
             title="Next Guided Tour Step ({nextGuidedOffer.step}/7)"
           >
             <span class="qhud-crest">!</span>
             <span class="qhud-body">
               <strong>Next Guided ({nextGuidedOffer.step}/7): {nextGuidedOffer.shortLabel}</strong>
-              <span>Speak with {nextGuidedOffer.giverLabel} ({nextGuidedOffer.giverRoomName})</span>
+              <span>
+                Speak with {nextGuidedOffer.giverLabel} ({nextGuidedOffer.giverRoomName}){#if questDest} · Sail: +ship/plan {questDest.portId}{/if}
+              </span>
             </span>
           </button>
         {/if}
