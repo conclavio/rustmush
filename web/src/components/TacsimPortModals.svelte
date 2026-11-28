@@ -219,6 +219,17 @@
   const sailingPreflight = $derived(
     evaluateSailingPreflightReadiness(questDestPort, questTradeNeed, st),
   );
+  const questTradeReadyToSail = $derived(
+    Boolean(
+      questTradeNeed &&
+        !questTradeNeed.wantsBuy &&
+        questTradeNeed.wantsSell &&
+        stowageReadiness?.ready &&
+        questDestPort &&
+        currentVenueId &&
+        currentVenueId !== questDestPort.portId,
+    ),
+  );
   const questCoopAction = $derived.by(() => {
     const sug = app.quests?.suggestedAction;
     if (!sug || !sug.command.startsWith("+coop/")) return null;
@@ -464,14 +475,40 @@
                     · Also: {extra.targetQuantity} {extra.commoditySlug.replaceAll("_", " ").toUpperCase()}{extraReady ? " [✓]" : ""}
                   </span>
                 {/each}
+                {#if questTradeReadyToSail && questDestPort}
+                  <span class="qtag">· Haul → {questDestPort.portLabel} (do not sell here)</span>
+                  {#if sailingPreflight && (!sailingPreflight.propellantOk || !sailingPreflight.provisionsOk)}
+                    <span class="muted">
+                      · Top up {!sailingPreflight.propellantOk && !sailingPreflight.provisionsOk
+                        ? "Fuel & Stores"
+                        : !sailingPreflight.propellantOk
+                          ? "Fuel"
+                          : "Stores"} before undocking
+                    </span>
+                  {/if}
+                {/if}
               </div>
-              <button
-                type="button"
-                class="qbtn-gold"
-                onclick={() => (app.tacsim.selectedQtyPreset = questTradeNeed.targetQuantity)}
-              >
-                Set Quest Qty ({questTradeNeed.targetQuantity})
-              </button>
+              <div class="qb-text">
+                {#if questTradeReadyToSail && questDestPort}
+                  <button
+                    type="button"
+                    class="buybtn"
+                    onclick={() => {
+                      app.tacsim.selectedDestination = questDestPort.portId;
+                      app.tacsim.activeModal = "sailing";
+                    }}
+                  >
+                    Sail → {questDestPort.portLabel}
+                  </button>
+                {/if}
+                <button
+                  type="button"
+                  class="qbtn-gold"
+                  onclick={() => (app.tacsim.selectedQtyPreset = questTradeNeed.targetQuantity)}
+                >
+                  Set Quest Qty ({questTradeNeed.targetQuantity})
+                </button>
+              </div>
             </div>
           {/if}
 
