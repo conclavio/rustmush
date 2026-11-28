@@ -2497,9 +2497,11 @@ impl TuiApp {
                         );
                         self.push_local_line(&notice);
                         self.sounds.play("power_online", Instant::now());
-                    } else if let Some((obj_room, is_turn_in)) = self
-                        .quests_snap
-                        .active_objective_room(self.quests_overlay.tracked_key.as_deref())
+                    } else if let Some((obj_room, is_turn_in)) =
+                        self.quests_snap.active_objective_room_with_stowage(
+                            self.quests_overlay.tracked_key.as_deref(),
+                            self.port_walk.quest_stowage_telemetry().as_ref(),
+                        )
                         && atlas_entry.eq_ignore_ascii_case(&obj_room)
                     {
                         let notice = if is_turn_in {
@@ -2572,6 +2574,7 @@ impl TuiApp {
                 if feed.as_str() == PORT_TRADE_FEED {
                     if *kind == PanelFrameKind::Keyframe {
                         let q = self.port_walk.observe_port_trade(data, Instant::now());
+                        self.sync_port_walk_quest_state();
                         queries.extend(q);
                         queries.extend(self.port_walk.drain_pack_queries(&self.manifest.panels));
                         if self.pixel.kind() == PictureKind::StationWalk {
@@ -5039,8 +5042,11 @@ impl TuiApp {
         self.port_walk
             .observe_quest_guidance(trade_needs.first().cloned(), dest_port);
         self.port_walk.observe_quest_trade_needs(trade_needs);
-        self.port_walk
-            .observe_quest_objective_room(self.quests_snap.active_objective_room(tracked));
+        let stowage = self.port_walk.quest_stowage_telemetry();
+        self.port_walk.observe_quest_objective_room(
+            self.quests_snap
+                .active_objective_room_with_stowage(tracked, stowage.as_ref()),
+        );
         self.port_walk.observe_quest_ship_target(
             self.quests_snap
                 .active_ship_target_compartment_for_location(
