@@ -1694,23 +1694,19 @@ impl QuestsSnapshot {
         let needs = single.active_trade_needs(Some(&q.key));
         if needs.is_empty() {
             let mine = single.surface_mining_status(Some(&q.key))?;
-            let want = normalize_good_slug(&mine.target_ore_slug);
-            let current: i64 = stowage
-                .cargo_lots
-                .iter()
-                .filter(|(id, name, _)| {
-                    normalize_good_slug(id) == want || normalize_good_slug(name) == want
-                })
-                .map(|(_, _, qty)| (*qty).max(0))
-                .sum();
+            let current = stowage.commodity_qty(&mine.target_ore_slug);
             let ready = current >= 1;
-            let tag = if ready {
-                "[ORE HOLD READY]"
-            } else {
-                "[ORE HOLD]"
-            };
             let label = mine.target_ore_slug.replace('_', " ").to_ascii_uppercase();
-            return Some((format!("{tag} {label}: {current}/1 t"), ready));
+            if ready {
+                return Some((format!("[ORE HOLD READY] {label}: {current}/1 t"), true));
+            }
+            if mine.mine_done {
+                return Some((
+                    format!("[RECOVER RIG FIRST] {label}: {current}/1 t (run +tv/1 recover go)"),
+                    false,
+                ));
+            }
+            return Some((format!("[ORE HOLD] {label}: {current}/1 t"), false));
         }
         let eval_need = |need: &QuestTradeNeed| -> (String, i64, i64, &'static str, bool) {
             let target = need.target_quantity.max(1);
@@ -3117,6 +3113,30 @@ pub fn render_quest_sheet_lines_with_stowage(
                     .add_modifier(Modifier::BOLD)
             };
             lines.push(Line::from(Span::styled(format!("  {pf_txt}"), style)));
+        }
+        if q.can_finish_now {
+            lines.push(Line::from(Span::styled(
+                "  [?] Ready to turn in here (F11 -> Enter)",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )));
+        } else if let Some(suggested) =
+            QuestsSnapshot::suggested_action_for_with_stowage(q, stowage)
+        {
+            let cmd = suggested.command.trim();
+            let action_label = if suggested.label.contains(cmd) {
+                suggested.label
+            } else {
+                format!("{} ({cmd})", suggested.label)
+            };
+            lines.push(Line::from(vec![
+                Span::styled("  Next Cmd: ", Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    format!("{action_label} [F11 -> p]"),
+                    Style::default().fg(Color::LightCyan),
+                ),
+            ]));
         }
         let other_ready_here: Vec<&ActiveQuest> = snap
             .active
@@ -7061,5 +7081,161 @@ mod tests {
             .expect("guided turn-in badge");
         assert_eq!(ti_badge, "[?] Ilse Oduya-Brandt: Turn-In [Step 2/7] (F11)");
         assert_eq!(ti_color, Color::Green);
+    }
+
+    #[test]
+    fn render_quest_sheet_lines_shows_stowage_aware_next_cmd_cargo_preflight_and_rig_recovery() {
+        let join = |lines: Vec<Line<'static>>| -> String {
+            lines
+                .iter()
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        // 1. Step 3 with fuel & provisions OK but 0/5 metals -> [CHECK BEFORE UNDOCK] + Buy Cargo (+market/list)
+        let step3 = parse_frame(&json!({
+            "schema": 1,
+            "completed": [
+                { "key": GUIDED_TOUR_KEYS[0], "title": "S1" },
+                { "key": GUIDED_TOUR_KEYS[1], "title": "S2" }
+            ],
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[2],
+                "title": "Metals Down the Corridor",
+                "next_step": "Buy 5t metals at Ceres Exchange and deliver to Stickney Yards",
+                "checkpoints": [{
+                    "id": "deliver_metals",
+                    "title": "Buy and deliver 5t metals to Stickney Yards",
+                    "instructions": "Buy 5t metals (+market/buy metals 5), sail to Stickney Yards (+ship/plan stickney), and sell.",
+                    "checked": false,
+                    "live_ready": false
+                }]
+            }],
+            "available": []
+        }));
+        let stow_empty = QuestStowageTelemetry {
+            cargo_kg: 0,
+            propellant_kg: 10_000,
+            provisions_days: 10,
+            cargo_lots: vec![],
+        };
+        let txt_empty = join(render_quest_sheet_lines_with_stowage(
+            &step3,
+            None,
+            Some(&stow_empty),
+        ));
+        assert!(txt_empty.contains("[CHECK BEFORE UNDOCK]"), "{txt_empty}");
+        assert!(txt_empty.contains("metals 0/5!"), "{txt_empty}");
+        assert!(
+            txt_empty.contains("Next Cmd: Buy Cargo (+market/list) [F11 -> p]"),
+            "{txt_empty}"
+        );
+
+        // 2. Step 3 with 5t metals loaded -> [PRE-FLIGHT OK] + Plan Stickney Yards (+ship/plan stickney)
+        let stow_loaded = QuestStowageTelemetry {
+            cargo_kg: 5_000,
+            propellant_kg: 10_000,
+            provisions_days: 10,
+            cargo_lots: vec![("tacsim:metals".into(), "Metals".into(), 5)],
+        };
+        let txt_loaded = join(render_quest_sheet_lines_with_stowage(
+            &step3,
+            None,
+            Some(&stow_loaded),
+        ));
+        assert!(txt_loaded.contains("[PRE-FLIGHT OK]"), "{txt_loaded}");
+        assert!(
+            txt_loaded.contains("Next Cmd: Plan Stickney Yards (+ship/plan stickney) [F11 -> p]"),
+            "{txt_loaded}"
+        );
+
+        // 3. Step 6 post-mine with 0t ore stowed -> [RECOVER RIG FIRST] + Recover Rig (+tv/1 recover go)
+        let step6 = parse_frame(&json!({
+            "schema": 1,
+            "completed": [
+                { "key": GUIDED_TOUR_KEYS[0], "title": "S1" },
+                { "key": GUIDED_TOUR_KEYS[1], "title": "S2" },
+                { "key": GUIDED_TOUR_KEYS[2], "title": "S3" },
+                { "key": GUIDED_TOUR_KEYS[3], "title": "S4" },
+                { "key": GUIDED_TOUR_KEYS[4], "title": "S5" }
+            ],
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[5],
+                "title": "Prospect the Surface",
+                "next_room_entry": "room.c07_exchange",
+                "next_step": "Recover rig and return carbon_ore to Ceres Exchange",
+                "checkpoints": [
+                    { "id": "buy_license", "title": "Buy prospecting license", "checked": true, "live_ready": true },
+                    { "id": "lease_rig", "title": "Lease mining rig", "checked": true, "live_ready": true },
+                    { "id": "scan_site", "title": "Scan site", "checked": true, "live_ready": true },
+                    { "id": "sound_pocket", "title": "Sound pocket", "checked": true, "live_ready": true },
+                    { "id": "mine_carbon_ore", "title": "Mine 1t carbon_ore", "checked": true, "live_ready": true },
+                    { "id": "return_exchange", "title": "Return to Ceres Exchange", "checked": false, "live_ready": false }
+                ]
+            }],
+            "available": []
+        }));
+        let txt_s6_recover = join(render_quest_sheet_lines_with_stowage(
+            &step6,
+            None,
+            Some(&stow_empty),
+        ));
+        assert!(
+            txt_s6_recover.contains("[RECOVER RIG FIRST] CARBON ORE: 0/1 t (run +tv/1 recover go)"),
+            "{txt_s6_recover}"
+        );
+        assert!(
+            txt_s6_recover.contains("Next Cmd: Recover Rig (+tv/1 recover go) [F11 -> p]"),
+            "{txt_s6_recover}"
+        );
+
+        // 4. Step 6 after rig recovery (1t carbon_ore stowed) -> [ORE HOLD READY] + Plan Ceres Freeport
+        let stow_ore = QuestStowageTelemetry {
+            cargo_kg: 1_000,
+            propellant_kg: 10_000,
+            provisions_days: 10,
+            cargo_lots: vec![("tacsim:carbon_ore".into(), "Carbon Ore".into(), 1)],
+        };
+        let txt_s6_ready = join(render_quest_sheet_lines_with_stowage(
+            &step6,
+            None,
+            Some(&stow_ore),
+        ));
+        assert!(
+            txt_s6_ready.contains("[ORE HOLD READY] CARBON ORE: 1/1 t"),
+            "{txt_s6_ready}"
+        );
+        assert!(
+            txt_s6_ready.contains("Next Cmd: Plan Ceres Freeport (+ship/plan ceres) [F11 -> p]"),
+            "{txt_s6_ready}"
+        );
+
+        // 5. Ready-to-turn-in quest here -> shows [?] Ready to turn in here (F11 -> Enter)
+        let ready_here = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[1],
+                "title": "Stock the Locker and Tanks",
+                "ready_to_finish": true,
+                "can_finish_now": true,
+                "finish_cmd": "+quest/finish #18=tok",
+                "checkpoints": []
+            }]
+        }));
+        let txt_ready = join(render_quest_sheet_lines_with_stowage(
+            &ready_here,
+            None,
+            None,
+        ));
+        assert!(
+            txt_ready.contains("[?] Ready to turn in here (F11 -> Enter)"),
+            "{txt_ready}"
+        );
     }
 }
