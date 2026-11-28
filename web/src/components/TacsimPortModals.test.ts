@@ -1469,4 +1469,54 @@ describe("TacsimPortModals Dray-P Vehicle Bay and Co-op Refit quest guidance", (
     expect(onCmd2).toHaveBeenCalledWith("+ship/leave");
     expect(stowedApp.tacsim.closeModal).toHaveBeenCalled();
   });
+
+  it("renders [QUEST READY] turn-in and post-graduation Corridor Captain (7/7) welcome banners on Jobs Board", async () => {
+    // 1. Active quest ready to turn in here -> [QUEST READY] + 1-click Turn In Now (?)
+    const readyQuests = new QuestsStore();
+    readyQuests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[1],
+          title: "Stock the Locker and Tanks",
+          turn_in_name: "Ilse Oduya-Brandt",
+          next_room_name: "Registry & Co-op Desk",
+          ready_to_finish: true,
+          can_finish_now: true,
+          finish_cmd: "+quest/finish #18=tok-step2",
+          checkpoints: [],
+        },
+      ],
+    });
+    const onCmd1 = vi.fn();
+    const readyApp = makeApp(readyQuests, "trade");
+    const r1 = render(TacsimPortModals, { props: { app: readyApp, onCmd: onCmd1 } });
+    await fireEvent.click(screen.getByRole("button", { name: /^Jobs & Crew$/i }));
+    const readyBanner = screen.getByRole("status", { name: "active quest ready to turn in" });
+    expect(readyBanner.textContent).toContain("[QUEST READY] Step 2/7");
+    expect(readyBanner.textContent).toContain("Ilse Oduya-Brandt");
+    await fireEvent.click(screen.getByRole("button", { name: /Turn In Now \(\?\)/i }));
+    expect(onCmd1).toHaveBeenCalledWith("+quest/finish #18=tok-step2");
+    r1.unmount();
+
+    // 2. All 7 guided quests completed -> Corridor Captain (7/7) open contracts banner with Haulage & Surveys buttons
+    const masteredQuests = new QuestsStore();
+    masteredQuests.applyFrame({
+      schema: 1,
+      active: [],
+      available: [],
+      completed: GUIDED_TOUR_KEYS.map((k, i) => ({ key: k, title: `Step ${i + 1}` })),
+    });
+    const onCmd2 = vi.fn();
+    const masteredApp = makeApp(masteredQuests, "trade");
+    render(TacsimPortModals, { props: { app: masteredApp, onCmd: onCmd2 } });
+    await fireEvent.click(screen.getByRole("button", { name: /^Jobs & Crew$/i }));
+    const capBanner = screen.getByRole("status", { name: "corridor captain jobs board" });
+    expect(capBanner.textContent).toContain("[★ CORRIDOR CAPTAIN 7/7]");
+    expect(capBanner.textContent).toContain("GUIDED TOUR COMPLETE");
+    await fireEvent.click(screen.getByRole("button", { name: /Haulage \(\+market\/jobs haul\)/i }));
+    expect(onCmd2).toHaveBeenCalledWith("+market/jobs haul");
+    await fireEvent.click(screen.getByRole("button", { name: /Surveys \(\+market\/jobs survey\)/i }));
+    expect(onCmd2).toHaveBeenCalledWith("+market/jobs survey");
+  });
 });
