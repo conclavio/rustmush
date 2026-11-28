@@ -322,6 +322,8 @@ namespace TacSim.UI
         private Text _exchangeQuestBannerText;
         private Button _exchangeQuestQtyBtn;
         private Text _exchangeQuestQtyBtnLbl;
+        private Button _exchangeSailJumpBtn;
+        private Text _exchangeSailJumpBtnLbl;
         private RectTransform _listingsViewportRect;
         private GameObject _sailingQuestBanner;
         private Text _sailingQuestBannerText;
@@ -336,6 +338,8 @@ namespace TacSim.UI
         public ulong FirstExchangeListingIdSnapshot { get; private set; }
         public bool IsExchangeQuestBannerVisible => _exchangeQuestBanner != null && _exchangeQuestBanner.activeSelf;
         public string ExchangeQuestBannerText => _exchangeQuestBannerText != null ? _exchangeQuestBannerText.text : string.Empty;
+        public bool IsExchangeSailJumpVisible => _exchangeSailJumpBtn != null && _exchangeSailJumpBtn.gameObject.activeSelf;
+        public string ExchangeSailJumpLabelSnapshot => _exchangeSailJumpBtnLbl != null ? _exchangeSailJumpBtnLbl.text : string.Empty;
         public bool IsSailingQuestBannerVisible => _sailingQuestBanner != null && _sailingQuestBanner.activeSelf;
         public string SailingQuestBannerText => _sailingQuestBannerText != null ? _sailingQuestBannerText.text : string.Empty;
         public string SailingPreflightSummarySnapshot { get; private set; } = string.Empty;
@@ -1068,6 +1072,10 @@ namespace TacSim.UI
             _exchangeQuestBannerText = CreateText(_exchangeQuestBanner.transform, string.Empty, 12, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(1f, 0.88f, 0.44f));
             _exchangeQuestBannerText.supportRichText = true;
             SetRect(_exchangeQuestBannerText.rectTransform, Vector2.zero, Vector2.one, new Vector2(12f, 0f), new Vector2(-176f, 0f));
+            _exchangeSailJumpBtn = CreateButton(_exchangeQuestBanner.transform, "SAIL TO BUYER", new Color(0.14f, 0.50f, 0.32f), () => JumpFromExchangeToQuestSailing());
+            SetRect(_exchangeSailJumpBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-318f, 3f), new Vector2(-174f, -3f));
+            _exchangeSailJumpBtnLbl = _exchangeSailJumpBtn.GetComponentInChildren<Text>();
+            _exchangeSailJumpBtn.gameObject.SetActive(false);
             _exchangeQuestQtyBtn = CreateButton(_exchangeQuestBanner.transform, "SET QUEST QTY", new Color(0.64f, 0.46f, 0.12f), () => ApplyQuestTradeQuantity());
             SetRect(_exchangeQuestQtyBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-168f, 3f), new Vector2(-6f, -3f));
             _exchangeQuestQtyBtnLbl = _exchangeQuestQtyBtn.GetComponentInChildren<Text>();
@@ -2794,6 +2802,31 @@ namespace TacSim.UI
             SwitchTradeTerminalTab(TradeTerminalTab.Exchange, autoQuery: false);
         }
 
+        private bool TryResolveExchangeHaulDestination(QuestTradeNeed questNeed, out QuestDestinationHint haulDest)
+        {
+            haulDest = default;
+            if (_boundTradeState == null || QuestJournal == null) return false;
+            if (questNeed.WantsBuy || !questNeed.WantsSell) return false;
+            if (_boundTradeState.GetHoldCommodityQuantity(questNeed.CommoditySlug) < Mathf.Max(1, questNeed.TargetQuantity))
+                return false;
+            if (!QuestJournal.TryGetActiveDestinationPort(out haulDest) || string.IsNullOrEmpty(haulDest.PortId))
+                return false;
+            string curPort = !string.IsNullOrEmpty(_boundTradeState.ActiveVenue)
+                ? _boundTradeState.ActiveVenue
+                : (!string.IsNullOrEmpty(_boundTradeState.AboardDockedPortHint)
+                    ? _boundTradeState.AboardDockedPortHint
+                    : _activePortHint);
+            int curIdx = CorridorDestinationIndex(curPort);
+            int destIdx = CorridorDestinationIndex(haulDest.PortId);
+            return curIdx >= 0 && destIdx >= 0 && curIdx != destIdx;
+        }
+
+        public bool JumpFromExchangeToQuestSailing()
+        {
+            SwitchTradeTerminalTab(TradeTerminalTab.Sailing, autoQuery: false);
+            return ApplyQuestDestinationPort();
+        }
+
         private void RefreshSailingQuestGuidance()
         {
             QuestDestinationHint hint = default;
@@ -2998,7 +3031,9 @@ namespace TacSim.UI
               .Append(_boundTradeState.StoresCrewDays).Append('/')
               .Append(_boundTradeState.StoresLimitCrewDays).Append('|')
               .Append(_boundTradeState.NextAfterListingId ?? 0UL).Append('|')
-              .Append(_boundTradeState.AboardDockedPortHint ?? string.Empty);
+              .Append(_boundTradeState.ActiveVenue ?? string.Empty).Append('|')
+              .Append(_boundTradeState.AboardDockedPortHint ?? string.Empty).Append('|')
+              .Append(_activePortHint ?? string.Empty);
             if (QuestJournal != null && QuestJournal.TryResolveContextualTradeNeed(_boundTradeState, out var qNeed, out var qAllNeeds))
             {
                 sb.Append("|Q:").Append(qNeed.CommoditySlug).Append(':').Append(qNeed.TargetQuantity)
@@ -3124,12 +3159,34 @@ namespace TacSim.UI
                                 extraPart = esb.ToString();
                             }
                         }
+                        bool showSailJump = TryResolveExchangeHaulDestination(questNeed, out var haulDest);
+                        if (_exchangeSailJumpBtn != null)
+                            _exchangeSailJumpBtn.gameObject.SetActive(showSailJump);
+                        if (showSailJump && _exchangeSailJumpBtnLbl != null)
+                            _exchangeSailJumpBtnLbl.text = $"SAIL: {haulDest.PortId.ToUpperInvariant()}";
+                        SetRect(_exchangeQuestBannerText.rectTransform, Vector2.zero, Vector2.one,
+                            new Vector2(12f, 0f), new Vector2(showSailJump ? -324f : -176f, 0f));
+
+                        string haulPart = string.Empty;
+                        if (showSailJump)
+                        {
+                            bool fuelMissing = _boundTradeState.TankTonnes <= 0;
+                            bool storesMissing = _boundTradeState.StoresCrewDays <= 0;
+                            string topupSuffix = fuelMissing && storesMissing
+                                ? " | Top up Fuel & Stores first"
+                                : (fuelMissing ? " | Top up Fuel first" : (storesMissing ? " | Top up Stores first" : string.Empty));
+                            haulPart = $"  |  <color=#55EE99>Haul → {MushProtocol.EscapeUnityRichText(haulDest.PortLabel)} (do not sell here{topupSuffix})</color>";
+                        }
                         string stepTag = ResolveActiveQuestStepTag();
                         string stepSuffix = string.IsNullOrEmpty(stepTag) ? string.Empty : $" <color=#FFDD44>{stepTag}</color>";
-                        _exchangeQuestBannerText.text = $"<color=#FFDD44>[QUEST]</color> {verb} <b>{questNeed.TargetQuantity}</b> × <b>{MushProtocol.EscapeUnityRichText(itemLabel)}</b>  <color=#BBD4E6>— {MushProtocol.EscapeUnityRichText(questNeed.QuestTitle)}</color>{holdPart}{extraPart}{stepSuffix}";
+                        _exchangeQuestBannerText.text = $"<color=#FFDD44>[QUEST]</color> {verb} <b>{questNeed.TargetQuantity}</b> × <b>{MushProtocol.EscapeUnityRichText(itemLabel)}</b>  <color=#BBD4E6>— {MushProtocol.EscapeUnityRichText(questNeed.QuestTitle)}</color>{holdPart}{extraPart}{haulPart}{stepSuffix}";
                     }
                     if (_exchangeQuestQtyBtnLbl != null)
                         _exchangeQuestQtyBtnLbl.text = $"SET QUEST QTY ({questNeed.TargetQuantity})";
+                }
+                else if (_exchangeSailJumpBtn != null)
+                {
+                    _exchangeSailJumpBtn.gameObject.SetActive(false);
                 }
             }
             if (_listingsViewportRect != null)
