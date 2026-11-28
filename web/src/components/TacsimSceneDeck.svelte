@@ -13,6 +13,7 @@
     evaluateSailingPreflightReadiness,
     extractActiveDestinationPort,
     extractActiveTradeNeed,
+    formatQuestHoldReadinessSummary,
     guidedStepNumber,
     inferStationPortFromRoomEntry,
     needsOriginPortProcurement,
@@ -330,6 +331,9 @@
       app.tacsim.ambient?.stowage ??
       (app.tacsim.trade?.hullId ? app.tacsim.trade.stowage : null),
   );
+  const dockHoldReadiness = $derived(
+    trackedQuest ? formatQuestHoldReadinessSummary(trackedQuest, liveStowage) : null,
+  );
   const step6OreHeldQty = $derived.by((): number | null => {
     if (!questMining?.mineDone || !liveStowage) return null;
     const slug = questMining.targetOreSlug.toLowerCase();
@@ -554,6 +558,11 @@
             <strong>{questDest.portLabel}</strong>
             <span class="qd-sep">—</span>
             <span>{questDest.questTitle}{questStepTag}</span>
+            {#if dockHoldReadiness}
+              <span class="qd-hold" class:ready={dockHoldReadiness.ready}>
+                {dockHoldReadiness.tag} {dockHoldReadiness.text}
+              </span>
+            {/if}
             {#if trackedQuest?.nextStep}
               <span class="qd-step">· {trackedQuest.nextStep}</span>
             {/if}
@@ -1012,6 +1021,21 @@
   .quest-dock-banner .qd-sep,
   .quest-dock-banner .qd-step {
     color: #d6c38d;
+  }
+
+  .quest-dock-banner .qd-hold {
+    padding: 0.04rem 0.4rem;
+    border-radius: 4px;
+    border: 1px solid #eab308;
+    background: rgb(234 179 8 / 16%);
+    color: #fde047;
+    font-weight: 700;
+  }
+
+  .quest-dock-banner .qd-hold.ready {
+    border-color: #34d399;
+    background: rgb(16 185 129 / 20%);
+    color: #6ee7b7;
   }
 
   .visor-tac-strip {

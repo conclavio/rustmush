@@ -3325,6 +3325,33 @@ describe("PR #693 Web review regressions (items 1-7, 9-11)", () => {
     const ceresApproach = screen.getByRole("status", { name: "quest docking approach" });
     expect(ceresApproach.textContent).toContain("Ceres Freeport");
     expect(ceresApproach.textContent).toContain("[Step 6/7]");
+
+    // Live stowage surfaces [RECOVER RIG FIRST] while 0t ore is stowed, flipping to [ORE HOLD READY] once recovered
+    app.tacsim.trade.hullId = "#99";
+    app.tacsim.trade.stowage = {
+      cargoKg: 0,
+      cargoMaxKg: 100_000,
+      cargoL: 0,
+      cargoMaxL: 120_000,
+      propellantKg: 10_000,
+      propellantMaxKg: 80_000,
+      provisionsCrewDays: 10,
+      provisionsMaxCrewDays: 120,
+      cargoLines: [],
+    };
+    await tick();
+    expect(screen.getByRole("status", { name: "quest docking approach" }).textContent).toContain(
+      "[RECOVER RIG FIRST]",
+    );
+    app.tacsim.trade.stowage = {
+      ...app.tacsim.trade.stowage,
+      cargoKg: 1000,
+      cargoLines: [{ good: "tacsim:carbon_ore", label: "Carbon Ore", qty: 1, unit: "t", massKg: 1000 }],
+    };
+    await tick();
+    expect(screen.getByRole("status", { name: "quest docking approach" }).textContent).toContain(
+      "[ORE HOLD READY]",
+    );
     deck.unmount();
   });
 
