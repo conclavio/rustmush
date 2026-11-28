@@ -14782,6 +14782,7 @@ namespace TacSim.Tests
                 }")));
                 hud.UpdateDockingHud(session, assistOn: true);
                 StringAssert.Contains("[QUEST DOCK]", hud.DockingTelemetrySnapshot);
+                StringAssert.Contains("[Step 3/7]", hud.DockingTelemetrySnapshot);
                 StringAssert.Contains("Stickney Yards", hud.DockingTelemetrySnapshot);
                 StringAssert.Contains("Metals Down the Corridor", hud.DockingTelemetrySnapshot);
                 StringAssert.Contains("Dock at Stickney Yards and sell 5t metals", hud.DockingTelemetrySnapshot);
@@ -14799,7 +14800,32 @@ namespace TacSim.Tests
                 }")));
                 hud.UpdateDockingHud(session, assistOn: false);
                 StringAssert.Contains("[QUEST DOCK]", hud.DockingTelemetrySnapshot);
+                StringAssert.Contains("[Step 4/7]", hud.DockingTelemetrySnapshot);
                 StringAssert.Contains("Stickney Yards", hud.DockingTelemetrySnapshot);
+
+                // 4. Post-mine Step 6 -> transitions Docking HUD to Ceres Freeport [Step 6/7]
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""next_step"": ""Return to Ceres Exchange Hall"",
+                        ""next_room_entry"": ""room.c07_exchange"",
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Scan site"", ""instructions"": ""+tv/1 scan go"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""sound_mineral_pocket"", ""title"": ""Sound pocket"", ""instructions"": ""+tv/1 sound go"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""instructions"": ""+tv/1 mine go"", ""checked"": true, ""live_ready"": true }
+                        ]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                var ceresSession = DockingClientSession.CreateStandardPortPractice("dock.ceres.1", "Ceres Freeport");
+                hud.UpdateDockingHud(ceresSession, assistOn: true);
+                StringAssert.Contains("[QUEST DOCK]", hud.DockingTelemetrySnapshot);
+                StringAssert.Contains("[Step 6/7]", hud.DockingTelemetrySnapshot);
+                StringAssert.Contains("Ceres Freeport", hud.DockingTelemetrySnapshot);
+                StringAssert.Contains("Return to Ceres Exchange Hall", hud.DockingTelemetrySnapshot);
             }
             finally
             {
@@ -15724,9 +15750,10 @@ namespace TacSim.Tests
                 Assert.IsTrue(hud.Overlays.TriggerSurfaceReturnPortForTests());
                 Assert.AreEqual("+ship/plan ceres", emitted);
 
-                // Orbital quest strip also transitions to Return: CERES FREEPORT once mine_done is true
+                // Orbital quest strip also transitions to Return: CERES FREEPORT [Step 6/7] once mine_done is true
                 Assert.IsTrue(hud.Overlays.IsOrbitalQuestStripVisible);
                 StringAssert.Contains("CERES FREEPORT", hud.Overlays.OrbitalQuestBannerSnapshot);
+                StringAssert.Contains("[Step 6/7]", hud.Overlays.OrbitalQuestBannerSnapshot);
                 Assert.AreEqual("PLAN: CERES", hud.Overlays.OrbitalQuestButtonLabel);
             }
             finally
