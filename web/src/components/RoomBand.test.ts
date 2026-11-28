@@ -542,6 +542,76 @@ describe("room band exit buttons submit safe goto commands", () => {
     expect(markerBtns[1]!.textContent).toContain("Dockside Broker");
     expect(markerBtns[1]!.textContent).not.toContain("Step ");
   });
+
+  it("renders a clickable between-steps Next Guided pill or Corridor Captain 7/7 mastery pill when no room markers are present", async () => {
+    const openLog = vi.fn();
+    const betweenApp = {
+      roomView: HALL,
+      screens: { exits: new Map() },
+      presence: { prune: vi.fn(), thinking: [], composing: [] },
+      quests: {
+        roomMarkers: [],
+        active: [],
+        trackedKey: null,
+        nextGuidedOffer: {
+          step: 2,
+          key: "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel",
+          shortLabel: "Stock Locker & Tanks",
+          giverLabel: "Ilse",
+          giverRoomEntry: "room.c05_registry",
+          giverRoomName: "Registry & Co-op Desk",
+          locationLabel: "Ceres Freeport",
+          status: "available",
+        },
+        guidedTourProgress: { completed: 1, total: 7, currentStep: 2, allDone: false },
+        openLog,
+      },
+      tacsim: null,
+    } as unknown as GameApp;
+
+    const first = render(RoomBand, { props: { app: betweenApp, onCmd: vi.fn() } });
+    const nextBtn = screen.getByRole("button", { name: "next guided quest step" });
+    expect(nextBtn.textContent).toContain("Next: Ilse");
+    expect(nextBtn.textContent).toContain("Registry & Co-op Desk");
+    expect(nextBtn.textContent).toContain("Step 2/7");
+    await fireEvent.click(nextBtn);
+    expect(openLog).toHaveBeenCalledWith("completed");
+    first.unmount();
+
+    const masterApp = {
+      ...betweenApp,
+      quests: {
+        roomMarkers: [],
+        active: [],
+        trackedKey: null,
+        nextGuidedOffer: null,
+        guidedTourProgress: { completed: 7, total: 7, currentStep: null, allDone: true },
+        openLog,
+      },
+    } as unknown as GameApp;
+    const second = render(RoomBand, { props: { app: masterApp, onCmd: vi.fn() } });
+    const masterBtn = screen.getByRole("button", { name: "guided tour mastered" });
+    expect(masterBtn.textContent).toContain("Corridor Captain");
+    expect(masterBtn.textContent).toContain("7/7");
+    await fireEvent.click(masterBtn);
+    expect(openLog).toHaveBeenCalledTimes(2);
+    second.unmount();
+
+    const cleanApp = {
+      ...betweenApp,
+      quests: {
+        roomMarkers: [],
+        active: [],
+        trackedKey: null,
+        nextGuidedOffer: null,
+        guidedTourProgress: null,
+        openLog,
+      },
+    } as unknown as GameApp;
+    const third = render(RoomBand, { props: { app: cleanApp, onCmd: vi.fn() } });
+    expect(third.container.querySelectorAll("button.qmarker")).toHaveLength(0);
+    third.unmount();
+  });
 });
 
 describe("channel colorHex inline style sanitization", () => {
