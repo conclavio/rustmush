@@ -10,7 +10,9 @@
   import { tacsimAudio } from "$lib/tacsim/audio";
   import {
     GUIDED_TOUR_KEYS,
+    evaluateSailingPreflightReadiness,
     extractActiveDestinationPort,
+    extractActiveTradeNeed,
     guidedStepNumber,
     inferStationPortFromRoomEntry,
     needsOriginPortProcurement,
@@ -318,11 +320,77 @@
         normalizePortVenueTarget(app.tacsim.dockTarget) === questDest.portId.toLowerCase(),
     ),
   );
+  const liveStowage = $derived(
+    app.tacsim.ambient?.ownStowage ??
+      app.tacsim.ambient?.stowage ??
+      (app.tacsim.trade?.hullId ? app.tacsim.trade.stowage : null),
+  );
+  const step6OreHeldQty = $derived.by((): number | null => {
+    if (!questMining?.mineDone || !liveStowage) return null;
+    const slug = questMining.targetOreSlug.toLowerCase();
+    const norm = slug.replace(/_/g, " ");
+    let total = 0;
+    for (const line of liveStowage.cargoLines ?? []) {
+      const g = (line.good || "").toLowerCase();
+      const l = (line.label || "").toLowerCase();
+      if (g === slug || g.endsWith(`:${slug}`) || g.includes(slug) || l.includes(norm)) {
+        total += line.qty;
+      }
+    }
+    return total;
+  });
+  const questRecoverRigFirst = $derived(step6OreHeldQty !== null && step6OreHeldQty < 1);
+  const questOreHoldReady = $derived(step6OreHeldQty !== null && step6OreHeldQty >= 1);
+  const arrivedAtQuestDest = $derived.by(() => {
+    if (!questDest || dockingActive || questRecoverRigFirst) return false;
+    if (!app.tacsim.ambient?.docked || app.tacsim.ambient?.settledPad) return false;
+    const curPort = normalizePortVenueTarget(
+      app.tacsim.ambient.port || app.tacsim.trade?.hullPort || "",
+    );
+    if (!curPort || curPort !== questDest.portId.toLowerCase()) return false;
+    if (
+      questMining?.mineDone &&
+      !trackedQuest?.readyToFinish &&
+      !trackedQuest?.canFinishNow &&
+      !questOreHoldReady
+    ) {
+      return false;
+    }
+    return true;
+  });
+  const helmPreflight = $derived.by(() => {
+    if (!questDest || arrivedAtQuestDest || questRecoverRigFirst || !liveStowage) return null;
+    const need = app.quests ? extractActiveTradeNeed(app.quests.active, app.quests.trackedKey) : null;
+    return evaluateSailingPreflightReadiness(questDest, need, liveStowage);
+  });
+  const helmPreflightHint = $derived.by(() => {
+    if (!helmPreflight) return "";
+    const parts = [
+      `Propellant ${helmPreflight.propellantTonnes}t`,
+      `Stores ${helmPreflight.provisionsDays}d`,
+    ];
+    if (helmPreflight.cargoRequired) {
+      parts.push(`${helmPreflight.cargoLabel} ${helmPreflight.cargoQty}/${helmPreflight.cargoTarget}`);
+    }
+    return parts.join(" · ");
+  });
 
   function planQuestDestination(): void {
     if (!questDest) return;
     app.tacsim.selectedDestination = questDest.portId;
     onCmd(`+ship/plan ${questDest.portId}`);
+  }
+
+  function handleQuestDestChipClick(): void {
+    if (questRecoverRigFirst) {
+      onCmd("+tv/1 recover go");
+      return;
+    }
+    if (arrivedAtQuestDest) {
+      onCmd("+ship/leave");
+      return;
+    }
+    planQuestDestination();
   }
 
   function openQuestGroundChart(): void {
@@ -364,19 +432,35 @@
       <button
         type="button"
         class="quest-dest-chip"
+        class:arrived={questOreHoldReady}
+        class:warn={questRecoverRigFirst}
         onclick={() => handleAction("ui:open_rig")}
         title="Open Dray-P Prospector Rig Cradle for {questMining.questTitle}"
       >
-        <span class="qdest-tag">[QUEST]</span>{" "}Rig: {questMining.scanDone ? "✓" : "○"} Scan · {questMining.soundDone ? "✓" : "○"} Sound · {questMining.mineDone ? "✓" : "○"} {questMining.targetOreSlug}{questStepTag}
+        <span class="qdest-tag">{questRecoverRigFirst ? "[RECOVER RIG FIRST]" : questOreHoldReady ? "[ORE HOLD READY]" : "[QUEST]"}</span>{" "}Rig: {questMining.scanDone ? "✓" : "○"} Scan · {questMining.soundDone ? "✓" : "○"} Sound · {questMining.mineDone ? "✓" : "○"} {questMining.targetOreSlug}{questStepTag}
       </button>
     {:else if app.tacsim.isAboardShip && questDest}
       <button
         type="button"
         class="quest-dest-chip"
-        onclick={planQuestDestination}
-        title="Plan quest route to {questDest.portLabel} (+ship/plan {questDest.portId})"
+        class:arrived={arrivedAtQuestDest || questOreHoldReady}
+        class:warn={questRecoverRigFirst || (helmPreflight !== null && !helmPreflight.ready)}
+        onclick={handleQuestDestChipClick}
+        title={questRecoverRigFirst
+          ? `Recover mining rig so mined ${questMining?.targetOreSlug ?? "ore"} transfers into ship hold (+tv/1 recover go)`
+          : arrivedAtQuestDest
+            ? `Docked at ${questDest.portLabel} — cycle ashore (+ship/leave)`
+            : helmPreflight && !helmPreflight.ready
+              ? `Check hold before undocking: ${helmPreflightHint} (+ship/plan ${questDest.portId})`
+              : `Plan quest route to ${questDest.portLabel} (+ship/plan ${questDest.portId})`}
       >
-        <span class="qdest-tag">[QUEST]</span>{" "}Dest: {questDest.portLabel}{questStepTag}
+        {#if questRecoverRigFirst}
+          <span class="qdest-tag">[RECOVER RIG FIRST]</span>{" "}Recover Rig (+tv/1 recover go){questStepTag}
+        {:else if arrivedAtQuestDest}
+          <span class="qdest-tag">[QUEST ARRIVED]</span>{" "}At {questDest.portLabel} · +ship/leave{questStepTag}
+        {:else}
+          <span class="qdest-tag">{questOreHoldReady ? "[ORE HOLD READY]" : "[QUEST]"}</span>{" "}Dest: {questDest.portLabel}{questStepTag}{helmPreflight ? (helmPreflight.ready ? " · [PRE-FLIGHT OK]" : " · [CHECK HOLD]") : ""}
+        {/if}
       </button>
     {:else if app.tacsim.isAboardShip && questMining && !questMining.mineDone}
       <button
@@ -412,10 +496,24 @@
             <button
               type="button"
               class="quest-dest-chip"
-              onclick={planQuestDestination}
-              title="Plan quest route to {questDest.portLabel} (+ship/plan {questDest.portId})"
+              class:arrived={arrivedAtQuestDest || questOreHoldReady}
+              class:warn={questRecoverRigFirst || (helmPreflight !== null && !helmPreflight.ready)}
+              onclick={handleQuestDestChipClick}
+              title={questRecoverRigFirst
+                ? `Recover mining rig so mined ${questMining?.targetOreSlug ?? "ore"} transfers into ship hold (+tv/1 recover go)`
+                : arrivedAtQuestDest
+                  ? `Docked at ${questDest.portLabel} — cycle ashore (+ship/leave)`
+                  : helmPreflight && !helmPreflight.ready
+                    ? `Check hold before undocking: ${helmPreflightHint} (+ship/plan ${questDest.portId})`
+                    : `Plan quest route to ${questDest.portLabel} (+ship/plan ${questDest.portId})`}
             >
-              <span class="qdest-tag">[QUEST]</span>{" "}Dest: {questDest.portLabel}{questStepTag}
+              {#if questRecoverRigFirst}
+                <span class="qdest-tag">[RECOVER RIG FIRST]</span>{" "}Recover Rig (+tv/1 recover go){questStepTag}
+              {:else if arrivedAtQuestDest}
+                <span class="qdest-tag">[QUEST ARRIVED]</span>{" "}At {questDest.portLabel} · +ship/leave{questStepTag}
+              {:else}
+                <span class="qdest-tag">{questOreHoldReady ? "[ORE HOLD READY]" : "[QUEST]"}</span>{" "}Dest: {questDest.portLabel}{questStepTag}{helmPreflight ? (helmPreflight.ready ? " · [PRE-FLIGHT OK]" : " · [CHECK HOLD]") : ""}
+              {/if}
             </button>
           {:else if questMining && !questMining.mineDone}
             <button
@@ -675,6 +773,28 @@
   .qdest-tag {
     color: #fbbf24;
     font-weight: 800;
+  }
+
+  .quest-dest-chip.arrived {
+    border-color: #34d399;
+    background: rgba(16, 185, 129, 0.2);
+    color: #d1fae5;
+    box-shadow: 0 0 8px rgba(52, 211, 153, 0.28);
+  }
+
+  .quest-dest-chip.arrived .qdest-tag {
+    color: #6ee7b7;
+  }
+
+  .quest-dest-chip.warn {
+    border-color: #f97316;
+    background: rgba(249, 115, 22, 0.2);
+    color: #ffedd5;
+    box-shadow: 0 0 8px rgba(249, 115, 22, 0.28);
+  }
+
+  .quest-dest-chip.warn .qdest-tag {
+    color: #fdba74;
   }
 
   .quick-actions {
