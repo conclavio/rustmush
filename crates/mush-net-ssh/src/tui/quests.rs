@@ -192,20 +192,84 @@ impl GuidedTourProgress {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GuidedTourStepStatus {
+    Completed,
+    Active,
+    Available,
+    Upcoming,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GuidedTourRoadmapStep {
+    pub step: usize,
+    pub key: &'static str,
+    pub short_label: &'static str,
+    pub giver_label: &'static str,
+    pub location_label: &'static str,
+    pub status: GuidedTourStepStatus,
+    pub ready_to_turn_in: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QuestSuggestedAction {
     pub label: String,
     pub command: String,
 }
 
+pub const GUIDED_TOUR_ROADMAP_META: [(&str, &str, &str, &str); 7] = [
+    (
+        "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+        "Co-op Charter",
+        "Maren Halvorsen",
+        "Ceres Arrivals -> Registry",
+    ),
+    (
+        "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel",
+        "Locker & Tanks",
+        "Ilse Oduya-Brandt",
+        "Ceres Chandlery & Exchange",
+    ),
+    (
+        "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+        "Metals Haul",
+        "Ilse Oduya-Brandt",
+        "Ceres -> Stickney Receiving",
+    ),
+    (
+        "tacsim.quests.guided_onboarding/quest.guide_04_return_haul",
+        "Return Load",
+        "Jonas Achterberg-Nkemelu",
+        "Stickney -> Ceres Chandlery",
+    ),
+    (
+        "tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector",
+        "Dray-P Refit",
+        "Ilse Oduya-Brandt",
+        "Ceres Registry -> Exchange",
+    ),
+    (
+        "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+        "Surface Mining",
+        "Rosalind Qureshi-Mbeki",
+        "Ceres Surface Landing Site",
+    ),
+    (
+        "tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore",
+        "Sell Mined Ore",
+        "Rosalind Qureshi-Mbeki",
+        "Ceres -> Stickney Service",
+    ),
+];
+
 pub const GUIDED_TOUR_KEYS: [&str; 7] = [
-    "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
-    "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel",
-    "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
-    "tacsim.quests.guided_onboarding/quest.guide_04_return_haul",
-    "tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector",
-    "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
-    "tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore",
+    GUIDED_TOUR_ROADMAP_META[0].0,
+    GUIDED_TOUR_ROADMAP_META[1].0,
+    GUIDED_TOUR_ROADMAP_META[2].0,
+    GUIDED_TOUR_ROADMAP_META[3].0,
+    GUIDED_TOUR_ROADMAP_META[4].0,
+    GUIDED_TOUR_ROADMAP_META[5].0,
+    GUIDED_TOUR_ROADMAP_META[6].0,
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -796,6 +860,80 @@ impl QuestsSnapshot {
             current_step: active_step.or(avail_step),
             all_done: completed >= total,
         })
+    }
+
+    /// Build the 7-step Guided Corridor Tour roadmap with live completed / active /
+    /// available / upcoming status for each step.
+    #[must_use]
+    pub fn guided_tour_roadmap(&self) -> Vec<GuidedTourRoadmapStep> {
+        GUIDED_TOUR_ROADMAP_META
+            .iter()
+            .enumerate()
+            .map(|(idx, &(key, short_label, giver_label, location_label))| {
+                let active_match = self.active.iter().find(|q| q.key == key);
+                let status = if self.completed.iter().any(|c| c.key == key) {
+                    GuidedTourStepStatus::Completed
+                } else if active_match.is_some() {
+                    GuidedTourStepStatus::Active
+                } else if self.available.iter().any(|a| a.key == key) {
+                    GuidedTourStepStatus::Available
+                } else {
+                    GuidedTourStepStatus::Upcoming
+                };
+                GuidedTourRoadmapStep {
+                    step: idx + 1,
+                    key,
+                    short_label,
+                    giver_label,
+                    location_label,
+                    status,
+                    ready_to_turn_in: active_match
+                        .is_some_and(|q| q.can_finish_now || q.ready_to_finish),
+                }
+            })
+            .collect()
+    }
+
+    /// Render a compact, color-coded 7-step Guided Corridor Tour roadmap line for the F11 overlay.
+    #[must_use]
+    pub fn render_guided_tour_roadmap_line(&self) -> Option<Line<'static>> {
+        self.guided_tour_progress()?;
+        let steps = self.guided_tour_roadmap();
+        let mut spans: Vec<Span<'static>> = Vec::with_capacity(steps.len() * 2);
+        for (idx, s) in steps.iter().enumerate() {
+            if idx > 0 {
+                spans.push(Span::raw("  "));
+            }
+            let (badge, style) = match s.status {
+                GuidedTourStepStatus::Completed => ("[x]", Style::default().fg(Color::Green)),
+                GuidedTourStepStatus::Active => {
+                    let mark = if s.ready_to_turn_in { "[?]" } else { "[>]" };
+                    let color = if s.ready_to_turn_in {
+                        Color::Green
+                    } else {
+                        Color::Yellow
+                    };
+                    (
+                        mark,
+                        Style::default().fg(color).add_modifier(Modifier::BOLD),
+                    )
+                }
+                GuidedTourStepStatus::Available => (
+                    "[!]",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                GuidedTourStepStatus::Upcoming => {
+                    ("[ ]", Style::default().add_modifier(Modifier::DIM))
+                }
+            };
+            spans.push(Span::styled(
+                format!("{badge} {}. {}", s.step, s.short_label),
+                style,
+            ));
+        }
+        Some(Line::from(spans))
     }
 
     /// Extract a verified, registered next command to prefill for an active quest's next step.
@@ -1734,10 +1872,26 @@ pub fn render_quest_overlay(
     }
     f.render_widget(Paragraph::new(Line::from(tab_spans)), chunks[0]);
 
+    let body_area = if let Some(roadmap_line) = snap.render_guided_tour_roadmap_line()
+        && chunks[1].height >= 9
+    {
+        let body_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(2), Constraint::Min(5)])
+            .split(chunks[1]);
+        f.render_widget(
+            Paragraph::new(roadmap_line).wrap(Wrap { trim: true }),
+            body_chunks[0],
+        );
+        body_chunks[1]
+    } else {
+        chunks[1]
+    };
+
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(36), Constraint::Percentage(64)])
-        .split(chunks[1]);
+        .split(body_area);
 
     // Left list
     let mut list_lines: Vec<Line<'static>> = Vec::new();
@@ -2606,5 +2760,47 @@ mod tests {
             }]
         }));
         assert!(at_turn_in.active_destination_port(None).is_none());
+    }
+
+    #[test]
+    fn guided_tour_roadmap_tracks_all_seven_steps_and_renders_overlay_line() {
+        let snap = parse_frame(&json!({
+            "schema": 1,
+            "completed": [
+                { "key": GUIDED_TOUR_KEYS[0], "title": "First Papers" },
+                { "key": GUIDED_TOUR_KEYS[1], "title": "Stock Locker" }
+            ],
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[2],
+                "title": "Metals Down the Corridor",
+                "ready_to_finish": true,
+                "checkpoints": []
+            }],
+            "available": [{
+                "key": GUIDED_TOUR_KEYS[3],
+                "title": "Return Load",
+                "checkpoints": []
+            }]
+        }));
+        let roadmap = snap.guided_tour_roadmap();
+        assert_eq!(roadmap.len(), 7);
+        assert_eq!(roadmap[0].status, GuidedTourStepStatus::Completed);
+        assert_eq!(roadmap[1].status, GuidedTourStepStatus::Completed);
+        assert_eq!(roadmap[2].status, GuidedTourStepStatus::Active);
+        assert!(roadmap[2].ready_to_turn_in);
+        assert_eq!(roadmap[3].status, GuidedTourStepStatus::Available);
+        assert_eq!(roadmap[4].status, GuidedTourStepStatus::Upcoming);
+        assert_eq!(roadmap[6].short_label, "Sell Mined Ore");
+
+        let line = snap
+            .render_guided_tour_roadmap_line()
+            .expect("expected rendered roadmap line");
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains("[x] 1. Co-op Charter"), "{text}");
+        assert!(text.contains("[x] 2. Locker & Tanks"), "{text}");
+        assert!(text.contains("[?] 3. Metals Haul"), "{text}");
+        assert!(text.contains("[!] 4. Return Load"), "{text}");
+        assert!(text.contains("[ ] 5. Dray-P Refit"), "{text}");
+        assert!(text.contains("[ ] 7. Sell Mined Ore"), "{text}");
     }
 }
