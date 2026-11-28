@@ -9,7 +9,7 @@ import { GUIDED_TOUR_KEYS, QuestsStore } from "$lib/stores/quests.svelte";
 
 function makeApp(
   quests: QuestsStore,
-  activeModal: "coop" | "rig",
+  activeModal: "coop" | "rig" | "sailing" | "trade",
   stowage = {
     cargoKg: 0,
     cargoMaxKg: 100_000,
@@ -136,5 +136,66 @@ describe("TacsimPortModals Dray-P Vehicle Bay and Co-op Refit quest guidance", (
 
     await fireEvent.click(screen.getByRole("button", { name: /Ground Chart \(\+chart\/ground\)/i }));
     expect(onCmd).toHaveBeenCalledWith("+chart/ground");
+  });
+
+  it("renders Sailing Plan pre-flight readiness strip and switches to Exchange when missing fuel, stores, or quest cargo", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[2],
+          title: "Metals Down the Corridor",
+          checkpoints: [
+            {
+              id: "deliver_metals",
+              title: "Deliver 5t metals to Stickney Yards",
+              instructions: "Check +ship/plan stickney and sell at Stickney Yards.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    const blockedApp = makeApp(quests, "sailing", {
+      cargoKg: 2000,
+      cargoMaxKg: 100_000,
+      cargoL: 1000,
+      cargoMaxL: 120_000,
+      propellantKg: 0,
+      propellantMaxKg: 80_000,
+      provisionsCrewDays: 0,
+      provisionsMaxCrewDays: 120,
+      cargoLines: [{ good: "tacsim:metals", label: "Metals", qty: 2, unit: "u", massKg: 2000 }],
+    });
+    const blocked = render(TacsimPortModals, { props: { app: blockedApp, onCmd: vi.fn() } });
+    const blockedStrip = screen.getByLabelText("sailing pre-flight readiness");
+    expect(blockedStrip.textContent).toContain("[CHECK BEFORE UNDOCK]");
+    expect(blockedStrip.textContent).toContain("✗ Propellant 0 t");
+    expect(blockedStrip.textContent).toContain("✗ Stores 0 d");
+    expect(blockedStrip.textContent).toContain("✗ metals 2/5");
+    await fireEvent.click(screen.getByRole("button", { name: /Open Exchange/i }));
+    expect(blockedApp.tacsim.activeModal).toBe("trade");
+    blocked.unmount();
+
+    const readyApp = makeApp(quests, "sailing", {
+      cargoKg: 5000,
+      cargoMaxKg: 100_000,
+      cargoL: 2500,
+      cargoMaxL: 120_000,
+      propellantKg: 14_000,
+      propellantMaxKg: 80_000,
+      provisionsCrewDays: 10,
+      provisionsMaxCrewDays: 120,
+      cargoLines: [{ good: "tacsim:metals", label: "Metals", qty: 5, unit: "u", massKg: 5000 }],
+    });
+    render(TacsimPortModals, { props: { app: readyApp, onCmd: vi.fn() } });
+    const readyStrip = screen.getByLabelText("sailing pre-flight readiness");
+    expect(readyStrip.textContent).toContain("[PRE-FLIGHT OK]");
+    expect(readyStrip.textContent).toContain("✓ Propellant 14 t");
+    expect(readyStrip.textContent).toContain("✓ Stores 10 d");
+    expect(readyStrip.textContent).toContain("✓ metals 5/5");
   });
 });

@@ -8,6 +8,7 @@
   import {
     evaluateQuestStowageReadiness,
     evaluateRefitHoldReadiness,
+    evaluateSailingPreflightReadiness,
     extractSurfaceMiningPrepActions,
     matchesQuestTradeRow,
     normalizeGoodSlug,
@@ -98,6 +99,9 @@
     return { label: "Recover Rig (+tv/1 recover go)", command: "+tv/1 recover go" };
   });
   const stowageReadiness = $derived(evaluateQuestStowageReadiness(questTradeNeed, st));
+  const sailingPreflight = $derived(
+    evaluateSailingPreflightReadiness(questDestPort, questTradeNeed, st),
+  );
   const questCoopAction = $derived.by(() => {
     const sug = app.quests?.suggestedAction;
     if (!sug || !sug.command.startsWith("+coop/")) return null;
@@ -840,6 +844,43 @@
                   Select Quest Port ({questDestPort.portId})
                 </button>
               </div>
+              {#if sailingPreflight}
+                <div
+                  class="refit-check-strip"
+                  class:ready={sailingPreflight.ready}
+                  aria-label="sailing pre-flight readiness"
+                >
+                  <span class="qtag">
+                    {sailingPreflight.ready ? "[PRE-FLIGHT OK]" : "[CHECK BEFORE UNDOCK]"}
+                  </span>
+                  <span class:ok={sailingPreflight.propellantOk}>
+                    {sailingPreflight.propellantOk
+                      ? `✓ Propellant ${sailingPreflight.propellantTonnes} t`
+                      : "✗ Propellant 0 t"}
+                  </span>
+                  <span class:ok={sailingPreflight.provisionsOk}>
+                    {sailingPreflight.provisionsOk
+                      ? `✓ Stores ${sailingPreflight.provisionsDays} d`
+                      : "✗ Stores 0 d"}
+                  </span>
+                  {#if sailingPreflight.cargoRequired}
+                    <span class:ok={sailingPreflight.cargoOk}>
+                      {sailingPreflight.cargoOk
+                        ? `✓ ${sailingPreflight.cargoLabel} ${sailingPreflight.cargoQty}/${sailingPreflight.cargoTarget}`
+                        : `✗ ${sailingPreflight.cargoLabel} ${sailingPreflight.cargoQty}/${sailingPreflight.cargoTarget}`}
+                    </span>
+                  {/if}
+                  {#if !sailingPreflight.ready}
+                    <button
+                      type="button"
+                      class="qbtn-gold"
+                      onclick={() => (app.tacsim.activeModal = "trade")}
+                    >
+                      Open Exchange
+                    </button>
+                  {/if}
+                </div>
+              {/if}
             {/if}
             <h3>Select Corridor Destination Port</h3>
             <div class="dest-grid">

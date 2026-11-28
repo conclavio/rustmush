@@ -4,6 +4,7 @@ import {
   QuestsStore,
   evaluateQuestStowageReadiness,
   evaluateRefitHoldReadiness,
+  evaluateSailingPreflightReadiness,
   extractSurfaceMiningPrepActions,
   inferStationPortFromRoomEntry,
   matchesQuestTradeRow,
@@ -630,5 +631,51 @@ describe("QuestsStore", () => {
     expect(resolveQuestShipTargetCompartment(store.active, store.trackedKey, "ceres")).toBe("bridge");
     // Docked at Stickney -> airlock to cycle ashore and sell!
     expect(resolveQuestShipTargetCompartment(store.active, store.trackedKey, "stickney")).toBe("airlock");
+  });
+
+  it("evaluates Sailing Plan pre-flight readiness for propellant, provisions, and required quest cargo", () => {
+    const dest = { questTitle: "Metals Down the Corridor", portId: "stickney", portLabel: "Stickney Yards" };
+    const need = {
+      questTitle: "Metals Down the Corridor",
+      checkpointTitle: "Deliver 5t metals",
+      commoditySlug: "metals",
+      targetQuantity: 5,
+      wantsBuy: true,
+      wantsSell: true,
+    };
+    const missing = evaluateSailingPreflightReadiness(dest, need, {
+      propellantKg: 10_000,
+      provisionsCrewDays: 0,
+      cargoLines: [{ good: "tacsim:metals", label: "Metals", qty: 3 }],
+    });
+    expect(missing).toEqual({
+      propellantTonnes: 10,
+      propellantOk: true,
+      provisionsDays: 0,
+      provisionsOk: false,
+      cargoRequired: true,
+      cargoLabel: "metals",
+      cargoQty: 3,
+      cargoTarget: 5,
+      cargoOk: false,
+      ready: false,
+    });
+
+    const ready = evaluateSailingPreflightReadiness(dest, need, {
+      propellantKg: 15_000,
+      provisionsCrewDays: 12,
+      cargoLines: [{ good: "tacsim:metals", label: "Metals", qty: 5 }],
+    });
+    expect(ready?.ready).toBe(true);
+    expect(ready?.cargoOk).toBe(true);
+
+    // Non-cargo destination (e.g. return haul without trade cargo need) checks propellant & stores only
+    const noCargo = evaluateSailingPreflightReadiness(dest, null, {
+      propellantKg: 8_000,
+      provisionsCrewDays: 6,
+      cargoLines: [],
+    });
+    expect(noCargo?.cargoRequired).toBe(false);
+    expect(noCargo?.ready).toBe(true);
   });
 });
