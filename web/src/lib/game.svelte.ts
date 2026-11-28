@@ -109,6 +109,7 @@ import { PORT_TRADE_FEED, TACSIM_CONTENT_FEED } from "./tacsim/trade";
 import {
   QUESTS_FEED,
   QuestsStore,
+  needsOriginPortProcurement,
   resolveQuestShipTargetCompartment,
 } from "./stores/quests.svelte";
 import {
@@ -2150,10 +2151,20 @@ export class GameApp {
         const currentEntry =
           (this.tacsim.view3dOpen ? this.tacsim.physicalLocationKey : null) ??
           this.tacsim.serverStationRoomEntry;
+        const liveStowage =
+          this.tacsim.ambient?.ownStowage ??
+          this.tacsim.ambient?.stowage ??
+          (this.tacsim.trade?.hullId ? this.tacsim.trade.stowage : null);
+        const needsOriginExchange = needsOriginPortProcurement(
+          this.quests.active,
+          this.quests.trackedKey,
+          liveStowage,
+        );
         routeCrumb = computeNextQuestExitBreadcrumb(
           this.tacsim.stationPack,
           currentEntry,
           targetEntry,
+          needsOriginExchange,
         );
       }
 

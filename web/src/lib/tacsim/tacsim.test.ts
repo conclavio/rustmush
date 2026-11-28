@@ -2791,4 +2791,32 @@ describe("PR #693 Web review regressions (items 1-7, 9-11)", () => {
     expect(sent).toContain("+ship/plan stickney");
     deck.unmount();
   });
+
+  it("routes cross-port trade quests to local Exchange first when needsOriginExchangeFirst is true, then flips to Berth Gallery", () => {
+    const ceres = buildFallbackFreeport();
+    const toExchange = computeNextQuestExitBreadcrumb(
+      ceres,
+      "room.c05_registry",
+      "room.p07_receiving",
+      true,
+    );
+    expect(toExchange).not.toBeNull();
+    expect(toExchange!.targetRoomEntry).toBe("room.c07_exchange");
+
+    // Already at Exchange Hall while procuring -> null (stay here to buy)
+    expect(
+      computeNextQuestExitBreadcrumb(ceres, "room.c07_exchange", "room.p07_receiving", true),
+    ).toBeNull();
+
+    // Once cargo is loaded (needsOriginExchangeFirst = false) -> routes to Berth Gallery to board
+    const toBerth = computeNextQuestExitBreadcrumb(
+      ceres,
+      "room.c07_exchange",
+      "room.p07_receiving",
+      false,
+    );
+    expect(toBerth).not.toBeNull();
+    expect(toBerth!.targetRoomEntry).toBe("room.c01_berth_gallery");
+    expect(toBerth!.targetRoomName).toContain("Board Ship");
+  });
 });

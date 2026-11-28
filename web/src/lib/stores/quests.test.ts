@@ -8,6 +8,7 @@ import {
   extractSurfaceMiningPrepActions,
   inferStationPortFromRoomEntry,
   matchesQuestTradeRow,
+  needsOriginPortProcurement,
   parseQuestMarkers,
   resolveQuestShipTargetCompartment,
 } from "./quests.svelte";
@@ -677,5 +678,76 @@ describe("QuestsStore", () => {
     });
     expect(noCargo?.cargoRequired).toBe(false);
     expect(noCargo?.ready).toBe(true);
+  });
+
+  it("detects when a cross-port buy+deliver quest requires local Exchange procurement before boarding", () => {
+    const store = new QuestsStore();
+    store.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+          title: "Metals Down the Corridor",
+          next_room_entry: "room.p07_receiving",
+          checkpoints: [
+            {
+              id: "deliver_metals",
+              title: "Buy 5 tonnes of metals at Ceres and deliver them to Stickney Yards",
+              instructions: "Buy metals at Ceres Exchange Hall, then fly to Stickney and +market/sell.",
+              room_entry: "room.p07_receiving",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+    // Hold lacks 5t metals -> must visit local Exchange first
+    expect(
+      needsOriginPortProcurement(store.active, store.trackedKey, {
+        propellantKg: 10_000,
+        provisionsCrewDays: 10,
+        cargoLines: [{ good: "tacsim:metals", label: "Metals", qty: 2 }],
+      }),
+    ).toBe(true);
+    // Hold has 5t metals -> ready to head to Berth Gallery & board ship
+    expect(
+      needsOriginPortProcurement(store.active, store.trackedKey, {
+        propellantKg: 10_000,
+        provisionsCrewDays: 10,
+        cargoLines: [{ good: "tacsim:metals", label: "Metals", qty: 5 }],
+      }),
+    ).toBe(false);
+    // Unloaded stowage -> false (preserves default cross-port berth routing)
+    expect(needsOriginPortProcurement(store.active, store.trackedKey, null)).toBe(false);
+
+    // Sell-only quest (Step 7 carbon_ore) does NOT redirect to origin Exchange
+    store.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore",
+          title: "Deliver Your Mined Ore to Market",
+          next_room_entry: "room.p11_service",
+          checkpoints: [
+            {
+              id: "sell_carbon_ore",
+              title: "Sell at least 1 tonne of carbon ore at Stickney Yards",
+              instructions: "Fly to Stickney Yards and +market/sell.",
+              room_entry: "room.p11_service",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+    expect(
+      needsOriginPortProcurement(store.active, store.trackedKey, {
+        propellantKg: 10_000,
+        provisionsCrewDays: 10,
+        cargoLines: [],
+      }),
+    ).toBe(false);
   });
 });

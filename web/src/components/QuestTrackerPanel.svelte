@@ -4,7 +4,10 @@
   // turn-by-turn 1-click station route step, objective checklist, 1-click Verify/Complete/Abandon,
   // or a quick-accept prompt when a quest NPC in the room has an available quest.
   import type { GameApp } from "$lib/game.svelte";
-  import { resolveQuestShipTargetCompartment } from "$lib/stores/quests.svelte";
+  import {
+    needsOriginPortProcurement,
+    resolveQuestShipTargetCompartment,
+  } from "$lib/stores/quests.svelte";
   import {
     computeNextQuestExitBreadcrumb,
     computeShipQuestBreadcrumb,
@@ -43,7 +46,17 @@
       null;
     const currentEntry =
       (tacsim.view3dOpen ? tacsim.physicalLocationKey : null) ?? tacsim.serverStationRoomEntry;
-    return computeNextQuestExitBreadcrumb(tacsim.stationPack, currentEntry, targetEntry);
+    const liveStowage =
+      tacsim.ambient?.ownStowage ??
+      tacsim.ambient?.stowage ??
+      (tacsim.trade?.hullId ? tacsim.trade.stowage : null);
+    const needsOriginExchange = needsOriginPortProcurement(q.active, q.trackedKey, liveStowage);
+    return computeNextQuestExitBreadcrumb(
+      tacsim.stationPack,
+      currentEntry,
+      targetEntry,
+      needsOriginExchange,
+    );
   });
 </script>
 

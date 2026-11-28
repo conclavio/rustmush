@@ -1032,6 +1032,7 @@ export function computeNextQuestExitBreadcrumb(
   pack: AtlasNeighborhoodPack | null | undefined,
   currentRoomEntry: string | null | undefined,
   targetRoomEntry: string | null | undefined,
+  needsOriginExchangeFirst = false,
 ): StationQuestBreadcrumb | null {
   if (!pack || !currentRoomEntry || !targetRoomEntry || currentRoomEntry === targetRoomEntry) {
     return null;
@@ -1043,23 +1044,40 @@ export function computeNextQuestExitBreadcrumb(
     if (!/^room\.[cpldt]\d/i.test(targetRoomEntry.trim())) {
       return null;
     }
-    const berth = [...pack.rooms.values()].find((r) =>
-      r.entryId.toLowerCase().includes("berth_gallery"),
-    );
-    if (!berth) return null;
-    if (currentRoomEntry === berth.entryId) {
-      return {
-        nextRoomEntry: "ship",
-        nextRoomName: "Board Ship",
-        nextExitCommand: "+ship/board",
-        nextExitLabel: "Board Ship",
-        targetRoomEntry,
-        targetRoomName: "Board Ship",
-        hops: 1,
-      };
+    if (needsOriginExchangeFirst) {
+      const exchange =
+        [...pack.rooms.values()].find((r) => r.entryId.toLowerCase().includes("exchange")) ??
+        [...pack.rooms.values()].find(
+          (r) =>
+            r.entryId.toLowerCase().includes("chandlery") ||
+            r.entryId.toLowerCase().includes("service"),
+        );
+      if (exchange) {
+        if (currentRoomEntry === exchange.entryId) {
+          return null;
+        }
+        effectiveTarget = exchange.entryId;
+      }
     }
-    effectiveTarget = berth.entryId;
-    boardingCrossPort = true;
+    if (effectiveTarget === targetRoomEntry) {
+      const berth = [...pack.rooms.values()].find((r) =>
+        r.entryId.toLowerCase().includes("berth_gallery"),
+      );
+      if (!berth) return null;
+      if (currentRoomEntry === berth.entryId) {
+        return {
+          nextRoomEntry: "ship",
+          nextRoomName: "Board Ship",
+          nextExitCommand: "+ship/board",
+          nextExitLabel: "Board Ship",
+          targetRoomEntry,
+          targetRoomName: "Board Ship",
+          hops: 1,
+        };
+      }
+      effectiveTarget = berth.entryId;
+      boardingCrossPort = true;
+    }
   }
 
   const path = findStationExitPath(pack, currentRoomEntry, effectiveTarget);

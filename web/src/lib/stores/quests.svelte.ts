@@ -286,6 +286,33 @@ export function evaluateSailingPreflightReadiness(
   };
 }
 
+/**
+ * True when the tracked quest is a cross-port buy+deliver trade run (e.g. Step 3 metals
+ * or Step 4 industrial_parts) whose required cargo is not yet loaded in the ship's hold,
+ * so station wayfinding should direct the player to the local Exchange before Berth Gallery.
+ */
+export function needsOriginPortProcurement(
+  active: readonly ActiveQuestView[],
+  trackedKey: string | null,
+  stowage:
+    | {
+        propellantKg: number;
+        provisionsCrewDays: number;
+        cargoLines: ReadonlyArray<{ good: string; label: string; qty: number }>;
+      }
+    | null
+    | undefined,
+): boolean {
+  if (!stowage) return false;
+  const tracked = orderedActiveQuests(active, trackedKey)[0] ?? null;
+  if (!tracked || tracked.readyToFinish || tracked.canFinishNow) return false;
+  const need = extractActiveTradeNeed(active, trackedKey);
+  if (!need || !need.wantsBuy || !need.wantsSell) return false;
+  if (need.commoditySlug === "propellant" || need.commoditySlug === "provisions") return false;
+  const readiness = evaluateQuestStowageReadiness(need, stowage);
+  return readiness !== null && !readiness.ready;
+}
+
 export interface QuestDestinationHint {
   questTitle: string;
   portId: string;
