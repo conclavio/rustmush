@@ -5665,38 +5665,76 @@ impl TuiApp {
             let line = Line::from(spans);
             frame.render_widget(Paragraph::new(line), quest_bar);
             rest
-        } else if self.active == CHART_SCREEN
-            && body_area.height >= 6
-            && let Some(dest) = self
+        } else if self.active == CHART_SCREEN && body_area.height >= 6 {
+            let tracked = self.quests_overlay.tracked_key.as_deref();
+            let cur_port = self.panels.get(CHART_FEED).and_then(|v| {
+                v.pointer("/chart/vantage/port")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| {
+                        v.pointer("/chart/vantage/body")
+                            .and_then(Value::as_str)
+                            .filter(|s| !s.is_empty())
+                    })
+            });
+            let dest = self
                 .quests_snap
-                .active_destination_port(self.quests_overlay.tracked_key.as_deref())
-        {
-            let [quest_bar, rest] =
-                Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(body_area);
-            let line = Line::from(vec![
-                Span::styled(
+                .active_destination_port(tracked)
+                .or_else(|| self.quests_snap.next_guided_offer_destination(cur_port));
+            let qm = self
+                .quests_snap
+                .surface_mining_status(tracked)
+                .filter(|m| !m.mine_done);
+            if dest.is_some() || qm.is_some() {
+                let [quest_bar, rest] =
+                    Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(body_area);
+                let mut spans = vec![Span::styled(
                     " [QUEST] ",
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("Destination: {} ", dest.port_label),
-                    Style::default()
-                        .fg(Color::White)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("— {}  ", dest.quest_title),
-                    Style::default().fg(Color::Gray),
-                ),
-                Span::styled(
-                    format!("(+ship/plan {})", dest.port_id),
-                    Style::default().fg(Color::Cyan),
-                ),
-            ]);
-            frame.render_widget(Paragraph::new(line), quest_bar);
-            rest
+                )];
+                if let Some(dest) = dest {
+                    spans.push(Span::styled(
+                        format!("Destination: {} ", dest.port_label),
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                    spans.push(Span::styled(
+                        format!("— {}  ", dest.quest_title),
+                        Style::default().fg(Color::Gray),
+                    ));
+                    spans.push(Span::styled(
+                        format!("(+ship/plan {})", dest.port_id),
+                        Style::default().fg(Color::Cyan),
+                    ));
+                } else if let Some(ref m) = qm {
+                    spans.push(Span::styled(
+                        format!("Surface Mining: {} ", m.target_ore_slug),
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                    spans.push(Span::styled(
+                        format!("— {}", m.quest_title),
+                        Style::default().fg(Color::Gray),
+                    ));
+                }
+                if let Some(m) = qm {
+                    spans.push(Span::styled(
+                        format!(
+                            "  |  Alt+q quarry (z: ground, l: {} wash)",
+                            m.recommended_family
+                        ),
+                        Style::default().fg(Color::Green),
+                    ));
+                }
+                frame.render_widget(Paragraph::new(Line::from(spans)), quest_bar);
+                rest
+            } else {
+                body_area
+            }
         } else {
             body_area
         };
