@@ -2015,15 +2015,34 @@ namespace TacSim.World
         public void ApplyQuestMarkers(IReadOnlyList<MushNpcQuestMarker> markers)
         {
             var incoming = new Dictionary<string, MushNpcQuestMarker>(StringComparer.Ordinal);
+            var keysById = new Dictionary<string, HashSet<string>>(StringComparer.Ordinal);
+            var keysByName = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
             if (markers != null)
             {
                 for (int i = 0; i < markers.Count; i++)
                 {
                     var m = markers[i];
-                    if (m != null && !string.IsNullOrEmpty(m.NpcId))
+                    if (m == null) continue;
+                    string qKey = !string.IsNullOrEmpty(m.QuestKey) ? m.QuestKey : $"{m.Marker}:{m.QuestTitle}";
+                    if (!string.IsNullOrEmpty(m.NpcId))
                     {
                         if (!incoming.TryGetValue(m.NpcId, out var existing) || QuestMarkerPriority(m) < QuestMarkerPriority(existing))
                             incoming[m.NpcId] = m;
+                        if (!keysById.TryGetValue(m.NpcId, out var idSet))
+                        {
+                            idSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                            keysById[m.NpcId] = idSet;
+                        }
+                        idSet.Add(qKey);
+                    }
+                    if (!string.IsNullOrEmpty(m.NpcName))
+                    {
+                        if (!keysByName.TryGetValue(m.NpcName, out var nameSet))
+                        {
+                            nameSet = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                            keysByName[m.NpcName] = nameSet;
+                        }
+                        nameSet.Add(qKey);
                     }
                 }
             }
@@ -2035,7 +2054,8 @@ namespace TacSim.World
                 if (actorGo == null) continue;
 
                 incoming.TryGetValue(actorId, out var marker);
-                if (marker == null && markers != null && _actorDisplayNames.TryGetValue(actorId, out string dispName) && !string.IsNullOrEmpty(dispName))
+                string dispName = _actorDisplayNames.TryGetValue(actorId, out string dn) ? dn : string.Empty;
+                if (marker == null && markers != null && !string.IsNullOrEmpty(dispName))
                 {
                     for (int i = 0; i < markers.Count; i++)
                     {
@@ -2049,8 +2069,15 @@ namespace TacSim.World
                     }
                 }
 
+                var distinctKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                if (keysById.TryGetValue(actorId, out var idKeys))
+                    distinctKeys.UnionWith(idKeys);
+                if (!string.IsNullOrEmpty(dispName) && keysByName.TryGetValue(dispName, out var nameKeys))
+                    distinctKeys.UnionWith(nameKeys);
+                int extraQuests = Math.Max(0, distinctKeys.Count - 1);
+
                 var wi = actorGo.GetComponent<WorldInteractable>();
-                string rawActorName = _actorDisplayNames.TryGetValue(actorId, out string n) ? n : string.Empty;
+                string rawActorName = dispName;
                 string safeActorName = MushProtocol.EscapeUnityRichText(rawActorName);
 
                 if (marker != null && !string.IsNullOrEmpty(marker.Symbol))
@@ -2079,9 +2106,12 @@ namespace TacSim.World
                             : string.Equals(marker.Marker, "available", StringComparison.OrdinalIgnoreCase)
                                 ? "Quest Available"
                                 : "Quest In Progress";
+                        string moreSuffix = extraQuests > 0 ? $" (+{extraQuests} more)" : string.Empty;
                         wi.promptTitle = $"[{marker.Symbol}] {safeActorName} — {roleTag}";
                         if (!string.IsNullOrEmpty(marker.QuestTitle))
-                            wi.promptSubtitle = MushProtocol.EscapeUnityRichText(marker.QuestTitle);
+                            wi.promptSubtitle = $"{MushProtocol.EscapeUnityRichText(marker.QuestTitle)}{moreSuffix}";
+                        else if (extraQuests > 0)
+                            wi.promptSubtitle = $"{roleTag}{moreSuffix}";
                     }
                 }
                 else

@@ -3246,27 +3246,40 @@ namespace TacSim.UI
                    b.IndexOf(a, StringComparison.OrdinalIgnoreCase) >= 0;
         }
 
+        private static int NpcQuestMarkerPriority(MushNpcQuestMarker m)
+        {
+            if (m == null) return 3;
+            if (string.Equals(m.Marker, "turn_in", StringComparison.OrdinalIgnoreCase)) return 0;
+            if (string.Equals(m.Marker, "available", StringComparison.OrdinalIgnoreCase)) return 1;
+            return 2;
+        }
+
         private void TryAddNpcQuestModalButtons(string npcName)
         {
             var qp = QuestJournal.LatestPanel;
+            var distinctKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
             MushNpcQuestMarker marker = null;
             for (int i = 0; i < qp.RoomMarkers.Count; i++)
             {
-                if (NpcNamesMatch(qp.RoomMarkers[i].NpcName, npcName))
+                var cand = qp.RoomMarkers[i];
+                if (cand != null && NpcNamesMatch(cand.NpcName, npcName))
                 {
-                    marker = qp.RoomMarkers[i];
-                    break;
+                    distinctKeys.Add(!string.IsNullOrEmpty(cand.QuestKey) ? cand.QuestKey : $"{cand.Marker}:{cand.QuestTitle}");
+                    if (marker == null || NpcQuestMarkerPriority(cand) < NpcQuestMarkerPriority(marker))
+                        marker = cand;
                 }
             }
 
             MushAvailableQuest offer = null;
             for (int i = 0; i < qp.Available.Count; i++)
             {
-                if ((marker != null && !string.IsNullOrEmpty(marker.NpcId) && qp.Available[i].GiverId == marker.NpcId) ||
-                    NpcNamesMatch(qp.Available[i].GiverName, npcName))
+                var av = qp.Available[i];
+                if ((marker != null && !string.IsNullOrEmpty(marker.NpcId) && av.GiverId == marker.NpcId) ||
+                    NpcNamesMatch(av.GiverName, npcName))
                 {
-                    offer = qp.Available[i];
-                    break;
+                    if (!string.IsNullOrEmpty(av.Key)) distinctKeys.Add(av.Key);
+                    if (offer == null) offer = av;
                 }
             }
 
@@ -3278,32 +3291,56 @@ namespace TacSim.UI
                     NpcNamesMatch(q.TurnInName, npcName) ||
                     NpcNamesMatch(q.GiverName, npcName))
                 {
-                    active = q;
-                    break;
+                    if (!string.IsNullOrEmpty(q.Key)) distinctKeys.Add(q.Key);
+                    bool qReady = q.CanFinishNow || q.ReadyToFinish;
+                    bool curReady = active != null && (active.CanFinishNow || active.ReadyToFinish);
+                    if (active == null || (qReady && !curReady))
+                        active = q;
                 }
             }
 
             if (marker == null && offer == null && active == null)
                 return;
 
-            string title = marker != null && !string.IsNullOrEmpty(marker.QuestTitle)
-                ? marker.QuestTitle
-                : (offer != null ? offer.Title : (active != null ? active.Title : string.Empty));
+            bool turnInUrgent =
+                (marker != null && string.Equals(marker.Marker, "turn_in", StringComparison.OrdinalIgnoreCase)) ||
+                (active != null && (active.CanFinishNow || active.ReadyToFinish));
+
+            string title;
+            if (turnInUrgent)
+            {
+                title = (marker != null && string.Equals(marker.Marker, "turn_in", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(marker.QuestTitle))
+                    ? marker.QuestTitle
+                    : (active != null && !string.IsNullOrEmpty(active.Title) ? active.Title : (marker?.QuestTitle ?? string.Empty));
+            }
+            else
+            {
+                title = marker != null && !string.IsNullOrEmpty(marker.QuestTitle)
+                    ? marker.QuestTitle
+                    : (offer != null ? offer.Title : (active != null ? active.Title : string.Empty));
+            }
+
+            int extraQuests = Math.Max(0, distinctKeys.Count - 1);
+            string moreSuffix = extraQuests > 0 ? $" (+{extraQuests} more)" : string.Empty;
             string titleSuffix = !string.IsNullOrEmpty(title) ? $": {title}" : string.Empty;
             string dlgLabel;
-            if ((marker != null && marker.Marker == "available") || offer != null)
-                dlgLabel = $"[!] QUEST DIALOG{titleSuffix}";
-            else if ((marker != null && marker.Marker == "turn_in") || (active != null && (active.CanFinishNow || active.ReadyToFinish)))
-                dlgLabel = $"[?] TURN IN QUEST{titleSuffix}";
+            if (turnInUrgent)
+                dlgLabel = $"[?] TURN IN QUEST{titleSuffix}{moreSuffix}";
+            else if ((marker != null && string.Equals(marker.Marker, "available", StringComparison.OrdinalIgnoreCase)) || offer != null)
+                dlgLabel = $"[!] QUEST DIALOG{titleSuffix}{moreSuffix}";
             else
-                dlgLabel = $"[?] QUEST DIALOG{titleSuffix}";
+                dlgLabel = $"[?] QUEST DIALOG{titleSuffix}{moreSuffix}";
 
             string targetNpcId = marker != null && !string.IsNullOrEmpty(marker.NpcId)
                 ? marker.NpcId
-                : (offer != null && !string.IsNullOrEmpty(offer.GiverId)
-                    ? offer.GiverId
-                    : (active != null && !string.IsNullOrEmpty(active.TurnInId) ? active.TurnInId : active?.GiverId));
-            string targetKey = active != null ? active.Key : (offer != null ? offer.Key : marker?.QuestKey);
+                : (turnInUrgent && active != null && !string.IsNullOrEmpty(active.TurnInId)
+                    ? active.TurnInId
+                    : (offer != null && !string.IsNullOrEmpty(offer.GiverId)
+                        ? offer.GiverId
+                        : (active != null && !string.IsNullOrEmpty(active.TurnInId) ? active.TurnInId : active?.GiverId)));
+            string targetKey = turnInUrgent
+                ? (active != null ? active.Key : marker?.QuestKey)
+                : (offer != null ? offer.Key : (active != null ? active.Key : marker?.QuestKey));
 
             CreateButton(_modalButtonsRoot, dlgLabel, new Color(0.68f, 0.48f, 0.12f), () =>
             {

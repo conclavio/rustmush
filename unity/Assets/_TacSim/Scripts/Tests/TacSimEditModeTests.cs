@@ -14472,5 +14472,83 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void NpcTalkModalAnd3dPrompt_PrioritizeTurnInOverAvailableAndShowExtraQuestCount()
+        {
+            var rootGo = new UnityEngine.GameObject("NpcTalkPriorityAndCountTest");
+            try
+            {
+                var coord = rootGo.AddComponent<TacSimGameCoordinator>();
+                var hudGo = new UnityEngine.GameObject("Hud");
+                hudGo.transform.SetParent(rootGo.transform, false);
+                coord.Hud = hudGo.AddComponent<TacSim.UI.TacSimHudController>();
+                coord.EnsureSubsystems();
+
+                string emitted = null;
+                coord.Hud.OnCommandSubmitted += cmd => emitted = cmd;
+
+                var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+                var onRoom = typeof(TacSimGameCoordinator).GetMethod("HandleServerRoomView", flags);
+                Assert.IsNotNull(onRoom);
+
+                // Ilse has 3 distinct quest markers -> 3D [E] subtitle must carry (+2 more)
+                onRoom.Invoke(coord, new object[]
+                {
+                    MushProtocol.ParseRoomView(JsonNode.Parse(@"{
+                        ""room"": { ""id"": ""#15"", ""name"": ""Registry & Co-op Desk"" },
+                        ""contents"": [{ ""id"": ""#50"", ""name"": ""Ilse Oduya-Brandt"" }],
+                        ""ambient"": {
+                            ""atlas"": { ""pack"": ""neighborhood.ceres_freeport"", ""entry"": ""room.c05_registry"" },
+                            ""npcs"": [""#50""],
+                            ""quest_markers"": [
+                                { ""npc_id"": ""#50"", ""npc_name"": ""Ilse Oduya-Brandt"", ""marker"": ""in_progress"", ""symbol"": ""?"", ""quest_key"": ""q.active"", ""quest_title"": ""Active Check"" },
+                                { ""npc_id"": ""#50"", ""npc_name"": ""Ilse Oduya-Brandt"", ""marker"": ""available"", ""symbol"": ""!"", ""quest_key"": ""q.next"", ""quest_title"": ""Locker & Tanks"" },
+                                { ""npc_id"": ""#50"", ""npc_name"": ""Ilse Oduya-Brandt"", ""marker"": ""turn_in"", ""symbol"": ""?"", ""quest_key"": ""q.turnin"", ""quest_title"": ""First Papers at the Registry"" }
+                            ]
+                        }
+                    }"))
+                });
+
+                var targetables = coord.StationWorld.GetActiveRoomTargetables();
+                var ilseWi = targetables.Find(w => w.actorId == "#50");
+                Assert.IsNotNull(ilseWi);
+                StringAssert.Contains("[?] Ilse Oduya-Brandt", ilseWi.promptTitle);
+                Assert.AreEqual("First Papers at the Registry (+2 more)", ilseWi.promptSubtitle);
+
+                // NPC Talk modal with BOTH a ready turn-in AND an available offer must prioritize [?] TURN IN QUEST (+1 more)
+                coord.Hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#15"",
+                    ""room_name"": ""Registry & Co-op Desk"",
+                    ""room_markers"": [
+                        { ""npc_id"": ""#50"", ""npc_name"": ""Ilse Oduya-Brandt"", ""marker"": ""available"", ""symbol"": ""!"", ""quest_key"": ""q.next"", ""quest_title"": ""Locker & Tanks"" },
+                        { ""npc_id"": ""#50"", ""npc_name"": ""Ilse Oduya-Brandt"", ""marker"": ""turn_in"", ""symbol"": ""?"", ""quest_key"": ""q.turnin"", ""quest_title"": ""First Papers at the Registry"" }
+                    ],
+                    ""available"": [
+                        { ""key"": ""q.next"", ""title"": ""Locker & Tanks"", ""giver_id"": ""#50"", ""giver_name"": ""Ilse Oduya-Brandt"", ""accept_cmd"": ""+quest/accept #50=tok2"" }
+                    ],
+                    ""active"": [
+                        { ""key"": ""q.turnin"", ""title"": ""First Papers at the Registry"", ""giver_id"": ""#42"", ""giver_name"": ""Maren"", ""turn_in_id"": ""#50"", ""turn_in_name"": ""Ilse Oduya-Brandt"", ""ready_to_finish"": true, ""can_finish_now"": true, ""finish_cmd"": ""+quest/finish #50=tok1"", ""checkpoints"": [] }
+                    ],
+                    ""completed"": []
+                }")));
+
+                coord.Hud.ShowDetailModal("ILSE ODUYA-BRANDT", "Co-op Registrar", npcName: "Ilse Oduya-Brandt");
+                Assert.IsTrue(
+                    coord.Hud.TriggerDetailModalButtonContaining("[?] TURN IN QUEST: First Papers at the Registry (+1 more)"),
+                    "NPC Talk modal must prioritize turn-in over available offer and show (+1 more)");
+                Assert.IsTrue(coord.Hud.QuestJournal.IsQuestDialogOpen);
+                Assert.AreEqual("q.turnin", coord.Hud.QuestJournal.DialogQuestKey);
+
+                coord.Hud.ShowDetailModal("ILSE ODUYA-BRANDT", "Co-op Registrar", npcName: "Ilse Oduya-Brandt");
+                Assert.IsTrue(coord.Hud.TriggerDetailModalButtonContaining("[?] COMPLETE NOW"));
+                Assert.AreEqual("+quest/finish #50=tok1", emitted);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
