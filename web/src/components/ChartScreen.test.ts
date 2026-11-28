@@ -73,4 +73,66 @@ describe("ChartScreen quest destination guidance", () => {
     expect(tacsim.selectedDestination).toBe("stickney");
     expect(focusComposer).toHaveBeenCalledWith("+ship/plan stickney");
   });
+
+  it("highlights between-steps Next Guided Offer port when off-station and shows Ground Chart jump for Step 6", async () => {
+    const chart = new ChartStore();
+    chart.applyKeyframe(skyChartFixture());
+    const quests = new QuestsStore();
+    const focusComposer = vi.fn();
+    const switchScreen = vi.fn().mockReturnValue(true);
+    const quarry = { mode: "site", family: "volatiles" };
+    const tacsim = { selectedDestination: "ceres" };
+    const app = {
+      chart,
+      quests,
+      tacsim,
+      quarry,
+      switchScreen,
+      focusComposer,
+    } as unknown as GameApp;
+
+    // Between steps 3 & 4 while reading sky chart from Ceres -> highlights Stickney Yards for Jonas
+    quests.applyFrame({
+      schema: 1,
+      completed: [
+        { key: "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll", title: "S1" },
+        { key: "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel", title: "S2" },
+        { key: "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery", title: "S3" },
+      ],
+      active: [],
+      available: [],
+    });
+
+    const first = render(ChartScreen, { props: { app } });
+    const banner = await screen.findByRole("status", { name: "active quest destination" });
+    expect(banner.textContent).toContain("Stickney Yards");
+    expect(banner.textContent).toContain("Next Guided (4/7)");
+    await fireEvent.click(screen.getByRole("button", { name: "Plan +ship/plan stickney" }));
+    expect(focusComposer).toHaveBeenCalledWith("+ship/plan stickney");
+    first.unmount();
+
+    // Active Step 6 surface mining -> offers 1-click Ground Chart (CARBON) jump
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+          title: "Scan, Sound, and Mine a Landing Site",
+          introduction: "Choose an open Ceres landing site such as Freeport Commons.",
+          checkpoints: [
+            { id: "scan_landing_site", title: "Surface scan", instructions: "+tv/1 scan go", checked: false, live_ready: false },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", instructions: "+tv/1 mine go", checked: false, live_ready: false },
+          ],
+        },
+      ],
+      available: [],
+      completed: [],
+    });
+    render(ChartScreen, { props: { app } });
+    const groundBtn = screen.getByRole("button", { name: /Ground Chart \(CARBON\)/i });
+    await fireEvent.click(groundBtn);
+    expect(quarry.mode).toBe("ground");
+    expect(quarry.family).toBe("carbon");
+    expect(switchScreen).toHaveBeenCalledWith("quarry");
+  });
 });

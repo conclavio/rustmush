@@ -486,6 +486,35 @@ export function findNextGuidedOffer(
   return roadmap.find((s) => s.status === "upcoming") ?? null;
 }
 
+/**
+ * Resolves a corridor destination hint for a between-steps Next Guided Offer when the pilot
+ * is currently at a different port/body than the next guided NPC giver (returns null if already there).
+ */
+export function resolveNextGuidedOfferDestination(
+  nextOffer: GuidedTourRoadmapStep | null,
+  currentPortOrBody?: string | null,
+): QuestDestinationHint | null {
+  if (!nextOffer) return null;
+  const targetPort = inferStationPortFromRoomEntry(nextOffer.giverRoomEntry);
+  if (!targetPort) return null;
+  const found = KNOWN_DESTINATIONS.find(([id]) => id === targetPort);
+  if (!found) return null;
+  const cur = (currentPortOrBody ?? "").trim().toLowerCase();
+  if (
+    cur &&
+    (cur === found[0] ||
+      cur.includes(found[0]) ||
+      found[1].toLowerCase().includes(cur))
+  ) {
+    return null;
+  }
+  return {
+    questTitle: `Next Guided (${nextOffer.step}/7): ${nextOffer.shortLabel} — ${nextOffer.giverLabel}`,
+    portId: found[0],
+    portLabel: found[1],
+  };
+}
+
 function guidedStepNumber(key: string): number | null {
   const idx = GUIDED_TOUR_KEYS.indexOf(key);
   return idx >= 0 ? idx + 1 : null;
