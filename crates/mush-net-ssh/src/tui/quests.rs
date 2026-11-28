@@ -1838,6 +1838,18 @@ pub fn render_quest_tracker_lines_with_route(
     tracked_key: Option<&str>,
     route_hop: Option<&QuestExitBreadcrumb>,
 ) -> Vec<Line<'static>> {
+    render_quest_tracker_lines_with_route_and_stowage(snap, tracked_key, route_hop, None)
+}
+
+/// Build compact tracker lines for the Scene screen right rail, including live
+/// ship hold & Step 5 refit readiness telemetry alongside route breadcrumbs.
+#[must_use]
+pub fn render_quest_tracker_lines_with_route_and_stowage(
+    snap: &QuestsSnapshot,
+    tracked_key: Option<&str>,
+    route_hop: Option<&QuestExitBreadcrumb>,
+    stowage: Option<&QuestStowageTelemetry>,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let tour = snap.guided_tour_progress();
     let tracked = tracked_key
@@ -1912,6 +1924,18 @@ pub fn render_quest_tracker_lines_with_route(
                 Span::styled(mark, style),
                 Span::styled(cp.title.clone(), style),
             ]));
+        }
+        if let Some(st) = stowage
+            && let Some((hold_txt, hold_ready)) = QuestsSnapshot::hold_readiness_line_for(q, st)
+        {
+            let style = if hold_ready {
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Yellow)
+            };
+            lines.push(Line::from(Span::styled(hold_txt, style)));
         }
         if !q.can_finish_now
             && !q.can_check_now
@@ -3617,5 +3641,87 @@ mod tests {
         assert!(!ready);
         assert!(line.contains("[HOLD] PROPELLANT: 0/5 t"), "{line}");
         assert!(line.contains("PROVISIONS 10/10d OK"), "{line}");
+    }
+
+    #[test]
+    fn scene_quest_tracker_renders_live_step2_hold_and_step5_refit_readiness() {
+        let snap = parse_frame(&json!({
+            "schema": 1,
+            "active": [
+                {
+                    "key": GUIDED_TOUR_KEYS[1],
+                    "title": "Stock the Locker and Tanks",
+                    "next_step": "Buy 5t propellant at Exchange",
+                    "checkpoints": [
+                        {
+                            "id": "buy_provisions",
+                            "title": "Buy 10 provisions",
+                            "instructions": "Buy 10 provisions.",
+                            "checked": false,
+                            "live_ready": false
+                        },
+                        {
+                            "id": "buy_propellant",
+                            "title": "Buy 5t propellant",
+                            "instructions": "Buy 5 tonnes of propellant.",
+                            "checked": false,
+                            "live_ready": false
+                        }
+                    ]
+                },
+                {
+                    "key": GUIDED_TOUR_KEYS[4],
+                    "title": "Refit the Dray for Surface Mining",
+                    "next_step": "Run +coop/refit prospector",
+                    "checkpoints": [
+                        {
+                            "id": "refit_dray_p",
+                            "title": "Refit Dray into Dray-P",
+                            "instructions": "Empty hold and run +coop/refit prospector.",
+                            "checked": false,
+                            "live_ready": false
+                        }
+                    ]
+                }
+            ]
+        }));
+        let stowage = QuestStowageTelemetry {
+            cargo_kg: 0,
+            propellant_kg: 2000,
+            provisions_days: 10,
+            cargo_lots: Vec::new(),
+        };
+
+        let step2_lines = render_quest_tracker_lines_with_route_and_stowage(
+            &snap,
+            Some(GUIDED_TOUR_KEYS[1]),
+            None,
+            Some(&stowage),
+        );
+        let step2_text: String = step2_lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            step2_text.contains("[HOLD] PROPELLANT: 2/5 t | PROVISIONS 10/10d OK"),
+            "{step2_text}"
+        );
+
+        let step5_lines = render_quest_tracker_lines_with_route_and_stowage(
+            &snap,
+            Some(GUIDED_TOUR_KEYS[4]),
+            None,
+            Some(&stowage),
+        );
+        let step5_text: String = step5_lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            step5_text.contains("[REFIT CHECK] Cargo empty | Stores 10d | Tank 2t OK"),
+            "{step5_text}"
+        );
     }
 }
