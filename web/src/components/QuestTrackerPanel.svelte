@@ -8,6 +8,7 @@
   import {
     computeNextQuestExitBreadcrumb,
     computeShipQuestBreadcrumb,
+    normalizePortVenueTarget,
   } from "$lib/tacsim/spatial";
 
   let { app, onCmd }: { app: GameApp; onCmd: (cmd: string) => void } = $props();
@@ -25,7 +26,10 @@
     if (!tracked || !tacsim) return null;
     if (tacsim.isAboardShip) {
       if (tacsim.seatedAtBridgeHelm) return null;
-      const targetComp = resolveQuestShipTargetCompartment(q.active, q.trackedKey);
+      const dockedPortId = tacsim.ambient?.docked
+        ? normalizePortVenueTarget(tacsim.ambient?.port ?? tacsim.trade?.hullPort)
+        : null;
+      const targetComp = resolveQuestShipTargetCompartment(q.active, q.trackedKey, dockedPortId);
       const currentComp =
         (tacsim.view3dOpen ? tacsim.physicalLocationKey : null) ?? tacsim.serverShipCompartment;
       return computeShipQuestBreadcrumb(tacsim.shipTemplate, currentComp, targetComp);
@@ -88,7 +92,13 @@
           title={`Quest route: ${routeCrumb.hops} ${routeCrumb.hops === 1 ? "hop" : "hops"} to ${routeCrumb.targetRoomName} (${routeCrumb.nextExitCommand})`}
           onclick={() => onCmd(routeCrumb.nextExitCommand)}
         >
-          Walk → {routeCrumb.nextRoomName} ({routeCrumb.hops}h)
+          {#if routeCrumb.nextExitCommand === "+ship/board"}
+            Board Ship
+          {:else if routeCrumb.nextExitCommand === "+ship/leave"}
+            Cycle Ashore
+          {:else}
+            Walk → {routeCrumb.nextRoomName} ({routeCrumb.hops}h)
+          {/if}
         </button>
       {:else if suggested}
         <button

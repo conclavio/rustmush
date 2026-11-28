@@ -236,4 +236,131 @@ describe("QuestTrackerPanel route step, guided tour pill, and quick-accept", () 
     await fireEvent.click(bayBtn);
     expect(onCmdMine).toHaveBeenCalledWith("+tv/bay in");
   });
+
+  it("guides cross-port quests to Berth Gallery (+ship/board) and docked ships to Airlock (+ship/leave)", async () => {
+    const quests = new QuestsStore();
+    const ceres = buildFallbackFreeport();
+    const dray = buildFallbackDray("tacsim.unit.dray");
+    const berthEntry = [...ceres.rooms.keys()].find((k) => k.includes("berth_gallery"))!;
+    const otherEntry = [...ceres.rooms.keys()].find((k) => k !== berthEntry)!;
+
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#15",
+      room_name: ceres.rooms.get(otherEntry)!.name,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[2],
+          title: "Metals Down the Corridor",
+          next_step: "Sell 5t metals at Stickney Yards",
+          next_room_entry: "room.p07_receiving",
+          next_room_name: "Receiving & Customs",
+          checkpoints: [
+            {
+              id: "deliver_metals",
+              title: "Deliver 5t metals to Stickney Yards",
+              instructions: "Fly to Stickney (+ship/plan stickney) and sell metals.",
+              room_entry: "room.p07_receiving",
+              room_name: "Receiving & Customs",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    // 1. Ashore on Ceres outside Berth Gallery -> walks toward Berth Gallery
+    const onCmdWalk = vi.fn();
+    const r1 = render(QuestTrackerPanel, {
+      props: {
+        app: {
+          quests,
+          tacsim: {
+            isAboardShip: false,
+            view3dOpen: false,
+            physicalLocationKey: null,
+            serverStationRoomEntry: otherEntry,
+            stationPack: ceres,
+          },
+          focusComposer: vi.fn(),
+        } as unknown as GameApp,
+        onCmd: onCmdWalk,
+      },
+    });
+    const walkToBerth = screen.getByRole("button", { name: /^Walk → / });
+    await fireEvent.click(walkToBerth);
+    expect(String(onCmdWalk.mock.calls[0]![0]).toLowerCase().startsWith("goto ")).toBe(true);
+    r1.unmount();
+
+    // 2. Ashore at Ceres Berth Gallery -> 1-click Board Ship (+ship/board)
+    const onCmdBoard = vi.fn();
+    const r2 = render(QuestTrackerPanel, {
+      props: {
+        app: {
+          quests,
+          tacsim: {
+            isAboardShip: false,
+            view3dOpen: false,
+            physicalLocationKey: null,
+            serverStationRoomEntry: berthEntry,
+            stationPack: ceres,
+          },
+          focusComposer: vi.fn(),
+        } as unknown as GameApp,
+        onCmd: onCmdBoard,
+      },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: /Board Ship/i }));
+    expect(onCmdBoard).toHaveBeenCalledWith("+ship/board");
+    r2.unmount();
+
+    // 3. Aboard ship docked at Stickney on Bridge -> routes toward Airlock
+    const onCmdToLock = vi.fn();
+    const r3 = render(QuestTrackerPanel, {
+      props: {
+        app: {
+          quests,
+          tacsim: {
+            isAboardShip: true,
+            seatedAtBridgeHelm: false,
+            view3dOpen: false,
+            physicalLocationKey: null,
+            serverShipCompartment: "bridge",
+            shipTemplate: dray,
+            ambient: { docked: true, port: "stickney" },
+          },
+          focusComposer: vi.fn(),
+        } as unknown as GameApp,
+        onCmd: onCmdToLock,
+      },
+    });
+    const walkLock = screen.getByRole("button", { name: /^Walk → / });
+    await fireEvent.click(walkLock);
+    expect(String(onCmdToLock.mock.calls[0]![0]).toLowerCase().startsWith("goto ")).toBe(true);
+    r3.unmount();
+
+    // 4. Aboard ship docked at Stickney in Airlock -> 1-click Cycle Ashore (+ship/leave)
+    const onCmdLeave = vi.fn();
+    render(QuestTrackerPanel, {
+      props: {
+        app: {
+          quests,
+          tacsim: {
+            isAboardShip: true,
+            seatedAtBridgeHelm: false,
+            view3dOpen: false,
+            physicalLocationKey: null,
+            serverShipCompartment: "airlock",
+            shipTemplate: dray,
+            ambient: { docked: true, port: "stickney" },
+          },
+          focusComposer: vi.fn(),
+        } as unknown as GameApp,
+        onCmd: onCmdLeave,
+      },
+    });
+    await fireEvent.click(screen.getByRole("button", { name: /Cycle Ashore/i }));
+    expect(onCmdLeave).toHaveBeenCalledWith("+ship/leave");
+  });
 });

@@ -1036,11 +1036,37 @@ export function computeNextQuestExitBreadcrumb(
   if (!pack || !currentRoomEntry || !targetRoomEntry || currentRoomEntry === targetRoomEntry) {
     return null;
   }
-  const path = findStationExitPath(pack, currentRoomEntry, targetRoomEntry);
+
+  let effectiveTarget = targetRoomEntry;
+  let boardingCrossPort = false;
+  if (!pack.rooms.has(targetRoomEntry)) {
+    if (!/^room\.[cpldt]\d/i.test(targetRoomEntry.trim())) {
+      return null;
+    }
+    const berth = [...pack.rooms.values()].find((r) =>
+      r.entryId.toLowerCase().includes("berth_gallery"),
+    );
+    if (!berth) return null;
+    if (currentRoomEntry === berth.entryId) {
+      return {
+        nextRoomEntry: "ship",
+        nextRoomName: "Board Ship",
+        nextExitCommand: "+ship/board",
+        nextExitLabel: "Board Ship",
+        targetRoomEntry,
+        targetRoomName: "Board Ship",
+        hops: 1,
+      };
+    }
+    effectiveTarget = berth.entryId;
+    boardingCrossPort = true;
+  }
+
+  const path = findStationExitPath(pack, currentRoomEntry, effectiveTarget);
   if (path.length === 0) return null;
   const first = path[0]!;
   const nextRoom = pack.rooms.get(first.targetRoom);
-  const targetRoom = pack.rooms.get(targetRoomEntry);
+  const targetRoom = pack.rooms.get(effectiveTarget);
 
   let exitLabel = nextRoom?.name ?? first.targetRoom;
   for (const ex of pack.exits) {
@@ -1060,9 +1086,11 @@ export function computeNextQuestExitBreadcrumb(
     nextRoomName: nextRoom?.name ?? first.targetRoom,
     nextExitCommand: first.command,
     nextExitLabel: exitLabel,
-    targetRoomEntry,
-    targetRoomName: targetRoom?.name ?? targetRoomEntry,
-    hops: path.length,
+    targetRoomEntry: effectiveTarget,
+    targetRoomName: boardingCrossPort
+      ? `${targetRoom?.name ?? effectiveTarget} (Board Ship)`
+      : (targetRoom?.name ?? effectiveTarget),
+    hops: boardingCrossPort ? path.length + 1 : path.length,
   };
 }
 
@@ -1414,7 +1442,21 @@ export function computeShipQuestBreadcrumb(
   if (!tpl || !currentComp || !targetComp) return null;
   const cFrom = resolveCompartmentDef(tpl, currentComp)?.id ?? currentComp;
   const cTo = resolveCompartmentDef(tpl, targetComp)?.id ?? targetComp;
-  if (!cFrom || !cTo || cFrom === cTo) return null;
+  if (!cFrom || !cTo) return null;
+  if (cFrom === cTo) {
+    if (cTo === "airlock") {
+      return {
+        nextRoomEntry: "ashore",
+        nextRoomName: "Cycle Ashore",
+        nextExitCommand: "+ship/leave",
+        nextExitLabel: "Cycle Ashore",
+        targetRoomEntry: "ashore",
+        targetRoomName: "Cycle Ashore",
+        hops: 1,
+      };
+    }
+    return null;
+  }
   if (!tpl.compartments.has(cTo)) return null;
 
   const path = findShipExitPath(tpl, cFrom, cTo);
@@ -1441,8 +1483,9 @@ export function computeShipQuestBreadcrumb(
     nextExitCommand: first.command,
     nextExitLabel: exitLabel,
     targetRoomEntry: cTo,
-    targetRoomName: targetDef?.name ?? cTo,
-    hops: path.length,
+    targetRoomName:
+      cTo === "airlock" ? `${targetDef?.name ?? cTo} (Cycle Ashore)` : (targetDef?.name ?? cTo),
+    hops: cTo === "airlock" ? path.length + 1 : path.length,
   };
 }
 

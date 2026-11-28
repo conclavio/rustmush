@@ -483,11 +483,39 @@ export function extractActiveDestinationPort(
   return null;
 }
 
+export function inferStationPortFromRoomEntry(
+  roomEntry: string | null | undefined,
+): string | null {
+  if (!roomEntry) return null;
+  const low = roomEntry.trim().toLowerCase();
+  if (/^room\.c\d/.test(low)) return "ceres";
+  if (/^room\.p\d/.test(low)) return "stickney";
+  if (/^room\.l\d/.test(low)) return "luna";
+  if (/^room\.d\d/.test(low)) return "deimos";
+  if (/^room\.t\d/.test(low)) return "titan";
+  return null;
+}
+
 export function resolveQuestShipTargetCompartment(
   active: readonly ActiveQuestView[],
   trackedKey: string | null,
-): "bay" | "bridge" | null {
+  dockedPortId: string | null = null,
+): "airlock" | "bay" | "bridge" | null {
   const mining = extractActiveSurfaceMiningStatus(active, trackedKey);
+  const dockedNorm = dockedPortId?.trim().toLowerCase() ?? "";
+  if (dockedNorm) {
+    const tracked = orderedActiveQuests(active, trackedKey)[0] ?? null;
+    if (tracked && (!mining || mining.mineDone || tracked.readyToFinish || tracked.canFinishNow)) {
+      const targetEntry =
+        tracked.nextRoomEntry ||
+        tracked.checkpoints.find((c) => !c.checked && !c.liveReady && c.roomEntry)?.roomEntry ||
+        null;
+      const targetPort = inferStationPortFromRoomEntry(targetEntry);
+      if (targetPort && targetPort === dockedNorm) {
+        return "airlock";
+      }
+    }
+  }
   if (mining && !mining.mineDone) {
     return "bay";
   }

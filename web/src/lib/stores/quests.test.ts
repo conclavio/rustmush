@@ -5,8 +5,10 @@ import {
   evaluateQuestStowageReadiness,
   evaluateRefitHoldReadiness,
   extractSurfaceMiningPrepActions,
+  inferStationPortFromRoomEntry,
   matchesQuestTradeRow,
   parseQuestMarkers,
+  resolveQuestShipTargetCompartment,
 } from "./quests.svelte";
 
 describe("QuestsStore", () => {
@@ -593,5 +595,40 @@ describe("QuestsStore", () => {
       nextStepText: "Recover rig",
     });
     expect(afterMine.map((a) => a.command)).toEqual(["+tv/1 recover go"]);
+  });
+
+  it("infers corridor port from station room prefix and routes docked ships to airlock when objective is ashore", () => {
+    expect(inferStationPortFromRoomEntry("room.c08_chandlery")).toBe("ceres");
+    expect(inferStationPortFromRoomEntry("room.p07_receiving")).toBe("stickney");
+    expect(inferStationPortFromRoomEntry("room.l01_berth_gallery")).toBe("luna");
+    expect(inferStationPortFromRoomEntry("room.d02_concourse")).toBe("deimos");
+    expect(inferStationPortFromRoomEntry("room.t04_deck")).toBe("titan");
+    expect(inferStationPortFromRoomEntry("room.welcome_hall")).toBeNull();
+
+    const store = new QuestsStore();
+    store.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+          title: "Metals Down the Corridor",
+          next_room_entry: "room.p07_receiving",
+          checkpoints: [
+            {
+              id: "deliver_metals",
+              title: "Deliver 5t metals to Stickney Yards",
+              instructions: "Check +ship/plan stickney and sell at Receiving.",
+              room_entry: "room.p07_receiving",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+    // Still docked at Ceres -> bridge to fly to Stickney
+    expect(resolveQuestShipTargetCompartment(store.active, store.trackedKey, "ceres")).toBe("bridge");
+    // Docked at Stickney -> airlock to cycle ashore and sell!
+    expect(resolveQuestShipTargetCompartment(store.active, store.trackedKey, "stickney")).toBe("airlock");
   });
 });
