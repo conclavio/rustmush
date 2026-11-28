@@ -36,6 +36,9 @@
   const trackedDoneCount = $derived(
     trackedQuest ? trackedQuest.checkpoints.filter((c) => c.checked || c.liveReady).length : 0,
   );
+  const guidedTour = $derived(app.quests?.guidedTourProgress ?? null);
+  const guidedRoadmap = $derived(guidedTour ? (app.quests?.guidedTourRoadmap ?? []) : []);
+  const nextGuidedOffer = $derived(app.quests?.nextGuidedOffer ?? null);
 
   // No poll: since interface cut I1 every command-side sheet write
   // republishes the keyframe to the subject (see web/README.md), so the
@@ -127,13 +130,60 @@
 
     <div class="sections">
       {#if trackedQuest || completedQuestsCount > 0 || availableQuestsCount > 0}
-        <section class="block quest-summary" aria-label="guided quest progress">
+        <section class="block quest-summary" class:mastered={guidedTour?.allDone} aria-label="guided quest progress">
           <div class="qsum-head">
-            <h3>Guided Quests</h3>
+            <h3>
+              Guided Quests
+              {#if guidedTour}
+                <span class="qsum-tour-badge" class:mastered={guidedTour.allDone}>
+                  {guidedTour.allDone
+                    ? `Corridor Captain (${guidedTour.completed}/${guidedTour.total})`
+                    : `Tour ${guidedTour.completed}/${guidedTour.total}`}
+                </span>
+              {/if}
+            </h3>
             <button type="button" class="qlog-btn" onclick={() => app.quests?.openLog()}>
               Open Quest Log
             </button>
           </div>
+          {#if guidedRoadmap.length > 0}
+            <div class="qsum-roadmap" role="group" aria-label="guided corridor tour steps">
+              {#each guidedRoadmap as step (step.key)}
+                {@const badge =
+                  step.status === "completed"
+                    ? "✓"
+                    : step.status === "active"
+                      ? step.readyToTurnIn
+                        ? "?"
+                        : "▸"
+                      : step.status === "available"
+                        ? "!"
+                        : "○"}
+                {@const tip = `Step ${step.step}/7 · ${step.shortLabel} · ${step.giverLabel} (${step.giverRoomName})`}
+                {#if step.status === "active" || step.status === "available"}
+                  <button
+                    type="button"
+                    class="qsum-step"
+                    class:current={step.status === "active"}
+                    class:avail={step.status === "available"}
+                    title={`${tip} — click to open dialog`}
+                    onclick={() => app.quests?.openQuestDialog(step.key)}
+                  >
+                    {badge} {step.step}. {step.shortLabel}
+                  </button>
+                {:else}
+                  <span
+                    class="qsum-step"
+                    class:done={step.status === "completed"}
+                    class:upcoming={step.status === "upcoming"}
+                    title={tip}
+                  >
+                    {badge} {step.step}. {step.shortLabel}
+                  </span>
+                {/if}
+              {/each}
+            </div>
+          {/if}
           {#if trackedQuest}
             <div class="qsum-line">
               <strong class="qsum-title">{trackedQuest.title}</strong>
@@ -147,6 +197,10 @@
           {:else if availableQuestsCount > 0}
             <p class="qsum-next">
               {availableQuestsCount} quest offer{availableQuestsCount === 1 ? "" : "s"} available here.
+            </p>
+          {:else if nextGuidedOffer}
+            <p class="qsum-next">
+              <strong>Next Guided ({nextGuidedOffer.step}/7):</strong> {nextGuidedOffer.shortLabel} — speak with <strong>{nextGuidedOffer.giverLabel}</strong> ({nextGuidedOffer.giverRoomName})
             </p>
           {/if}
           {#if completedQuestsCount > 0}
@@ -533,5 +587,71 @@
 
   .qsum-done {
     color: #86efac;
+  }
+
+  .quest-summary.mastered {
+    border-color: rgba(52, 211, 153, 0.7);
+    background: linear-gradient(90deg, rgba(16, 185, 129, 0.14), rgba(212, 166, 74, 0.1));
+  }
+
+  .qsum-tour-badge {
+    margin-left: 0.45rem;
+    padding: 0.06rem 0.4rem;
+    border-radius: 999px;
+    border: 1px solid rgba(251, 191, 36, 0.65);
+    background: rgba(212, 166, 74, 0.2);
+    color: #fde68a;
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    font-weight: 700;
+    vertical-align: middle;
+  }
+
+  .qsum-tour-badge.mastered {
+    border-color: rgba(52, 211, 153, 0.75);
+    background: rgba(16, 185, 129, 0.22);
+    color: #a7f3d0;
+  }
+
+  .qsum-roadmap {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+    margin: 0.25rem 0 0.35rem;
+  }
+
+  .qsum-step {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.1rem 0.38rem;
+    border-radius: 4px;
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    background: rgba(15, 23, 42, 0.55);
+    color: var(--fg-muted);
+    font: inherit;
+    font-size: 0.69rem;
+    line-height: 1.2;
+  }
+
+  button.qsum-step {
+    cursor: pointer;
+  }
+
+  .qsum-step.done {
+    border-color: rgba(52, 211, 153, 0.55);
+    background: rgba(16, 185, 129, 0.14);
+    color: #6ee7b7;
+  }
+
+  .qsum-step.current,
+  .qsum-step.avail {
+    border-color: rgba(251, 191, 36, 0.75);
+    background: rgba(212, 166, 74, 0.22);
+    color: #fde68a;
+    font-weight: 700;
+  }
+
+  .qsum-step.upcoming {
+    opacity: 0.68;
   }
 </style>
