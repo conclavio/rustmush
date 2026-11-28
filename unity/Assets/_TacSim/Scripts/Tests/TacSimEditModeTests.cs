@@ -17146,5 +17146,96 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ExchangeModal_ShowsMissingListingDeskHintAndWayfinderForStep2OtherDesk()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave97PR3_MissingListingDeskHintTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                var tradeState = new TacSimTradeAndShipState();
+                hud.BindTradeState(tradeState);
+                hud.QuestJournal.BindTradeState(tradeState);
+
+                string wayfinderRoom = null;
+                hud.QuestJournal.OnWayfinderRoomRequested += r => wayfinderRoom = r;
+
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"",
+                        ""title"": ""Stock the Locker and Tanks"",
+                        ""next_room_entry"": ""room.c08_chandlery"",
+                        ""next_room_name"": ""Co-op Chandlery"",
+                        ""checkpoints"": [
+                            {
+                                ""id"": ""buy_provisions"",
+                                ""title"": ""Buy at least 10 provisions at Ceres Co-op Chandlery"",
+                                ""instructions"": ""Buy 10 provisions at Co-op Chandlery."",
+                                ""room_entry"": ""room.c08_chandlery"",
+                                ""room_name"": ""Co-op Chandlery"",
+                                ""checked"": false
+                            },
+                            {
+                                ""id"": ""buy_propellant"",
+                                ""title"": ""Buy at least 5 tonnes of propellant at Ceres Exchange Hall"",
+                                ""instructions"": ""Buy 5 tonnes of propellant at Exchange Hall."",
+                                ""room_entry"": ""room.c07_exchange"",
+                                ""room_name"": ""Exchange Hall"",
+                                ""checked"": false
+                            }
+                        ]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+
+                // 1. At Chandlery with 10d provisions stocked & only Provisions ask on board -> shows Exchange Hall hint + WAYFINDER
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""listings"": [
+                        { ""id"": 301, ""side"": ""ask"", ""good"": ""tacsim:provisions"", ""good_label"": ""Provisions"", ""vendor"": ""Co-op Chandlery"", ""available_qty"": 40, ""unit_price_minor"": 500, ""price_text"": ""5.00cr"", ""funded"": true }
+                    ],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": { ""cargo_kg"": 0, ""cargo_limit_kg"": 100000, ""tank_kg"": 0, ""tank_limit_kg"": 80000, ""stores_days"": 10, ""stores_limit_days"": 120, ""items"": [] }
+                    }
+                }"));
+                hud.OpenTradeAndSailingModal("CO-OP CHANDLERY", openSailingTab: false);
+
+                Assert.IsTrue(hud.IsExchangeQuestBannerVisible);
+                StringAssert.Contains("PROPELLANT", hud.ExchangeQuestBannerText);
+                StringAssert.Contains("Not listed here — try Exchange Hall", hud.ExchangeQuestBannerText);
+                Assert.IsTrue(hud.IsExchangeSailJumpVisible);
+                Assert.AreEqual("WAYFINDER", hud.ExchangeSailJumpLabelSnapshot);
+                Assert.IsTrue(hud.TriggerExchangeQuestWayfinder());
+                Assert.AreEqual("room.c07_exchange", wayfinderRoom);
+
+                // 2. At Exchange Hall with Propellant ask on board -> missing-desk hint and WAYFINDER button clear
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""listings"": [
+                        { ""id"": 302, ""side"": ""ask"", ""good"": ""tacsim:propellant"", ""good_label"": ""Propellant"", ""vendor"": ""Exchange Hall"", ""available_qty"": 50, ""unit_price_minor"": 800, ""price_text"": ""8.00cr"", ""funded"": true }
+                    ],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": { ""cargo_kg"": 0, ""cargo_limit_kg"": 100000, ""tank_kg"": 0, ""tank_limit_kg"": 80000, ""stores_days"": 10, ""stores_limit_days"": 120, ""items"": [] }
+                    }
+                }"));
+                hud.OpenTradeAndSailingModal("EXCHANGE HALL", openSailingTab: false);
+
+                Assert.IsTrue(hud.IsExchangeQuestBannerVisible);
+                Assert.IsFalse(hud.ExchangeQuestBannerText.Contains("Not listed here"));
+                Assert.IsFalse(hud.IsExchangeSailJumpVisible);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

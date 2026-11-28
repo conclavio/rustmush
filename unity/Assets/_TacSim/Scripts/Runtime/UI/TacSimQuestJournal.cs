@@ -25,8 +25,18 @@ namespace TacSim.UI
         public readonly int TargetQuantity;
         public readonly bool WantsBuy;
         public readonly bool WantsSell;
+        public readonly string RoomEntry;
+        public readonly string RoomName;
 
-        public QuestTradeNeed(string questTitle, string checkpointTitle, string commoditySlug, int targetQuantity, bool wantsBuy, bool wantsSell)
+        public QuestTradeNeed(
+            string questTitle,
+            string checkpointTitle,
+            string commoditySlug,
+            int targetQuantity,
+            bool wantsBuy,
+            bool wantsSell,
+            string roomEntry = null,
+            string roomName = null)
         {
             QuestTitle = questTitle ?? string.Empty;
             CheckpointTitle = checkpointTitle ?? string.Empty;
@@ -34,6 +44,43 @@ namespace TacSim.UI
             TargetQuantity = Mathf.Max(1, targetQuantity);
             WantsBuy = wantsBuy;
             WantsSell = wantsSell;
+            RoomEntry = roomEntry ?? string.Empty;
+            RoomName = roomName ?? string.Empty;
+        }
+
+        public string FormatVenueHint()
+        {
+            if (!string.IsNullOrWhiteSpace(RoomName)) return RoomName.Trim();
+            string e = (RoomEntry ?? string.Empty).Trim().ToLowerInvariant();
+            switch (e)
+            {
+                case "room.c08_chandlery":
+                case "room.c06_chandlery":
+                    return "Co-op Chandlery";
+                case "room.c07_exchange":
+                    return "Exchange Hall";
+                case "room.c05_registry":
+                    return "Registry & Co-op Desk";
+                case "room.p07_receiving":
+                    return "Receiving Counter";
+                case "room.p11_service":
+                    return "Service Counter";
+            }
+            if (string.Equals(CommoditySlug, "provisions", StringComparison.OrdinalIgnoreCase))
+                return "Co-op Chandlery";
+            if (string.Equals(CommoditySlug, "propellant", StringComparison.OrdinalIgnoreCase))
+                return "Exchange Hall";
+            return string.Empty;
+        }
+
+        public string ResolveVenueRoomEntry()
+        {
+            if (!string.IsNullOrWhiteSpace(RoomEntry)) return RoomEntry.Trim();
+            if (string.Equals(CommoditySlug, "provisions", StringComparison.OrdinalIgnoreCase))
+                return "room.c08_chandlery";
+            if (string.Equals(CommoditySlug, "propellant", StringComparison.OrdinalIgnoreCase))
+                return "room.c07_exchange";
+            return string.Empty;
         }
 
         public bool MatchesListing(MarketListingRow row)
@@ -1415,7 +1462,9 @@ namespace TacSim.UI
                     picked.CommoditySlug,
                     picked.TargetQuantity,
                     wantsBuy: false,
-                    wantsSell: true);
+                    wantsSell: true,
+                    roomEntry: picked.RoomEntry,
+                    roomName: picked.RoomName);
             }
 
             need = picked;
@@ -1492,7 +1541,7 @@ namespace TacSim.UI
             if (qty <= 0) qty = ExtractLeadingPositiveInt(cp.Instructions);
             if (qty <= 0) qty = 1;
 
-            need = new QuestTradeNeed(questTitle, cp.Title, matchedSlug, qty, wantsBuy, wantsSell);
+            need = new QuestTradeNeed(questTitle, cp.Title, matchedSlug, qty, wantsBuy, wantsSell, cp.RoomEntry, cp.RoomName);
             return true;
         }
 
@@ -2546,6 +2595,14 @@ namespace TacSim.UI
                 roomEntry = nextOffer.GiverRoomEntry;
             if (string.IsNullOrEmpty(roomEntry)) return false;
             OnWayfinderRoomRequested?.Invoke(roomEntry);
+            return true;
+        }
+
+        public bool TriggerWayfinderToRoom(string roomEntry)
+        {
+            if (string.IsNullOrWhiteSpace(roomEntry))
+                return TriggerTrackerWayfinder();
+            OnWayfinderRoomRequested?.Invoke(roomEntry.Trim());
             return true;
         }
 
