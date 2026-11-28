@@ -1702,4 +1702,120 @@ describe("TacsimPortModals Dray-P Vehicle Bay and Co-op Refit quest guidance", (
     await fireEvent.click(screen.getByRole("button", { name: "Run +coop/refit prospector" }));
     expect(onCmdIndReady).toHaveBeenCalledWith("+coop/refit prospector");
   });
+
+  it("renders live quest offer preview and active hold/refit readiness inside NPC Talk modal", () => {
+    // 1. NPC with available offer -> shows first objective + reward preview right inside Talk modal
+    const offerQuests = new QuestsStore();
+    offerQuests.applyFrame({
+      schema: 1,
+      available: [
+        {
+          key: GUIDED_TOUR_KEYS[0],
+          title: "First Papers at the Registry",
+          giver_id: "#11",
+          giver_name: "Maren Halvorsen",
+          accept_cmd: "+quest/accept #11=tok1",
+          reward_summary: "Guided Tour Step 1/7 · Co-op Charter",
+          checkpoints: [
+            {
+              id: "enroll_coop",
+              title: "Enroll your Dray hull with Ilse at the Registry",
+              instructions: "Run +coop/enroll <name>.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+      active: [],
+      completed: [],
+    });
+    const offerApp = makeApp(offerQuests, "trade");
+    const offerTacsim = offerApp.tacsim as unknown as {
+      activeModal: string;
+      focusedNpc: { id: string; name: string; bio: string };
+    };
+    offerTacsim.activeModal = "npc";
+    offerTacsim.focusedNpc = {
+      id: "#11",
+      name: "Maren Halvorsen",
+      bio: "Port Watch clerk",
+    };
+    const rOffer = render(TacsimPortModals, { props: { app: offerApp, onCmd: vi.fn() } });
+    const preview = screen.getByRole("status", { name: "npc quest offer preview" });
+    expect(preview.textContent).toContain("Objective: Enroll your Dray hull with Ilse at the Registry");
+    expect(preview.textContent).toContain("Reward: Guided Tour Step 1/7 · Co-op Charter");
+    rOffer.unmount();
+
+    // 2. NPC with in-progress Step 5 refit & live stowage -> shows Next step + [REFIT CHECK], then [READY] once cleared
+    const activeQuests = new QuestsStore();
+    activeQuests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[4],
+          title: "Refit the Dray for Surface Mining",
+          giver_id: "#18",
+          giver_name: "Ilse Oduya-Brandt",
+          turn_in_id: "#31",
+          turn_in_name: "Rosalind Qureshi-Mbeki",
+          next_step: "Empty hold & stores, then run +coop/refit prospector",
+          checkpoints: [
+            {
+              id: "refit_dray_p",
+              title: "Refit Dray-P",
+              instructions: "Empty hold and run +coop/refit prospector.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+      available: [],
+      completed: [],
+    });
+    const blockedApp = makeApp(activeQuests, "trade", {
+      cargoKg: 2000,
+      cargoMaxKg: 100_000,
+      cargoL: 1000,
+      cargoMaxL: 120_000,
+      propellantKg: 12_000,
+      propellantMaxKg: 80_000,
+      provisionsCrewDays: 4,
+      provisionsMaxCrewDays: 120,
+      cargoLines: [{ good: "tacsim:metals", label: "Metals", qty: 2, unit: "u", massKg: 2000 }],
+    });
+    const blockedTacsim = blockedApp.tacsim as unknown as {
+      activeModal: string;
+      focusedNpc: { id: string; name: string; bio: string };
+    };
+    blockedTacsim.activeModal = "npc";
+    blockedTacsim.focusedNpc = {
+      id: "#18",
+      name: "Ilse Oduya-Brandt",
+      bio: "Co-op Registry factor",
+    };
+    const rBlocked = render(TacsimPortModals, { props: { app: blockedApp, onCmd: vi.fn() } });
+    const statusBlocked = screen.getByRole("status", { name: "npc quest status" });
+    expect(statusBlocked.textContent).toContain("Next: Empty hold & stores, then run +coop/refit prospector");
+    expect(statusBlocked.textContent).toContain("[REFIT CHECK]");
+    expect(statusBlocked.textContent).toContain("Cargo 2.0t");
+    rBlocked.unmount();
+
+    const clearApp = makeApp(activeQuests, "trade");
+    const clearTacsim = clearApp.tacsim as unknown as {
+      activeModal: string;
+      focusedNpc: { id: string; name: string; bio: string };
+    };
+    clearTacsim.activeModal = "npc";
+    clearTacsim.focusedNpc = {
+      id: "#18",
+      name: "Ilse Oduya-Brandt",
+      bio: "Co-op Registry factor",
+    };
+    render(TacsimPortModals, { props: { app: clearApp, onCmd: vi.fn() } });
+    const statusClear = screen.getByRole("status", { name: "npc quest status" });
+    expect(statusClear.textContent).toContain("[READY]");
+    expect(statusClear.textContent).toContain("Cargo empty");
+  });
 });
