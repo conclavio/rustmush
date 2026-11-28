@@ -1816,10 +1816,42 @@ namespace TacSim.UI
         public void SelectQuestSubTab(string subTab)
         {
             ActiveQuestSubTab = subTab ?? "active";
-            _selectedQuestIndex = 0;
+            _selectedQuestIndex = ResolveDefaultJournalIndex(ActiveQuestSubTab);
             _confirmAbandonKey = string.Empty;
             _confirmDeclineKey = string.Empty;
             RefreshJournalBody();
+        }
+
+        private int ResolveDefaultJournalIndex(string subTab)
+        {
+            if (LatestPanel == null) return 0;
+            if (string.Equals(subTab, "active", StringComparison.OrdinalIgnoreCase) && LatestPanel.Active.Count > 0)
+            {
+                for (int i = 0; i < LatestPanel.Active.Count; i++)
+                    if (LatestPanel.Active[i].CanFinishNow) return i;
+                for (int i = 0; i < LatestPanel.Active.Count; i++)
+                    if (LatestPanel.Active[i].CanCheckNow || LatestPanel.Active[i].ReadyToFinish) return i;
+                if (!string.IsNullOrEmpty(TrackedQuestKey))
+                {
+                    for (int i = 0; i < LatestPanel.Active.Count; i++)
+                        if (string.Equals(LatestPanel.Active[i].Key, TrackedQuestKey, StringComparison.Ordinal)) return i;
+                }
+                return 0;
+            }
+            if (string.Equals(subTab, "available", StringComparison.OrdinalIgnoreCase) && LatestPanel.Available.Count > 0)
+            {
+                for (int i = 0; i < LatestPanel.Available.Count; i++)
+                {
+                    var av = LatestPanel.Available[i];
+                    if (av != null &&
+                        (string.Equals(av.Category, "guided", StringComparison.OrdinalIgnoreCase) ||
+                         GuidedStepNumber(av.Key) > 0))
+                    {
+                        return i;
+                    }
+                }
+            }
+            return 0;
         }
 
         public void TrackQuest(string questKey)
@@ -2512,7 +2544,17 @@ namespace TacSim.UI
                     keys.Add(a.Key);
                 }
             }
-            // 2. Available quest offers next (`!` gold)
+            // 2. Available quest offers next (`!` gold), guided tour offers before optional offers
+            for (int i = 0; i < LatestPanel.Available.Count; i++)
+            {
+                var av = LatestPanel.Available[i];
+                if (av.GiverId == npcId &&
+                    (string.Equals(av.Category, "guided", StringComparison.OrdinalIgnoreCase) || GuidedStepNumber(av.Key) > 0) &&
+                    !keys.Contains(av.Key))
+                {
+                    keys.Add(av.Key);
+                }
+            }
             for (int i = 0; i < LatestPanel.Available.Count; i++)
             {
                 var av = LatestPanel.Available[i];
@@ -2768,6 +2810,9 @@ namespace TacSim.UI
                 if (_dlgBodyText != null)
                 {
                     var sb = new StringBuilder(512);
+                    int offerStep = GuidedStepNumber(offer.Key);
+                    if (offerStep > 0)
+                        sb.Append($"<b><color=#66EEAA>[Step {offerStep}/7]</color></b>\n");
                     sb.Append(MushProtocol.EscapeUnityRichText(offer.Introduction)).Append("\n\n");
                     sb.Append("<b><color=#FFDF77>REQUIREMENTS &amp; STEPS</color></b>\n");
                     for (int i = 0; i < offer.Checkpoints.Count; i++)
@@ -2808,6 +2853,15 @@ namespace TacSim.UI
                 if (_dlgBodyText != null)
                 {
                     var sb = new StringBuilder(512);
+                    int activeStep = GuidedStepNumber(active.Key);
+                    if (activeStep > 0)
+                        sb.Append($"<b><color=#66EEAA>[Step {activeStep}/7]</color></b>");
+                    if (active.CanFinishNow)
+                    {
+                        if (activeStep > 0) sb.Append("  ");
+                        sb.Append("<color=#55EE99><b>[?] READY TO COMPLETE HERE</b></color>");
+                    }
+                    if (activeStep > 0 || active.CanFinishNow) sb.Append('\n');
                     sb.Append(MushProtocol.EscapeUnityRichText(active.Introduction)).Append("\n\n");
                     sb.Append("<b><color=#FFDF77>OBJECTIVES</color></b>\n");
                     for (int i = 0; i < active.Checkpoints.Count; i++)
@@ -3052,7 +3106,12 @@ namespace TacSim.UI
                     {
                         int sel = _selectedQuestIndex % LatestPanel.Active.Count;
                         var q = LatestPanel.Active[sel];
-                        sb.Append($"<b><color=#FFDF77>[{sel + 1}/{LatestPanel.Active.Count}] {MushProtocol.EscapeUnityRichText(q.Title)}</color></b>\n");
+                        int activeStep = GuidedStepNumber(q.Key);
+                        string activeStepTag = activeStep > 0 ? $" <color=#66EEAA>[Step {activeStep}/7]</color>" : string.Empty;
+                        string readyLead = q.CanFinishNow ? "<color=#55EE99>[?]</color> " : string.Empty;
+                        sb.Append($"{readyLead}<b><color=#FFDF77>[{sel + 1}/{LatestPanel.Active.Count}] {MushProtocol.EscapeUnityRichText(q.Title)}</color></b>{activeStepTag}\n");
+                        if (q.CanFinishNow)
+                            sb.Append("<color=#55EE99><b>READY TO COMPLETE HERE</b></color>\n");
                         sb.Append($"<color=#77DDFF>Giver: {MushProtocol.EscapeUnityRichText(q.GiverName)}  ·  Turn in: {MushProtocol.EscapeUnityRichText(q.TurnInName)}</color>\n");
                         sb.Append(MushProtocol.EscapeUnityRichText(q.Introduction)).Append("\n\n");
                         for (int i = 0; i < q.Checkpoints.Count; i++)
@@ -3111,7 +3170,9 @@ namespace TacSim.UI
                     {
                         int sel = _selectedQuestIndex % LatestPanel.Available.Count;
                         var q = LatestPanel.Available[sel];
-                        sb.Append($"<b><color=#FFDD44>[!] [{sel + 1}/{LatestPanel.Available.Count}] {MushProtocol.EscapeUnityRichText(q.Title)}</color></b>\n");
+                        int availStep = GuidedStepNumber(q.Key);
+                        string availStepTag = availStep > 0 ? $" <color=#66EEAA>[Step {availStep}/7]</color>" : string.Empty;
+                        sb.Append($"<b><color=#FFDD44>[!] [{sel + 1}/{LatestPanel.Available.Count}] {MushProtocol.EscapeUnityRichText(q.Title)}</color></b>{availStepTag}\n");
                         sb.Append($"<color=#77DDFF>Offered by: {MushProtocol.EscapeUnityRichText(q.GiverName)}  ·  Turn in: {MushProtocol.EscapeUnityRichText(q.TurnInName)}</color>\n");
                         sb.Append(MushProtocol.EscapeUnityRichText(q.Introduction)).Append("\n\n");
                         for (int i = 0; i < q.Checkpoints.Count; i++)
