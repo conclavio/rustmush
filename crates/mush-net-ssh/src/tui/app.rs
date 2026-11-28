@@ -3535,6 +3535,14 @@ impl TuiApp {
             r.extend_submits(out.commands);
             r.extend_submits(self.port_walk.take_orders());
             r.extend_queries(out.queries);
+            if let Some((npc_id, npc_name)) = out.open_quest_for_npc {
+                self.port_walk.stop_motion();
+                self.quests_overlay
+                    .open_for_npc(&self.quests_snap, &npc_id, &npc_name);
+                if self.manifest.panels.iter().any(|p| p == QUESTS_FEED) {
+                    r.push_query((QUESTS_FEED.to_string(), Value::Null));
+                }
+            }
             return;
         }
         match key {
