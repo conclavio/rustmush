@@ -2658,6 +2658,7 @@ namespace TacSim.UI
                     readyTurnInWayfinder = true;
                 }
             }
+            bool tourMastered = QuestJournal.TryGetGuidedTourProgress(out _, out _, out _, out bool allDone) && allDone;
             EconomyPanels.ApplyQuestGuidance(
                 tradeSlug,
                 tradeTitle,
@@ -2670,7 +2671,8 @@ namespace TacSim.UI
                 questStepTag: ResolveActiveQuestStepTag(),
                 readyTurnInSummary: readyTurnInSummary,
                 readyTurnInCommand: readyTurnInCommand,
-                readyTurnInWayfinder: readyTurnInWayfinder);
+                readyTurnInWayfinder: readyTurnInWayfinder,
+                guidedTourMastered: tourMastered);
         }
 
         public void SwitchTradeTerminalTab(TradeTerminalTab tab, bool autoQuery = true)
