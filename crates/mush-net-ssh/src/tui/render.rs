@@ -5394,7 +5394,34 @@ pub fn render_quarry_rigs_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
 /// shown (`site.readings[].line`, or the frame's own `site.no_readings` sentence), the frame's
 /// `site.other_rigs` sentence, and the log (`site.log`, the viewer's own excursion's lines).
 pub fn render_quarry_side_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
+    render_quarry_side_rows_with_quest(data, ctx, None)
+}
+
+fn matches_quest_ore_text(text: &str, m: &super::quests::QuestSurfaceMiningStatus) -> bool {
+    if text.is_empty() {
+        return false;
+    }
+    let low = text.to_ascii_lowercase();
+    let slug = m.target_ore_slug.to_ascii_lowercase();
+    let spaced = slug.replace('_', " ");
+    let fam = m.recommended_family.to_ascii_lowercase();
+    (!slug.is_empty() && low.contains(&slug))
+        || (!spaced.is_empty() && low.contains(&spaced))
+        || (!fam.is_empty() && low.contains(&fam))
+}
+
+/// Quest-aware variant of [`render_quarry_side_rows`] that surfaces matching Step 6 landing sites
+/// (`+ship/plan <venue>`) and mineral readings first in bold gold `[QUEST]` rows.
+pub fn render_quarry_side_rows_with_quest(
+    data: &Value,
+    ctx: &RenderCtx<'_>,
+    quest_mining: Option<&super::quests::QuestSurfaceMiningStatus>,
+) -> PaneRows {
     let system = ctx.tag("system");
+    let quest_style = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+    let active_mine = quest_mining.filter(|m| !m.mine_done);
     let line_rows = |lines: &[String]| -> Vec<PaneRow> {
         lines
             .iter()
@@ -5408,6 +5435,61 @@ pub fn render_quarry_side_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
         if chart_num(frame, "width") == 0 {
             return PaneRows::one(&quarry_text(frame, "/title").unwrap_or_default());
         }
+        let mut rows = Vec::new();
+        if let Some(m) = active_mine
+            && let Some(sites) = frame.pointer("/ground/sites").and_then(Value::as_array)
+        {
+            let mut matched: Vec<&Value> = Vec::new();
+            for s in sites {
+                let best = s.get("best").and_then(Value::as_str).unwrap_or("");
+                let best_line = s.get("best_line").and_then(Value::as_str).unwrap_or("");
+                if matches_quest_ore_text(best_line, m) || matches_quest_ore_text(best, m) {
+                    matched.push(s);
+                }
+            }
+            if matched.is_empty()
+                && let Some(starter) = sites
+                    .iter()
+                    .find(|s| {
+                        !s.get("here").and_then(Value::as_bool).unwrap_or(false)
+                            && s.get("venue")
+                                .and_then(Value::as_str)
+                                .is_some_and(|v| v.eq_ignore_ascii_case("commons"))
+                    })
+                    .or_else(|| {
+                        sites.iter().find(|s| {
+                            !s.get("here").and_then(Value::as_bool).unwrap_or(false)
+                                && s.get("venue")
+                                    .and_then(Value::as_str)
+                                    .is_some_and(|v| v.eq_ignore_ascii_case("ahuna"))
+                        })
+                    })
+                    .or_else(|| {
+                        sites.iter().find(|s| {
+                            !s.get("here").and_then(Value::as_bool).unwrap_or(false)
+                                && s.get("tenure")
+                                    .and_then(Value::as_str)
+                                    .is_some_and(|t| t.to_ascii_lowercase().contains("open"))
+                        })
+                    })
+            {
+                matched.push(starter);
+            }
+            for s in matched {
+                let letter = s.get("letter").and_then(Value::as_str).unwrap_or("?");
+                let site = s.get("site").and_then(Value::as_str).unwrap_or("");
+                let venue = s.get("venue").and_then(Value::as_str).unwrap_or("");
+                let summary = if venue.is_empty() {
+                    format!("{letter} {site}")
+                } else {
+                    format!("{letter} {site} (+ship/plan {venue})")
+                };
+                rows.push(PaneRow::plain(Line::from(vec![
+                    Span::styled("[QUEST] ", quest_style),
+                    Span::styled(clean(&summary), quest_style),
+                ])));
+            }
+        }
         let lines: Vec<String> = frame
             .pointer("/ground/lines")
             .and_then(Value::as_array)
@@ -5419,9 +5501,8 @@ pub fn render_quarry_side_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
                     .collect()
             })
             .unwrap_or_default();
-        return PaneRows {
-            rows: line_rows(&lines),
-        };
+        rows.extend(line_rows(&lines));
+        return PaneRows { rows };
     }
     if data.is_null() {
         return PaneRows::one(QUARRY_NO_MAP);
@@ -5447,6 +5528,27 @@ pub fn render_quarry_side_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
         if let Some(line) = quarry_text(data, "/site/no_readings") {
             rows.push(PaneRow::plain(Line::from(line)));
         }
+    } else if let Some(m) = active_mine {
+        let fam_match = family.eq_ignore_ascii_case(&m.recommended_family);
+        let mut direct = Vec::new();
+        let mut family_only = Vec::new();
+        let mut rest = Vec::new();
+        for line in readings {
+            if matches_quest_ore_text(&line, m) {
+                direct.push(line);
+            } else if fam_match {
+                family_only.push(line);
+            } else {
+                rest.push(line);
+            }
+        }
+        for line in direct.into_iter().chain(family_only) {
+            rows.push(PaneRow::plain(Line::from(vec![
+                Span::styled("[QUEST] ", quest_style),
+                Span::styled(clean(&line), quest_style),
+            ])));
+        }
+        rows.extend(line_rows(&rest));
     } else {
         rows.extend(line_rows(&readings));
     }
@@ -8888,6 +8990,105 @@ mod tests {
         assert!(
             text.contains("[Q] Board Ship (+ship/board)"),
             "Exits row must append Board Ship quest action hint:\n{text}"
+        );
+    }
+
+    #[test]
+    fn render_quarry_side_rows_with_quest_sorts_matching_sites_and_readings_first() {
+        let mining = super::super::quests::QuestSurfaceMiningStatus {
+            quest_title: "Scan, Sound, and Mine a Landing Site".into(),
+            target_ore_slug: "carbon_ore".into(),
+            recommended_family: "carbon".into(),
+            scan_done: false,
+            sound_done: false,
+            mine_done: false,
+        };
+        let row_texts = |rows: PaneRows| -> Vec<String> {
+            rows.rows
+                .into_iter()
+                .map(|r| {
+                    r.line
+                        .spans
+                        .into_iter()
+                        .map(|s| s.content.into_owned())
+                        .collect::<String>()
+                })
+                .collect()
+        };
+        let theme = AnsiTheme::classic();
+
+        // 1. Site readings: carbon_ore listed second sorts first with [QUEST] badge
+        let site_data = serde_json::json!({
+            "width": 16,
+            "site": {
+                "family": "volatiles",
+                "readings": [
+                    { "target": "A", "line": "A · 90 m W — lean water_ice trace" },
+                    { "target": "C", "line": "C · 170 m NE — rich carbon_ore pocket" }
+                ],
+                "log": []
+            }
+        });
+        let store = PanelStore::default();
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::Ansi16,
+            utf8: true,
+            store: &store,
+            selected_channel: None,
+            pane: None,
+            picture: None,
+        };
+        let site_rows = row_texts(render_quarry_side_rows_with_quest(
+            &site_data,
+            &ctx,
+            Some(&mining),
+        ));
+        assert_eq!(site_rows[0], "readings, volatiles");
+        assert!(
+            site_rows[1].starts_with("[QUEST] C · 170 m NE — rich carbon_ore pocket"),
+            "matching carbon_ore reading must sort first:\n{site_rows:#?}"
+        );
+        assert_eq!(site_rows[2], "A · 90 m W — lean water_ice trace");
+
+        // 2. Ground chart: matching carbon_ore site bubbles to row 0 with +ship/plan hint
+        let mut g_store = PanelStore::default();
+        g_store.set_quarry(super::super::panels::QuarryView {
+            mode: super::super::panels::QuarryMode::Ground,
+            ..Default::default()
+        });
+        g_store.apply_panel(
+            &mush_proto::SmolStr::new_static(BODY_GROUND_FEED),
+            mush_proto::PanelFrameKind::Keyframe,
+            &serde_json::json!({
+                "width": 56,
+                "ground": {
+                    "sites": [
+                        { "letter": "A", "site": "Occator Rim", "venue": "occator", "here": false, "best": "water_ice", "best_line": "lean water_ice" },
+                        { "letter": "B", "site": "Freeport Commons", "venue": "commons", "here": false, "best": "carbon_ore", "best_line": "rich carbon_ore" }
+                    ],
+                    "lines": ["A Occator Rim", "B Freeport Commons"]
+                }
+            }),
+            0,
+        );
+        let g_ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::Ansi16,
+            utf8: true,
+            store: &g_store,
+            selected_channel: None,
+            pane: None,
+            picture: None,
+        };
+        let ground_rows = row_texts(render_quarry_side_rows_with_quest(
+            &Value::Null,
+            &g_ctx,
+            Some(&mining),
+        ));
+        assert_eq!(
+            ground_rows[0],
+            "[QUEST] B Freeport Commons (+ship/plan commons)"
         );
     }
 }

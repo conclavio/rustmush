@@ -58,8 +58,9 @@ use super::render::{
     BODY_GROUND_FEED, CHART_FEED, Entry, GUTTER_W, PaneRow, PaneRows, RenderCtx, SITE_MAP_FEED,
     TV_STATUS_FEED, dim_span_owned, floor_line, legend_line, render_backlog_rows,
     render_channels_rows, render_chart_table_rows, render_cockpit_notices_rows, render_event,
-    render_event_with_quest_exit, render_rolls_rows, render_sheet_rows, render_vitals_rows,
-    render_who_rail, status_line, tab_strip, vitals_line, wrap_spans, wrap_spans_count,
+    render_event_with_quest_exit, render_quarry_side_rows_with_quest, render_rolls_rows,
+    render_sheet_rows, render_vitals_rows, render_who_rail, status_line, tab_strip, vitals_line,
+    wrap_spans, wrap_spans_count,
 };
 use super::replay::{Document, Live, Picture, REPLAY_DOCUMENT_SHAPE, REPLAY_GRID_SHAPE};
 use super::screen::{
@@ -5540,6 +5541,13 @@ impl TuiApp {
             PaneContent::Scrollback | PaneContent::Who => PaneRows::default(),
             PaneContent::Panel { feed, render } => {
                 let feed = self.resolve_feed(feed);
+                if feed == SITE_MAP_FEED && spec.id == PaneId("readings") {
+                    let data = self.panels.get(feed).unwrap_or(&Value::Null);
+                    let mining = self
+                        .quests_snap
+                        .surface_mining_status(self.quests_overlay.tracked_key.as_deref());
+                    return render_quarry_side_rows_with_quest(data, &ctx, mining.as_ref());
+                }
                 match self.panels.get(feed) {
                     Some(data) => render(data, &ctx),
                     // A feed whose first keyframe is still in flight is
