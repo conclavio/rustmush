@@ -235,6 +235,7 @@ namespace TacSim.UI
         private Button _trackerActionBtn;
         private Text _trackerActionLbl;
         private Button _trackerNavBtn;
+        private Button _trackerCycleBtn;
         private bool _trackerCollapsed;
 
         private readonly List<string>[] _tabLines =
@@ -279,6 +280,7 @@ namespace TacSim.UI
         public bool IsTrackerVisible => _trackerRoot != null && _trackerRoot.activeSelf;
         public bool IsTrackerCollapsed => _trackerCollapsed;
         public bool IsTrackerWayfinderVisible => _trackerNavBtn != null && _trackerNavBtn.gameObject.activeSelf;
+        public bool IsTrackerCycleVisible => _trackerCycleBtn != null && _trackerCycleBtn.gameObject.activeSelf;
         public bool IsJournalPrefillVisible => _qPrefillBtn != null && _qPrefillBtn.gameObject.activeSelf;
         public string GuidedTourProgressSnapshot
         {
@@ -438,7 +440,11 @@ namespace TacSim.UI
 
             var hdrBar = CreatePanel(_trackerRoot.transform, "TrackerHeader", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -24f), Vector2.zero, new Color(0.16f, 0.22f, 0.28f, 0.97f));
             _trackerHeaderText = CreateText(hdrBar.transform, "OBJECTIVE [J]", 10, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(1f, 0.86f, 0.44f));
-            SetRect(_trackerHeaderText.rectTransform, Vector2.zero, Vector2.one, new Vector2(8f, 0f), new Vector2(-56f, 0f));
+            SetRect(_trackerHeaderText.rectTransform, Vector2.zero, Vector2.one, new Vector2(8f, 0f), new Vector2(-82f, 0f));
+
+            _trackerCycleBtn = CreateSmallButton(hdrBar.transform, "▸", new Color(0.24f, 0.32f, 0.44f), () => CycleTrackedQuest(), out _);
+            SetRect(_trackerCycleBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-78f, 2f), new Vector2(-56f, -2f));
+            _trackerCycleBtn.gameObject.SetActive(false);
 
             var openBtn = CreateSmallButton(hdrBar.transform, "J", new Color(0.16f, 0.38f, 0.50f), () => SetOpen(true), out _);
             SetRect(openBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-52f, 2f), new Vector2(-30f, -2f));
@@ -1125,6 +1131,36 @@ namespace TacSim.UI
             OnQuestsPanelUpdated?.Invoke();
         }
 
+        public string CycleTrackedQuest()
+        {
+            if (LatestPanel == null || LatestPanel.Active.Count == 0)
+            {
+                TrackedQuestKey = string.Empty;
+                return string.Empty;
+            }
+            if (LatestPanel.Active.Count == 1)
+            {
+                TrackedQuestKey = LatestPanel.Active[0].Key;
+                SyncStructuredTrackerCard();
+                return TrackedQuestKey;
+            }
+            int curIdx = -1;
+            for (int i = 0; i < LatestPanel.Active.Count; i++)
+            {
+                if (LatestPanel.Active[i].Key == TrackedQuestKey)
+                {
+                    curIdx = i;
+                    break;
+                }
+            }
+            int nextIdx = curIdx >= 0 ? (curIdx + 1) % LatestPanel.Active.Count : 1;
+            TrackedQuestKey = LatestPanel.Active[nextIdx].Key;
+            _manualPinActive = false;
+            SyncStructuredTrackerCard();
+            OnQuestsPanelUpdated?.Invoke();
+            return TrackedQuestKey;
+        }
+
         public void SetOpen(bool open, QuestJournalTab? tabOverride = null)
         {
             if (_modalRoot == null) return;
@@ -1409,6 +1445,26 @@ namespace TacSim.UI
                 }
                 if (!string.IsNullOrEmpty(active.NextStep))
                     sb.Append("<color=#77DDFF>Next:</color> ").Append(MushProtocol.EscapeUnityRichText(active.NextStep));
+                if (LatestPanel.Available.Count > 0)
+                {
+                    int availCount = LatestPanel.Available.Count;
+                    sb.Append("\n<color=#FFDD44><b>[!] ").Append(availCount)
+                      .Append(availCount == 1 ? " offer here" : " offers here")
+                      .Append("</b></color>");
+                }
+
+                string multiPrefix = string.Empty;
+                if (LatestPanel.Active.Count > 1)
+                {
+                    int activeIdx = 0;
+                    for (int i = 0; i < LatestPanel.Active.Count; i++)
+                    {
+                        if (LatestPanel.Active[i].Key == active.Key) { activeIdx = i; break; }
+                    }
+                    multiPrefix = $"[{activeIdx + 1}/{LatestPanel.Active.Count}] ";
+                }
+                if (_trackerCycleBtn != null)
+                    _trackerCycleBtn.gameObject.SetActive(LatestPanel.Active.Count > 1);
 
                 string tourSuffix = hasTour ? $" · TOUR {tourDone}/{tourTotal}" : string.Empty;
                 PinnedCategory = $"QUEST ({done}/{active.Checkpoints.Count}){tourSuffix} [J]";
@@ -1417,7 +1473,7 @@ namespace TacSim.UI
                 if (_trackerHeaderText != null) _trackerHeaderText.text = PinnedCategory;
                 if (_trackerDetailText != null)
                 {
-                    _trackerDetailText.text = $"<b><color=#FFDF77>{MushProtocol.EscapeUnityRichText(active.Title)}</color></b>\n{sb}";
+                    _trackerDetailText.text = $"<b><color=#FFDF77>{multiPrefix}{MushProtocol.EscapeUnityRichText(active.Title)}</color></b>\n{sb}";
                 }
                 if (_trackerActionBtn != null)
                 {
@@ -1426,7 +1482,15 @@ namespace TacSim.UI
                     {
                         if (active.CanFinishNow) _trackerActionLbl.text = "COMPLETE [?]";
                         else if (active.CanCheckNow) _trackerActionLbl.text = "VERIFY STEP";
-                        else if (!string.IsNullOrEmpty(_trackerRouteCommand)) _trackerActionLbl.text = $"WALK ({_trackerRouteHops}h)";
+                        else if (!string.IsNullOrEmpty(_trackerRouteCommand))
+                        {
+                            if (string.Equals(_trackerRouteCommand, "+ship/board", StringComparison.OrdinalIgnoreCase))
+                                _trackerActionLbl.text = "BOARD SHIP";
+                            else if (string.Equals(_trackerRouteCommand, "+ship/leave", StringComparison.OrdinalIgnoreCase))
+                                _trackerActionLbl.text = "ASHORE";
+                            else
+                                _trackerActionLbl.text = $"WALK ({_trackerRouteHops}h)";
+                        }
                         else if (!string.IsNullOrEmpty(active.NextRoomEntry)) _trackerActionLbl.text = "WAYFINDER";
                         else _trackerActionLbl.text = "OPEN DIALOG";
                     }
@@ -1437,6 +1501,8 @@ namespace TacSim.UI
                 }
                 return;
             }
+
+            if (_trackerCycleBtn != null) _trackerCycleBtn.gameObject.SetActive(false);
 
             if (LatestPanel.Available.Count > 0)
             {

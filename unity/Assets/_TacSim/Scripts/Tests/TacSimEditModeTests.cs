@@ -11968,5 +11968,57 @@ namespace TacSim.Tests
             StringAssert.Contains("[✓]", postMarkup);
             StringAssert.Contains("+tv/1 recover go", postMarkup);
         }
+
+        [Test]
+        public void QuestTrackerCard_CyclesMultipleActiveQuests_ShowsSimultaneousOffers_AndBoardingLabels()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestTrackerMultiCycleTestRoot");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                var submitted = new List<string>();
+                hud.QuestJournal.OnCommandRequested += cmd => submitted.Add(cmd);
+
+                var multiJson = JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#18"",
+                    ""room_name"": ""Visiting Berth Gallery"",
+                    ""active"": [
+                        { ""key"": ""q.first"", ""title"": ""First Active Quest"", ""next_step"": ""Board ship"", ""checkpoints"": [] },
+                        { ""key"": ""q.second"", ""title"": ""Second Active Quest"", ""next_step"": ""Cycle ashore"", ""checkpoints"": [] }
+                    ],
+                    ""available"": [
+                        { ""key"": ""q.offer"", ""title"": ""Room Side Offer"", ""giver_id"": ""#42"", ""giver_name"": ""Ilse"", ""accept_cmd"": ""+quest/accept #42 tok"" }
+                    ]
+                }");
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(multiJson));
+                Assert.IsTrue(hud.QuestJournal.IsTrackerCycleVisible);
+                StringAssert.Contains("[1/2] First Active Quest", hud.QuestJournal.TrackerDetailSnapshot);
+                StringAssert.Contains("[!] 1 offer here", hud.QuestJournal.TrackerDetailSnapshot);
+
+                // Cross-port boarding route labels tracker action as BOARD SHIP and executes +ship/board
+                hud.QuestJournal.SetTrackerRouteBreadcrumb("Board Ship", "+ship/board", 1);
+                Assert.AreEqual("BOARD SHIP", hud.QuestJournal.TrackerActionLabelSnapshot);
+                hud.QuestJournal.TriggerTrackerQuickAction();
+                Assert.Contains("+ship/board", submitted);
+
+                // Cycling advances to Second Active Quest ([2/2]) and supports ASHORE (+ship/leave)
+                Assert.AreEqual("q.second", hud.QuestJournal.CycleTrackedQuest());
+                StringAssert.Contains("[2/2] Second Active Quest", hud.QuestJournal.TrackerDetailSnapshot);
+                hud.QuestJournal.SetTrackerRouteBreadcrumb("Cycle Ashore", "+ship/leave", 1);
+                Assert.AreEqual("ASHORE", hud.QuestJournal.TrackerActionLabelSnapshot);
+                hud.QuestJournal.TriggerTrackerQuickAction();
+                Assert.Contains("+ship/leave", submitted);
+
+                // Cycling wraps back to q.first
+                Assert.AreEqual("q.first", hud.QuestJournal.CycleTrackedQuest());
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
