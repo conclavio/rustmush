@@ -449,6 +449,28 @@ fn extract_leading_positive_i64(text: &str) -> Option<i64> {
     None
 }
 
+/// Infer a corridor port slug (`"ceres"`, `"stickney"`, `"luna"`, `"deimos"`, `"titan"`)
+/// from a canonical station room entry prefix (`room.c*`, `room.p*`, `room.l*`, `room.d*`, `room.t*`).
+#[must_use]
+pub fn infer_station_port_from_room_entry(room_entry: &str) -> Option<&'static str> {
+    let low = room_entry.trim().to_ascii_lowercase();
+    let rest = low.strip_prefix("room.")?;
+    let mut chars = rest.chars();
+    let prefix = chars.next()?;
+    let second = chars.next()?;
+    if !second.is_ascii_digit() {
+        return None;
+    }
+    match prefix {
+        'c' => Some("ceres"),
+        'p' => Some("stickney"),
+        'l' => Some("luna"),
+        'd' => Some("deimos"),
+        't' => Some("titan"),
+        _ => None,
+    }
+}
+
 impl QuestsSnapshot {
     fn ordered_active<'a>(&'a self, tracked_key: Option<&str>) -> Vec<&'a ActiveQuest> {
         let mut out = Vec::with_capacity(self.active.len());
@@ -652,15 +674,39 @@ impl QuestsSnapshot {
         None
     }
 
-    /// Resolve the ship interior target compartment (`"bay"` for active surface
-    /// mining quests, `"bridge"` for active corridor flight quests).
+    /// Resolve the ship interior target compartment (`"airlock"` when docked at the
+    /// active quest's objective port, `"bay"` for active surface mining quests, or
+    /// `"bridge"` for active corridor flight quests).
     #[must_use]
     pub fn active_ship_target_compartment(
         &self,
         tracked_key: Option<&str>,
     ) -> Option<&'static str> {
-        if let Some(mining) = self.surface_mining_status(tracked_key)
-            && !mining.mine_done
+        self.active_ship_target_compartment_for_port(tracked_key, None)
+    }
+
+    /// Docked-port aware ship compartment resolver for cross-port disembark wayfinding.
+    #[must_use]
+    pub fn active_ship_target_compartment_for_port(
+        &self,
+        tracked_key: Option<&str>,
+        docked_port: Option<&str>,
+    ) -> Option<&'static str> {
+        let mining = self.surface_mining_status(tracked_key);
+        if let Some(docked) = docked_port.filter(|s| !s.is_empty())
+            && let Some(q) = self.ordered_active(tracked_key).into_iter().next()
+        {
+            let mining_blocking = mining.as_ref().is_some_and(|m| !m.mine_done);
+            if (!mining_blocking || q.ready_to_finish || q.can_finish_now)
+                && let Some((room_entry, _)) = self.active_objective_room(tracked_key)
+                && let Some(target_port) = infer_station_port_from_room_entry(&room_entry)
+                && target_port.eq_ignore_ascii_case(docked)
+            {
+                return Some("airlock");
+            }
+        }
+        if let Some(m) = mining
+            && !m.mine_done
         {
             return Some("bay");
         }
@@ -2304,6 +2350,59 @@ mod tests {
         assert_eq!(
             overlay.handle_key(Key::Char('p'), &after_mine),
             QuestOverlayAction::Prefill("+tv/1 recover go".into())
+        );
+    }
+
+    #[test]
+    fn infers_station_port_from_room_prefix_and_routes_docked_ship_to_airlock() {
+        assert_eq!(
+            infer_station_port_from_room_entry("room.c08_chandlery"),
+            Some("ceres")
+        );
+        assert_eq!(
+            infer_station_port_from_room_entry("room.p07_receiving"),
+            Some("stickney")
+        );
+        assert_eq!(
+            infer_station_port_from_room_entry("room.l01_berth_gallery"),
+            Some("luna")
+        );
+        assert_eq!(
+            infer_station_port_from_room_entry("room.d02_concourse"),
+            Some("deimos")
+        );
+        assert_eq!(
+            infer_station_port_from_room_entry("room.t04_deck"),
+            Some("titan")
+        );
+        assert_eq!(
+            infer_station_port_from_room_entry("room.welcome_hall"),
+            None
+        );
+
+        let snap = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[2],
+                "title": "Metals Down the Corridor",
+                "next_room_entry": "room.p07_receiving",
+                "checkpoints": [{
+                    "id": "deliver_metals",
+                    "title": "Deliver 5t metals to Stickney Yards",
+                    "instructions": "Run +ship/plan stickney and sell at Receiving.",
+                    "room_entry": "room.p07_receiving",
+                    "checked": false,
+                    "live_ready": false
+                }]
+            }]
+        }));
+        assert_eq!(
+            snap.active_ship_target_compartment_for_port(None, Some("ceres")),
+            Some("bridge")
+        );
+        assert_eq!(
+            snap.active_ship_target_compartment_for_port(None, Some("stickney")),
+            Some("airlock")
         );
     }
 }
