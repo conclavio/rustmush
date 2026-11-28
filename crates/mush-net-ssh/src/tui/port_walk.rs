@@ -244,7 +244,7 @@ struct InteractableTarget {
     action: InteractAction,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum InteractAction {
     OpenDrawer(PortDrawerKind),
     OpenNpc { id: String, name: String },
@@ -982,6 +982,7 @@ impl PortWalkState {
     /// Sync active surface prospecting quest status for Vehicle Bay HUD guidance.
     pub fn observe_quest_mining_status(&mut self, status: Option<QuestSurfaceMiningStatus>) {
         self.quest_mining_status = status;
+        self.refresh_npc_quest_labels();
     }
 
     /// Active quest corridor destination hint (e.g., Stickney Yards), if any.
@@ -1387,6 +1388,7 @@ impl PortWalkState {
         let next = target.filter(|s| !s.is_empty()).map(str::to_string);
         if self.quest_ship_target != next {
             self.quest_ship_target = next;
+            self.refresh_npc_quest_labels();
             self.bump_scene();
         }
     }
@@ -1707,19 +1709,94 @@ impl PortWalkState {
         }
     }
 
+    fn interactable_quest_priority(&self, target: &InteractableTarget) -> u8 {
+        match &target.action {
+            InteractAction::OpenNpc { id, name } => self
+                .find_quest_marker(id, name)
+                .map_or(3, Self::quest_marker_priority),
+            InteractAction::Command(cmd) => {
+                let is_bay_quest = *cmd == "+tv/bay in"
+                    && (self
+                        .quest_mining_status
+                        .as_ref()
+                        .is_some_and(|m| !m.mine_done)
+                        || self.quest_ship_target.as_deref() == Some("bay"));
+                let is_hop_cmd = (*cmd == "+ship/board" || *cmd == "+ship/leave")
+                    && self
+                        .next_quest_hop()
+                        .is_some_and(|hop| hop.next_exit_command == *cmd);
+                if is_bay_quest || is_hop_cmd { 1 } else { 3 }
+            }
+            _ => 3,
+        }
+    }
+
+    fn sort_interactables_quest_first(&mut self, preserve_focus: bool) {
+        if self.interactables.len() <= 1 {
+            return;
+        }
+        let focused_action = if preserve_focus {
+            self.interactables
+                .get(self.focus_idx)
+                .map(|t| t.action.clone())
+        } else {
+            None
+        };
+        let priorities: Vec<u8> = self
+            .interactables
+            .iter()
+            .map(|t| self.interactable_quest_priority(t))
+            .collect();
+        let mut indexed: Vec<(u8, usize, InteractableTarget)> = self
+            .interactables
+            .drain(..)
+            .enumerate()
+            .map(|(i, t)| (priorities[i], i, t))
+            .collect();
+        indexed.sort_by_key(|(prio, idx, _)| (*prio, *idx));
+        self.interactables = indexed.into_iter().map(|(_, _, t)| t).collect();
+        if let Some(prev) = focused_action
+            && let Some(new_idx) = self.interactables.iter().position(|t| t.action == prev)
+        {
+            self.focus_idx = new_idx;
+        } else if !self.interactables.is_empty() {
+            self.focus_idx = self.focus_idx.min(self.interactables.len() - 1);
+        }
+    }
+
     fn refresh_npc_quest_labels(&mut self) {
+        let bay_quest = self
+            .quest_mining_status
+            .as_ref()
+            .is_some_and(|m| !m.mine_done)
+            || self.quest_ship_target.as_deref() == Some("bay");
         let mut updates: Vec<(usize, String)> = Vec::new();
         for (idx, target) in self.interactables.iter().enumerate() {
-            if let InteractAction::OpenNpc { id, name } = &target.action {
-                let is_npc = self
-                    .actors
-                    .iter()
-                    .find(|a| (!id.is_empty() && a.id == *id) || a.name.eq_ignore_ascii_case(name))
-                    .is_none_or(|a| a.npc);
-                let next_label = self.format_npc_interact_label(id, name, is_npc);
-                if target.label != next_label {
-                    updates.push((idx, next_label));
+            match &target.action {
+                InteractAction::OpenNpc { id, name } => {
+                    let is_npc = self
+                        .actors
+                        .iter()
+                        .find(|a| {
+                            (!id.is_empty() && a.id == *id) || a.name.eq_ignore_ascii_case(name)
+                        })
+                        .is_none_or(|a| a.npc);
+                    let next_label = self.format_npc_interact_label(id, name, is_npc);
+                    if target.label != next_label {
+                        updates.push((idx, next_label));
+                    }
                 }
+                InteractAction::Command("+tv/bay in") => {
+                    let next_label = if bay_quest {
+                        "[Q] Enter Vehicle Bay (+tv/bay in)".to_string()
+                    } else {
+                        "Enter Vehicle Bay (+tv/bay in)".to_string()
+                    };
+                    if target.label != next_label {
+                        updates.push((idx, next_label));
+                    }
+                }
+                _ => {}
             }
         }
         for (idx, lbl) in updates {
@@ -1727,6 +1804,7 @@ impl PortWalkState {
                 target.label = lbl;
             }
         }
+        self.sort_interactables_quest_first(true);
     }
 
     /// Observe a live `RoomView` from the server.
@@ -3690,9 +3768,20 @@ impl PortWalkState {
                 if let Some(it) = self.interactables.get(idx) {
                     let focused = idx == self.focus_idx;
                     let prefix = if focused { "[E] > " } else { "      " };
+                    let is_quest = it.label.starts_with("[?]")
+                        || it.label.starts_with("[!]")
+                        || it.label.starts_with("[Q]");
                     let style = if focused {
                         Style::default()
-                            .fg(Color::Green)
+                            .fg(if is_quest {
+                                Color::Yellow
+                            } else {
+                                Color::Green
+                            })
+                            .add_modifier(Modifier::BOLD)
+                    } else if is_quest {
+                        Style::default()
+                            .fg(Color::Yellow)
                             .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(Color::Gray)
@@ -4816,6 +4905,43 @@ impl PortWalkState {
                             action: InteractAction::OpenDrawer(PortDrawerKind::Trade),
                         },
                     );
+                    if self.ship_rooms.iter().any(|r| r.entry_id == "bay") {
+                        let bay_quest = self
+                            .quest_mining_status
+                            .as_ref()
+                            .is_some_and(|m| !m.mine_done)
+                            || self.quest_ship_target.as_deref() == Some("bay");
+                        self.interactables.push(InteractableTarget {
+                            label: if bay_quest {
+                                "[Q] Enter Vehicle Bay (+tv/bay in)".to_string()
+                            } else {
+                                "Enter Vehicle Bay (+tv/bay in)".to_string()
+                            },
+                            x_m: rcx,
+                            y_m: rmin_y + 1.2,
+                            floor: rfloor,
+                            action: InteractAction::Command("+tv/bay in"),
+                        });
+                    }
+                }
+                "bay" => {
+                    self.interactables.insert(
+                        0,
+                        InteractableTarget {
+                            label: "Rig Status & Launch Check (+tv)".to_string(),
+                            x_m: rcx,
+                            y_m: rmax_y - 1.2,
+                            floor: rfloor,
+                            action: InteractAction::Command("+tv"),
+                        },
+                    );
+                    self.interactables.push(InteractableTarget {
+                        label: "Return to Cargo Hold (+tv/bay out)".to_string(),
+                        x_m: rcx,
+                        y_m: rmin_y + 1.2,
+                        floor: rfloor,
+                        action: InteractAction::Command("+tv/bay out"),
+                    });
                 }
                 _ => {}
             }
@@ -4952,6 +5078,7 @@ impl PortWalkState {
             }
         }
 
+        self.sort_interactables_quest_first(false);
         self.refresh_nearest_focus();
     }
 
@@ -10564,6 +10691,163 @@ mod tests {
         assert!(
             !top_in_bay.contains("[QUEST -> Deck:"),
             "expected no redundant Deck cue once inside bay:\n{top_in_bay}"
+        );
+    }
+
+    #[test]
+    fn nearby_interactables_sort_quest_markers_first_and_surface_vehicle_bay_actions() {
+        let mut st = PortWalkState::new();
+        let mut ambient = std::collections::BTreeMap::new();
+        ambient.insert(
+            "atlas".into(),
+            json!({ "pack": "neighborhood.ceres_freeport", "entry": "room.c03_arrivals" }),
+        );
+        ambient.insert("occupants".into(), json!({ "npcs": ["#99", "#11", "#18"] }));
+        let arrivals = RoomView {
+            id: "#10".into(),
+            name: "Port Watch Arrivals".into(),
+            desc: mush_proto::RichText::plain("Arrivals."),
+            exits: Vec::new(),
+            contents: vec![
+                mush_proto::ObjRef {
+                    id: "#99".into(),
+                    name: "Unmarked Clerk".into(),
+                },
+                mush_proto::ObjRef {
+                    id: "#11".into(),
+                    name: "Maren Halvorsen".into(),
+                },
+                mush_proto::ObjRef {
+                    id: "#18".into(),
+                    name: "Ilse Oduya-Brandt".into(),
+                },
+            ],
+            zone: None,
+            ambient,
+        };
+        st.observe_room(&arrivals, Some("Pilot"));
+        st.observe_quest_markers(&[
+            QuestMarker {
+                npc_id: "#11".into(),
+                npc_name: "Maren Halvorsen".into(),
+                marker: "available".into(),
+                symbol: "!".into(),
+                quest_key: "q.avail".into(),
+                quest_title: "First Papers".into(),
+                category: "guided".into(),
+            },
+            QuestMarker {
+                npc_id: "#18".into(),
+                npc_name: "Ilse Oduya-Brandt".into(),
+                marker: "turn_in".into(),
+                symbol: "?".into(),
+                quest_key: "q.turnin".into(),
+                quest_title: "Ready Turn-In".into(),
+                category: "guided".into(),
+            },
+        ]);
+        assert!(
+            st.interactables[0]
+                .label
+                .starts_with("[?] Ilse Oduya-Brandt"),
+            "expected turn_in NPC at row 0, got {:?}",
+            st.interactables
+                .iter()
+                .map(|i| &i.label)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            st.interactables[1].label.starts_with("[!] Maren Halvorsen"),
+            "expected available NPC at row 1, got {:?}",
+            st.interactables
+                .iter()
+                .map(|i| &i.label)
+                .collect::<Vec<_>>()
+        );
+
+        // Aboard Dray-P in Cargo Hold with Step 6 mining active -> [Q] Enter Vehicle Bay floats to row 0
+        let mut hold_amb = std::collections::BTreeMap::new();
+        hold_amb.insert(
+            "tacsim".into(),
+            json!({
+                "mode": "interior",
+                "room": "hold",
+                "hull_name": "Starling",
+                "unit_type": "tacsim.unit.dray_p"
+            }),
+        );
+        let hold_view = RoomView {
+            id: "#54".into(),
+            name: "M/V Starling - Cargo Hold".into(),
+            desc: mush_proto::RichText::plain("Hold."),
+            exits: Vec::new(),
+            contents: Vec::new(),
+            zone: None,
+            ambient: hold_amb,
+        };
+        st.observe_room(&hold_view, Some("Pilot"));
+        if !st.ship_rooms.iter().any(|r| r.entry_id == "bay") {
+            st.ship_rooms.push(RoomGeom {
+                entry_id: "bay".into(),
+                name: "Vehicle Bay".into(),
+                kind: "bay",
+                floor: 0,
+                min_x: -4.0,
+                max_x: 4.0,
+                min_y: -4.0,
+                max_y: 4.0,
+            });
+            st.observe_room(&hold_view, Some("Pilot"));
+        }
+        st.observe_quest_mining_status(Some(QuestSurfaceMiningStatus {
+            quest_title: "Scan, Sound, and Mine a Landing Site".into(),
+            target_ore_slug: "carbon_ore".into(),
+            recommended_family: "carbon".into(),
+            scan_done: false,
+            sound_done: false,
+            mine_done: false,
+        }));
+        assert_eq!(
+            st.interactables[0].label,
+            "[Q] Enter Vehicle Bay (+tv/bay in)"
+        );
+        assert_eq!(
+            st.interactables[0].action,
+            InteractAction::Command("+tv/bay in")
+        );
+
+        // Inside Vehicle Bay -> surfaces +tv and +tv/bay out interactables
+        let mut bay_amb = std::collections::BTreeMap::new();
+        bay_amb.insert(
+            "tacsim".into(),
+            json!({
+                "mode": "interior",
+                "room": "bay",
+                "hull_name": "Starling",
+                "unit_type": "tacsim.unit.dray_p"
+            }),
+        );
+        let bay_view = RoomView {
+            id: "#55".into(),
+            name: "M/V Starling - Vehicle Bay".into(),
+            desc: mush_proto::RichText::plain("Bay."),
+            exits: Vec::new(),
+            contents: Vec::new(),
+            zone: None,
+            ambient: bay_amb,
+        };
+        st.observe_room(&bay_view, Some("Pilot"));
+        assert!(
+            st.interactables
+                .iter()
+                .any(|t| t.action == InteractAction::Command("+tv")),
+            "expected +tv interactable in bay"
+        );
+        assert!(
+            st.interactables
+                .iter()
+                .any(|t| t.action == InteractAction::Command("+tv/bay out")),
+            "expected +tv/bay out interactable in bay"
         );
     }
 }
