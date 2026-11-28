@@ -25,6 +25,14 @@ namespace TacSim.World
         public bool IsFunded = true;
     }
 
+    [Serializable]
+    public sealed class HoldCargoLot
+    {
+        public string GoodId;
+        public string Label;
+        public int Quantity;
+    }
+
     /// <summary>
     /// Authoritative client trade, credit, hold-gauge, and sailing-plan state for the
     /// Visual Commodity Exchange, Dual Mass/Volume Hold Bars, and Sailing Plan Builder.
@@ -68,6 +76,7 @@ namespace TacSim.World
 
         public List<GoodItemDef> GoodsCatalog { get; private set; }
         public List<MarketListingRow> Listings { get; } = new List<MarketListingRow>();
+        public List<HoldCargoLot> CargoLots { get; } = new List<HoldCargoLot>();
         public List<string> SailingOrderLines { get; } = new List<string>();
         public List<TacSimDockedHullRef> BerthDockedHulls { get; } = new List<TacSimDockedHullRef>();
         public bool HasAuthoritativeBerthFeed { get; private set; }
@@ -116,6 +125,7 @@ namespace TacSim.World
         public void ResetSessionState()
         {
             Listings.Clear();
+            CargoLots.Clear();
             SailingOrderLines.Clear();
             BerthDockedHulls.Clear();
             HasAuthoritativeBerthFeed = false;
@@ -385,9 +395,62 @@ namespace TacSim.World
                     st.Long("stores_days", 0),
                     st.Long("stores_limit_days", 120),
                     notify: false);
+
+                var itemsArr = st["items"].AsArray() ?? st["cargo_lines"].AsArray();
+                if (itemsArr != null)
+                {
+                    CargoLots.Clear();
+                    for (int i = 0; i < itemsArr.Count; i++)
+                    {
+                        var it = itemsArr[i];
+                        if (!it.IsObject) continue;
+                        string gid = it.Str("good", it.Str("good_id", string.Empty));
+                        int qty = it.Int("qty", it.Int("quantity", 0));
+                        if (string.IsNullOrEmpty(gid) || qty <= 0) continue;
+                        string lbl = it.Str("label", it.Str("name", gid));
+                        CargoLots.Add(new HoldCargoLot
+                        {
+                            GoodId = gid,
+                            Label = lbl,
+                            Quantity = qty
+                        });
+                    }
+                }
+            }
+            else if (data.ContainsKey("ship") && (!shipObj.IsObject || (shipObj.ContainsKey("stowage") && shipObj["stowage"].IsNull)))
+            {
+                CargoLots.Clear();
             }
 
             OnStateChanged?.Invoke();
+        }
+
+        public int GetHoldCommodityQuantity(string commoditySlug)
+        {
+            if (string.IsNullOrWhiteSpace(commoditySlug)) return 0;
+            string want = NormalizeGoodSlug(commoditySlug);
+            if (want == "propellant") return Mathf.Max(0, TankTonnes);
+            if (want == "provisions") return Mathf.Max(0, StoresCrewDays);
+
+            int total = 0;
+            for (int i = 0; i < CargoLots.Count; i++)
+            {
+                var lot = CargoLots[i];
+                if (lot == null || lot.Quantity <= 0) continue;
+                if (NormalizeGoodSlug(lot.GoodId) == want || NormalizeGoodSlug(lot.Label) == want)
+                    total += lot.Quantity;
+            }
+            return total;
+        }
+
+        private static string NormalizeGoodSlug(string raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return string.Empty;
+            string s = raw.Trim().ToLowerInvariant();
+            int colon = s.LastIndexOf(':');
+            if (colon >= 0 && colon < s.Length - 1)
+                s = s.Substring(colon + 1);
+            return s.Replace('-', '_').Replace(' ', '_');
         }
 
         /// <summary>
