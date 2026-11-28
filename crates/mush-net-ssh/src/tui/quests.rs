@@ -102,7 +102,7 @@ pub struct QuestsSnapshot {
     pub completed: Vec<CompletedQuest>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct QuestTradeNeed {
     pub quest_title: String,
     pub checkpoint_title: String,
@@ -110,6 +110,8 @@ pub struct QuestTradeNeed {
     pub target_quantity: i64,
     pub wants_buy: bool,
     pub wants_sell: bool,
+    pub room_entry: String,
+    pub room_name: String,
 }
 
 /// Snapshot of live ship stowage passed into the F11 Quest Overlay so Steps 2, 3, 4, 5, and 7
@@ -138,6 +140,27 @@ impl QuestTradeNeed {
         }
         let name = normalize_good_slug(good_name);
         !name.is_empty() && name == self.commodity_slug
+    }
+
+    /// Human-readable station desk label when no matching listing appears on the current board.
+    #[must_use]
+    pub fn venue_hint_label(&self) -> Option<&str> {
+        let trimmed = self.room_name.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed);
+        }
+        match self.room_entry.trim() {
+            "room.c08_chandlery" | "room.c06_chandlery" => Some("Co-op Chandlery"),
+            "room.c07_exchange" => Some("Exchange Hall"),
+            "room.c05_registry" => Some("Registry & Co-op Desk"),
+            "room.p07_receiving" => Some("Receiving Counter"),
+            "room.p11_service" => Some("Service Counter"),
+            _ => match self.commodity_slug.as_str() {
+                "provisions" => Some("Co-op Chandlery"),
+                "propellant" => Some("Exchange Hall"),
+                _ => None,
+            },
+        }
     }
 }
 
@@ -868,6 +891,8 @@ impl QuestsSnapshot {
                     target_quantity,
                     wants_buy,
                     wants_sell,
+                    room_entry: cp.room_entry.clone(),
+                    room_name: cp.room_name.clone(),
                 });
             }
             if !out.is_empty() {
