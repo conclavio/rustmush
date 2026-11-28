@@ -8,7 +8,10 @@
   import { PICTURE_PREF_KEY } from "$lib/picture";
   import { storageGet, storageSet } from "$lib/storage";
   import { tacsimAudio } from "$lib/tacsim/audio";
-  import { extractActiveDestinationPort } from "$lib/stores/quests.svelte";
+  import {
+    extractActiveDestinationPort,
+    resolveNextGuidedOfferDestination,
+  } from "$lib/stores/quests.svelte";
   import {
     formatHeldLockSummary,
     formatMountAtLockEffect,
@@ -194,7 +197,13 @@
     app.quests?.active.find((q) => q.key === app.quests?.trackedKey) ?? app.quests?.active[0] ?? null,
   );
   const questDest = $derived(
-    app.quests ? extractActiveDestinationPort(app.quests.active, app.quests.trackedKey) : null,
+    app.quests
+      ? (extractActiveDestinationPort(app.quests.active, app.quests.trackedKey) ??
+          resolveNextGuidedOfferDestination(
+            app.quests.nextGuidedOffer,
+            app.tacsim.ambient?.port || app.tacsim.trade?.hullPort || app.tacsim.trade?.venueId || null,
+          ))
+      : null,
   );
   const questMining = $derived(app.quests?.surfaceMiningStatus ?? null);
   const inVehicleBay = $derived(
@@ -211,6 +220,18 @@
     if (!questDest) return;
     app.tacsim.selectedDestination = questDest.portId;
     onCmd(`+ship/plan ${questDest.portId}`);
+  }
+
+  function openQuestGroundChart(): void {
+    if (!questMining) return;
+    if (app.quarry) {
+      app.quarry.mode = "ground";
+      app.quarry.family = questMining.recommendedFamily;
+    }
+    if (app.switchScreen?.("quarry")) {
+      return;
+    }
+    onCmd("+chart/ground");
   }
 </script>
 
@@ -254,6 +275,15 @@
       >
         <span class="qdest-tag">[QUEST]</span>{" "}Dest: {questDest.portLabel}
       </button>
+    {:else if app.tacsim.isAboardShip && questMining && !questMining.mineDone}
+      <button
+        type="button"
+        class="quest-dest-chip"
+        onclick={openQuestGroundChart}
+        title="Open Ground Chart ({questMining.recommendedFamily.toUpperCase()} wash) to pick a landing site"
+      >
+        <span class="qdest-tag">[QUEST]</span>{" "}Mine {questMining.targetOreSlug} · Ground Chart
+      </button>
     {/if}
 
     <div class="quick-actions">
@@ -283,6 +313,15 @@
               title="Plan quest route to {questDest.portLabel} (+ship/plan {questDest.portId})"
             >
               <span class="qdest-tag">[QUEST]</span>{" "}Dest: {questDest.portLabel}
+            </button>
+          {:else if questMining && !questMining.mineDone}
+            <button
+              type="button"
+              class="quest-dest-chip"
+              onclick={openQuestGroundChart}
+              title="Open Ground Chart ({questMining.recommendedFamily.toUpperCase()} wash) to pick a landing site"
+            >
+              <span class="qdest-tag">[QUEST]</span>{" "}Mine {questMining.targetOreSlug} · Ground Chart
             </button>
           {/if}
           <div class="visor-btns">
