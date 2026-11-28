@@ -1073,8 +1073,12 @@ namespace TacSim.UI
             if (_surfRecoverBtnBg != null) _surfRecoverBtnBg.color = new Color(0.28f, 0.28f, 0.44f);
             if (_surfReturnPortBtn != null) _surfReturnPortBtn.gameObject.SetActive(false);
             string recommendedFam = string.Empty;
+            QuestSurfaceMiningStatus activeQuestMine = default;
+            bool hasIncompleteQuestMine = false;
             if (_questJournal != null && _questJournal.TryGetActiveSurfaceMiningStatus(out var qMine))
             {
+                activeQuestMine = qMine;
+                hasIncompleteQuestMine = !qMine.MineDone;
                 HasSurfaceQuestChecklist = true;
                 Color questGold = new Color(0.72f, 0.54f, 0.12f);
                 if (!qMine.ScanDone)
@@ -1134,8 +1138,46 @@ namespace TacSim.UI
             if (!string.IsNullOrEmpty(_surface.PresenceLine))
                 sb.AppendLine($"<color=#FFAA88>{MushProtocol.EscapeUnityRichText(_surface.PresenceLine)}</color>");
             var lines = _surface.RecentSiteLines;
-            for (int i = Mathf.Max(0, lines.Count - 3); i < lines.Count; i++)
-                sb.AppendLine("• " + MushProtocol.EscapeUnityRichText(lines[i]));
+            if (hasIncompleteQuestMine && lines.Count > 0)
+            {
+                string slug = (activeQuestMine.TargetOreSlug ?? string.Empty).ToLowerInvariant();
+                string spaced = slug.Replace('_', ' ');
+                string fam = (activeQuestMine.RecommendedFamily ?? string.Empty).ToLowerInvariant();
+                var matchedIdx = new List<int>(3);
+                for (int i = lines.Count - 1; i >= 0 && matchedIdx.Count < 3; i--)
+                {
+                    string low = (lines[i] ?? string.Empty).ToLowerInvariant();
+                    if ((!string.IsNullOrEmpty(slug) && low.Contains(slug, StringComparison.Ordinal)) ||
+                        (!string.IsNullOrEmpty(spaced) && low.Contains(spaced, StringComparison.Ordinal)) ||
+                        (!string.IsNullOrEmpty(fam) && low.Contains(fam, StringComparison.Ordinal)))
+                    {
+                        matchedIdx.Add(i);
+                    }
+                }
+                matchedIdx.Reverse();
+                for (int m = 0; m < matchedIdx.Count; m++)
+                {
+                    sb.AppendLine("<color=#FFDD44><b>[QUEST]</b></color> " + MushProtocol.EscapeUnityRichText(lines[matchedIdx[m]]));
+                }
+                int remaining = 3 - matchedIdx.Count;
+                if (remaining > 0)
+                {
+                    var otherIdx = new List<int>(remaining);
+                    for (int i = lines.Count - 1; i >= 0 && otherIdx.Count < remaining; i--)
+                    {
+                        if (!matchedIdx.Contains(i))
+                            otherIdx.Add(i);
+                    }
+                    otherIdx.Reverse();
+                    for (int k = 0; k < otherIdx.Count; k++)
+                        sb.AppendLine("• " + MushProtocol.EscapeUnityRichText(lines[otherIdx[k]]));
+                }
+            }
+            else
+            {
+                for (int i = Mathf.Max(0, lines.Count - 3); i < lines.Count; i++)
+                    sb.AppendLine("• " + MushProtocol.EscapeUnityRichText(lines[i]));
+            }
             sb.Append("<color=#88CCFF>[WASD / LMB Terrain] Drive   [RMB + Scroll] Orbit   [G] Ground Chart</color>");
             _surfaceReadingsText.text = sb.ToString();
         }

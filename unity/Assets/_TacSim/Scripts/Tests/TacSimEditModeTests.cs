@@ -14903,5 +14903,94 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuarryGroundChartAndSurfaceTelemetry_SortQuestSitesAndReadingsFirst()
+        {
+            var rootGo = new UnityEngine.GameObject("QuarryQuestSortFirstTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                var surfaceGo = new UnityEngine.GameObject("SurfaceQuestSortStage");
+                surfaceGo.transform.SetParent(rootGo.transform, false);
+                var surface = surfaceGo.AddComponent<TacSim.Surface.SurfaceMiningController>();
+                surface.BuildSurfaceStage(null, "commons");
+                hud.Overlays.BindControllers(surface, null, null);
+
+                var groundJson = JsonNode.Parse(@"{
+                    ""title"": ""Ceres Ground Survey"",
+                    ""width"": 4,
+                    ""height"": 2,
+                    ""rows"": [""...."", ""....""],
+                    ""ground"": {
+                        ""body"": ""ceres"",
+                        ""name"": ""Ceres"",
+                        ""family"": ""volatiles"",
+                        ""family_word"": ""volatiles"",
+                        ""families"": [""volatiles"", ""carbon"", ""metals""],
+                        ""sites"": [
+                            { ""letter"": ""A"", ""site"": ""Occator Rim"", ""venue"": ""occator"", ""tenure"": ""open"", ""here"": false, ""best"": ""water_ice"", ""best_line"": ""lean water_ice"" },
+                            { ""letter"": ""B"", ""site"": ""Freeport Commons"", ""venue"": ""commons"", ""tenure"": ""open"", ""here"": false, ""best"": ""carbon_ore"", ""best_line"": ""rich carbon_ore"" }
+                        ],
+                        ""lines"": [""A Occator Rim"", ""B Freeport Commons""]
+                    }
+                }");
+
+                // 1. Without active mining quest -> raw order preserved (occator first)
+                hud.GroundChart.ApplyGroundFrame(groundJson);
+                Assert.AreEqual("occator", hud.GroundChart.FirstListedSiteVenueSnapshot);
+
+                // 2. Activate Step 6 mining quest -> matching carbon_ore site (commons) sorts first with [!]
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Surface scan"", ""instructions"": ""+tv/1 scan go"", ""checked"": false, ""live_ready"": false },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""instructions"": ""+tv/1 mine go"", ""checked"": false, ""live_ready"": false }
+                        ]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                hud.GroundChart.ApplyGroundFrame(groundJson);
+                Assert.AreEqual("commons", hud.GroundChart.FirstListedSiteVenueSnapshot);
+                StringAssert.Contains("[!]", hud.GroundChart.FirstListedSiteLabelSnapshot);
+                StringAssert.Contains("Freeport Commons", hud.GroundChart.FirstListedSiteLabelSnapshot);
+
+                // 3. Surface telemetry bubbles matching carbon_ore site line ahead of newer non-matching lines
+                surface.EnterSurfaceMode();
+                surface.ApplySiteMapFrame(JsonNode.Parse(@"{
+                    ""width"": 4,
+                    ""height"": 4,
+                    ""rows"": [""...."", ""...."", ""...."", ""....""],
+                    ""site"": {
+                        ""name"": ""Freeport Commons"",
+                        ""family"": ""volatiles"",
+                        ""lines"": [
+                            ""B 140m NE — rich carbon_ore pocket"",
+                            ""A 90m W — lean water_ice trace"",
+                            ""C 210m S — barren silicates"",
+                            ""D 300m E — lean water_ice trace""
+                        ],
+                        ""rigs"": [],
+                        ""readings"": [],
+                        ""others"": []
+                    }
+                }"));
+                hud.Overlays.RefreshSurfaceHud();
+                string surfTxt = hud.Overlays.SurfaceReadingsTextForTests;
+                int qIdx = surfTxt.IndexOf("[QUEST]</b></color> B 140m NE", System.StringComparison.Ordinal);
+                int otherIdx = surfTxt.IndexOf("• D 300m E", System.StringComparison.Ordinal);
+                Assert.Greater(qIdx, 0, "matching carbon_ore reading must surface with [QUEST] tag:\n" + surfTxt);
+                Assert.Greater(otherIdx, qIdx, "matching carbon_ore reading must sort ahead of non-matching lines:\n" + surfTxt);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
