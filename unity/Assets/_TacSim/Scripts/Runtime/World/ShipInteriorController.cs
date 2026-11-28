@@ -211,6 +211,54 @@ namespace TacSim.World
             return Template.FindExitPath(normFrom, normTo);
         }
 
+        public bool TryGetNextQuestCompartmentBreadcrumb(
+            string fromComp,
+            string targetComp,
+            out string nextCompId,
+            out string nextCompName,
+            out string nextCommand,
+            out int hopCount)
+        {
+            nextCompId = string.Empty;
+            nextCompName = string.Empty;
+            nextCommand = string.Empty;
+            hopCount = 0;
+
+            if (Template == null || string.IsNullOrEmpty(fromComp) || string.IsNullOrEmpty(targetComp))
+                return false;
+
+            string resolvedTarget = targetComp;
+            if (!Template.Compartments.ContainsKey(resolvedTarget))
+            {
+                if (string.Equals(resolvedTarget, "bay", StringComparison.OrdinalIgnoreCase) &&
+                    Template.Compartments.ContainsKey("hold"))
+                {
+                    resolvedTarget = "hold";
+                }
+                else
+                {
+                    return false;
+                }
+            }
+
+            string normFrom = TryGetCompartmentDef(fromComp, out var cFrom) ? cFrom.Id : fromComp;
+            if (string.Equals(normFrom, resolvedTarget, StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            var path = FindExitPath(normFrom, resolvedTarget);
+            if (path == null || path.Count == 0)
+                return false;
+
+            nextCommand = path[0].command ?? string.Empty;
+            nextCompId = path[0].targetCompartment ?? string.Empty;
+            hopCount = path.Count;
+            if (Template.Compartments.TryGetValue(nextCompId, out var nextDef) && !string.IsNullOrEmpty(nextDef.Name))
+                nextCompName = nextDef.Name;
+            else
+                nextCompName = nextCompId;
+            return !string.IsNullOrEmpty(nextCommand);
+        }
+
         public void BuildInterior(TacSimAssetCatalog catalog, string unitId = "tacsim.unit.dray")
         {
             Catalog = catalog;
