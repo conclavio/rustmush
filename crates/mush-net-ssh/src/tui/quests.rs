@@ -467,19 +467,31 @@ impl QuestMilestone {
                 let step = self.detail.as_deref().unwrap_or(&self.title);
                 format!("[QUEST] Objective Complete: {step}")
             }
-            QuestMilestoneKind::Ready => format!("[QUEST] Ready to turn in: {}", self.title),
+            QuestMilestoneKind::Ready => match self.detail.as_deref() {
+                Some(who) if !who.is_empty() => {
+                    format!("[QUEST] Ready to turn in: {} -> {who}", self.title)
+                }
+                _ => format!("[QUEST] Ready to turn in: {}", self.title),
+            },
             QuestMilestoneKind::Completed => {
                 if self.tour_all_done {
                     format!(
-                        "[QUEST] ★ Corridor Captain (7/7) — Guided Tour Complete: {}",
+                        "[QUEST] ★ Corridor Captain (7/7) — Guided Tour Complete: {} · Try +market/jobs",
                         self.title
                     )
+                } else if let Some(next_hint) = self.detail.as_deref().filter(|s| !s.is_empty()) {
+                    format!("[QUEST] Completed: {} · {next_hint}", self.title)
                 } else {
                     format!("[QUEST] Completed: {}", self.title)
                 }
             }
             QuestMilestoneKind::Abandoned => {
-                if self.restartable {
+                if let Some(where_hint) = self.detail.as_deref().filter(|s| !s.is_empty()) {
+                    format!(
+                        "[QUEST] Abandoned (restart with {where_hint}): {}",
+                        self.title
+                    )
+                } else if self.restartable {
                     format!("[QUEST] Abandoned (restartable anytime): {}", self.title)
                 } else {
                     format!("[QUEST] Abandoned: {}", self.title)
@@ -496,7 +508,7 @@ impl QuestMilestone {
 pub struct QuestMilestoneTracker {
     hydrated: bool,
     seen_active: HashSet<String>,
-    seen_active_meta: BTreeMap<String, (String, bool)>,
+    seen_active_meta: BTreeMap<String, (String, bool, String)>,
     seen_ready: HashSet<String>,
     seen_checkpoints: HashSet<String>,
     seen_completed: HashSet<String>,
@@ -555,35 +567,87 @@ impl QuestMilestoneTracker {
                     }
                 }
                 if became_ready {
+                    let turn_in_detail = if q.turn_in_name.is_empty() {
+                        None
+                    } else if q.next_room_name.is_empty() {
+                        Some(q.turn_in_name.clone())
+                    } else {
+                        Some(format!("{} ({})", q.turn_in_name, q.next_room_name))
+                    };
                     out.push(QuestMilestone {
                         kind: QuestMilestoneKind::Ready,
                         title: q.title.clone(),
-                        detail: None,
+                        detail: turn_in_detail,
                         tour_all_done: false,
                         restartable: false,
                     });
                 }
             }
-            for (prev_key, (prev_title, prev_restartable)) in &self.seen_active_meta {
+            for (prev_key, (prev_title, prev_restartable, prev_giver)) in &self.seen_active_meta {
                 if !current_active_keys.contains(prev_key.as_str())
                     && !current_completed_keys.contains(prev_key.as_str())
                 {
+                    let guided_meta = GUIDED_TOUR_ROADMAP_META
+                        .iter()
+                        .find(|m| m.0 == prev_key.as_str());
+                    let restartable = *prev_restartable || guided_meta.is_some();
+                    let restart_detail = if !restartable {
+                        None
+                    } else if let Some(meta) = guided_meta {
+                        Some(format!("{} in {}", meta.2, meta.4))
+                    } else if !prev_giver.is_empty() {
+                        Some(prev_giver.clone())
+                    } else {
+                        None
+                    };
                     out.push(QuestMilestone {
                         kind: QuestMilestoneKind::Abandoned,
                         title: prev_title.clone(),
-                        detail: None,
+                        detail: restart_detail,
                         tour_all_done: false,
-                        restartable: *prev_restartable,
+                        restartable,
                     });
                 }
             }
             for c in &snap.completed {
                 if !self.seen_completed.contains(&c.key) {
                     let is_mastery = newly_mastered && GUIDED_TOUR_KEYS.contains(&c.key.as_str());
+                    let next_detail = if is_mastery {
+                        None
+                    } else {
+                        GUIDED_TOUR_KEYS
+                            .iter()
+                            .position(|&k| k == c.key.as_str())
+                            .and_then(|idx| {
+                                let next_meta = GUIDED_TOUR_ROADMAP_META.get(idx + 1)?;
+                                if current_completed_keys.contains(next_meta.0)
+                                    || current_active_keys.contains(next_meta.0)
+                                {
+                                    return None;
+                                }
+                                let next_step = idx + 2;
+                                let offered_here =
+                                    snap.available.iter().any(|av| av.key == next_meta.0);
+                                Some(if offered_here {
+                                    format!(
+                                        "Next ({next_step}/{}): Speak with {} here",
+                                        GUIDED_TOUR_KEYS.len(),
+                                        next_meta.2
+                                    )
+                                } else {
+                                    format!(
+                                        "Next ({next_step}/{}): {} in {}",
+                                        GUIDED_TOUR_KEYS.len(),
+                                        next_meta.2,
+                                        next_meta.4
+                                    )
+                                })
+                            })
+                    };
                     out.push(QuestMilestone {
                         kind: QuestMilestoneKind::Completed,
                         title: c.title.clone(),
-                        detail: None,
+                        detail: next_detail,
                         tour_all_done: is_mastery,
                         restartable: false,
                     });
@@ -597,8 +661,10 @@ impl QuestMilestoneTracker {
         self.seen_checkpoints.clear();
         for q in &snap.active {
             self.seen_active.insert(q.key.clone());
-            self.seen_active_meta
-                .insert(q.key.clone(), (q.title.clone(), q.allow_restart));
+            self.seen_active_meta.insert(
+                q.key.clone(),
+                (q.title.clone(), q.allow_restart, q.giver_name.clone()),
+            );
             if q.ready_to_finish || q.can_finish_now {
                 self.seen_ready.insert(q.key.clone());
             }
@@ -4071,7 +4137,7 @@ mod tests {
         assert_eq!(m_ready.len(), 1);
         assert_eq!(m_ready[0].kind, QuestMilestoneKind::Ready);
 
-        // Abandoning a restartable quest emits Abandoned with restartable note
+        // Abandoning a guided quest names the exact giver & room to re-accept it
         let abandoned = parse_frame(&json!({
             "schema": 1,
             "active": [],
@@ -4083,10 +4149,72 @@ mod tests {
         assert!(m_ab[0].restartable);
         assert_eq!(
             m_ab[0].notice_text(),
-            "[QUEST] Abandoned (restartable anytime): Stock the Locker and Fuel the Tank"
+            "[QUEST] Abandoned (restart with Ilse Oduya-Brandt in Registry & Co-op Desk): Stock the Locker and Fuel the Tank"
         );
 
-        // Completing the 7th guided quest emits Corridor Captain mastery celebration
+        // Ready with turn-in NPC & room names the destination; Step 5 completion announces Next (6/7)
+        tracker.reset();
+        let s5_start = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[4],
+                "title": "Refit the Dray for Surface Mining",
+                "turn_in_name": "Rosalind Qureshi-Mbeki",
+                "next_room_name": "Exchange Hall",
+                "ready_to_finish": false
+            }],
+            "completed": [
+                { "key": GUIDED_TOUR_KEYS[0], "title": "Step 1" },
+                { "key": GUIDED_TOUR_KEYS[1], "title": "Step 2" },
+                { "key": GUIDED_TOUR_KEYS[2], "title": "Step 3" },
+                { "key": GUIDED_TOUR_KEYS[3], "title": "Step 4" }
+            ]
+        }));
+        assert!(tracker.observe(&s5_start).is_empty());
+        let s5_ready = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[4],
+                "title": "Refit the Dray for Surface Mining",
+                "turn_in_name": "Rosalind Qureshi-Mbeki",
+                "next_room_name": "Exchange Hall",
+                "ready_to_finish": true
+            }],
+            "completed": [
+                { "key": GUIDED_TOUR_KEYS[0], "title": "Step 1" },
+                { "key": GUIDED_TOUR_KEYS[1], "title": "Step 2" },
+                { "key": GUIDED_TOUR_KEYS[2], "title": "Step 3" },
+                { "key": GUIDED_TOUR_KEYS[3], "title": "Step 4" }
+            ]
+        }));
+        let m_s5_ready = tracker.observe(&s5_ready);
+        assert_eq!(
+            m_s5_ready[0].notice_text(),
+            "[QUEST] Ready to turn in: Refit the Dray for Surface Mining -> Rosalind Qureshi-Mbeki (Exchange Hall)"
+        );
+        let s5_done = parse_frame(&json!({
+            "schema": 1,
+            "active": [],
+            "available": [{
+                "key": GUIDED_TOUR_KEYS[5],
+                "title": "Scan, Sound, and Mine a Landing Site",
+                "giver_name": "Rosalind Qureshi-Mbeki"
+            }],
+            "completed": [
+                { "key": GUIDED_TOUR_KEYS[0], "title": "Step 1" },
+                { "key": GUIDED_TOUR_KEYS[1], "title": "Step 2" },
+                { "key": GUIDED_TOUR_KEYS[2], "title": "Step 3" },
+                { "key": GUIDED_TOUR_KEYS[3], "title": "Step 4" },
+                { "key": GUIDED_TOUR_KEYS[4], "title": "Refit the Dray for Surface Mining" }
+            ]
+        }));
+        let m_s5_done = tracker.observe(&s5_done);
+        assert_eq!(
+            m_s5_done[0].notice_text(),
+            "[QUEST] Completed: Refit the Dray for Surface Mining · Next (6/7): Speak with Rosalind Qureshi-Mbeki here"
+        );
+
+        // Completing the 7th guided quest emits Corridor Captain mastery celebration + Jobs Board hint
         tracker.reset();
         let before_7th = parse_frame(&json!({
             "schema": 1,
@@ -4124,6 +4252,7 @@ mod tests {
         assert_eq!(m_master[0].kind, QuestMilestoneKind::Completed);
         assert!(m_master[0].tour_all_done);
         assert!(m_master[0].notice_text().contains("Corridor Captain (7/7)"));
+        assert!(m_master[0].notice_text().contains("+market/jobs"));
     }
 
     #[test]
