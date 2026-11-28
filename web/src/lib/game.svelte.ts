@@ -942,6 +942,15 @@ export class GameApp {
           ts,
         );
         tacsimAudio.play("ui_chime");
+      } else if (atlasEntry && !tracked) {
+        const nextOffer = this.quests.nextGuidedOffer;
+        if (nextOffer && nextOffer.giverRoomEntry.toLowerCase() === atlasEntry.toLowerCase()) {
+          this.notifications.fromQuestArrival(view.name, false, ts, {
+            step: nextOffer.step,
+            giverLabel: nextOffer.giverLabel,
+          });
+          tacsimAudio.play("ui_chime");
+        }
       }
     }
     if (this.session.hasPanel(QUESTS_FEED)) {

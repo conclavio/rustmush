@@ -98,15 +98,22 @@ describe("NotificationStore", () => {
     expect(s.toasts).toHaveLength(3);
   });
 
-  it("fromQuestArrival emits objective and turn-in arrival toasts with /quests prefill", () => {
+  it("fromQuestArrival emits objective, turn-in, and between-steps next-guided arrival toasts with /quests prefill", () => {
     const s = new NotificationStore();
     const obj = s.fromQuestArrival("Co-op Registry", false, 400)!;
     const ti = s.fromQuestArrival("Port Watch Arrivals", true, 500)!;
+    const nextG = s.fromQuestArrival("Exchange Hall", false, 600, {
+      step: 6,
+      giverLabel: "Rosalind Qureshi-Mbeki",
+    })!;
     expect(obj.category).toBe("quest");
     expect(obj.text[0]?.text).toBe("Quest Objective: Co-op Registry");
     expect(ti.text[0]?.text).toBe("Quest Turn-In Here: Port Watch Arrivals");
+    expect(nextG.text[0]?.text).toBe(
+      "Next Guided Step (6/7) [!]: Speak with Rosalind Qureshi-Mbeki in Exchange Hall",
+    );
     expect(ti.action).toEqual({ label: "Quests", prefill: "/quests" });
-    expect(s.toasts).toHaveLength(2);
+    expect(s.toasts).toHaveLength(3);
   });
 
   it("fromQuestMilestone formats checkpoint, restartable abandon, and 7/7 Corridor Captain mastery toasts", () => {
