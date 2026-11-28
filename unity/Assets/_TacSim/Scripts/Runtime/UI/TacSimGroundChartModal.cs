@@ -257,6 +257,14 @@ namespace TacSim.UI
         public string ActiveFamily { get; private set; } = "volatiles";
         public string SelectedSiteVenue { get; private set; } = string.Empty;
         public string SelectedSiteLetter { get; private set; } = string.Empty;
+        public string FirstListedSiteVenueSnapshot =>
+            _sitePool.Count > 0 && _sitePool[0].Root != null && _sitePool[0].Root.activeSelf
+                ? (_sitePool[0].BoundVenue ?? string.Empty)
+                : string.Empty;
+        public string FirstListedSiteLabelSnapshot =>
+            _sitePool.Count > 0 && _sitePool[0].Root != null && _sitePool[0].Root.activeSelf && _sitePool[0].Label != null
+                ? _sitePool[0].Label.text
+                : string.Empty;
 
         private static readonly string[] DefaultFamilies = { "volatiles", "metals", "strategic", "carbon" };
 
@@ -716,12 +724,38 @@ namespace TacSim.UI
             QuestSurfaceMiningStatus qMineRow = default;
             bool hasQuestMining = _questJournal != null && _questJournal.TryGetActiveSurfaceMiningStatus(out qMineRow);
             string recVenue = TryGetRecommendedQuestSite(out var recRowSite) ? recRowSite.Venue : string.Empty;
+            List<GroundChartSite> orderedSites = null;
+            if (count > 0)
+            {
+                if (hasQuestMining && !qMineRow.MineDone)
+                {
+                    orderedSites = new List<GroundChartSite>(count);
+                    var recSites = new List<GroundChartSite>(2);
+                    var restSites = new List<GroundChartSite>(count);
+                    for (int i = 0; i < count; i++)
+                    {
+                        var s = CurrentFrame.Sites[i];
+                        if (MatchesQuestSite(s, qMineRow))
+                            orderedSites.Add(s);
+                        else if (!string.IsNullOrEmpty(recVenue) && string.Equals(s.Venue, recVenue, StringComparison.OrdinalIgnoreCase))
+                            recSites.Add(s);
+                        else
+                            restSites.Add(s);
+                    }
+                    orderedSites.AddRange(recSites);
+                    orderedSites.AddRange(restSites);
+                }
+                else
+                {
+                    orderedSites = CurrentFrame.Sites;
+                }
+            }
             for (int i = 0; i < _sitePool.Count; i++)
             {
                 var row = _sitePool[i];
-                if (i < count)
+                if (orderedSites != null && i < orderedSites.Count)
                 {
-                    var s = CurrentFrame.Sites[i];
+                    var s = orderedSites[i];
                     row.BoundVenue = s.Venue;
                     row.BoundLetter = s.Letter;
                     bool sel = (!string.IsNullOrEmpty(SelectedSiteVenue) && string.Equals(s.Venue, SelectedSiteVenue, StringComparison.OrdinalIgnoreCase)) ||
