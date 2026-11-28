@@ -8,6 +8,7 @@
 
   const q = $derived(app.quests);
   const tracked = $derived(q.trackedQuest);
+  const suggested = $derived(q.suggestedAction);
   const firstOffer = $derived(q.available[0] ?? null);
   const doneCount = $derived(
     tracked ? tracked.checkpoints.filter((cp) => cp.checked).length : 0,
@@ -43,6 +44,15 @@
       {:else if tracked.canCheckNow}
         <button type="button" class="tbtn primary" onclick={() => onCmd(tracked.checkCmd)}>
           Verify Step
+        </button>
+      {:else if suggested}
+        <button
+          type="button"
+          class="tbtn primary"
+          title={`Prefill ${suggested.command}`}
+          onclick={() => app.focusComposer?.(suggested.command)}
+        >
+          {suggested.label}
         </button>
       {/if}
       <button type="button" class="tbtn" onclick={() => q.openLog("active")}>

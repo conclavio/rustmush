@@ -359,4 +359,80 @@ describe("QuestsStore", () => {
       }),
     ).toEqual([]);
   });
+
+  it("computes 7-step guided tour progress and extracts verified suggested commands", () => {
+    const store = new QuestsStore();
+    store.applyFrame({
+      schema: 1,
+      room_id: "#12",
+      room_name: "Registry & Co-op Desk",
+      room_markers: [],
+      available: [],
+      completed: [
+        { key: "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll", title: "Step 1" },
+        { key: "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel", title: "Step 2" },
+        { key: "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery", title: "Step 3" },
+        { key: "tacsim.quests.guided_onboarding/quest.guide_04_return_haul", title: "Step 4" },
+      ],
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector",
+          title: "Refit the Dray for Surface Mining",
+          category: "guided",
+          next_step: "Run +coop/refit prospector at Registry & Co-op Desk",
+          checkpoints: [
+            {
+              id: "refit_dray_p",
+              title: "Refit your Dray into a Dray-P prospector",
+              instructions: "Stand at Registry and run +coop/refit prospector.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(store.guidedTourProgress).toEqual({
+      completed: 4,
+      total: 7,
+      currentStep: 5,
+      currentTitle: "Refit the Dray for Surface Mining",
+      allDone: false,
+    });
+    expect(store.suggestedAction).toEqual({
+      label: "Refit Dray-P",
+      command: "+coop/refit prospector",
+    });
+
+    // Step 1 Co-op enrollment suggests +coop/enroll
+    store.applyFrame({
+      schema: 1,
+      room_id: "#12",
+      room_name: "Registry & Co-op Desk",
+      room_markers: [],
+      available: [],
+      completed: [],
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+          title: "First Papers at the Registry",
+          category: "guided",
+          checkpoints: [
+            {
+              id: "enroll_coop",
+              title: "Enroll in the Belt Co-op",
+              instructions: "Run +coop/enroll <ship name> at the Registry.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+    expect(store.suggestedAction).toEqual({
+      label: "Enroll Co-op",
+      command: "+coop/enroll ",
+    });
+  });
 });
