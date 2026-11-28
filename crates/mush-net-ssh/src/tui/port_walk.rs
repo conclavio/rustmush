@@ -1089,6 +1089,26 @@ impl PortWalkState {
         })
     }
 
+    /// True when the tracked quest is a cross-port buy+deliver trade run whose required cargo
+    /// is not yet loaded in live ship stowage, so wayfinding should route to the local Exchange
+    /// before heading to Berth Gallery.
+    #[must_use]
+    pub fn needs_origin_port_procurement(&self) -> bool {
+        if !self.stowage_loaded || self.quest_room_turn_in {
+            return false;
+        }
+        let Some(need) = self.quest_trade_need.as_ref() else {
+            return false;
+        };
+        if !need.wants_buy || !need.wants_sell {
+            return false;
+        }
+        if need.commodity_slug == "propellant" || need.commodity_slug == "provisions" {
+            return false;
+        }
+        self.quest_stowage_readiness().is_some_and(|r| !r.ready)
+    }
+
     /// Normalized corridor port slug while aboard a docked ship (e.g. `"ceres"`, `"stickney"`).
     #[must_use]
     pub fn docked_port_slug(&self) -> Option<&str> {
@@ -1184,21 +1204,39 @@ impl PortWalkState {
             if self.rooms.iter().any(|r| r.entry_id == raw_target) {
                 (raw_target.to_string(), &self.portals)
             } else if infer_station_port_from_room_entry(raw_target).is_some() {
-                let berth = self
-                    .rooms
-                    .iter()
-                    .find(|r| r.entry_id.to_ascii_lowercase().contains("berth_gallery"))?;
-                if self.active_location_key == berth.entry_id {
-                    return Some(QuestExitBreadcrumb {
-                        next_room_entry: "ship".into(),
-                        next_room_name: "Board Ship".into(),
-                        next_exit_command: "+ship/board".into(),
-                        target_room_name: "Board Ship".into(),
-                        hops: 1,
-                    });
+                if self.needs_origin_port_procurement()
+                    && let Some(exchange) = self
+                        .rooms
+                        .iter()
+                        .find(|r| r.entry_id.to_ascii_lowercase().contains("exchange"))
+                        .or_else(|| {
+                            self.rooms.iter().find(|r| {
+                                let low = r.entry_id.to_ascii_lowercase();
+                                low.contains("chandlery") || low.contains("service")
+                            })
+                        })
+                {
+                    if self.active_location_key == exchange.entry_id {
+                        return None;
+                    }
+                    (exchange.entry_id.clone(), &self.portals)
+                } else {
+                    let berth = self
+                        .rooms
+                        .iter()
+                        .find(|r| r.entry_id.to_ascii_lowercase().contains("berth_gallery"))?;
+                    if self.active_location_key == berth.entry_id {
+                        return Some(QuestExitBreadcrumb {
+                            next_room_entry: "ship".into(),
+                            next_room_name: "Board Ship".into(),
+                            next_exit_command: "+ship/board".into(),
+                            target_room_name: "Board Ship".into(),
+                            hops: 1,
+                        });
+                    }
+                    extra_step_label = Some("Board Ship");
+                    (berth.entry_id.clone(), &self.portals)
                 }
-                extra_step_label = Some("Board Ship");
-                (berth.entry_id.clone(), &self.portals)
             } else {
                 return None;
             }
@@ -9181,6 +9219,79 @@ mod tests {
         assert!(
             rendered_ready.contains("[PRE-FLIGHT OK] Fuel 14t | Stores 12d | metals 5/5 OK"),
             "expected ready pre-flight strip in Sailing drawer: {rendered_ready}"
+        );
+    }
+
+    #[test]
+    fn cross_port_trade_quest_routes_to_local_exchange_before_berth_until_cargo_loaded() {
+        let mut st = PortWalkState::new();
+        let make_room = |entry: &str, name: &str| {
+            let mut ambient = std::collections::BTreeMap::new();
+            ambient.insert(
+                "atlas".into(),
+                json!({ "pack": "neighborhood.ceres_freeport", "entry": entry }),
+            );
+            RoomView {
+                id: "#10".into(),
+                name: name.into(),
+                desc: mush_proto::RichText::plain("Station deck."),
+                exits: Vec::new(),
+                contents: Vec::new(),
+                zone: None,
+                ambient,
+            }
+        };
+        st.observe_room(
+            &make_room("room.c05_registry", "Registry & Co-op Desk"),
+            Some("Pilot"),
+        );
+        st.observe_quest_objective_room(Some(("room.p07_receiving".into(), false)));
+        st.observe_quest_guidance(
+            Some(QuestTradeNeed {
+                quest_title: "Metals Down the Corridor".into(),
+                checkpoint_title: "Buy 5t metals and deliver to Stickney Yards".into(),
+                commodity_slug: "metals".into(),
+                target_quantity: 5,
+                wants_buy: true,
+                wants_sell: true,
+            }),
+            Some(QuestDestinationHint {
+                quest_title: "Metals Down the Corridor".into(),
+                port_id: "stickney".into(),
+                port_label: "Stickney Yards".into(),
+            }),
+        );
+
+        // Live stowage loaded with only 2/5 metals -> routes to Exchange Hall first
+        st.stowage_loaded = true;
+        st.cargo_lots = vec![CargoLotRow {
+            good_id: "tacsim:metals".into(),
+            good_name: "Metals".into(),
+            quantity: 2,
+        }];
+        assert!(st.needs_origin_port_procurement());
+        let to_exchange = st
+            .next_quest_hop()
+            .expect("expected hop toward Exchange Hall while cargo incomplete");
+        assert_eq!(to_exchange.target_room_name, "Exchange Hall");
+
+        // Standing in Exchange Hall while still procuring -> None (buy here!)
+        st.observe_room(
+            &make_room("room.c07_exchange", "Exchange Hall"),
+            Some("Pilot"),
+        );
+        assert!(st.next_quest_hop().is_none());
+
+        // Once 5/5 metals are loaded -> automatically flips to Berth Gallery (Board Ship)!
+        st.cargo_lots[0].quantity = 5;
+        assert!(!st.needs_origin_port_procurement());
+        let to_berth = st
+            .next_quest_hop()
+            .expect("expected hop toward Berth Gallery once metals loaded");
+        assert!(
+            to_berth.target_room_name.contains("Board Ship"),
+            "expected Berth Gallery (Board Ship) route: {:?}",
+            to_berth
         );
     }
 }
