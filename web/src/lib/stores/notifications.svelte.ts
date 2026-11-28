@@ -138,25 +138,30 @@ export class NotificationStore {
     });
   }
 
-  /** Surface arrival at a tracked quest's station objective, turn-in room, or between-steps next guided giver room in the unified toast tray. */
+  /** Surface arrival at a tracked quest's station objective, boarding berth, turn-in room, or between-steps next guided giver room in the unified toast tray. */
   fromQuestArrival(
     roomName: string,
     isTurnIn: boolean,
     ts: number,
     nextGuided?: { step: number; giverLabel: string },
+    isBoarding = false,
   ): Notification | null {
     const label = roomName.trim() || "Objective Room";
     const text = nextGuided
       ? `Next Guided Step (${nextGuided.step}/7) [!]: Speak with ${nextGuided.giverLabel} in ${label}`
-      : isTurnIn
-        ? `Quest Turn-In Here: ${label}`
-        : `Quest Objective: ${label}`;
+      : isBoarding
+        ? `Board Ship Here: ${label} (+ship/board)`
+        : isTurnIn
+          ? `Quest Turn-In Here: ${label}`
+          : `Quest Objective: ${label}`;
     return this.add({
       serverId: this.#nextQuestNoticeId--,
       severity: "info",
       category: "quest",
       text: [{ text, tag: null }],
-      action: { label: "Quests", prefill: "/quests" },
+      action: isBoarding
+        ? { label: "Board Ship", prefill: "+ship/board" }
+        : { label: "Quests", prefill: "/quests" },
       ts,
     });
   }

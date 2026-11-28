@@ -3099,4 +3099,100 @@ describe("quest command palette route, step and cycle shortcuts", () => {
       "Next Guided Step (2/7) [!]: Speak with Ilse Oduya-Brandt in Registry & Co-op Desk",
     );
   });
+
+  it("fires local station procurement and Berth Gallery boarding arrival toasts for cross-port Step 3 quests", () => {
+    const { app, ws } = boot(["tacsim.quests"]);
+    ws.deliver(
+      panel(10, "tacsim.quests", "keyframe", {
+        schema: 1,
+        room_id: "#15",
+        room_name: "Registry & Co-op Desk",
+        active: [
+          {
+            key: "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+            title: "Metals Down the Corridor",
+            next_room_entry: "room.p07_receiving",
+            checkpoints: [
+              {
+                id: "deliver_metals",
+                title: "Buy 5 tonnes of metals at Ceres and deliver to Stickney",
+                instructions: "Buy 5t metals and +market/sell at Stickney.",
+                room_entry: "room.p07_receiving",
+                checked: false,
+                live_ready: false,
+              },
+            ],
+          },
+        ],
+        available: [],
+        completed: [],
+      }),
+    );
+
+    // Hydrate at Registry with 0/5t metals loaded
+    app.tacsim.trade.hullId = "#99";
+    app.tacsim.trade.stowage = {
+      ...app.tacsim.trade.stowage,
+      cargoKg: 0,
+      propellantKg: 10_000,
+      provisionsCrewDays: 10,
+      cargoLines: [],
+    };
+    ws.deliver(
+      env(11, {
+        t: "room",
+        d: {
+          id: "#15",
+          name: "Registry & Co-op Desk",
+          desc: [{ text: "Registry." }],
+          exits: [],
+          contents: [],
+          ambient: { atlas: { pack: "neighborhood.ceres_freeport", entry: "room.c05_registry" } },
+        },
+      } as OutputEvent),
+    );
+    expect(app.notifications.list.filter((n) => n.category === "quest")).toHaveLength(0);
+
+    // 1. Walking into Exchange Hall while procuring emits objective arrival toast
+    ws.deliver(
+      env(12, {
+        t: "room",
+        d: {
+          id: "#17",
+          name: "Exchange Hall",
+          desc: [{ text: "Exchange." }],
+          exits: [],
+          contents: [],
+          ambient: { atlas: { pack: "neighborhood.ceres_freeport", entry: "room.c07_exchange" } },
+        },
+      } as OutputEvent),
+    );
+    const afterExch = app.notifications.list.filter((n) => n.category === "quest");
+    expect(afterExch).toHaveLength(1);
+    expect(afterExch[0]?.text[0]?.text).toBe("Quest Objective: Exchange Hall");
+
+    // 2. Load 5/5t metals and walk to Berth Gallery -> emits Board Ship arrival toast with +ship/board prefill
+    app.tacsim.trade.stowage = {
+      ...app.tacsim.trade.stowage,
+      cargoKg: 5000,
+      cargoLines: [{ good: "tacsim:metals", label: "Metals", qty: 5, unit: "u", massKg: 5000 }],
+    };
+    ws.deliver(
+      env(13, {
+        t: "room",
+        d: {
+          id: "#19",
+          name: "Visiting Berth Gallery",
+          desc: [{ text: "Berths." }],
+          exits: [],
+          contents: [],
+          ambient: { atlas: { pack: "neighborhood.ceres_freeport", entry: "room.c01_berth_gallery" } },
+        },
+      } as OutputEvent),
+    );
+    const afterBerth = app.notifications.list.filter((n) => n.category === "quest");
+    expect(afterBerth).toHaveLength(2);
+    expect(afterBerth[0]?.text[0]?.text).toBe("Board Ship Here: Visiting Berth Gallery (+ship/board)");
+    expect(afterBerth[0]?.action).toEqual({ label: "Board Ship", prefill: "+ship/board" });
+  });
 });

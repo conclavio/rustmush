@@ -118,6 +118,7 @@ import {
   computeNextQuestExitBreadcrumb,
   computeShipQuestBreadcrumb,
   normalizePortVenueTarget,
+  resolveLocalStationQuestTarget,
 } from "./tacsim/spatial";
 
 /** Doc 31 cut UD.3b: the pulled feed of published unit designs' looks. */
@@ -935,11 +936,26 @@ export class GameApp {
         tracked?.nextRoomEntry ||
         tracked?.checkpoints.find((c) => !c.checked && !c.liveReady && c.roomEntry)?.roomEntry ||
         "";
-      if (atlasEntry && objRoom && atlasEntry.toLowerCase() === objRoom.toLowerCase()) {
+      const liveStowage =
+        this.tacsim.ambient?.ownStowage ??
+        this.tacsim.ambient?.stowage ??
+        (this.tacsim.trade?.hullId ? this.tacsim.trade.stowage : null);
+      const localTarget = tracked
+        ? resolveLocalStationQuestTarget(
+            this.tacsim.stationPack,
+            objRoom || null,
+            needsOriginPortProcurement(this.quests.active, this.quests.trackedKey, liveStowage),
+            needsSurfaceExpeditionBoarding(this.quests.active, this.quests.trackedKey),
+          )
+        : null;
+      const resolvedRoom = localTarget?.roomEntry || objRoom;
+      if (atlasEntry && resolvedRoom && atlasEntry.toLowerCase() === resolvedRoom.toLowerCase()) {
         this.notifications.fromQuestArrival(
           view.name,
           Boolean(tracked?.readyToFinish || tracked?.canFinishNow),
           ts,
+          undefined,
+          Boolean(localTarget?.isBoardingTarget),
         );
         tacsimAudio.play("ui_chime");
       } else if (atlasEntry && !tracked) {

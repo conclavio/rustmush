@@ -10,13 +10,12 @@
   import { tacsimAudio } from "$lib/tacsim/audio";
   import {
     extractActiveDestinationPort,
-    inferStationPortFromRoomEntry,
     needsOriginPortProcurement,
     needsSurfaceExpeditionBoarding,
     resolveNextGuidedOfferDestination,
     resolveQuestShipTargetCompartment,
   } from "$lib/stores/quests.svelte";
-  import { normalizePortVenueTarget } from "$lib/tacsim/spatial";
+  import { normalizePortVenueTarget, resolveLocalStationQuestTarget } from "$lib/tacsim/spatial";
   import {
     formatHeldLockSummary,
     formatMountAtLockEffect,
@@ -177,38 +176,22 @@
     const quests = app.quests;
     const pack = app.tacsim.stationPack;
     if (!quests || !pack) return null;
-    if (needsSurfaceExpeditionBoarding(quests.active, quests.trackedKey)) {
-      for (const id of pack.rooms.keys()) {
-        if (id.toLowerCase().includes("berth_gallery")) return id;
-      }
-      return null;
-    }
     const rawTarget =
       trackedQuest?.nextRoomEntry ||
       trackedQuest?.checkpoints.find((c) => !c.checked && !c.liveReady && c.roomEntry)?.roomEntry ||
       (!trackedQuest ? quests.nextGuidedOffer?.giverRoomEntry : null) ||
       null;
-    if (!rawTarget) return null;
-    if (pack.rooms.has(rawTarget)) return rawTarget;
-    if (inferStationPortFromRoomEntry(rawTarget)) {
-      const liveStowage =
-        app.tacsim.ambient?.ownStowage ??
-        app.tacsim.ambient?.stowage ??
-        (app.tacsim.trade?.hullId ? app.tacsim.trade.stowage : null);
-      if (needsOriginPortProcurement(quests.active, quests.trackedKey, liveStowage)) {
-        for (const id of pack.rooms.keys()) {
-          if (id.toLowerCase().includes("exchange")) return id;
-        }
-        for (const id of pack.rooms.keys()) {
-          const low = id.toLowerCase();
-          if (low.includes("chandlery") || low.includes("service")) return id;
-        }
-      }
-      for (const id of pack.rooms.keys()) {
-        if (id.toLowerCase().includes("berth_gallery")) return id;
-      }
-    }
-    return null;
+    const liveStowage =
+      app.tacsim.ambient?.ownStowage ??
+      app.tacsim.ambient?.stowage ??
+      (app.tacsim.trade?.hullId ? app.tacsim.trade.stowage : null);
+    const resolved = resolveLocalStationQuestTarget(
+      pack,
+      rawTarget,
+      needsOriginPortProcurement(quests.active, quests.trackedKey, liveStowage),
+      needsSurfaceExpeditionBoarding(quests.active, quests.trackedKey),
+    );
+    return resolved?.roomEntry ?? null;
   });
 
   const resolvedQuestShipTarget = $derived.by((): string | null => {
