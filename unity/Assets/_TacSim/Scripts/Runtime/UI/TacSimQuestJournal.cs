@@ -375,6 +375,7 @@ namespace TacSim.UI
         private void HandleBoundTradeStateChanged()
         {
             if (LatestPanel == null) return;
+            SyncStructuredTrackerCard();
             RefreshJournalBody();
             if (IsQuestDialogOpen)
                 RefreshQuestDialogUi();
@@ -1902,6 +1903,13 @@ namespace TacSim.UI
                     if (cp.Checked) done++;
                     string sym = cp.Checked ? "<color=#55EE99>[✓]</color>" : (cp.LiveReady ? "<color=#FFDD55>[◆]</color>" : "<color=#99BBCC>[ ]</color>");
                     sb.Append(sym).Append(' ').Append(MushProtocol.EscapeUnityRichText(cp.Title)).Append('\n');
+                }
+                if (TryGetQuestHoldReadinessSummary(active, out string holdSummary, out bool holdReady))
+                {
+                    string holdHex = holdReady ? "#55EE99" : "#FFDD44";
+                    sb.Append("<color=").Append(holdHex).Append('>')
+                      .Append(MushProtocol.EscapeUnityRichText(holdSummary))
+                      .Append("</color>\n");
                 }
                 if (!active.CanFinishNow && !active.CanCheckNow && !string.IsNullOrEmpty(_trackerRouteRoomName) && _trackerRouteHops > 0)
                 {
