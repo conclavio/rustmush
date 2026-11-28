@@ -261,6 +261,13 @@
   const nextGuidedOffer = $derived(
     !trackedQuest && !roomOfferMarker ? (app.quests?.nextGuidedOffer ?? null) : null,
   );
+  const dockingActive = $derived(Boolean(app.picture?.spaceDockingData));
+  const dockTargetMatchesQuest = $derived(
+    Boolean(
+      questDest &&
+        normalizePortVenueTarget(app.tacsim.dockTarget) === questDest.portId.toLowerCase(),
+    ),
+  );
 
   function planQuestDestination(): void {
     if (!questDest) return;
@@ -375,14 +382,30 @@
             <button type="button" class="qbtn" onclick={() => onCmd("+helm/thrust 500")}>50%</button>
             <button type="button" class="qbtn" onclick={() => onCmd("+helm/thrust 1000")}>100%</button>
             <button type="button" class="qbtn" onclick={() => handleAction("ui:open_sailing")}>Undock / Route</button>
-            <button type="button" class="qbtn" onclick={() => handleAction("ui:dock_destination")}>
-              60 Hz Dock ({app.tacsim.dockTarget})
+            <button
+              type="button"
+              class="qbtn"
+              class:quest-dock={dockTargetMatchesQuest}
+              onclick={() => handleAction("ui:dock_destination")}
+            >
+              {#if dockTargetMatchesQuest}[Q]{" "}{/if}60 Hz Dock ({app.tacsim.dockTarget})
             </button>
             <button type="button" class="qbtn accent" onclick={() => app.tacsim.standFromBridgeHelm()}>
               Stand From Helm
             </button>
           </div>
         </div>
+        {#if dockingActive && questDest}
+          <div class="quest-dock-banner" role="status" aria-label="quest docking approach">
+            <span class="qdest-tag">[QUEST DOCK]</span>
+            <strong>{questDest.portLabel}</strong>
+            <span class="qd-sep">—</span>
+            <span>{questDest.questTitle}</span>
+            {#if trackedQuest?.nextStep}
+              <span class="qd-step">· {trackedQuest.nextStep}</span>
+            {/if}
+          </div>
+        {/if}
 
         <div class="visor-tac-strip" aria-label="space fire control and mounts">
           <div class="visor-lock-row">
@@ -730,6 +753,31 @@
     border-color: #c44a62;
     color: #ffeef2;
     font-weight: 600;
+  }
+
+  .qbtn.quest-dock {
+    background: #332609;
+    border-color: #eab308;
+    color: #ffe270;
+    font-weight: 700;
+  }
+
+  .quest-dock-banner {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    padding: 0.28rem 0.75rem;
+    background: #231a06;
+    border-bottom: 1px solid #8a6a1a;
+    color: #f8e9b5;
+    font-family: var(--font-mono);
+    font-size: 0.74rem;
+  }
+
+  .quest-dock-banner .qd-sep,
+  .quest-dock-banner .qd-step {
+    color: #d6c38d;
   }
 
   .visor-tac-strip {
