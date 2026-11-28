@@ -802,7 +802,7 @@ export function resolveNextGuidedOfferDestination(
   };
 }
 
-function guidedStepNumber(key: string): number | null {
+export function guidedStepNumber(key: string): number | null {
   const idx = GUIDED_TOUR_KEYS.indexOf(key);
   return idx >= 0 ? idx + 1 : null;
 }
@@ -1376,9 +1376,25 @@ const MARKER_PRIORITY: Record<QuestMarkerKind, number> = {
   in_progress: 2,
 };
 
+function isGuidedMarker(m: NpcQuestMarker): boolean {
+  return m.category === "guided" || guidedStepNumber(m.questKey) !== null;
+}
+
+function compareQuestMarkers(a: NpcQuestMarker, b: NpcQuestMarker): number {
+  const prioDiff = MARKER_PRIORITY[a.marker] - MARKER_PRIORITY[b.marker];
+  if (prioDiff !== 0) return prioDiff;
+  const aGuided = isGuidedMarker(a) ? 0 : 1;
+  const bGuided = isGuidedMarker(b) ? 0 : 1;
+  if (aGuided !== bGuided) return aGuided - bGuided;
+  const aStep = guidedStepNumber(a.questKey) ?? 999;
+  const bStep = guidedStepNumber(b.questKey) ?? 999;
+  return aStep - bStep;
+}
+
 /**
  * Orders and coalesces NPC quest markers in the current room by action urgency:
- * gold turn-in (`?`) -> gold available offer (`!`) -> silver in-progress (`?`).
+ * gold turn-in (`?`) -> gold available offer (`!`) -> silver in-progress (`?`),
+ * tie-breaking guided tour steps ahead of optional side markers at equal urgency.
  * Duplicate entries for the same NPC are merged into one highest-priority marker
  * with an aggregated `questCount`.
  */
@@ -1403,7 +1419,7 @@ export function sortRoomQuestMarkers(
     } else {
       existing.questKeys.add(qKey);
       existing.maxCount = Math.max(existing.maxCount, m.questCount);
-      if (MARKER_PRIORITY[m.marker] < MARKER_PRIORITY[existing.best.marker]) {
+      if (compareQuestMarkers(m, existing.best) < 0) {
         existing.best = m;
       }
     }
@@ -1413,7 +1429,7 @@ export function sortRoomQuestMarkers(
       const count = Math.max(maxCount, questKeys.size);
       return count === best.questCount ? best : { ...best, questCount: count };
     })
-    .sort((a, b) => MARKER_PRIORITY[a.marker] - MARKER_PRIORITY[b.marker]);
+    .sort(compareQuestMarkers);
 }
 
 function parseCheckpoints(raw: unknown): QuestCheckpointView[] {

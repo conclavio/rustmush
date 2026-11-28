@@ -11,6 +11,7 @@
   import {
     GUIDED_TOUR_KEYS,
     extractActiveDestinationPort,
+    guidedStepNumber,
     inferStationPortFromRoomEntry,
     needsOriginPortProcurement,
     needsSurfaceExpeditionBoarding,
@@ -64,7 +65,9 @@
         if (wi.npcMeta) {
           const qm =
             wi.npcMeta.questMarker ??
-            app.quests.roomMarkers.find((m) => m.npcId === wi.npcMeta?.id) ??
+            (app.quests.prioritizedRoomMarkers ?? app.quests.roomMarkers).find(
+              (m) => m.npcId === wi.npcMeta?.id,
+            ) ??
             null;
           if (qm && (qm.marker === "available" || qm.marker === "turn_in")) {
             app.quests.openNpcDialog(wi.npcMeta.id);
@@ -301,6 +304,9 @@
       : null,
   );
   const roomOfferExtraCount = $derived(Math.max(0, (roomOfferMarker?.questCount ?? 1) - 1));
+  const roomOfferStepNo = $derived(
+    roomOfferMarker ? guidedStepNumber(roomOfferMarker.questKey) : null,
+  );
   const nextGuidedOffer = $derived(
     !trackedQuest && !roomOfferMarker ? (app.quests?.nextGuidedOffer ?? null) : null,
   );
@@ -534,8 +540,8 @@
           >
             <span class="qhud-crest">{roomOfferMarker.symbol}</span>
             <span class="qhud-body">
-              <strong>{roomOfferMarker.npcName}</strong>
-              <span>{roomOfferMarker.questTitle}{#if roomOfferExtraCount > 0} (+{roomOfferExtraCount} more){/if}</span>
+              <strong>{roomOfferMarker.npcName}{roomOfferStepNo !== null ? ` [Step ${roomOfferStepNo}/${GUIDED_TOUR_KEYS.length}]` : ""}</strong>
+              <span>{roomOfferMarker.questTitle}{roomOfferExtraCount > 0 ? ` (+${roomOfferExtraCount} more)` : ""}</span>
             </span>
           </button>
         {:else if nextGuidedOffer}
