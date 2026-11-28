@@ -4282,6 +4282,13 @@ namespace TacSim.UI
                         MushProtocol.EscapeUnityRichText(qDest.PortLabel),
                         MushProtocol.EscapeUnityRichText(qDest.QuestTitle),
                         stepSuffix);
+                    if (tracked != null && QuestJournal.TryGetQuestHoldReadinessSummary(tracked, out string dockHoldSummary, out bool dockHoldReady))
+                    {
+                        string holdHex = dockHoldReady
+                            ? "#66FFAA"
+                            : (dockHoldSummary.IndexOf("RECOVER RIG", StringComparison.OrdinalIgnoreCase) >= 0 ? "#FF7766" : "#FFDD55");
+                        sb.AppendFormat("<color={0}><b>{1}</b></color>\n", holdHex, MushProtocol.EscapeUnityRichText(dockHoldSummary));
+                    }
                 }
             }
             sb.AppendFormat("Range Z: <b>{0} mm</b> (<= 500)   Closure: <b>{1} mm/s</b> (100..800)\n", session.DzMm, session.VzMmps);
