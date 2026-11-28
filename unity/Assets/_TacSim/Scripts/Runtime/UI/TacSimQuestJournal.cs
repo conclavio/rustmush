@@ -569,27 +569,65 @@ namespace TacSim.UI
                 return true;
             }
 
+            var qNeeds = new List<QuestTradeNeed>(4);
             for (int cIdx = 0; cIdx < q.Checkpoints.Count; cIdx++)
             {
                 var cp = q.Checkpoints[cIdx];
                 if (cp.Checked || cp.LiveReady) continue;
-                if (TryExtractTradeNeedFromCheckpoint(q.Title, cp, out var need))
+                if (TryExtractTradeNeedFromCheckpoint(q.Title, cp, out var extracted))
+                    qNeeds.Add(extracted);
+            }
+            if (qNeeds.Count == 0) return false;
+
+            int primaryIdx = 0;
+            for (int i = 0; i < qNeeds.Count; i++)
+            {
+                int curI = _boundTradeState.GetHoldCommodityQuantity(qNeeds[i].CommoditySlug);
+                int tgtI = Mathf.Max(1, qNeeds[i].TargetQuantity);
+                if (curI < tgtI)
                 {
-                    int current = _boundTradeState.GetHoldCommodityQuantity(need.CommoditySlug);
-                    int target = Mathf.Max(1, need.TargetQuantity);
-                    string unit = string.Equals(need.CommoditySlug, "propellant", StringComparison.OrdinalIgnoreCase)
-                        ? "t"
-                        : string.Equals(need.CommoditySlug, "provisions", StringComparison.OrdinalIgnoreCase)
-                            ? "d"
-                            : "u";
-                    string label = need.CommoditySlug.Replace('_', ' ').ToUpperInvariant();
-                    ready = current >= target;
-                    string tag = ready ? "[HOLD READY]" : "[HOLD]";
-                    summary = $"{tag} {label}: {current}/{target} {unit}";
-                    return true;
+                    primaryIdx = i;
+                    break;
                 }
             }
-            return false;
+
+            var need = qNeeds[primaryIdx];
+            int current = _boundTradeState.GetHoldCommodityQuantity(need.CommoditySlug);
+            int target = Mathf.Max(1, need.TargetQuantity);
+            string unit = string.Equals(need.CommoditySlug, "propellant", StringComparison.OrdinalIgnoreCase)
+                ? "t"
+                : string.Equals(need.CommoditySlug, "provisions", StringComparison.OrdinalIgnoreCase)
+                    ? "d"
+                    : "u";
+            string label = need.CommoditySlug.Replace('_', ' ').ToUpperInvariant();
+            ready = current >= target;
+            string holdTag = ready ? "[HOLD READY]" : "[HOLD]";
+            var sb = new StringBuilder(96);
+            sb.Append($"{holdTag} {label}: {current}/{target} {unit}");
+            if (qNeeds.Count > 1)
+            {
+                bool appended = false;
+                for (int i = 0; i < qNeeds.Count; i++)
+                {
+                    if (i == primaryIdx) continue;
+                    var ex = qNeeds[i];
+                    int exCur = _boundTradeState.GetHoldCommodityQuantity(ex.CommoditySlug);
+                    int exTgt = Mathf.Max(1, ex.TargetQuantity);
+                    string exUnit = string.Equals(ex.CommoditySlug, "propellant", StringComparison.OrdinalIgnoreCase)
+                        ? "t"
+                        : string.Equals(ex.CommoditySlug, "provisions", StringComparison.OrdinalIgnoreCase)
+                            ? "d"
+                            : "u";
+                    string exLabel = ex.CommoditySlug.Replace('_', ' ').ToUpperInvariant();
+                    sb.Append(appended ? ", " : " | ");
+                    appended = true;
+                    sb.Append(exCur >= exTgt
+                        ? $"{exLabel} {exCur}/{exTgt}{exUnit} OK"
+                        : $"{exLabel} {exCur}/{exTgt}{exUnit}");
+                }
+            }
+            summary = sb.ToString();
+            return true;
         }
 
         public static string InferStationPortFromRoomEntry(string roomEntry)
@@ -996,15 +1034,10 @@ namespace TacSim.UI
             ("metals", new[] { "metals" }),
         };
 
-        /// <summary>
-        /// Extracts the next active trade commodity need (commodity slug, target lot quantity, buy/sell side)
-        /// from the tracked (or first matching) active quest so the Visual Commodity Exchange can highlight
-        /// matching listings and provide a 1-click "SET QUEST QTY" button.
-        /// </summary>
-        public bool TryGetActiveTradeNeed(out QuestTradeNeed need)
+        public List<QuestTradeNeed> GetActiveTradeNeeds()
         {
-            need = default;
-            if (LatestPanel == null || LatestPanel.Active.Count == 0) return false;
+            var result = new List<QuestTradeNeed>(4);
+            if (LatestPanel == null || LatestPanel.Active.Count == 0) return result;
 
             var ordered = new List<MushActiveQuest>(LatestPanel.Active.Count);
             var tracked = GetTrackedActiveQuest();
@@ -1015,6 +1048,7 @@ namespace TacSim.UI
                     ordered.Add(LatestPanel.Active[i]);
             }
 
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             for (int qIdx = 0; qIdx < ordered.Count; qIdx++)
             {
                 var q = ordered[qIdx];
@@ -1022,11 +1056,99 @@ namespace TacSim.UI
                 {
                     var cp = q.Checkpoints[cIdx];
                     if (cp.Checked || cp.LiveReady) continue;
-                    if (TryExtractTradeNeedFromCheckpoint(q.Title, cp, out need))
-                        return true;
+                    if (!TryExtractTradeNeedFromCheckpoint(q.Title, cp, out var extracted))
+                        continue;
+                    string key = $"{extracted.CommoditySlug}|{(extracted.WantsBuy ? 1 : 0)}|{(extracted.WantsSell ? 1 : 0)}";
+                    if (seen.Add(key))
+                        result.Add(extracted);
+                }
+                if (result.Count > 0)
+                    return result;
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// Extracts the next active trade commodity need (commodity slug, target lot quantity, buy/sell side)
+        /// from the tracked (or first matching) active quest so the Visual Commodity Exchange can highlight
+        /// matching listings and provide a 1-click "SET QUEST QTY" button.
+        /// </summary>
+        public bool TryGetActiveTradeNeed(out QuestTradeNeed need)
+        {
+            var list = GetActiveTradeNeeds();
+            if (list.Count > 0)
+            {
+                need = list[0];
+                return true;
+            }
+            need = default;
+            return false;
+        }
+
+        /// <summary>
+        /// Contextually resolves the most relevant Exchange trade need for live ship stowage and venue listings:
+        /// - Advances Step 2 past buy-only items already satisfied in live stowage and prefers an unsatisfied
+        ///   item actually listed on the current venue's book.
+        /// - Narrows dual buy+sell delivery runs (Steps 3 &amp; 4) to SELL-only once required cargo is loaded.
+        /// </summary>
+        public bool TryResolveContextualTradeNeed(TacSimTradeAndShipState trade, out QuestTradeNeed need, out List<QuestTradeNeed> allNeeds)
+        {
+            allNeeds = GetActiveTradeNeeds();
+            need = default;
+            if (allNeeds.Count == 0) return false;
+
+            var pool = new List<QuestTradeNeed>(allNeeds.Count);
+            for (int i = 0; i < allNeeds.Count; i++)
+            {
+                var n = allNeeds[i];
+                bool buySatisfied = trade != null &&
+                                    n.WantsBuy &&
+                                    !n.WantsSell &&
+                                    trade.GetHoldCommodityQuantity(n.CommoditySlug) >= Mathf.Max(1, n.TargetQuantity);
+                if (!buySatisfied)
+                    pool.Add(n);
+            }
+            if (pool.Count == 0)
+                pool.AddRange(allNeeds);
+
+            QuestTradeNeed picked = pool[0];
+            if (trade != null && trade.Listings.Count > 0)
+            {
+                for (int i = 0; i < pool.Count; i++)
+                {
+                    bool onBook = false;
+                    for (int j = 0; j < trade.Listings.Count; j++)
+                    {
+                        if (pool[i].MatchesListing(trade.Listings[j]))
+                        {
+                            onBook = true;
+                            break;
+                        }
+                    }
+                    if (onBook)
+                    {
+                        picked = pool[i];
+                        break;
+                    }
                 }
             }
-            return false;
+
+            if (trade != null &&
+                picked.WantsBuy &&
+                picked.WantsSell &&
+                trade.GetHoldCommodityQuantity(picked.CommoditySlug) >= Mathf.Max(1, picked.TargetQuantity))
+            {
+                picked = new QuestTradeNeed(
+                    picked.QuestTitle,
+                    picked.CheckpointTitle,
+                    picked.CommoditySlug,
+                    picked.TargetQuantity,
+                    wantsBuy: false,
+                    wantsSell: true);
+            }
+
+            need = picked;
+            return true;
         }
 
         private static bool TryExtractTradeNeedFromCheckpoint(string questTitle, MushQuestCheckpoint cp, out QuestTradeNeed need)

@@ -13154,5 +13154,109 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ExchangeTerminal_AdvancesStep2DualItemByStowageAndVenueAndNarrowsLoadedStep3ToSellBids()
+        {
+            var rootGo = new UnityEngine.GameObject("ExchangeDualItemQuestTestRoot");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                var trade = new TacSim.World.TacSimTradeAndShipState();
+                hud.BindTradeState(trade);
+
+                // Step 2 active: 10 provisions + 5 propellant
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"",
+                        ""title"": ""Stock the Locker and Tanks"",
+                        ""checkpoints"": [
+                            { ""id"": ""buy_provisions"", ""title"": ""Buy at least 10 provisions at Ceres Co-op Chandlery"", ""instructions"": ""Buy 10 provisions."", ""checked"": false, ""live_ready"": false },
+                            { ""id"": ""buy_propellant"", ""title"": ""Buy at least 5 tonnes of propellant at Ceres Exchange Hall"", ""instructions"": ""Buy 5 propellant."", ""checked"": false, ""live_ready"": false }
+                        ]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+
+                // 1. At Exchange Hall with only propellant listed and 0 provisions -> picks propellant (5)
+                trade.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""ship"": { ""hull_id"": ""#99"", ""stowage"": { ""stores_days"": 0, ""stores_limit_days"": 120, ""reaction_kg"": 0, ""max_reaction_kg"": 80000 } },
+                    ""listings"": [
+                        { ""id"": 12, ""side"": ""ask"", ""good"": ""tacsim:propellant"", ""good_label"": ""Propellant"", ""available_qty"": 40, ""unit_price_minor"": 1800, ""price_text"": ""18.00 cr"", ""funded"": true, ""vendor_name"": ""Exchange"" }
+                    ]
+                }"));
+                hud.OpenTradeAndSailingModal("EXCHANGE", openSailingTab: false);
+                StringAssert.Contains("PROPELLANT", hud.ExchangeQuestBannerText);
+                Assert.AreEqual(1, hud.HighlightedQuestListingCount);
+                Assert.IsTrue(hud.ApplyQuestTradeQuantity());
+                Assert.AreEqual(5, trade.SelectedTradeQuantity);
+
+                // 2. Both provisions and propellant listed, with 10 provisions already stowed -> advances to propellant & shows [OK] on provisions
+                trade.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""ship"": { ""hull_id"": ""#99"", ""stowage"": { ""stores_days"": 10, ""stores_limit_days"": 120, ""reaction_kg"": 0, ""max_reaction_kg"": 80000 } },
+                    ""listings"": [
+                        { ""id"": 11, ""side"": ""ask"", ""good"": ""tacsim:provisions"", ""good_label"": ""Provisions"", ""available_qty"": 25, ""unit_price_minor"": 1000, ""price_text"": ""10.00 cr"", ""funded"": true, ""vendor_name"": ""Chandlery"" },
+                        { ""id"": 12, ""side"": ""ask"", ""good"": ""tacsim:propellant"", ""good_label"": ""Propellant"", ""available_qty"": 40, ""unit_price_minor"": 1800, ""price_text"": ""18.00 cr"", ""funded"": true, ""vendor_name"": ""Exchange"" }
+                    ]
+                }"));
+                hud.RefreshTradeTerminal();
+                StringAssert.Contains("PROPELLANT", hud.ExchangeQuestBannerText);
+                StringAssert.Contains("10 PROVISIONS [OK]", hud.ExchangeQuestBannerText);
+                Assert.AreEqual(1, hud.HighlightedQuestListingCount);
+                Assert.IsTrue(hud.QuestJournal.TryGetQuestHoldReadinessSummary(hud.QuestJournal.GetTrackedActiveQuest(), out string holdSummary, out bool holdReady));
+                Assert.IsFalse(holdReady);
+                StringAssert.Contains("[HOLD] PROPELLANT: 0/5 t", holdSummary);
+                StringAssert.Contains("PROVISIONS 10/10d OK", holdSummary);
+
+                // 3. Step 3 with 5t metals loaded in hold -> narrows from BUY/SELL to SELL and highlights Standing Bid only
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"",
+                        ""title"": ""Metals Down the Corridor"",
+                        ""checkpoints"": [
+                            { ""id"": ""deliver_metals"", ""title"": ""Buy 5 tonnes of metals at Ceres and deliver them to Stickney Yards"", ""instructions"": ""Buy 5 metals and sell with +market/sell."", ""checked"": false, ""live_ready"": false }
+                        ]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                trade.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""stickney"",
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 5000,
+                            ""max_cargo_kg"": 100000,
+                            ""reaction_kg"": 10000,
+                            ""max_reaction_kg"": 80000,
+                            ""stores_days"": 10,
+                            ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:metals"", ""label"": ""Metals"", ""quantity"": 5 }]
+                        }
+                    },
+                    ""listings"": [
+                        { ""id"": 21, ""side"": ""ask"", ""good"": ""tacsim:metals"", ""good_label"": ""Metals"", ""available_qty"": 10, ""unit_price_minor"": 10000, ""price_text"": ""100.00 cr"", ""funded"": true, ""vendor_name"": ""Ask Desk"" },
+                        { ""id"": 22, ""side"": ""bid"", ""good"": ""tacsim:metals"", ""good_label"": ""Metals"", ""available_qty"": 20, ""unit_price_minor"": 14500, ""price_text"": ""145.00 cr"", ""funded"": true, ""vendor_name"": ""Kasei Receiving"" }
+                    ]
+                }"));
+                hud.RefreshTradeTerminal();
+                StringAssert.Contains("SELL <b>5</b>", hud.ExchangeQuestBannerText);
+                StringAssert.DoesNotContain("BUY / SELL", hud.ExchangeQuestBannerText);
+                Assert.AreEqual(1, hud.HighlightedQuestListingCount, "Only Standing Bid must be highlighted once quest cargo is loaded in hold");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
