@@ -1097,21 +1097,7 @@ impl PortWalkState {
                 gauge_kind: "provisions",
             });
         }
-        let norm = |raw: &str| -> String {
-            let trimmed = raw.trim().to_ascii_lowercase();
-            let tail = trimmed
-                .rsplit_once(':')
-                .map_or(trimmed.as_str(), |(_, r)| r);
-            tail.replace(['-', ' '], "_")
-        };
-        let mut current_qty = 0i64;
-        for lot in &self.cargo_lots {
-            if norm(&lot.good_id) == need.commodity_slug
-                || norm(&lot.good_name) == need.commodity_slug
-            {
-                current_qty += lot.quantity.max(0);
-            }
-        }
+        let current_qty = self.hold_commodity_quantity(&need.commodity_slug);
         Some(QuestStowageReadiness {
             commodity_slug: need.commodity_slug.clone(),
             label,
@@ -1121,6 +1107,29 @@ impl PortWalkState {
             ready: current_qty >= target_qty,
             gauge_kind: "cargo",
         })
+    }
+
+    /// Total live quantity of a normalized commodity slug currently stowed in ship cargo lots.
+    #[must_use]
+    pub fn hold_commodity_quantity(&self, commodity_slug: &str) -> i64 {
+        let norm = |raw: &str| -> String {
+            let trimmed = raw.trim().to_ascii_lowercase();
+            let tail = trimmed
+                .rsplit_once(':')
+                .map_or(trimmed.as_str(), |(_, r)| r);
+            tail.replace(['-', ' '], "_")
+        };
+        let want = norm(commodity_slug);
+        if want.is_empty() {
+            return 0;
+        }
+        let mut total = 0i64;
+        for lot in &self.cargo_lots {
+            if norm(&lot.good_id) == want || norm(&lot.good_name) == want {
+                total += lot.quantity.max(0);
+            }
+        }
+        total
     }
 
     /// Resolve the most relevant active quest trade need for the pilot's live stowage & venue book:
@@ -3709,6 +3718,32 @@ impl PortWalkState {
                 chk(qm.mine_done),
                 qm.target_ore_slug
             ));
+            if self.stowage_loaded {
+                let ore_qty = self.hold_commodity_quantity(&qm.target_ore_slug);
+                top.push_str(&format!(
+                    "  |  Hold: {ore_qty}t {}",
+                    qm.target_ore_slug.replace('_', " ")
+                ));
+            }
+            if qm.mine_done {
+                if let Some(dest) = &self.quest_dest_port {
+                    top.push_str(&format!(
+                        "  |  Return: {} (+ship/plan {})",
+                        dest.port_label, dest.port_id
+                    ));
+                } else {
+                    let ret_slug = self
+                        .quest_room_entry
+                        .as_deref()
+                        .and_then(infer_station_port_from_room_entry)
+                        .unwrap_or("ceres");
+                    let ret_label = CORRIDORS
+                        .iter()
+                        .find(|(id, _, _)| id.eq_ignore_ascii_case(ret_slug))
+                        .map_or("Ceres Freeport", |(_, lbl, _)| *lbl);
+                    top.push_str(&format!("  |  Return: {ret_label} (+ship/plan {ret_slug})"));
+                }
+            }
         } else if self.aboard_ship
             && let Some(dest) = &self.quest_dest_port
         {
@@ -4925,16 +4960,33 @@ impl PortWalkState {
                     }
                 }
                 "bay" => {
-                    self.interactables.insert(
-                        0,
-                        InteractableTarget {
-                            label: "Rig Status & Launch Check (+tv)".to_string(),
-                            x_m: rcx,
-                            y_m: rmax_y - 1.2,
-                            floor: rfloor,
-                            action: InteractAction::Command("+tv"),
-                        },
-                    );
+                    if let Some(qm) = &self.quest_mining_status {
+                        let (lbl, cmd) = if qm.mine_done {
+                            ("[Q] Recover Rig (+tv/1 recover go)", "+tv/1 recover go")
+                        } else {
+                            (
+                                "[Q] Launch Surface Rig (+tv/1 launch go)",
+                                "+tv/1 launch go",
+                            )
+                        };
+                        self.interactables.insert(
+                            0,
+                            InteractableTarget {
+                                label: lbl.to_string(),
+                                x_m: rcx,
+                                y_m: rmax_y - 1.0,
+                                floor: rfloor,
+                                action: InteractAction::Command(cmd),
+                            },
+                        );
+                    }
+                    self.interactables.push(InteractableTarget {
+                        label: "Rig Status & Launch Check (+tv)".to_string(),
+                        x_m: rcx,
+                        y_m: rmax_y - 1.4,
+                        floor: rfloor,
+                        action: InteractAction::Command("+tv"),
+                    });
                     self.interactables.push(InteractableTarget {
                         label: "Return to Cargo Hold (+tv/bay out)".to_string(),
                         x_m: rcx,
@@ -10836,7 +10888,20 @@ mod tests {
             zone: None,
             ambient: bay_amb,
         };
+        if !st.ship_rooms.iter().any(|r| r.entry_id == "bay") {
+            st.ship_rooms.push(RoomGeom {
+                entry_id: "bay".into(),
+                name: "Vehicle Bay".into(),
+                kind: "bay",
+                floor: 0,
+                min_x: -4.0,
+                max_x: 4.0,
+                min_y: -4.0,
+                max_y: 4.0,
+            });
+        }
         st.observe_room(&bay_view, Some("Pilot"));
+        assert_eq!(st.active_location_key, "bay");
         assert!(
             st.interactables
                 .iter()
@@ -10848,6 +10913,87 @@ mod tests {
                 .iter()
                 .any(|t| t.action == InteractAction::Command("+tv/bay out")),
             "expected +tv/bay out interactable in bay"
+        );
+    }
+
+    #[test]
+    fn vehicle_bay_hud_and_interactables_surface_live_ore_hold_and_post_mine_return_cue() {
+        let mut st = PortWalkState::new();
+        st.stowage_loaded = true;
+        st.cargo_lots.push(CargoLotRow {
+            good_id: "tacsim:carbon_ore".into(),
+            good_name: "Carbon Ore".into(),
+            quantity: 2,
+        });
+        st.observe_quest_objective_room(Some(("room.c07_exchange".into(), true)));
+        st.observe_quest_mining_status(Some(QuestSurfaceMiningStatus {
+            quest_title: "Scan, Sound, and Mine a Landing Site".into(),
+            target_ore_slug: "carbon_ore".into(),
+            recommended_family: "carbon".into(),
+            scan_done: true,
+            sound_done: true,
+            mine_done: true,
+        }));
+
+        let mut bay_amb = std::collections::BTreeMap::new();
+        bay_amb.insert(
+            "tacsim".into(),
+            json!({
+                "mode": "interior",
+                "room": "bay",
+                "hull_name": "Starling",
+                "unit_type": "tacsim.unit.dray_p"
+            }),
+        );
+        let bay_view = RoomView {
+            id: "#55".into(),
+            name: "M/V Starling - Vehicle Bay".into(),
+            desc: mush_proto::RichText::plain("Bay."),
+            exits: Vec::new(),
+            contents: Vec::new(),
+            zone: None,
+            ambient: bay_amb,
+        };
+        if !st.ship_rooms.iter().any(|r| r.entry_id == "bay") {
+            st.ship_rooms.push(RoomGeom {
+                entry_id: "bay".into(),
+                name: "Vehicle Bay".into(),
+                kind: "bay",
+                floor: 0,
+                min_x: -4.0,
+                max_x: 4.0,
+                min_y: -4.0,
+                max_y: 4.0,
+            });
+        }
+        st.observe_room(&bay_view, Some("Pilot"));
+        assert_eq!(st.active_location_key, "bay");
+        // Re-apply stowage after observe_room since empty tacsim stowage keeps cargo_lots
+        st.stowage_loaded = true;
+        if st.cargo_lots.is_empty() {
+            st.cargo_lots.push(CargoLotRow {
+                good_id: "tacsim:carbon_ore".into(),
+                good_name: "Carbon Ore".into(),
+                quantity: 2,
+            });
+        }
+
+        let (top, _) = st.hud_lines("kitty");
+        assert!(
+            top.contains("Hold: 2t carbon ore"),
+            "expected live ore hold in Vehicle Bay HUD:\n{top}"
+        );
+        assert!(
+            top.contains("Return: Ceres Freeport (+ship/plan ceres)"),
+            "expected post-mine return cue in Vehicle Bay HUD:\n{top}"
+        );
+        assert_eq!(
+            st.interactables[0].label,
+            "[Q] Recover Rig (+tv/1 recover go)"
+        );
+        assert_eq!(
+            st.interactables[0].action,
+            InteractAction::Command("+tv/1 recover go")
         );
     }
 }
