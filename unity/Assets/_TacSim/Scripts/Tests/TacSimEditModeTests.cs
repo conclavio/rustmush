@@ -19638,5 +19638,60 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void TacticalMinimap_DisplaysStepBadgeRigRecoveryBeaconAndQuarryHoldStatus()
+        {
+            var rootGo = new UnityEngine.GameObject("TacticalMinimapStepAndRigRecoveryTest");
+            try
+            {
+                var stGo = new UnityEngine.GameObject("Station");
+                stGo.transform.SetParent(rootGo.transform, false);
+                var station = stGo.AddComponent<TacSim.World.StationWorldController>();
+                station.BuildStation(null, "neighborhood.ceres_freeport");
+
+                var shipGo = new UnityEngine.GameObject("Ship");
+                shipGo.transform.SetParent(rootGo.transform, false);
+                var ship = shipGo.AddComponent<ShipInteriorController>();
+                ship.BuildInterior(new TacSimAssetCatalog(), "dray_p");
+
+                var surfGo = new UnityEngine.GameObject("Surface");
+                surfGo.transform.SetParent(rootGo.transform, false);
+                var surface = surfGo.AddComponent<TacSim.Surface.SurfaceMiningController>();
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.Minimap.BindWorldSources(station, ship, null, surface, null);
+
+                // 1. Station same-deck quest objective displays [! 3/7] in header
+                station.HighlightActiveRoom("room.c03_arrivals");
+                hud.Minimap.SetQuestObjectiveRoom("room.c07_exchange", isTurnIn: false, currentRoomHasOffer: false, stepTag: "3/7");
+                hud.Minimap.SyncMinimap(TacSimActiveStage.StationWalk, station.GetRoomSpawnPosition("room.c03_arrivals"), 0f, false, forceRedraw: true);
+                StringAssert.Contains("3/7", hud.Minimap.HeaderText);
+
+                // 2. Ship Interior Step 6 rig recovery -> [RECOVER RIG -> BAY! 6/7] from airlock, then [→ BRIDGE! 6/7] once ore is stowed
+                hud.Minimap.SetQuestShipCompartment("bay", stepTag: "6/7", recoverRigFirst: true, oreHoldReady: false);
+                hud.Minimap.SyncMinimap(TacSimActiveStage.ShipInteriorWalk, UnityEngine.Vector3.zero, 0f, false, forceRedraw: true);
+                Assert.IsTrue(hud.Minimap.LastShipMinimapHasQuestBeacon);
+                StringAssert.Contains("[RECOVER RIG -> BAY! 6/7]", hud.Minimap.HeaderText);
+
+                hud.Minimap.SetQuestShipCompartment("bridge", stepTag: "6/7", recoverRigFirst: false, oreHoldReady: true);
+                hud.Minimap.SyncMinimap(TacSimActiveStage.ShipInteriorWalk, UnityEngine.Vector3.zero, 0f, false, forceRedraw: true);
+                StringAssert.Contains("[→ BRIDGE! 6/7]", hud.Minimap.HeaderText);
+
+                // 3. Surface Quarry minimap header reflects [RECOVER RIG 6/7] -> [ORE READY 6/7]
+                hud.Minimap.SetQuestShipCompartment("bay", stepTag: "6/7", recoverRigFirst: true, oreHoldReady: false);
+                hud.Minimap.SyncMinimap(TacSimActiveStage.PlanetarySurface, UnityEngine.Vector3.zero, 0f, false, forceRedraw: true);
+                StringAssert.Contains("[RECOVER RIG 6/7]", hud.Minimap.HeaderText);
+
+                hud.Minimap.SetQuestShipCompartment("bridge", stepTag: "6/7", recoverRigFirst: false, oreHoldReady: true);
+                hud.Minimap.SyncMinimap(TacSimActiveStage.PlanetarySurface, UnityEngine.Vector3.zero, 0f, false, forceRedraw: true);
+                StringAssert.Contains("[ORE READY 6/7]", hud.Minimap.HeaderText);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
