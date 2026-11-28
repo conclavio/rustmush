@@ -229,6 +229,68 @@ describe("room band exit buttons submit safe goto commands", () => {
     expect(highlighted[0]!.getAttribute("title")).toContain("Quest route");
     expect(screen.getByRole("button", { name: "Cycle Ashore" }).getAttribute("data-quest-exit")).toBeNull();
   });
+
+  it("prioritizes room NPC quest markers (turn-in -> offer -> in-progress) with role cues and opens NPC dialog", async () => {
+    const openNpcDialog = vi.fn();
+    const app = {
+      roomView: HALL,
+      screens: { exits: new Map() },
+      presence: { prune: vi.fn(), thinking: [], composing: [] },
+      quests: {
+        roomMarkers: [
+          {
+            npcId: "#31",
+            npcName: "Silver Clerk",
+            marker: "in_progress",
+            symbol: "?",
+            questKey: "q.wip",
+            questTitle: "In Progress Job",
+            category: "optional",
+            questCount: 1,
+          },
+          {
+            npcId: "#11",
+            npcName: "Maren Halvorsen",
+            marker: "available",
+            symbol: "!",
+            questKey: "q.offer",
+            questTitle: "First Papers",
+            category: "guided",
+            questCount: 2,
+          },
+          {
+            npcId: "#22",
+            npcName: "Ilse Oduya-Brandt",
+            marker: "turn_in",
+            symbol: "?",
+            questKey: "q.turnin",
+            questTitle: "Stock the Locker",
+            category: "guided",
+            questCount: 1,
+          },
+        ],
+        active: [],
+        trackedKey: null,
+        openNpcDialog,
+      },
+    } as unknown as GameApp;
+
+    const { container } = render(RoomBand, { props: { app, onCmd: vi.fn() } });
+    const btns = Array.from(container.querySelectorAll("button.qmarker"));
+    expect(btns.map((b) => b.getAttribute("data-marker"))).toEqual([
+      "turn_in",
+      "available",
+      "in_progress",
+    ]);
+    expect(btns[0]!.textContent).toContain("Ilse Oduya-Brandt");
+    expect(btns[0]!.textContent).toContain("Turn In");
+    expect(btns[1]!.textContent).toContain("Maren Halvorsen");
+    expect(btns[1]!.textContent).toContain("Offer");
+    expect(btns[1]!.textContent).toContain("×2");
+
+    await fireEvent.click(btns[0]!);
+    expect(openNpcDialog).toHaveBeenCalledWith("#22");
+  });
 });
 
 describe("channel colorHex inline style sanitization", () => {

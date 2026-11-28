@@ -15,6 +15,7 @@ import {
   parseQuestMarkers,
   resolveContextualTradeNeed,
   resolveQuestShipTargetCompartment,
+  sortRoomQuestMarkers,
 } from "./quests.svelte";
 
 describe("QuestsStore", () => {
@@ -961,5 +962,42 @@ describe("QuestsStore", () => {
     });
     expect(loaded?.wantsBuy).toBe(false);
     expect(loaded?.wantsSell).toBe(true);
+  });
+
+  it("prioritizes room markers and computes live turn-in / available urgency badges", () => {
+    const store = new QuestsStore();
+    store.applyFrame({
+      schema: 1,
+      room_markers: [
+        { npc_id: "#1", npc_name: "In Progress", marker: "in_progress", quest_key: "q1", quest_title: "WIP" },
+        { npc_id: "#2", npc_name: "Offer NPC", marker: "available", quest_key: "q2", quest_title: "Offer" },
+        { npc_id: "#3", npc_name: "Turn-In NPC", marker: "turn_in", quest_key: "q3", quest_title: "Done" },
+      ],
+      active: [{ key: "q1", title: "WIP", can_finish_now: false, checkpoints: [] }],
+      available: [{ key: "q2", title: "Offer", checkpoints: [] }],
+      completed: [],
+    });
+
+    expect(store.prioritizedRoomMarkers.map((m) => m.marker)).toEqual([
+      "turn_in",
+      "available",
+      "in_progress",
+    ]);
+    expect(sortRoomQuestMarkers(store.roomMarkers).map((m) => m.npcId)).toEqual(["#3", "#2", "#1"]);
+    expect(store.hasTurnInHere).toBe(true);
+    expect(store.hasAvailableHere).toBe(true);
+
+    // Without turn_in marker or canFinishNow -> only available urgency
+    store.applyFrame({
+      schema: 1,
+      room_markers: [
+        { npc_id: "#2", npc_name: "Offer NPC", marker: "available", quest_key: "q2", quest_title: "Offer" },
+      ],
+      active: [],
+      available: [{ key: "q2", title: "Offer", checkpoints: [] }],
+      completed: [],
+    });
+    expect(store.hasTurnInHere).toBe(false);
+    expect(store.hasAvailableHere).toBe(true);
   });
 });

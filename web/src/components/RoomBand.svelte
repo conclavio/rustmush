@@ -17,6 +17,7 @@
     needsOriginPortProcurement,
     needsSurfaceExpeditionBoarding,
     resolveQuestShipTargetCompartment,
+    sortRoomQuestMarkers,
   } from "$lib/stores/quests.svelte";
 
   let { app, onCmd }: { app: GameApp; onCmd: (cmd: string) => void } = $props();
@@ -142,7 +143,7 @@
         {band.scene.title}{#if band.scene.round !== null}<span class="muted"> r{band.scene.round}{#if band.scene.turn !== null}·t{band.scene.turn}{/if}</span>{/if}
       </span>
     {/if}
-    {#each app.quests?.roomMarkers ?? [] as qm (qm.npcId)}
+    {#each sortRoomQuestMarkers(app.quests?.roomMarkers ?? []) as qm (qm.npcId)}
       <button
         type="button"
         class="qmarker"
@@ -151,6 +152,14 @@
         onclick={() => app.quests?.openNpcDialog(qm.npcId)}
       >
         <span class="qsym" aria-hidden="true">{qm.symbol}</span>{qm.npcName}
+        {#if qm.marker === "turn_in"}
+          <span class="qrole">Turn In</span>
+        {:else if qm.marker === "available"}
+          <span class="qrole">Offer</span>
+        {/if}
+        {#if qm.questCount > 1}
+          <span class="qcount">×{qm.questCount}</span>
+        {/if}
       </button>
     {/each}
     <span class="grow"></span>
@@ -305,6 +314,22 @@
   .qmarker[data-marker="in_progress"] .qsym {
     background: #475569;
     color: #e2e8f0;
+  }
+
+  .qrole {
+    font-size: 0.66rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    opacity: 0.88;
+  }
+
+  .qcount {
+    font-size: 0.68rem;
+    font-weight: 700;
+    padding: 0 0.25rem;
+    border-radius: 999px;
+    background: rgba(251, 191, 36, 0.24);
+    color: #fef3c7;
   }
 
   .exits {
