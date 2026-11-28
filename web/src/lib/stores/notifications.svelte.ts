@@ -138,10 +138,19 @@ export class NotificationStore {
     });
   }
 
-  /** Surface arrival at a tracked quest's station objective or turn-in room in the unified toast tray. */
-  fromQuestArrival(roomName: string, isTurnIn: boolean, ts: number): Notification | null {
+  /** Surface arrival at a tracked quest's station objective, turn-in room, or between-steps next guided giver room in the unified toast tray. */
+  fromQuestArrival(
+    roomName: string,
+    isTurnIn: boolean,
+    ts: number,
+    nextGuided?: { step: number; giverLabel: string },
+  ): Notification | null {
     const label = roomName.trim() || "Objective Room";
-    const text = isTurnIn ? `Quest Turn-In Here: ${label}` : `Quest Objective: ${label}`;
+    const text = nextGuided
+      ? `Next Guided Step (${nextGuided.step}/7) [!]: Speak with ${nextGuided.giverLabel} in ${label}`
+      : isTurnIn
+        ? `Quest Turn-In Here: ${label}`
+        : `Quest Objective: ${label}`;
     return this.add({
       serverId: this.#nextQuestNoticeId--,
       severity: "info",

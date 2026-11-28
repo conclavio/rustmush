@@ -3044,4 +3044,59 @@ describe("quest command palette route, step and cycle shortcuts", () => {
     expect(ashoreEntry).toBeDefined();
     expect(ashoreEntry?.label).toContain("Cycle Ashore");
   });
+
+  it("emits a between-steps Next Guided arrival toast when walking into the next giver room", () => {
+    const { app, ws } = boot(["tacsim.quests"]);
+    ws.deliver(
+      panel(10, "tacsim.quests", "keyframe", {
+        schema: 1,
+        room_id: "#10",
+        room_name: "Port Watch Arrivals",
+        active: [],
+        available: [],
+        completed: [
+          {
+            key: "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+            title: "First Papers at the Registry",
+          },
+        ],
+      }),
+    );
+
+    // First room hydration must not fire an arrival toast
+    ws.deliver(
+      env(11, {
+        t: "room",
+        d: {
+          id: "#10",
+          name: "Port Watch Arrivals",
+          desc: [{ text: "Arrivals." }],
+          exits: [],
+          contents: [],
+          ambient: { atlas: { pack: "neighborhood.ceres_freeport", entry: "room.c03_arrivals" } },
+        },
+      } as OutputEvent),
+    );
+    expect(app.notifications.list.filter((n) => n.category === "quest")).toHaveLength(0);
+
+    // Moving into Registry & Co-op Desk (Step 2 giver Ilse's room) fires the between-steps toast
+    ws.deliver(
+      env(12, {
+        t: "room",
+        d: {
+          id: "#15",
+          name: "Registry & Co-op Desk",
+          desc: [{ text: "Co-op registry." }],
+          exits: [],
+          contents: [],
+          ambient: { atlas: { pack: "neighborhood.ceres_freeport", entry: "room.c05_registry" } },
+        },
+      } as OutputEvent),
+    );
+    const questToasts = app.notifications.list.filter((n) => n.category === "quest");
+    expect(questToasts).toHaveLength(1);
+    expect(questToasts[0]?.text[0]?.text).toBe(
+      "Next Guided Step (2/7) [!]: Speak with Ilse Oduya-Brandt in Registry & Co-op Desk",
+    );
+  });
 });
