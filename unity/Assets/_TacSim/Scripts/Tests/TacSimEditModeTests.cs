@@ -15591,5 +15591,84 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ContextualQuickActions_HighlightQuestRelevantRoomAndShipActionsAndDedupeBreadcrumb()
+        {
+            var rootGo = new UnityEngine.GameObject("QuickActionsQuestHighlightTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                var tradeState = new TacSimTradeAndShipState();
+                hud.BindTradeState(tradeState);
+
+                // 1. Registry with Step 5 Refit active -> [Q] Refit Dray-P highlighted live on panel update
+                hud.RefreshContextualQuickActions("room.c05_registry", isSeatedAtHelm: false);
+                Assert.AreEqual(0, hud.HighlightedQuestQuickActionCount);
+
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"",
+                        ""title"": ""Refit the Dray for Surface Mining"",
+                        ""next_step"": ""Run +coop/refit prospector at Registry"",
+                        ""checkpoints"": [{
+                            ""id"": ""refit"",
+                            ""title"": ""Refit into Dray-P"",
+                            ""instructions"": ""Run +coop/refit prospector."",
+                            ""checked"": false,
+                            ""live_ready"": false
+                        }]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                Assert.GreaterOrEqual(hud.HighlightedQuestQuickActionCount, 1);
+                bool foundRefitQ = false;
+                for (int i = 0; i < hud.QuickActionSlotCount; i++)
+                {
+                    if (hud.GetQuickActionLabelForTests(i) == "[Q] Refit Dray-P")
+                        foundRefitQ = true;
+                }
+                Assert.IsTrue(foundRefitQ, "Registry quick actions must badge [Q] Refit Dray-P on Step 5");
+
+                // 2. Cargo Hold with Step 6 mining + +tv/bay in breadcrumb -> dedupes Vehicle Bay and highlights gold
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""next_step"": ""Enter Vehicle Bay and mine 1t carbon_ore"",
+                        ""checkpoints"": [
+                            { ""id"": ""scan"", ""title"": ""Scan site"", ""instructions"": ""+tv/1 scan go"", ""checked"": false, ""live_ready"": false },
+                            { ""id"": ""mine"", ""title"": ""Mine 1t carbon_ore"", ""instructions"": ""+tv/1 mine go"", ""checked"": false, ""live_ready"": false }
+                        ]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                hud.SetQuestExitBreadcrumb("Vehicle Bay", "+tv/bay in", 1);
+                hud.RefreshContextualQuickActions("interior:hold", isSeatedAtHelm: false);
+                Assert.AreEqual("[Q] Enter Vehicle Bay", hud.GetQuickActionLabelForTests(0));
+                int bayCount = 0;
+                for (int i = 0; i < hud.QuickActionSlotCount; i++)
+                {
+                    if (hud.GetQuickActionLabelForTests(i).IndexOf("Vehicle Bay", System.StringComparison.OrdinalIgnoreCase) >= 0)
+                        bayCount++;
+                }
+                Assert.AreEqual(1, bayCount, "Vehicle Bay quick action must not duplicate the +tv/bay in quest breadcrumb");
+
+                // 3. Inside Vehicle Bay on Step 6 -> highlights [Q] Launch Rig 1
+                hud.SetQuestExitBreadcrumb(string.Empty, string.Empty, 0);
+                hud.RefreshContextualQuickActions("interior:bay", isSeatedAtHelm: false);
+                Assert.AreEqual("[Q] Launch Rig 1", hud.GetQuickActionLabelForTests(0));
+                Assert.AreEqual(1, hud.HighlightedQuestQuickActionCount);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
