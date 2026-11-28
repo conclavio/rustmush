@@ -588,6 +588,18 @@ namespace TacSim.UI
             var qPanel = _questJournal?.LatestPanel;
             if (qPanel != null)
             {
+                string tourSnap = _questJournal.GuidedTourProgressSnapshot;
+                if (!string.IsNullOrEmpty(tourSnap))
+                {
+                    bool allDone = _questJournal.TryGetGuidedTourProgress(out _, out _, out _, out bool doneAll) && doneAll;
+                    string tourCol = allDone ? "#55EE99" : "#FFDD44";
+                    sb.AppendFormat("<color={0}><b>GUIDED TOUR:</b></color> <b>{1}</b>\n", tourCol, MushProtocol.EscapeUnityRichText(tourSnap));
+                }
+                string roadmapSnap = _questJournal.GuidedTourRoadmapSnapshot;
+                if (!string.IsNullOrEmpty(roadmapSnap))
+                {
+                    sb.AppendFormat("<color=#99CCEE>{0}</color>\n", MushProtocol.EscapeUnityRichText(roadmapSnap));
+                }
                 var activeQuest = _questJournal.GetTrackedActiveQuest();
                 if (activeQuest != null)
                 {
@@ -609,6 +621,15 @@ namespace TacSim.UI
                 {
                     sb.AppendFormat("<color=#FFDD44><b>QUEST AVAILABLE:</b></color> <b>{0}</b>  |  Completed: {1}\n",
                         MushProtocol.EscapeUnityRichText(qPanel.Available[0].Title),
+                        qPanel.Completed.Count);
+                }
+                else if (_questJournal.TryGetNextGuidedOffer(out var nextOffer))
+                {
+                    sb.AppendFormat("<color=#FFDD44><b>NEXT GUIDED ({0}/7):</b></color> <b>{1}</b> — speak with {2} ({3})  |  Completed: {4}\n",
+                        nextOffer.Step,
+                        MushProtocol.EscapeUnityRichText(nextOffer.ShortLabel),
+                        MushProtocol.EscapeUnityRichText(nextOffer.GiverLabel),
+                        MushProtocol.EscapeUnityRichText(nextOffer.GiverRoomName),
                         qPanel.Completed.Count);
                 }
                 else if (qPanel.Completed.Count > 0)
