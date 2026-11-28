@@ -859,7 +859,11 @@ namespace TacSim.Core
                     if (!string.IsNullOrEmpty(targetRoom))
                         PlotStationWayfinderRoute(targetRoom, autoWalk: false, isQuestObjective: true);
                 };
-                Hud.QuestJournal.OnQuestsPanelUpdated += SyncQuestDestinationToBridgeHolo;
+                Hud.QuestJournal.OnQuestsPanelUpdated += () =>
+                {
+                    SyncMinimapQuestObjective();
+                    SyncQuestDestinationToBridgeHolo();
+                };
                 Hud.QuestJournal.OnQuestMilestoneReached += HandleQuestMilestoneReached;
             }
 
@@ -1382,8 +1386,17 @@ namespace TacSim.Core
         private void SyncQuestDestinationToBridgeHolo()
         {
             QuestDestinationHint destHint = default;
-            bool hasDest = Hud?.QuestJournal != null &&
-                           Hud.QuestJournal.TryGetActiveDestinationPort(out destHint);
+            bool hasDest = false;
+            if (Hud?.QuestJournal != null)
+            {
+                hasDest = Hud.QuestJournal.TryGetActiveDestinationPort(out destHint);
+                if (!hasDest)
+                {
+                    string curPort = TradeState?.AboardDockedPortHint;
+                    if (string.IsNullOrEmpty(curPort)) curPort = TradeState?.ActiveVenue;
+                    hasDest = Hud.QuestJournal.TryGetNextGuidedOfferDestination(curPort, out destHint);
+                }
+            }
             if (ShipInterior != null)
             {
                 ShipInterior.SetQuestDestinationPort(hasDest ? destHint.PortId : string.Empty);

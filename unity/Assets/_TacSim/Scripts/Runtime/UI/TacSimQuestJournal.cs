@@ -612,7 +612,7 @@ namespace TacSim.UI
             var tracked = GetTrackedActiveQuest();
             if (tracked == null || tracked.ReadyToFinish || tracked.CanFinishNow) return false;
             QuestTradeNeed need = default;
-            if (!TryGetActiveTradeNeed(out need)) return false;
+            if (!TryGetFirstTradeNeedForQuest(tracked, out need)) return false;
             if (!need.WantsBuy || !need.WantsSell) return false;
             if (string.Equals(need.CommoditySlug, "propellant", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(need.CommoditySlug, "provisions", StringComparison.OrdinalIgnoreCase))
@@ -620,6 +620,20 @@ namespace TacSim.UI
                 return false;
             }
             return trade.GetHoldCommodityQuantity(need.CommoditySlug) < Mathf.Max(1, need.TargetQuantity);
+        }
+
+        private static bool TryGetFirstTradeNeedForQuest(MushActiveQuest q, out QuestTradeNeed need)
+        {
+            need = default;
+            if (q == null) return false;
+            for (int cIdx = 0; cIdx < q.Checkpoints.Count; cIdx++)
+            {
+                var cp = q.Checkpoints[cIdx];
+                if (cp.Checked || cp.LiveReady) continue;
+                if (TryExtractTradeNeedFromCheckpoint(q.Title, cp, out need))
+                    return true;
+            }
+            return false;
         }
 
         public bool TryGetQuestHoldReadinessSummary(MushActiveQuest q, out string summary, out bool ready)
@@ -737,7 +751,7 @@ namespace TacSim.UI
         {
             var active = GetTrackedActiveQuest();
             if (active == null || active.ReadyToFinish || active.CanFinishNow) return false;
-            return TryGetActiveSurfaceMiningStatus(out var mining) && !mining.MineDone;
+            return TryGetSurfaceMiningStatusForQuest(active, out var mining) && !mining.MineDone;
         }
 
         public bool TryGetActiveShipTargetCompartment(out string targetCompartment)
@@ -748,11 +762,12 @@ namespace TacSim.UI
         public bool TryGetActiveShipTargetCompartment(string dockedPortSlug, out string targetCompartment, bool settledPad = false)
         {
             targetCompartment = string.Empty;
-            bool hasMining = TryGetActiveSurfaceMiningStatus(out var mining);
+            var active = GetTrackedActiveQuest();
+            QuestSurfaceMiningStatus mining = default;
+            bool hasMining = active != null && TryGetSurfaceMiningStatusForQuest(active, out mining);
             string dockedStation = settledPad ? null : dockedPortSlug;
             if (!string.IsNullOrWhiteSpace(dockedStation))
             {
-                var active = GetTrackedActiveQuest();
                 bool miningBlocking = hasMining && !mining.MineDone;
                 if (active != null &&
                     (!miningBlocking || active.ReadyToFinish || active.CanFinishNow) &&
@@ -777,12 +792,12 @@ namespace TacSim.UI
                 targetCompartment = "bridge";
                 return true;
             }
-            if (TryGetActiveDestinationPort(out _))
+            if (active != null && TryGetDestinationPortForQuest(active, out _))
             {
                 targetCompartment = "bridge";
                 return true;
             }
-            if (TryGetNextGuidedOffer(out var nextOffer))
+            if ((LatestPanel == null || LatestPanel.Active.Count == 0) && TryGetNextGuidedOffer(out var nextOffer))
             {
                 string nextPort = InferStationPortFromRoomEntry(nextOffer.GiverRoomEntry);
                 if (!string.IsNullOrWhiteSpace(dockedStation) &&
@@ -1080,7 +1095,7 @@ namespace TacSim.UI
             }
             if (string.IsNullOrEmpty(TrackedQuestKey) && panel.Active.Count > 0)
             {
-                TrackedQuestKey = panel.Active[0].Key;
+                TrackedQuestKey = PickDefaultTrackedKey(panel.Active);
             }
 
             SyncStructuredTrackerCard();
@@ -1097,10 +1112,29 @@ namespace TacSim.UI
             }
         }
 
+        private static string PickDefaultTrackedKey(List<MushActiveQuest> active)
+        {
+            if (active == null || active.Count == 0) return string.Empty;
+            for (int i = 0; i < active.Count; i++)
+            {
+                var q = active[i];
+                if (q == null) continue;
+                if (string.Equals(q.Category, "guided", StringComparison.OrdinalIgnoreCase) ||
+                    GuidedStepNumber(q.Key) > 0)
+                {
+                    return q.Key;
+                }
+            }
+            return active[0]?.Key ?? string.Empty;
+        }
+
         public MushActiveQuest GetTrackedActiveQuest()
         {
             if (LatestPanel == null) return null;
-            return FindActiveByKey(TrackedQuestKey) ?? (LatestPanel.Active.Count > 0 ? LatestPanel.Active[0] : null);
+            var found = FindActiveByKey(TrackedQuestKey);
+            if (found != null) return found;
+            string defKey = PickDefaultTrackedKey(LatestPanel.Active);
+            return FindActiveByKey(defKey) ?? (LatestPanel.Active.Count > 0 ? LatestPanel.Active[0] : null);
         }
 
         private static readonly (string slug, string[] patterns)[] KnownTradeCommodities =
@@ -1330,64 +1364,72 @@ namespace TacSim.UI
 
             for (int qIdx = 0; qIdx < ordered.Count; qIdx++)
             {
-                var q = ordered[qIdx];
-                bool hasScan = false, scanDone = false;
-                bool hasSound = false, soundDone = false;
-                bool hasMine = false, mineDone = false;
-                string oreSlug = string.Empty;
-
-                for (int cIdx = 0; cIdx < q.Checkpoints.Count; cIdx++)
-                {
-                    var cp = q.Checkpoints[cIdx];
-                    string idLow = (cp.Id ?? string.Empty).ToLowerInvariant();
-                    string textLow = $"{idLow} {(cp.Title ?? string.Empty).ToLowerInvariant()} {(cp.Instructions ?? string.Empty).ToLowerInvariant()}";
-                    bool done = cp.Checked || cp.LiveReady;
-
-                    if (idLow.Contains("scan", StringComparison.Ordinal) || textLow.Contains("surface scan", StringComparison.Ordinal) || textLow.Contains("scan go", StringComparison.Ordinal))
-                    {
-                        hasScan = true;
-                        scanDone = done;
-                    }
-                    else if (idLow.Contains("sound", StringComparison.Ordinal) || textLow.Contains("sound a detected", StringComparison.Ordinal) || textLow.Contains("sound go", StringComparison.Ordinal))
-                    {
-                        hasSound = true;
-                        soundDone = done;
-                    }
-                    else if (idLow.StartsWith("mine_", StringComparison.Ordinal) || textLow.Contains("mine at least", StringComparison.Ordinal) || textLow.Contains("mine go", StringComparison.Ordinal))
-                    {
-                        hasMine = true;
-                        mineDone = done;
-                        if (textLow.Contains("carbon_ore", StringComparison.Ordinal) || textLow.Contains("carbon ore", StringComparison.Ordinal))
-                            oreSlug = "carbon_ore";
-                        else if (textLow.Contains("rare_earths", StringComparison.Ordinal) || textLow.Contains("rare earths", StringComparison.Ordinal))
-                            oreSlug = "rare_earths";
-                        else if (textLow.Contains("volatiles", StringComparison.Ordinal) || textLow.Contains("water_ice", StringComparison.Ordinal))
-                            oreSlug = "volatiles";
-                        else if (textLow.Contains("metals", StringComparison.Ordinal))
-                            oreSlug = "metals";
-                    }
-                }
-
-                if (hasScan || hasSound || hasMine)
-                {
-                    if (string.IsNullOrEmpty(oreSlug)) oreSlug = "carbon_ore";
-                    string family = oreSlug == "carbon_ore" ? "carbon"
-                                  : oreSlug == "rare_earths" ? "strategic"
-                                  : oreSlug == "metals" ? "metals"
-                                  : "volatiles";
-                    status = new QuestSurfaceMiningStatus(
-                        q.Title,
-                        oreSlug,
-                        family,
-                        hasScan,
-                        scanDone,
-                        hasSound,
-                        soundDone,
-                        hasMine,
-                        mineDone,
-                        q.NextStep);
+                if (TryGetSurfaceMiningStatusForQuest(ordered[qIdx], out status))
                     return true;
+            }
+            return false;
+        }
+
+        private static bool TryGetSurfaceMiningStatusForQuest(MushActiveQuest q, out QuestSurfaceMiningStatus status)
+        {
+            status = default;
+            if (q == null) return false;
+            bool hasScan = false, scanDone = false;
+            bool hasSound = false, soundDone = false;
+            bool hasMine = false, mineDone = false;
+            string oreSlug = string.Empty;
+
+            for (int cIdx = 0; cIdx < q.Checkpoints.Count; cIdx++)
+            {
+                var cp = q.Checkpoints[cIdx];
+                string idLow = (cp.Id ?? string.Empty).ToLowerInvariant();
+                string textLow = $"{idLow} {(cp.Title ?? string.Empty).ToLowerInvariant()} {(cp.Instructions ?? string.Empty).ToLowerInvariant()}";
+                bool done = cp.Checked || cp.LiveReady;
+
+                if (idLow.Contains("scan", StringComparison.Ordinal) || textLow.Contains("surface scan", StringComparison.Ordinal) || textLow.Contains("scan go", StringComparison.Ordinal))
+                {
+                    hasScan = true;
+                    scanDone = done;
                 }
+                else if (idLow.Contains("sound", StringComparison.Ordinal) || textLow.Contains("sound a detected", StringComparison.Ordinal) || textLow.Contains("sound go", StringComparison.Ordinal))
+                {
+                    hasSound = true;
+                    soundDone = done;
+                }
+                else if (idLow.StartsWith("mine_", StringComparison.Ordinal) || textLow.Contains("mine at least", StringComparison.Ordinal) || textLow.Contains("mine go", StringComparison.Ordinal))
+                {
+                    hasMine = true;
+                    mineDone = done;
+                    if (textLow.Contains("carbon_ore", StringComparison.Ordinal) || textLow.Contains("carbon ore", StringComparison.Ordinal))
+                        oreSlug = "carbon_ore";
+                    else if (textLow.Contains("rare_earths", StringComparison.Ordinal) || textLow.Contains("rare earths", StringComparison.Ordinal))
+                        oreSlug = "rare_earths";
+                    else if (textLow.Contains("volatiles", StringComparison.Ordinal) || textLow.Contains("water_ice", StringComparison.Ordinal))
+                        oreSlug = "volatiles";
+                    else if (textLow.Contains("metals", StringComparison.Ordinal))
+                        oreSlug = "metals";
+                }
+            }
+
+            if (hasScan || hasSound || hasMine)
+            {
+                if (string.IsNullOrEmpty(oreSlug)) oreSlug = "carbon_ore";
+                string family = oreSlug == "carbon_ore" ? "carbon"
+                              : oreSlug == "rare_earths" ? "strategic"
+                              : oreSlug == "metals" ? "metals"
+                              : "volatiles";
+                status = new QuestSurfaceMiningStatus(
+                    q.Title,
+                    oreSlug,
+                    family,
+                    hasScan,
+                    scanDone,
+                    hasSound,
+                    soundDone,
+                    hasMine,
+                    mineDone,
+                    q.NextStep);
+                return true;
             }
             return false;
         }
@@ -1426,47 +1468,41 @@ namespace TacSim.UI
                     ordered.Add(LatestPanel.Active[i]);
             }
 
-            string[] cmdPrefixes = { "+ship/plan ", "+ship/order depart ", "+ship/undock " };
-
             for (int qIdx = 0; qIdx < ordered.Count; qIdx++)
             {
-                var q = ordered[qIdx];
-                bool hasPendingCp = false;
-                for (int cIdx = 0; cIdx < q.Checkpoints.Count; cIdx++)
+                if (TryGetDestinationPortForQuest(ordered[qIdx], out hint))
+                    return true;
+            }
+            return false;
+        }
+
+        private static bool TryGetDestinationPortForQuest(MushActiveQuest q, out QuestDestinationHint hint)
+        {
+            hint = default;
+            if (q == null) return false;
+            string[] cmdPrefixes = { "+ship/plan ", "+ship/order depart ", "+ship/undock " };
+            bool hasPendingCp = false;
+            for (int cIdx = 0; cIdx < q.Checkpoints.Count; cIdx++)
+            {
+                var cp = q.Checkpoints[cIdx];
+                if (cp.Checked || cp.LiveReady) continue;
+                hasPendingCp = true;
+
+                string combined = $"{cp.Instructions} {cp.Title} {q.NextStep} {q.Introduction}".ToLowerInvariant();
+                for (int pIdx = 0; pIdx < cmdPrefixes.Length; pIdx++)
                 {
-                    var cp = q.Checkpoints[cIdx];
-                    if (cp.Checked || cp.LiveReady) continue;
-                    hasPendingCp = true;
-
-                    string combined = $"{cp.Instructions} {cp.Title} {q.NextStep} {q.Introduction}".ToLowerInvariant();
-                    for (int pIdx = 0; pIdx < cmdPrefixes.Length; pIdx++)
+                    int pos = combined.IndexOf(cmdPrefixes[pIdx], StringComparison.Ordinal);
+                    if (pos < 0) continue;
+                    int start = pos + cmdPrefixes[pIdx].Length;
+                    int end = start;
+                    while (end < combined.Length && (char.IsLetterOrDigit(combined[end]) || combined[end] == '_'))
+                        end++;
+                    if (end > start)
                     {
-                        int pos = combined.IndexOf(cmdPrefixes[pIdx], StringComparison.Ordinal);
-                        if (pos < 0) continue;
-                        int start = pos + cmdPrefixes[pIdx].Length;
-                        int end = start;
-                        while (end < combined.Length && (char.IsLetterOrDigit(combined[end]) || combined[end] == '_'))
-                            end++;
-                        if (end > start)
+                        string word = combined.Substring(start, end - start);
+                        for (int d = 0; d < KnownDestinations.Length; d++)
                         {
-                            string word = combined.Substring(start, end - start);
-                            for (int d = 0; d < KnownDestinations.Length; d++)
-                            {
-                                if (string.Equals(KnownDestinations[d].portId, word, StringComparison.OrdinalIgnoreCase))
-                                {
-                                    hint = new QuestDestinationHint(q.Title, KnownDestinations[d].portId, KnownDestinations[d].portLabel);
-                                    return true;
-                                }
-                            }
-                        }
-                    }
-
-                    for (int d = 0; d < KnownDestinations.Length; d++)
-                    {
-                        var pats = KnownDestinations[d].patterns;
-                        for (int k = 0; k < pats.Length; k++)
-                        {
-                            if (combined.Contains(pats[k], StringComparison.Ordinal))
+                            if (string.Equals(KnownDestinations[d].portId, word, StringComparison.OrdinalIgnoreCase))
                             {
                                 hint = new QuestDestinationHint(q.Title, KnownDestinations[d].portId, KnownDestinations[d].portLabel);
                                 return true;
@@ -1475,33 +1511,46 @@ namespace TacSim.UI
                     }
                 }
 
-                // Once all objectives are satisfied (e.g. post-mine Step 6 on a surface landing pad),
-                // fall back to the turn-in room's station port so the Space HUD, Solar Orrery, and
-                // Sailing Plan guide the pilot home unless they are already at the turn-in room.
-                if (!q.CanFinishNow && !q.TurnInHere && (q.ReadyToFinish || (!hasPendingCp && q.Checkpoints.Count > 0)))
+                for (int d = 0; d < KnownDestinations.Length; d++)
                 {
-                    string roomEntry = q.NextRoomEntry;
-                    if (string.IsNullOrEmpty(roomEntry))
+                    var pats = KnownDestinations[d].patterns;
+                    for (int k = 0; k < pats.Length; k++)
                     {
-                        for (int cIdx = q.Checkpoints.Count - 1; cIdx >= 0; cIdx--)
+                        if (combined.Contains(pats[k], StringComparison.Ordinal))
                         {
-                            if (!string.IsNullOrEmpty(q.Checkpoints[cIdx].RoomEntry))
-                            {
-                                roomEntry = q.Checkpoints[cIdx].RoomEntry;
-                                break;
-                            }
+                            hint = new QuestDestinationHint(q.Title, KnownDestinations[d].portId, KnownDestinations[d].portLabel);
+                            return true;
                         }
                     }
-                    string turnInPort = InferStationPortFromRoomEntry(roomEntry);
-                    if (!string.IsNullOrEmpty(turnInPort))
+                }
+            }
+
+            // Once all objectives are satisfied (e.g. post-mine Step 6 on a surface landing pad),
+            // fall back to the turn-in room's station port so the Space HUD, Solar Orrery, and
+            // Sailing Plan guide the pilot home unless they are already at the turn-in room.
+            if (!q.CanFinishNow && !q.TurnInHere && (q.ReadyToFinish || (!hasPendingCp && q.Checkpoints.Count > 0)))
+            {
+                string roomEntry = q.NextRoomEntry;
+                if (string.IsNullOrEmpty(roomEntry))
+                {
+                    for (int cIdx = q.Checkpoints.Count - 1; cIdx >= 0; cIdx--)
                     {
-                        for (int d = 0; d < KnownDestinations.Length; d++)
+                        if (!string.IsNullOrEmpty(q.Checkpoints[cIdx].RoomEntry))
                         {
-                            if (string.Equals(KnownDestinations[d].portId, turnInPort, StringComparison.OrdinalIgnoreCase))
-                            {
-                                hint = new QuestDestinationHint(q.Title, KnownDestinations[d].portId, KnownDestinations[d].portLabel);
-                                return true;
-                            }
+                            roomEntry = q.Checkpoints[cIdx].RoomEntry;
+                            break;
+                        }
+                    }
+                }
+                string turnInPort = InferStationPortFromRoomEntry(roomEntry);
+                if (!string.IsNullOrEmpty(turnInPort))
+                {
+                    for (int d = 0; d < KnownDestinations.Length; d++)
+                    {
+                        if (string.Equals(KnownDestinations[d].portId, turnInPort, StringComparison.OrdinalIgnoreCase))
+                        {
+                            hint = new QuestDestinationHint(q.Title, KnownDestinations[d].portId, KnownDestinations[d].portLabel);
+                            return true;
                         }
                     }
                 }
