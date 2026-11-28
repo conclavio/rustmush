@@ -736,7 +736,17 @@ namespace TacSim.UI
                 if (TryExtractTradeNeedFromCheckpoint(q.Title, cp, out var extracted))
                     qNeeds.Add(extracted);
             }
-            if (qNeeds.Count == 0) return false;
+            if (qNeeds.Count == 0)
+            {
+                if (!TryGetSurfaceMiningStatusForQuest(q, out var qm))
+                    return false;
+                int oreCur = _boundTradeState.GetHoldCommodityQuantity(qm.TargetOreSlug);
+                ready = oreCur >= 1;
+                string oreTag = ready ? "[ORE HOLD READY]" : "[ORE HOLD]";
+                string oreLabel = qm.TargetOreSlug.Replace('_', ' ').ToUpperInvariant();
+                summary = $"{oreTag} {oreLabel}: {oreCur}/1 t";
+                return true;
+            }
 
             int primaryIdx = 0;
             for (int i = 0; i < qNeeds.Count; i++)
@@ -786,6 +796,33 @@ namespace TacSim.UI
                 }
             }
             summary = sb.ToString();
+            return true;
+        }
+
+        public bool TryGetQuestPreflightReadinessSummary(MushActiveQuest q, out string summary, out bool ready)
+        {
+            summary = string.Empty;
+            ready = false;
+            if (q == null || _boundTradeState == null || string.IsNullOrEmpty(_boundTradeState.ShipHullId))
+                return false;
+            if (!TryGetDestinationPortForQuest(q, out var dest) || string.IsNullOrEmpty(dest.PortLabel))
+                return false;
+
+            int fuelT = Mathf.Max(0, _boundTradeState.TankTonnes);
+            int provD = Mathf.Max(0, _boundTradeState.StoresCrewDays);
+            bool fuelOk = fuelT > 0;
+            bool provOk = provD > 0;
+            ready = fuelOk && provOk;
+            if (ready)
+            {
+                summary = $"[PRE-FLIGHT OK] Fuel {fuelT}t | Provisions {provD}d → {dest.PortLabel}";
+            }
+            else
+            {
+                string fuelTxt = fuelOk ? $"{fuelT}t OK" : "0t!";
+                string provTxt = provOk ? $"{provD}d OK" : "0d!";
+                summary = $"[CHECK BEFORE UNDOCK] Fuel {fuelTxt} | Provisions {provTxt} → {dest.PortLabel}";
+            }
             return true;
         }
 
@@ -2922,6 +2959,11 @@ namespace TacSim.UI
                         string holdCol = holdReady ? "#55EE99" : "#FFDD44";
                         sb.Append($"\n<color={holdCol}><b>{MushProtocol.EscapeUnityRichText(holdSummary)}</b></color>\n");
                     }
+                    if (TryGetQuestPreflightReadinessSummary(active, out string pfSummary, out bool pfReady))
+                    {
+                        string pfCol = pfReady ? "#55EE99" : "#FFD166";
+                        sb.Append($"<color={pfCol}><b>{MushProtocol.EscapeUnityRichText(pfSummary)}</b></color>\n");
+                    }
                     if (TryGetSuggestedCommand(active, out string sugLbl, out string sugCmd))
                     {
                         sb.Append($"\n<color=#FFDD44><b>SUGGESTED CMD:</b></color> <color=#66EEAA>{MushProtocol.EscapeUnityRichText(sugCmd.Trim())}</color> ({MushProtocol.EscapeUnityRichText(sugLbl)})\n");
@@ -3228,6 +3270,11 @@ namespace TacSim.UI
                         {
                             string holdCol = jHoldReady ? "#55EE99" : "#FFDD44";
                             sb.Append($"\n<color={holdCol}><b>{MushProtocol.EscapeUnityRichText(jHoldSummary)}</b></color>");
+                        }
+                        if (TryGetQuestPreflightReadinessSummary(q, out string jPfSummary, out bool jPfReady))
+                        {
+                            string pfCol = jPfReady ? "#55EE99" : "#FFD166";
+                            sb.Append($"\n<color={pfCol}><b>{MushProtocol.EscapeUnityRichText(jPfSummary)}</b></color>");
                         }
                         sb.Append($"\n<color=#FFDF77><b>REWARD:</b> {MushProtocol.EscapeUnityRichText(q.RewardSummary)}</color>");
                         if (q.AllowRestart)

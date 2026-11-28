@@ -16122,5 +16122,99 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestJournalAndDialog_ShowStep6OreHoldAndStep7PreflightReadiness()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestJournalStep6OreAndPreflightTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                var tradeState = new TacSimTradeAndShipState();
+                hud.BindTradeState(tradeState);
+
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 2000,
+                            ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 12000,
+                            ""tank_limit_kg"": 80000,
+                            ""stores_days"": 0,
+                            ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:carbon_ore"", ""label"": ""Carbon Ore"", ""qty"": 2 }]
+                        }
+                    }
+                }"));
+
+                // 1. Step 6 surface prospecting -> [ORE HOLD READY] CARBON ORE: 2/1 t
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Scan site"", ""instructions"": ""+tv/1 scan go"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""instructions"": ""+tv/1 mine go"", ""checked"": false, ""live_ready"": false }
+                        ]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                hud.QuestJournal.SetOpen(true, TacSim.UI.QuestJournalTab.Quests);
+                StringAssert.Contains("[ORE HOLD READY] CARBON ORE: 2/1 t", hud.QuestJournal.JournalBodySnapshot);
+
+                // 2. Step 7 cross-port delivery with 0d provisions -> [CHECK BEFORE UNDOCK] in Journal & Dialog
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore"",
+                        ""title"": ""Deliver Your Mined Ore to Market"",
+                        ""checkpoints"": [{
+                            ""id"": ""sell_carbon_ore"",
+                            ""title"": ""Sell 1t carbon_ore at Stickney Yards"",
+                            ""instructions"": ""Fly to Stickney Yards (+ship/plan stickney) and +market/sell carbon_ore."",
+                            ""checked"": false,
+                            ""live_ready"": false
+                        }]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                StringAssert.Contains("[CHECK BEFORE UNDOCK] Fuel 12t OK | Provisions 0d! → Stickney Yards", hud.QuestJournal.JournalBodySnapshot);
+
+                Assert.IsTrue(hud.QuestJournal.OpenQuestDialogByKey("tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore"));
+                StringAssert.Contains("[CHECK BEFORE UNDOCK] Fuel 12t OK | Provisions 0d! → Stickney Yards", hud.QuestJournal.DialogBodySnapshot);
+
+                // 3. Restock provisions -> flips to [PRE-FLIGHT OK]
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 2000,
+                            ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 12000,
+                            ""tank_limit_kg"": 80000,
+                            ""stores_days"": 15,
+                            ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:carbon_ore"", ""label"": ""Carbon Ore"", ""qty"": 2 }]
+                        }
+                    }
+                }"));
+                StringAssert.Contains("[PRE-FLIGHT OK] Fuel 12t | Provisions 15d → Stickney Yards", hud.QuestJournal.JournalBodySnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
