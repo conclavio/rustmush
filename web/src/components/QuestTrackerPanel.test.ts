@@ -668,4 +668,76 @@ describe("QuestTrackerPanel route step, guided tour pill, and quick-accept", () 
     await fireEvent.click(sailBtn);
     expect(focusComposer).toHaveBeenCalledWith("+ship/plan stickney");
   });
+
+  it("surfaces Step 7 cross-port pre-flight check and Corridor Captain (7/7) Jobs Board shortcut in HUD Quest Tracker", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#19",
+      room_name: "Exchange Hall",
+      room_markers: [],
+      available: [],
+      completed: [],
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[6],
+          title: "Deliver Your Mined Ore to Market",
+          next_step: "Sail to Stickney Yards and sell carbon_ore",
+          checkpoints: [
+            {
+              id: "sell_carbon_ore",
+              title: "Sell 1t carbon_ore at Stickney Yards",
+              instructions: "Fly to Stickney Yards (+ship/plan stickney) and +market/sell carbon_ore.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    const app = {
+      quests,
+      tacsim: {
+        isAboardShip: false,
+        view3dOpen: false,
+        physicalLocationKey: null,
+        serverStationRoomEntry: "room.c07_exchange",
+        stationPack: buildFallbackFreeport(),
+        ambient: {
+          ownStowage: {
+            cargoKg: 2000,
+            propellantKg: 12_000,
+            provisionsCrewDays: 0,
+            cargoLines: [{ good: "tacsim:carbon_ore", label: "Carbon Ore", qty: 2 }],
+          },
+        },
+      },
+      focusComposer: vi.fn(),
+    } as unknown as GameApp;
+
+    const onCmd = vi.fn();
+    const first = render(QuestTrackerPanel, { props: { app, onCmd } });
+    const pfStrip = screen.getByLabelText("Tracked quest sailing preflight");
+    expect(pfStrip.textContent).toContain("[CHECK BEFORE UNDOCK]");
+    expect(pfStrip.textContent).toContain("✓ Propellant 12t");
+    expect(pfStrip.textContent).toContain("✗ Provisions 0d");
+    expect(pfStrip.textContent).toContain("→ Stickney Yards");
+    first.unmount();
+
+    // All 7 steps completed -> Corridor Captain bar includes 1-click Jobs Board (+market/jobs)
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#22",
+      room_name: "Service Counter",
+      room_markers: [],
+      active: [],
+      available: [],
+      completed: GUIDED_TOUR_KEYS.map((key, i) => ({ key, title: `Step ${i + 1}` })),
+    });
+    render(QuestTrackerPanel, { props: { app, onCmd } });
+    const jobsBtn = screen.getByRole("button", { name: "Jobs Board (+market/jobs)" });
+    await fireEvent.click(jobsBtn);
+    expect(onCmd).toHaveBeenCalledWith("+market/jobs");
+  });
 });
