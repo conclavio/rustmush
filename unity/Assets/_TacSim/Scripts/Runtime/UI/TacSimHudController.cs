@@ -269,6 +269,7 @@ namespace TacSim.UI
         private Transform _listingsContentRoot;
         private readonly List<Image> _qtyPresetImages = new List<Image>();
         private readonly List<Image> _destPortImages = new List<Image>();
+        private readonly List<Text> _destPortTexts = new List<Text>();
 
         /// <summary>
         /// The Ceres-Phobos lane's 12 venue words (crates/tacsim/content/lane/ceres_phobos.json),
@@ -340,6 +341,15 @@ namespace TacSim.UI
         public string SailingPreflightSummarySnapshot { get; private set; } = string.Empty;
         public bool IsSailingExchangeJumpVisible => _sailingExchangeJumpBtn != null && _sailingExchangeJumpBtn.gameObject.activeSelf;
         public int HighlightedQuestPortIndex { get; private set; } = -1;
+        public int CurrentVenuePortIndex { get; private set; } = -1;
+        public string QuestHighlightedPortLabelSnapshot =>
+            HighlightedQuestPortIndex >= 0 && HighlightedQuestPortIndex < _destPortTexts.Count && _destPortTexts[HighlightedQuestPortIndex] != null
+                ? _destPortTexts[HighlightedQuestPortIndex].text
+                : string.Empty;
+        public string CurrentVenuePortLabelSnapshot =>
+            CurrentVenuePortIndex >= 0 && CurrentVenuePortIndex < _destPortTexts.Count && _destPortTexts[CurrentVenuePortIndex] != null
+                ? _destPortTexts[CurrentVenuePortIndex].text
+                : string.Empty;
 
         // Modal dialog
         private GameObject _modalPanel;
@@ -1118,6 +1128,7 @@ namespace TacSim.UI
                     pbText.resizeTextMaxSize = 13;
                 }
                 _destPortImages.Add(pb.GetComponent<Image>());
+                _destPortTexts.Add(pbText);
             }
 
             // Golden active quest corridor destination banner (shown only when a quest targets a corridor port)
@@ -2648,16 +2659,47 @@ namespace TacSim.UI
             RefreshDestinationPortButtons(index);
         }
 
+        private int ResolveCurrentVenuePortIndex()
+        {
+            string curPort = !string.IsNullOrEmpty(_boundTradeState?.ActiveVenue)
+                ? _boundTradeState.ActiveVenue
+                : (!string.IsNullOrEmpty(_boundTradeState?.AboardDockedPortHint)
+                    ? _boundTradeState.AboardDockedPortHint
+                    : SolarMap?.CurrentFrame?.Vantage?.Port);
+            if (string.IsNullOrWhiteSpace(curPort)) return -1;
+            string low = curPort.Trim().ToLowerInvariant();
+            for (int i = 0; i < CorridorDestinations.Length; i++)
+            {
+                if (low == CorridorDestinations[i].code ||
+                    low.Contains(CorridorDestinations[i].code, StringComparison.Ordinal) ||
+                    CorridorDestinations[i].label.ToLowerInvariant().Contains(low, StringComparison.Ordinal))
+                {
+                    return i;
+                }
+            }
+            return -1;
+        }
+
         private void RefreshDestinationPortButtons(int selectedIdx)
         {
+            CurrentVenuePortIndex = ResolveCurrentVenuePortIndex();
             for (int i = 0; i < _destPortImages.Count; i++)
             {
                 if (i == selectedIdx)
                     _destPortImages[i].color = new Color(0.22f, 0.66f, 0.88f, 1f);
                 else if (i == HighlightedQuestPortIndex)
                     _destPortImages[i].color = new Color(0.58f, 0.42f, 0.12f, 1f);
+                else if (i == CurrentVenuePortIndex)
+                    _destPortImages[i].color = new Color(0.16f, 0.36f, 0.46f, 0.96f);
                 else
                     _destPortImages[i].color = new Color(0.13f, 0.24f, 0.35f, 0.92f);
+
+                if (i < _destPortTexts.Count && _destPortTexts[i] != null && i < CorridorDestinations.Length)
+                {
+                    string qPrefix = i == HighlightedQuestPortIndex ? "[Q] " : string.Empty;
+                    string hereSuffix = i == CurrentVenuePortIndex ? " [HERE]" : string.Empty;
+                    _destPortTexts[i].text = qPrefix + CorridorDestinations[i].label + hereSuffix;
+                }
             }
         }
 
@@ -2672,7 +2714,17 @@ namespace TacSim.UI
                 : (!string.IsNullOrEmpty(_boundTradeState?.AboardDockedPortHint)
                     ? _boundTradeState.AboardDockedPortHint
                     : SolarMap?.CurrentFrame?.Vantage?.Port);
-            return QuestJournal.TryGetNextGuidedOfferDestination(curPort, out hint);
+            if (QuestJournal.TryGetNextGuidedOfferDestination(curPort, out hint))
+                return true;
+            if (QuestJournal.TryGetActiveSurfaceMiningStatus(out var mining) && !mining.MineDone)
+            {
+                string ore = string.IsNullOrEmpty(mining.TargetOreSlug)
+                    ? "ore"
+                    : mining.TargetOreSlug.Replace('_', ' ');
+                hint = new QuestDestinationHint($"Surface Extraction ({ore})", "commons", "Freeport Commons");
+                return true;
+            }
+            return false;
         }
 
         public bool ApplyQuestDestinationPort()
