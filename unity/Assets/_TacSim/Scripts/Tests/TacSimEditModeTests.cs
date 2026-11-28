@@ -18033,5 +18033,90 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void OrbitalQuestStrip_ShowsPreflightArrivedAndStep6RigRecoveryGuard()
+        {
+            var rootGo = new UnityEngine.GameObject("OrbitalQuestStripPreflightTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                var tradeState = new TacSimTradeAndShipState();
+                hud.BindTradeState(tradeState);
+                string sentCmd = null;
+                hud.Overlays.OnCommandRequested += c => sentCmd = c;
+
+                // 1. Step 3 with 0t metals at Ceres -> [CHECK HOLD]; 5t metals -> [PRE-FLIGHT OK]
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{""enabled"":true,""venue"":""ceres"",""aboard_docked_port"":""ceres"",""listings"":[],""ship"":{""hull_id"":""#99"",""stowage"":{""cargo_kg"":0,""tank_kg"":10000,""stores_days"":12,""items"":[]}}}"));
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"",
+                        ""title"": ""Metals Down the Corridor"",
+                        ""next_room_entry"": ""room.p07_receiving"",
+                        ""checkpoints"": [{
+                            ""id"": ""deliver_metals"",
+                            ""title"": ""Buy 5t metals and deliver to Stickney Yards"",
+                            ""instructions"": ""+ship/plan stickney and sell 5t metals."",
+                            ""checked"": false,
+                            ""live_ready"": false
+                        }]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                Assert.IsTrue(hud.Overlays.IsOrbitalQuestStripVisible);
+                StringAssert.Contains("[CHECK HOLD]", hud.Overlays.OrbitalQuestBannerSnapshot);
+                Assert.AreEqual("PLAN: STICKNEY", hud.Overlays.OrbitalQuestButtonLabel);
+
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{""enabled"":true,""venue"":""ceres"",""aboard_docked_port"":""ceres"",""listings"":[],""ship"":{""hull_id"":""#99"",""stowage"":{""cargo_kg"":5000,""tank_kg"":10000,""stores_days"":12,""items"":[{""good"":""tacsim:metals"",""label"":""Metals"",""qty"":5}]}}}"));
+                StringAssert.Contains("[PRE-FLIGHT OK]", hud.Overlays.OrbitalQuestBannerSnapshot);
+                Assert.IsTrue(hud.Overlays.TriggerOrbitalQuestActionForTests());
+                Assert.AreEqual("+ship/plan stickney", sentCmd);
+
+                // 2. Arrived & docked at Stickney Yards -> [QUEST ARRIVED] + LEAVE SHIP (+ship/leave)
+                sentCmd = null;
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{""enabled"":true,""venue"":""stickney"",""aboard_docked_port"":""stickney"",""listings"":[],""ship"":{""hull_id"":""#99"",""stowage"":{""cargo_kg"":5000,""tank_kg"":10000,""stores_days"":12,""items"":[{""good"":""tacsim:metals"",""label"":""Metals"",""qty"":5}]}}}"));
+                StringAssert.Contains("[QUEST ARRIVED] At STICKNEY YARDS", hud.Overlays.OrbitalQuestBannerSnapshot);
+                Assert.AreEqual("LEAVE SHIP", hud.Overlays.OrbitalQuestButtonLabel);
+                Assert.IsTrue(hud.Overlays.TriggerOrbitalQuestActionForTests());
+                Assert.AreEqual("+ship/leave", sentCmd);
+
+                // 3. Step 6 post-mine with 0t ore -> [RECOVER RIG FIRST] (+tv/1 recover go); 1t carbon_ore -> [ORE HOLD READY] (+ship/plan ceres)
+                sentCmd = null;
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{""enabled"":true,""venue"":""commons"",""aboard_docked_port"":"""",""listings"":[],""ship"":{""hull_id"":""#99"",""stowage"":{""cargo_kg"":0,""tank_kg"":10000,""stores_days"":12,""items"":[]}}}"));
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""next_room_entry"": ""room.c07_exchange"",
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Scan"", ""instructions"": ""+tv/1 scan go"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""sound_mineral_pocket"", ""title"": ""Sound"", ""instructions"": ""+tv/1 sound go"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""instructions"": ""+tv/1 mine go"", ""checked"": true, ""live_ready"": true }
+                        ]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                StringAssert.Contains("[RECOVER RIG FIRST]", hud.Overlays.OrbitalQuestBannerSnapshot);
+                Assert.AreEqual("RECOVER RIG", hud.Overlays.OrbitalQuestButtonLabel);
+                Assert.IsTrue(hud.Overlays.TriggerOrbitalQuestActionForTests());
+                Assert.AreEqual("+tv/1 recover go", sentCmd);
+
+                sentCmd = null;
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{""enabled"":true,""venue"":""commons"",""aboard_docked_port"":"""",""listings"":[],""ship"":{""hull_id"":""#99"",""stowage"":{""cargo_kg"":1000,""tank_kg"":10000,""stores_days"":12,""items"":[{""good"":""tacsim:carbon_ore"",""label"":""Carbon Ore"",""qty"":1}]}}}"));
+                StringAssert.Contains("[ORE HOLD READY] Return: CERES FREEPORT", hud.Overlays.OrbitalQuestBannerSnapshot);
+                Assert.AreEqual("PLAN: CERES", hud.Overlays.OrbitalQuestButtonLabel);
+                Assert.IsTrue(hud.Overlays.TriggerOrbitalQuestActionForTests());
+                Assert.AreEqual("+ship/plan ceres", sentCmd);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
