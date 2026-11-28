@@ -2653,7 +2653,7 @@ namespace TacSim.UI
             return false;
         }
 
-        private static int GuidedStepNumber(string key)
+        public static int GuidedStepNumber(string key)
         {
             if (string.IsNullOrEmpty(key)) return 0;
             for (int i = 0; i < GuidedTourKeys.Length; i++)
