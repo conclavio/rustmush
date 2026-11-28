@@ -15,6 +15,7 @@ import { describe, expect, it, vi } from "vitest";
 import QuarryScreen from "./QuarryScreen.svelte";
 import type { GameApp } from "$lib/game.svelte";
 import { QuarryStore } from "$lib/stores/quarry.svelte";
+import { QuestsStore } from "$lib/stores/quests.svelte";
 
 function fixture(name: string): { site: Record<string, unknown> } {
   return JSON.parse(
@@ -71,5 +72,40 @@ describe("QuarryScreen's side pane", () => {
     delete raw.site.presence_line;
     mount(raw);
     expect(sideTexts()).toEqual([]);
+  });
+
+  it("highlights matching quest mineral readings and prefills the next mining action", () => {
+    const raw = fixture("site_map_other.json");
+    raw.site.family = "carbon";
+    raw.site.readings = [
+      { target: "B", line: "B · 140 m N — rich carbon_ore pocket" },
+    ];
+    const quarry = new QuarryStore();
+    quarry.applySite(raw, Date.now());
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+          title: "Scan, Sound, and Mine a Landing Site",
+          checkpoints: [
+            { id: "scan_landing_site", title: "Surface scan", instructions: "Run +tv/1 scan go.", checked: true, live_ready: true },
+            { id: "sound_mineral_pocket", title: "Sound pocket", instructions: "Run +tv/1 sound go.", checked: false, live_ready: false },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", instructions: "Run +tv/1 mine go.", checked: false, live_ready: false },
+          ],
+        },
+      ],
+    });
+    const focusComposer = vi.fn();
+    const app = { quarry, quests, focusComposer, refreshQuarry: vi.fn() } as unknown as GameApp;
+    render(QuarryScreen, { props: { app } });
+
+    const nextBtn = screen.getByRole("button", { name: /Next: Sound Pocket/i });
+    nextBtn.click();
+    expect(focusComposer).toHaveBeenCalledWith("+tv sound go");
+
+    const readingBtn = screen.getByRole("button", { name: /\[QUEST\] B · 140 m N — rich carbon_ore pocket/i });
+    expect(readingBtn.classList.contains("quest-match")).toBe(true);
   });
 });

@@ -900,6 +900,7 @@ export class GameApp {
   /** A room view, bare or as a `reply` (16b cut B.4, `B-14`): the room band,
    *  the exit keys and the scrollback, one way for both. */
   #applyRoom(view: RoomView, ts: number): void {
+    const prevRoomId = this.roomView?.id ?? "";
     this.roomView = view;
     // The room's one-letter exits become nav keys on the scene screen
     // (D-I-19), rebuilt on every Room event.
@@ -907,6 +908,30 @@ export class GameApp {
     this.scrollback.push("ev-room", roomLines(view), ts);
     this.tacsim.observeRoom(view);
     this.quests.observeRoom(view);
+    if (prevRoomId && prevRoomId !== view.id) {
+      const amb =
+        typeof view.ambient === "object" && view.ambient !== null && !Array.isArray(view.ambient)
+          ? (view.ambient as Record<string, unknown>)
+          : null;
+      const atlas =
+        amb && typeof amb["atlas"] === "object" && amb["atlas"] !== null && !Array.isArray(amb["atlas"])
+          ? (amb["atlas"] as Record<string, unknown>)
+          : null;
+      const atlasEntry = typeof atlas?.["entry"] === "string" ? atlas["entry"] : "";
+      const tracked = this.quests.trackedQuest;
+      const objRoom =
+        tracked?.nextRoomEntry ||
+        tracked?.checkpoints.find((c) => !c.checked && !c.liveReady && c.roomEntry)?.roomEntry ||
+        "";
+      if (atlasEntry && objRoom && atlasEntry.toLowerCase() === objRoom.toLowerCase()) {
+        this.notifications.fromQuestArrival(
+          view.name,
+          Boolean(tracked?.readyToFinish || tracked?.canFinishNow),
+          ts,
+        );
+        tacsimAudio.play("ui_chime");
+      }
+    }
     if (this.session.hasPanel(QUESTS_FEED)) {
       this.refreshQuests();
     }
