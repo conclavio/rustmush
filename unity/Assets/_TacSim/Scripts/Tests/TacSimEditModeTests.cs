@@ -12589,5 +12589,114 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestJournalAndDialog_ShowLiveHoldProgressAndRefitReadinessFromTradeState()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestJournalHoldReadinessTestRoot");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                var trade = new TacSimTradeAndShipState();
+                hud.BindTradeState(trade);
+
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#17"",
+                    ""room_name"": ""Exchange Hall"",
+                    ""active"": [
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"",
+                            ""title"": ""Metals Down the Corridor"",
+                            ""giver_name"": ""Ilse Oduya-Brandt"",
+                            ""turn_in_name"": ""Jonas Achterberg-Nkemelu"",
+                            ""checkpoints"": [{
+                                ""id"": ""deliver_metals"",
+                                ""title"": ""Buy 5 tonnes of metals at Ceres and deliver to Stickney"",
+                                ""instructions"": ""Buy 5t metals and +market/sell at Stickney."",
+                                ""checked"": false,
+                                ""live_ready"": false
+                            }]
+                        },
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"",
+                            ""title"": ""Refit the Dray for Surface Mining"",
+                            ""giver_name"": ""Ilse Oduya-Brandt"",
+                            ""turn_in_name"": ""Rosalind Qureshi-Mbeki"",
+                            ""checkpoints"": [{
+                                ""id"": ""refit_dray_p"",
+                                ""title"": ""Refit Dray-P"",
+                                ""instructions"": ""Run +coop/refit prospector."",
+                                ""checked"": false,
+                                ""live_ready"": false
+                            }]
+                        }
+                    ]
+                }")));
+
+                // Partial hold -> [HOLD] METALS: 2/5 u in Journal and Dialog
+                trade.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 2000, ""cargo_limit_kg"": 100000,
+                            ""cargo_l"": 1000, ""cargo_limit_l"": 120000,
+                            ""tank_kg"": 10000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 8, ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:metals"", ""label"": ""Metals"", ""qty"": 2 }]
+                        }
+                    }
+                }"));
+                StringAssert.Contains("[HOLD] METALS: 2/5 u", hud.QuestJournal.JournalBodySnapshot);
+
+                hud.QuestJournal.OpenQuestDialogByKey("tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery");
+                StringAssert.Contains("[HOLD] METALS: 2/5 u", hud.QuestJournal.DialogBodySnapshot);
+
+                // Top up metals -> live TradeState event automatically refreshes open Quest Dialog to [HOLD READY]
+                trade.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 5000, ""cargo_limit_kg"": 100000,
+                            ""cargo_l"": 2500, ""cargo_limit_l"": 120000,
+                            ""tank_kg"": 10000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 8, ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:metals"", ""label"": ""Metals"", ""qty"": 5 }]
+                        }
+                    }
+                }"));
+                StringAssert.Contains("[HOLD READY] METALS: 5/5 u", hud.QuestJournal.DialogBodySnapshot);
+
+                // Step 5 refit check in Dialog -> [REFIT CHECK] with cargo/stores, then [READY] when emptied
+                hud.QuestJournal.OpenQuestDialogByKey("tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector");
+                StringAssert.Contains("[REFIT CHECK]", hud.QuestJournal.DialogBodySnapshot);
+                StringAssert.Contains("Stores 8d", hud.QuestJournal.DialogBodySnapshot);
+
+                trade.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 0, ""cargo_limit_kg"": 100000,
+                            ""cargo_l"": 0, ""cargo_limit_l"": 120000,
+                            ""tank_kg"": 6000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 0, ""stores_limit_days"": 120,
+                            ""items"": []
+                        }
+                    }
+                }"));
+                StringAssert.Contains("[READY] Cargo empty | Stores empty | Tank 6t OK", hud.QuestJournal.DialogBodySnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
