@@ -1332,4 +1332,95 @@ describe("QuestsStore", () => {
     expect(store.guidedTourProgress).toMatchObject({ completed: 7, total: 7, allDone: true });
     expect(store.nextGuidedOffer).toBeNull();
   });
+
+  it("emits checkpoint, abandon (restartable), and 7/7 Corridor Captain milestones post-hydration", () => {
+    const store = new QuestsStore();
+    // Initial hydration (Step 2 active, both checkpoints incomplete) -> 0 milestones
+    expect(
+      store.applyFrame({
+        schema: 1,
+        active: [
+          {
+            key: GUIDED_TOUR_KEYS[1],
+            title: "Stock the Locker and Tanks",
+            allow_restart: true,
+            checkpoints: [
+              { id: "buy_provisions", title: "Buy 10 provisions", checked: false, live_ready: false },
+              { id: "buy_propellant", title: "Buy 5t propellant", checked: false, live_ready: false },
+            ],
+          },
+        ],
+        completed: [{ key: GUIDED_TOUR_KEYS[0], title: "Step 1" }],
+      }),
+    ).toEqual([]);
+
+    // 1. Mid-quest checkpoint completion -> emits "checkpoint" milestone
+    const cpMilestones = store.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[1],
+          title: "Stock the Locker and Tanks",
+          allow_restart: true,
+          checkpoints: [
+            { id: "buy_provisions", title: "Buy 10 provisions", checked: true, live_ready: true },
+            { id: "buy_propellant", title: "Buy 5t propellant", checked: false, live_ready: false },
+          ],
+        },
+      ],
+      completed: [{ key: GUIDED_TOUR_KEYS[0], title: "Step 1" }],
+    });
+    expect(cpMilestones).toEqual([
+      {
+        kind: "checkpoint",
+        key: GUIDED_TOUR_KEYS[1],
+        title: "Stock the Locker and Tanks",
+        detail: "Buy 10 provisions",
+      },
+    ]);
+
+    // 2. Abandoning Step 2 (removed from active without appearing in completed) -> emits "abandoned" with restartable: true
+    const abandonMilestones = store.applyFrame({
+      schema: 1,
+      active: [],
+      completed: [{ key: GUIDED_TOUR_KEYS[0], title: "Step 1" }],
+    });
+    expect(abandonMilestones).toEqual([
+      {
+        kind: "abandoned",
+        key: GUIDED_TOUR_KEYS[1],
+        title: "Stock the Locker and Tanks",
+        restartable: true,
+      },
+    ]);
+
+    // 3. Completing Step 7 after Steps 1-6 -> emits "completed" with tourAllDone: true
+    store.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[6],
+          title: "Deliver Your Mined Ore to Market",
+          checkpoints: [],
+        },
+      ],
+      completed: GUIDED_TOUR_KEYS.slice(0, 6).map((k, i) => ({ key: k, title: `Step ${i + 1}` })),
+    });
+    const finalMilestones = store.applyFrame({
+      schema: 1,
+      active: [],
+      completed: GUIDED_TOUR_KEYS.map((k, i) => ({
+        key: k,
+        title: i === 6 ? "Deliver Your Mined Ore to Market" : `Step ${i + 1}`,
+      })),
+    });
+    expect(finalMilestones).toEqual([
+      {
+        kind: "completed",
+        key: GUIDED_TOUR_KEYS[6],
+        title: "Deliver Your Mined Ore to Market",
+        tourAllDone: true,
+      },
+    ]);
+  });
 });

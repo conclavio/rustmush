@@ -108,4 +108,21 @@ describe("NotificationStore", () => {
     expect(ti.action).toEqual({ label: "Quests", prefill: "/quests" });
     expect(s.toasts).toHaveLength(2);
   });
+
+  it("fromQuestMilestone formats checkpoint, restartable abandon, and 7/7 Corridor Captain mastery toasts", () => {
+    const s = new NotificationStore();
+    const cp = s.fromQuestMilestone("checkpoint", "Stock the Locker", 100, {
+      detail: "Buy 10 provisions",
+    })!;
+    const ab = s.fromQuestMilestone("abandoned", "Stock the Locker", 200, {
+      restartable: true,
+    })!;
+    const cap = s.fromQuestMilestone("completed", "Deliver Your Mined Ore to Market", 300, {
+      tourAllDone: true,
+    })!;
+    expect(cp.text[0]?.text).toBe("Objective Complete: Buy 10 provisions");
+    expect(ab.text[0]?.text).toBe("Quest Abandoned (restartable anytime): Stock the Locker");
+    expect(cap.text[0]?.text).toContain("Corridor Captain (7/7)");
+    expect(cap.text[0]?.text).toContain("Deliver Your Mined Ore to Market");
+  });
 });
