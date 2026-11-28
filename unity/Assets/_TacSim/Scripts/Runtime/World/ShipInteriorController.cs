@@ -243,7 +243,17 @@ namespace TacSim.World
 
             string normFrom = TryGetCompartmentDef(fromComp, out var cFrom) ? cFrom.Id : fromComp;
             if (string.Equals(normFrom, resolvedTarget, StringComparison.OrdinalIgnoreCase))
+            {
+                if (string.Equals(resolvedTarget, "airlock", StringComparison.OrdinalIgnoreCase))
+                {
+                    nextCompId = "ashore";
+                    nextCompName = "Cycle Ashore";
+                    nextCommand = "+ship/leave";
+                    hopCount = 1;
+                    return true;
+                }
                 return false;
+            }
 
             var path = FindExitPath(normFrom, resolvedTarget);
             if (path == null || path.Count == 0)
@@ -251,7 +261,9 @@ namespace TacSim.World
 
             nextCommand = path[0].command ?? string.Empty;
             nextCompId = path[0].targetCompartment ?? string.Empty;
-            hopCount = path.Count;
+            hopCount = string.Equals(resolvedTarget, "airlock", StringComparison.OrdinalIgnoreCase)
+                ? path.Count + 1
+                : path.Count;
             if (Template.Compartments.TryGetValue(nextCompId, out var nextDef) && !string.IsNullOrEmpty(nextDef.Name))
                 nextCompName = nextDef.Name;
             else

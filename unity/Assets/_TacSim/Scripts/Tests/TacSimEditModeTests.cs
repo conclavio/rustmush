@@ -11837,5 +11837,105 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestCrossPortBerthBoarding_AndDockedAirlockDisembarkWayfinding()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestCrossPortWayfindingTestRoot");
+            try
+            {
+                // 1. Port prefix inference
+                Assert.AreEqual("ceres", TacSim.UI.TacSimQuestJournal.InferStationPortFromRoomEntry("room.c08_chandlery"));
+                Assert.AreEqual("stickney", TacSim.UI.TacSimQuestJournal.InferStationPortFromRoomEntry("room.p07_receiving"));
+                Assert.AreEqual("luna", TacSim.UI.TacSimQuestJournal.InferStationPortFromRoomEntry("room.l01_berth_gallery"));
+                Assert.AreEqual("deimos", TacSim.UI.TacSimQuestJournal.InferStationPortFromRoomEntry("room.d02_concourse"));
+                Assert.AreEqual("titan", TacSim.UI.TacSimQuestJournal.InferStationPortFromRoomEntry("room.t04_deck"));
+                Assert.IsNull(TacSim.UI.TacSimQuestJournal.InferStationPortFromRoomEntry("room.welcome_hall"));
+
+                // 2. Ashore on Ceres with Stickney objective -> walks toward Berth Gallery, then emits +ship/board
+                var station = rootGo.AddComponent<StationWorldController>();
+                station.BuildStation(null, "neighborhood.ceres_freeport");
+                Assert.IsTrue(
+                    station.TryGetNextQuestExitBreadcrumb(
+                        "room.c05_registry",
+                        "room.p07_receiving",
+                        out string nextEntry,
+                        out _,
+                        out string nextCmd,
+                        out int hopsToBerth));
+                Assert.IsFalse(string.IsNullOrEmpty(nextEntry));
+                Assert.IsTrue(nextCmd.StartsWith("goto ", System.StringComparison.OrdinalIgnoreCase), $"Unexpected cmd: {nextCmd}");
+                Assert.GreaterOrEqual(hopsToBerth, 2);
+
+                Assert.IsTrue(
+                    station.TryGetNextQuestExitBreadcrumb(
+                        "room.c01_berth_gallery",
+                        "room.p07_receiving",
+                        out string shipId,
+                        out string boardName,
+                        out string boardCmd,
+                        out int boardHops));
+                Assert.AreEqual("ship", shipId);
+                Assert.AreEqual("Board Ship", boardName);
+                Assert.AreEqual("+ship/board", boardCmd);
+                Assert.AreEqual(1, boardHops);
+
+                // 3. Aboard ship docked at Stickney -> QuestJournal resolves "airlock" instead of "bridge"
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"",
+                        ""title"": ""Metals Down the Corridor"",
+                        ""next_room_entry"": ""room.p07_receiving"",
+                        ""checkpoints"": [{
+                            ""id"": ""deliver_metals"",
+                            ""title"": ""Deliver 5t metals to Stickney Yards"",
+                            ""instructions"": ""Check +ship/plan stickney and sell at Receiving."",
+                            ""room_entry"": ""room.p07_receiving"",
+                            ""checked"": false,
+                            ""live_ready"": false
+                        }]
+                    }]
+                }")));
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveShipTargetCompartment("ceres", out string ceresTarget));
+                Assert.AreEqual("bridge", ceresTarget);
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveShipTargetCompartment("stickney", out string stickneyTarget));
+                Assert.AreEqual("airlock", stickneyTarget);
+
+                // 4. ShipInteriorController routes bridge -> airlock, then emits +ship/leave in airlock
+                var ship = rootGo.AddComponent<ShipInteriorController>();
+                ship.BuildInterior(null, "tacsim.unit.dray");
+                Assert.IsTrue(
+                    ship.TryGetNextQuestCompartmentBreadcrumb(
+                        "bridge",
+                        "airlock",
+                        out string nextCompId,
+                        out _,
+                        out string toLockCmd,
+                        out int toLockHops));
+                Assert.AreEqual("passage", nextCompId);
+                Assert.IsTrue(toLockCmd.StartsWith("goto ", System.StringComparison.OrdinalIgnoreCase));
+                Assert.GreaterOrEqual(toLockHops, 3);
+
+                Assert.IsTrue(
+                    ship.TryGetNextQuestCompartmentBreadcrumb(
+                        "airlock",
+                        "airlock",
+                        out string ashoreId,
+                        out string leaveName,
+                        out string leaveCmd,
+                        out int leaveHops));
+                Assert.AreEqual("ashore", ashoreId);
+                Assert.AreEqual("Cycle Ashore", leaveName);
+                Assert.AreEqual("+ship/leave", leaveCmd);
+                Assert.AreEqual(1, leaveHops);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

@@ -151,6 +151,15 @@ namespace TacSim.World
             return Pack.FindExitPath(fromRoomEntry, toRoomEntry);
         }
 
+        private static bool IsCorridorStationRoomEntry(string roomEntry)
+        {
+            if (string.IsNullOrWhiteSpace(roomEntry)) return false;
+            string low = roomEntry.Trim().ToLowerInvariant();
+            if (!low.StartsWith("room.", StringComparison.Ordinal) || low.Length < 7) return false;
+            char p = low[5];
+            return (p == 'c' || p == 'p' || p == 'l' || p == 'd' || p == 't') && char.IsDigit(low[6]);
+        }
+
         public bool TryGetNextQuestExitBreadcrumb(
             string fromRoomEntry,
             string targetRoomEntry,
@@ -169,13 +178,44 @@ namespace TacSim.World
             if (string.Equals(fromRoomEntry, targetRoomEntry, StringComparison.Ordinal))
                 return false;
 
-            var path = Pack.FindExitPath(fromRoomEntry, targetRoomEntry);
+            string effectiveTarget = targetRoomEntry;
+            bool boardingCrossPort = false;
+            if (!Pack.Rooms.ContainsKey(targetRoomEntry))
+            {
+                if (!IsCorridorStationRoomEntry(targetRoomEntry))
+                    return false;
+
+                string berthEntry = null;
+                foreach (var kv in Pack.Rooms)
+                {
+                    if (kv.Key.IndexOf("berth_gallery", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        berthEntry = kv.Key;
+                        break;
+                    }
+                }
+                if (string.IsNullOrEmpty(berthEntry))
+                    return false;
+
+                if (string.Equals(fromRoomEntry, berthEntry, StringComparison.Ordinal))
+                {
+                    nextRoomEntry = "ship";
+                    nextRoomName = "Board Ship";
+                    nextCommand = "+ship/board";
+                    hopCount = 1;
+                    return true;
+                }
+                effectiveTarget = berthEntry;
+                boardingCrossPort = true;
+            }
+
+            var path = Pack.FindExitPath(fromRoomEntry, effectiveTarget);
             if (path == null || path.Count == 0)
                 return false;
 
             nextCommand = path[0].command ?? string.Empty;
             nextRoomEntry = path[0].targetRoom ?? string.Empty;
-            hopCount = path.Count;
+            hopCount = boardingCrossPort ? path.Count + 1 : path.Count;
             if (Pack.Rooms.TryGetValue(nextRoomEntry, out var nextRoom) && !string.IsNullOrEmpty(nextRoom.Name))
                 nextRoomName = nextRoom.Name;
             else
