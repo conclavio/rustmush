@@ -301,4 +301,115 @@ describe("QuestDialogModal guided corridor tour roadmap", () => {
     expect(logStrip.textContent).toContain("PROVISIONS: 10/10 d");
     expect(logStrip.textContent).toContain("PROPELLANT 5/5t OK");
   });
+
+  it("updates header crest and resets abandon confirmation when switching multi-quest NPC tabs, and supports permanent decline in Quest Log Available tab", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#15",
+      room_name: "Registry & Co-op Desk",
+      room_markers: [
+        {
+          npc_id: "#18",
+          npc_name: "Ilse Oduya-Brandt",
+          marker: "turn_in",
+          symbol: "?",
+          quest_key: GUIDED_TOUR_KEYS[0],
+          quest_title: "First Papers at the Registry",
+          category: "guided",
+        },
+      ],
+      active: [
+        {
+          key: "side.in_progress",
+          title: "In-Progress Favor",
+          giver_id: "#18",
+          giver_name: "Ilse Oduya-Brandt",
+          turn_in_id: "#18",
+          turn_in_name: "Ilse Oduya-Brandt",
+          can_finish_now: false,
+          ready_to_finish: false,
+          abandon_cmd: "+quest/abandon side.in_progress",
+          checkpoints: [],
+        },
+        {
+          key: GUIDED_TOUR_KEYS[0],
+          title: "First Papers at the Registry",
+          giver_id: "#11",
+          giver_name: "Maren Halvorsen",
+          turn_in_id: "#18",
+          turn_in_name: "Ilse Oduya-Brandt",
+          can_finish_now: true,
+          ready_to_finish: true,
+          finish_cmd: "+quest/finish #18 tok1",
+          abandon_cmd: "+quest/abandon q1",
+          checkpoints: [],
+        },
+      ],
+      available: [
+        {
+          key: "side.one_shot",
+          title: "One-Shot Charter Audit",
+          giver_id: "#18",
+          giver_name: "Ilse Oduya-Brandt",
+          turn_in_id: "#18",
+          turn_in_name: "Ilse Oduya-Brandt",
+          allow_restart: false,
+          accept_cmd: "+quest/accept #18 tok_side",
+          decline_cmd: "+quest/decline #18 tok_side",
+          introduction: "Audit one ledger entry.",
+          reward_summary: "250 cr",
+          checkpoints: [],
+        },
+        {
+          key: GUIDED_TOUR_KEYS[1],
+          title: "Stock the Locker and Tanks",
+          giver_id: "#18",
+          giver_name: "Ilse Oduya-Brandt",
+          turn_in_id: "#18",
+          turn_in_name: "Ilse Oduya-Brandt",
+          allow_restart: true,
+          accept_cmd: "+quest/accept #18 tok_g2",
+          decline_cmd: "",
+          introduction: "Guided step 2.",
+          reward_summary: "Guided Step 2/7",
+          checkpoints: [],
+        },
+      ],
+      completed: [],
+    });
+
+    const sent: string[] = [];
+    const app = { quests, tacsim: { trade: null }, focusComposer: vi.fn() } as unknown as GameApp;
+
+    // 1. Open NPC dialog for Ilse -> turn-in quest selected first, crest is '?' turn_in
+    quests.openNpcDialog("#18");
+    const first = render(QuestDialogModal, { app, onCmd: (c) => sent.push(c) });
+    const getBadge = () => first.container.querySelector(".qbadge") as HTMLElement;
+    expect(getBadge().dataset.marker).toBe("turn_in");
+    expect(getBadge().textContent?.trim()).toBe("?");
+
+    // Arm abandon on turn-in quest, then switch to the [!] offer tab -> crest switches to '!' and confirm resets
+    await fireEvent.click(screen.getByRole("button", { name: "Abandon Quest" }));
+    expect(screen.getByRole("button", { name: "Confirm Abandon" })).toBeTruthy();
+
+    await fireEvent.click(screen.getByRole("button", { name: /One-Shot Charter Audit/ }));
+    expect(getBadge().dataset.marker).toBe("available");
+    expect(getBadge().textContent?.trim()).toBe("!");
+
+    // Switch back to turn-in quest -> abandon button must have reset (not armed)
+    await fireEvent.click(screen.getByRole("button", { name: /First Papers at the Registry/ }));
+    expect(screen.getByRole("button", { name: "Abandon Quest" })).toBeTruthy();
+    first.unmount();
+
+    // 2. Quest Log Available tab shows 2-click Decline Permanently ONLY for non-restartable offers
+    quests.openLog("available");
+    render(QuestDialogModal, { app, onCmd: (c) => sent.push(c) });
+    const declineBtns = screen.getAllByRole("button", { name: "Decline Permanently" });
+    expect(declineBtns).toHaveLength(1);
+    await fireEvent.click(declineBtns[0]!);
+    const confirmDecline = screen.getByRole("button", { name: "Confirm Permanent Decline" });
+    await fireEvent.click(confirmDecline);
+    expect(sent).toContain("+quest/decline #18 tok_side");
+  });
 });
