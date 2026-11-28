@@ -6,7 +6,13 @@
   // $lib/sheet.ts for the rendering rules (pip-vs-bar threshold, track mark
   // glyphs, map/list dispatch) and web/README.md for the payload contract.
   import type { GameApp } from "$lib/game.svelte";
-  import { GUIDED_TOUR_KEYS } from "$lib/stores/quests.svelte";
+  import {
+    GUIDED_TOUR_KEYS,
+    evaluateSailingPreflightReadiness,
+    extractActiveDestinationPort,
+    extractActiveTradeNeed,
+    formatQuestHoldReadinessSummary,
+  } from "$lib/stores/quests.svelte";
   import {
     approvalKind,
     asNumber,
@@ -45,6 +51,26 @@
     const idx = (GUIDED_TOUR_KEYS as readonly string[]).indexOf(trackedQuest.key);
     return idx >= 0 ? idx + 1 : 0;
   });
+  const liveStowage = $derived(
+    app.tacsim?.ambient?.ownStowage ??
+      app.tacsim?.ambient?.stowage ??
+      (app.tacsim?.trade?.hullId ? app.tacsim.trade.stowage : null),
+  );
+  const holdReadiness = $derived(
+    trackedQuest ? formatQuestHoldReadinessSummary(trackedQuest, liveStowage) : null,
+  );
+  const trackedDest = $derived(
+    trackedQuest ? extractActiveDestinationPort([trackedQuest], trackedQuest.key) : null,
+  );
+  const trackedPreflight = $derived(
+    trackedQuest && trackedDest
+      ? evaluateSailingPreflightReadiness(
+          trackedDest,
+          extractActiveTradeNeed([trackedQuest], trackedQuest.key),
+          liveStowage,
+        )
+      : null,
+  );
   const otherReadyHere = $derived(
     (app.quests?.active ?? []).filter((item) => item.key !== trackedQuest?.key && item.canFinishNow),
   );
@@ -224,6 +250,18 @@
             {#if trackedQuest.nextStep}
               <p class="qsum-next">{trackedQuest.nextStep}</p>
             {/if}
+            {#if holdReadiness}
+              <div class="qsum-readiness" class:ready={holdReadiness.ready} aria-label="sheet quest hold readiness">
+                <strong>{holdReadiness.tag}</strong> {holdReadiness.text}
+              </div>
+            {/if}
+            {#if trackedPreflight && trackedDest}
+              <div class="qsum-readiness" class:ready={trackedPreflight.ready} aria-label="sheet quest sailing preflight">
+                <strong>{trackedPreflight.ready ? "[PRE-FLIGHT OK]" : "[CHECK BEFORE UNDOCK]"}</strong>
+                {trackedPreflight.propellantOk ? " ✓" : " ✗"} Propellant {trackedPreflight.propellantTonnes}t ·
+                {trackedPreflight.provisionsOk ? " ✓" : " ✗"} Provisions {trackedPreflight.provisionsDays}d → {trackedDest.portLabel}
+              </div>
+            {/if}
             {#if trackedQuest.canFinishNow || otherReadyHere.length > 0 || availableQuestsCount > 0}
               <div class="qsum-actions">
                 {#if trackedQuest.canFinishNow}
@@ -289,6 +327,16 @@
             <p class="qsum-next">
               <strong>Next Guided ({nextGuidedOffer.step}/7):</strong> {nextGuidedOffer.shortLabel} — speak with <strong>{nextGuidedOffer.giverLabel}</strong> ({nextGuidedOffer.giverRoomName})
             </p>
+          {:else if guidedTour?.allDone}
+            <div class="qsum-actions">
+              <button
+                type="button"
+                class="qsum-action-btn ready"
+                onclick={() => app.focusComposer?.("+market/jobs")}
+              >
+                Jobs Board (+market/jobs)
+              </button>
+            </div>
           {/if}
           {#if completedQuestsCount > 0}
             <p class="qsum-done">Completed: {completedQuestsCount}</p>
@@ -720,6 +768,23 @@
 
   .qsum-done {
     color: #86efac;
+  }
+
+  .qsum-readiness {
+    margin-top: 0.25rem;
+    padding: 0.16rem 0.42rem;
+    border-radius: 4px;
+    border: 1px solid rgba(251, 191, 36, 0.45);
+    background: rgba(212, 166, 74, 0.12);
+    color: #fde68a;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+  }
+
+  .qsum-readiness.ready {
+    border-color: rgba(52, 211, 153, 0.55);
+    background: rgba(16, 185, 129, 0.14);
+    color: #a7f3d0;
   }
 
   .quest-summary.mastered {

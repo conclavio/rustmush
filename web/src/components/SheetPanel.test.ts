@@ -162,4 +162,78 @@ describe("SheetPanel guided corridor tour summary", () => {
     expect(quests.dialogOpen).toBe(true);
     expect(quests.dialogQuestKey).toBe(GUIDED_TOUR_KEYS[2]);
   });
+
+  it("displays live hold readiness, cross-port pre-flight check, and Corridor Captain Jobs Board shortcut on SheetPanel", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      completed: [],
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[6],
+          title: "Deliver Your Mined Ore to Market",
+          next_step: "Fly to Stickney Yards and sell carbon_ore",
+          checkpoints: [
+            {
+              id: "sell_carbon_ore",
+              title: "Sell 1t carbon_ore at Stickney Yards",
+              instructions: "Fly to Stickney Yards (+ship/plan stickney) and +market/sell carbon_ore.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+      available: [],
+    });
+
+    const focusComposer = vi.fn();
+    const app = {
+      sheet: {
+        loaded: true,
+        unavailable: false,
+        approval: null,
+        schema: { sections: [] },
+        data: {},
+      },
+      quests,
+      tacsim: {
+        ambient: {
+          ownStowage: {
+            cargoKg: 2000,
+            propellantKg: 12_000,
+            provisionsCrewDays: 0,
+            cargoLines: [{ good: "tacsim:carbon_ore", label: "Carbon Ore", qty: 2 }],
+          },
+        },
+      },
+      refreshSheet: vi.fn(),
+      focusComposer,
+    } as unknown as GameApp;
+
+    const first = render(SheetPanel, { props: { app } });
+    const holdEl = screen.getByLabelText("sheet quest hold readiness");
+    expect(holdEl.textContent).toContain("[HOLD READY]");
+    expect(holdEl.textContent).toContain("CARBON ORE: 2/1");
+
+    const pfEl = screen.getByLabelText("sheet quest sailing preflight");
+    expect(pfEl.textContent).toContain("[CHECK BEFORE UNDOCK]");
+    expect(pfEl.textContent).toContain("✓ Propellant 12t");
+    expect(pfEl.textContent).toContain("✗ Provisions 0d");
+    expect(pfEl.textContent).toContain("→ Stickney Yards");
+    first.unmount();
+
+    // All 7 steps complete -> Corridor Captain mastery + 1-click Jobs Board shortcut
+    quests.applyFrame({
+      schema: 1,
+      completed: GUIDED_TOUR_KEYS.map((key, i) => ({ key, title: `Step ${i + 1}` })),
+      active: [],
+      available: [],
+    });
+    render(SheetPanel, { props: { app } });
+    expect(screen.getByText(/Corridor Captain \(7\/7\)/i)).toBeTruthy();
+    const jobsBtn = screen.getByRole("button", { name: "Jobs Board (+market/jobs)" });
+    await fireEvent.click(jobsBtn);
+    expect(focusComposer).toHaveBeenCalledWith("+market/jobs");
+  });
 });
