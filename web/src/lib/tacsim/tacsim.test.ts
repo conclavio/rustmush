@@ -2819,4 +2819,30 @@ describe("PR #693 Web review regressions (items 1-7, 9-11)", () => {
     expect(toBerth!.targetRoomEntry).toBe("room.c01_berth_gallery");
     expect(toBerth!.targetRoomName).toContain("Board Ship");
   });
+
+  it("routes Step 6 surface expedition quests from Rosalind's Exchange Hall to Berth Gallery -> Board Ship", () => {
+    const ceres = buildFallbackFreeport();
+    // Even standing right in room.c07_exchange (Rosalind's turn-in room), needsShipExpedition routes to Berth Gallery!
+    const toBerth = computeNextQuestExitBreadcrumb(
+      ceres,
+      "room.c07_exchange",
+      "room.c07_exchange",
+      false,
+      true,
+    );
+    expect(toBerth).not.toBeNull();
+    expect(toBerth!.targetRoomEntry).toBe("room.c01_berth_gallery");
+    expect(toBerth!.targetRoomName).toContain("Board Ship");
+
+    // At Berth Gallery with needsShipExpedition -> +ship/board
+    const board = computeNextQuestExitBreadcrumb(
+      ceres,
+      "room.c01_berth_gallery",
+      "room.c07_exchange",
+      false,
+      true,
+    );
+    expect(board?.nextExitCommand).toBe("+ship/board");
+    expect(board?.nextRoomName).toBe("Board Ship");
+  });
 });

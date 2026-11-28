@@ -1033,15 +1033,39 @@ export function computeNextQuestExitBreadcrumb(
   currentRoomEntry: string | null | undefined,
   targetRoomEntry: string | null | undefined,
   needsOriginExchangeFirst = false,
+  needsShipExpedition = false,
 ): StationQuestBreadcrumb | null {
-  if (!pack || !currentRoomEntry || !targetRoomEntry || currentRoomEntry === targetRoomEntry) {
+  if (
+    !pack ||
+    !currentRoomEntry ||
+    (!targetRoomEntry && !needsShipExpedition) ||
+    (!needsShipExpedition && currentRoomEntry === targetRoomEntry)
+  ) {
     return null;
   }
 
-  let effectiveTarget = targetRoomEntry;
+  let effectiveTarget = targetRoomEntry ?? "";
   let boardingCrossPort = false;
-  if (!pack.rooms.has(targetRoomEntry)) {
-    if (!/^room\.[cpldt]\d/i.test(targetRoomEntry.trim())) {
+  if (needsShipExpedition) {
+    const berth = [...pack.rooms.values()].find((r) =>
+      r.entryId.toLowerCase().includes("berth_gallery"),
+    );
+    if (!berth) return null;
+    if (currentRoomEntry === berth.entryId) {
+      return {
+        nextRoomEntry: "ship",
+        nextRoomName: "Board Ship",
+        nextExitCommand: "+ship/board",
+        nextExitLabel: "Board Ship",
+        targetRoomEntry: effectiveTarget || "ship",
+        targetRoomName: "Board Ship",
+        hops: 1,
+      };
+    }
+    effectiveTarget = berth.entryId;
+    boardingCrossPort = true;
+  } else if (!pack.rooms.has(effectiveTarget)) {
+    if (!/^room\.[cpldt]\d/i.test(effectiveTarget.trim())) {
       return null;
     }
     if (needsOriginExchangeFirst) {
@@ -1059,7 +1083,7 @@ export function computeNextQuestExitBreadcrumb(
         effectiveTarget = exchange.entryId;
       }
     }
-    if (effectiveTarget === targetRoomEntry) {
+    if (effectiveTarget === (targetRoomEntry ?? "")) {
       const berth = [...pack.rooms.values()].find((r) =>
         r.entryId.toLowerCase().includes("berth_gallery"),
       );
@@ -1070,7 +1094,7 @@ export function computeNextQuestExitBreadcrumb(
           nextRoomName: "Board Ship",
           nextExitCommand: "+ship/board",
           nextExitLabel: "Board Ship",
-          targetRoomEntry,
+          targetRoomEntry: effectiveTarget,
           targetRoomName: "Board Ship",
           hops: 1,
         };

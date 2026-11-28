@@ -9,6 +9,7 @@ import {
   inferStationPortFromRoomEntry,
   matchesQuestTradeRow,
   needsOriginPortProcurement,
+  needsSurfaceExpeditionBoarding,
   parseQuestMarkers,
   resolveQuestShipTargetCompartment,
 } from "./quests.svelte";
@@ -749,5 +750,50 @@ describe("QuestsStore", () => {
         cargoLines: [],
       }),
     ).toBe(false);
+  });
+
+  it("routes Step 6 surface expeditions to Berth Gallery ashore, Bridge while docked at station, Bay on settled pad, Bridge post-mine, and Airlock back at Ceres", () => {
+    const store = new QuestsStore();
+    store.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+          title: "Scan, Sound, and Mine a Landing Site",
+          next_room_entry: "room.c07_exchange",
+          checkpoints: [
+            { id: "scan_landing_site", title: "Surface scan", instructions: "+tv/1 scan go", room_entry: "room.c07_exchange", checked: false, live_ready: false },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", instructions: "+tv/1 mine go", room_entry: "room.c07_exchange", checked: false, live_ready: false },
+          ],
+        },
+      ],
+    });
+    // Ashore -> must board ship for expedition
+    expect(needsSurfaceExpeditionBoarding(store.active, store.trackedKey)).toBe(true);
+    // Aboard Dray-P still docked at Ceres station -> bridge (fly to surface site first!)
+    expect(resolveQuestShipTargetCompartment(store.active, store.trackedKey, "ceres", false)).toBe("bridge");
+    // Aboard Dray-P settled on a surface landing pad -> bay (launch & operate rig!)
+    expect(resolveQuestShipTargetCompartment(store.active, store.trackedKey, "ceres", true)).toBe("bay");
+
+    // Once carbon_ore is mined (mineDone = true)
+    store.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+          title: "Scan, Sound, and Mine a Landing Site",
+          next_room_entry: "room.c07_exchange",
+          checkpoints: [
+            { id: "scan_landing_site", title: "Surface scan", instructions: "+tv/1 scan go", room_entry: "room.c07_exchange", checked: true, live_ready: true },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", instructions: "+tv/1 mine go", room_entry: "room.c07_exchange", checked: true, live_ready: true },
+          ],
+        },
+      ],
+    });
+    expect(needsSurfaceExpeditionBoarding(store.active, store.trackedKey)).toBe(false);
+    // Still on surface pad -> bridge (lift off & fly back to Ceres!)
+    expect(resolveQuestShipTargetCompartment(store.active, store.trackedKey, null, true)).toBe("bridge");
+    // Docked back at Ceres Freeport -> airlock (+ship/leave to turn in to Rosalind!)
+    expect(resolveQuestShipTargetCompartment(store.active, store.trackedKey, "ceres", false)).toBe("airlock");
   });
 });
