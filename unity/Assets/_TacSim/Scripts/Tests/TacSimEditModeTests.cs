@@ -16571,5 +16571,70 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestTracker_ShowsStep6ProspectingPrepAndHidesWhenReady()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestTrackerStep6PrepTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                // 1. Pre-scan -> Prep: +license | +tv/lease | +chart/ground
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Complete a surface scan"", ""checked"": false, ""live_ready"": false },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon ore"", ""checked"": false, ""live_ready"": false }
+                        ]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                StringAssert.Contains("Prep: +license  |  +tv/lease  |  +chart/ground", hud.QuestJournal.TrackerDetailSnapshot);
+
+                // 2. Mid-expedition (scan complete, mining pending) -> Prep: +chart/ground | Recover: +tv/1 recover go
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Complete a surface scan"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon ore"", ""checked"": false, ""live_ready"": false }
+                        ]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                StringAssert.Contains("Prep: +chart/ground  |  Recover: +tv/1 recover go", hud.QuestJournal.TrackerDetailSnapshot);
+
+                // 3. Ready to turn in -> prep hint hides cleanly
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""ready_to_finish"": true,
+                        ""can_finish_now"": true,
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Complete a surface scan"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon ore"", ""checked"": true, ""live_ready"": true }
+                        ]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                StringAssert.DoesNotContain("Prep: +license", hud.QuestJournal.TrackerDetailSnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
