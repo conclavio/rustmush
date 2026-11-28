@@ -110,6 +110,9 @@ import {
   GUIDED_TOUR_KEYS,
   QUESTS_FEED,
   QuestsStore,
+  extractActiveDestinationPort,
+  extractActiveSurfaceMiningStatus,
+  inferStationPortFromRoomEntry,
   needsOriginPortProcurement,
   needsSurfaceExpeditionBoarding,
   resolveNextGuidedOfferDestination,
@@ -2231,6 +2234,7 @@ export class GameApp {
         );
       }
 
+      let pushedSuggestedCmd = "";
       if (routeCrumb) {
         const routeTitle =
           routeCrumb.nextExitCommand === "+ship/board"
@@ -2250,6 +2254,7 @@ export class GameApp {
       } else {
         const suggested = this.quests.suggestedAction;
         if (suggested) {
+          pushedSuggestedCmd = suggested.command.trim().toLowerCase();
           questItems.push({
             kind: "step",
             key: tracked.key,
@@ -2259,6 +2264,52 @@ export class GameApp {
               ? `${suggested.command} — ${tracked.nextStep}`
               : suggested.command,
           });
+        }
+      }
+
+      const mining = extractActiveSurfaceMiningStatus([tracked], tracked.key);
+      if (mining) {
+        if (!mining.mineDone) {
+          if (pushedSuggestedCmd !== "+chart/ground") {
+            const oreLabel = mining.targetOreSlug.replaceAll("_", " ");
+            questItems.push({
+              kind: "step",
+              key: tracked.key,
+              command: "+chart/ground",
+              title: `Ground Chart: ${oreLabel} (${mining.recommendedFamily})`,
+              detail: "+chart/ground — Pick a Ceres landing site (Freeport Commons / Ahuna Flank)",
+            });
+          }
+        } else if (!tracked.canFinishNow && !tracked.turnInHere) {
+          let returnDest = extractActiveDestinationPort([tracked], tracked.key);
+          if (!returnDest) {
+            const turnInRoom =
+              tracked.nextRoomEntry ||
+              tracked.checkpoints[tracked.checkpoints.length - 1]?.roomEntry ||
+              null;
+            const slug = inferStationPortFromRoomEntry(turnInRoom);
+            if (slug) {
+              const label =
+                slug === "ceres"
+                  ? "Ceres Freeport"
+                  : slug === "stickney"
+                    ? "Stickney Yards"
+                    : slug;
+              returnDest = { questTitle: tracked.title, portId: slug, portLabel: label };
+            }
+          }
+          if (returnDest) {
+            const planCmd = `+ship/plan ${returnDest.portId}`;
+            if (pushedSuggestedCmd !== planCmd.toLowerCase()) {
+              questItems.push({
+                kind: "step",
+                key: tracked.key,
+                command: planCmd,
+                title: `Return → ${returnDest.portLabel}`,
+                detail: `${planCmd} — Return to ${tracked.turnInName || returnDest.portLabel} with mined ore`,
+              });
+            }
+          }
         }
       }
 
@@ -2349,6 +2400,15 @@ export class GameApp {
         key: nextGuided.key,
         title: `Next Guided (${nextGuided.step}/7): ${nextGuided.shortLabel}`,
         detail: `Speak with ${nextGuided.giverLabel} (${nextGuided.giverRoomName})`,
+      });
+    } else if (this.quests.available.length === 0 && this.quests.guidedTourProgress?.allDone) {
+      const tour = this.quests.guidedTourProgress;
+      questItems.push({
+        kind: "step",
+        key: "guided_tour_mastery",
+        command: "+market/jobs",
+        title: `★ Corridor Captain (${tour.completed}/${tour.total}) — Jobs Board`,
+        detail: "+market/jobs — Browse corridor freight & mining contracts",
       });
     }
 

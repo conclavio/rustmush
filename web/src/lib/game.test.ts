@@ -3341,4 +3341,132 @@ describe("quest command palette route, step and cycle shortcuts", () => {
     expect(guidedOfferIdx).toBeGreaterThanOrEqual(0);
     expect(sideOfferIdx).toBeGreaterThan(guidedOfferIdx);
   });
+
+  it("command palette surfaces Step 6 Ground Chart, post-mine Ceres Return, and Corridor Captain (7/7) Jobs Board", () => {
+    const { app } = boot();
+    let focused = "";
+    app.composer = {
+      focus: (prefill?: string) => {
+        focused = prefill ?? "";
+      },
+      blur: () => {},
+      cycleMode: () => {},
+      text: () => "",
+      setText: () => {},
+    };
+
+    // 1. Step 6 pre-mine -> Ground Chart shortcut (+chart/ground)
+    app.quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+          title: "Scan, Sound, and Mine a Landing Site",
+          turn_in_name: "Rosalind Qureshi-Mbeki",
+          next_room_entry: "room.c07_exchange",
+          next_step: "Scan a Ceres landing site and mine 1t carbon_ore.",
+          checkpoints: [
+            {
+              id: "scan_landing_site",
+              title: "Complete a surface scan",
+              instructions: "Run +tv/1 scan go",
+              checked: false,
+              live_ready: false,
+            },
+            {
+              id: "mine_carbon_ore",
+              title: "Mine at least 1 tonne of carbon ore",
+              instructions: "Run +tv/1 mine go",
+              room_entry: "room.c07_exchange",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+      available: [],
+      completed: [],
+    });
+
+    app.paletteQuery("/ground");
+    const groundIdx = app.paletteEntries.findIndex(
+      (e) => e.questAction?.kind === "step" && e.questAction.command === "+chart/ground",
+    );
+    expect(groundIdx).toBeGreaterThanOrEqual(0);
+    expect(app.paletteEntries[groundIdx]?.label).toContain("Ground Chart: carbon ore (carbon)");
+    app.paletteSelected = groundIdx;
+    app.palettePick(false);
+    expect(focused).toBe("+chart/ground");
+
+    // 2. Step 6 post-mine (off-station on surface pad) -> Return -> Ceres Freeport (+ship/plan ceres)
+    app.quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+          title: "Scan, Sound, and Mine a Landing Site",
+          turn_in_name: "Rosalind Qureshi-Mbeki",
+          next_room_entry: "room.c07_exchange",
+          ready_to_finish: true,
+          can_finish_now: false,
+          turn_in_here: false,
+          checkpoints: [
+            {
+              id: "scan_landing_site",
+              title: "Complete a surface scan",
+              instructions: "Run +tv/1 scan go",
+              checked: true,
+              live_ready: true,
+            },
+            {
+              id: "mine_carbon_ore",
+              title: "Mine at least 1 tonne of carbon ore",
+              instructions: "Run +tv/1 mine go",
+              room_entry: "room.c07_exchange",
+              checked: true,
+              live_ready: true,
+            },
+          ],
+        },
+      ],
+      available: [],
+      completed: [],
+    });
+
+    app.paletteQuery("/return");
+    const retIdx = app.paletteEntries.findIndex(
+      (e) => e.questAction?.kind === "step" && e.questAction.command === "+ship/plan ceres",
+    );
+    expect(retIdx).toBeGreaterThanOrEqual(0);
+    expect(app.paletteEntries[retIdx]?.label).toContain("Return → Ceres Freeport");
+    app.paletteSelected = retIdx;
+    app.palettePick(false);
+    expect(focused).toBe("+ship/plan ceres");
+
+    // 3. All 7 guided quests completed -> Corridor Captain (7/7) Jobs Board (+market/jobs)
+    app.quests.applyFrame({
+      schema: 1,
+      active: [],
+      available: [],
+      completed: [
+        { key: "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll", title: "S1" },
+        { key: "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel", title: "S2" },
+        { key: "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery", title: "S3" },
+        { key: "tacsim.quests.guided_onboarding/quest.guide_04_return_haul", title: "S4" },
+        { key: "tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector", title: "S5" },
+        { key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining", title: "S6" },
+        { key: "tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore", title: "S7" },
+      ],
+    });
+
+    app.paletteQuery("/jobs");
+    const jobsIdx = app.paletteEntries.findIndex(
+      (e) => e.questAction?.kind === "step" && e.questAction.command === "+market/jobs",
+    );
+    expect(jobsIdx).toBeGreaterThanOrEqual(0);
+    expect(app.paletteEntries[jobsIdx]?.label).toContain("Corridor Captain (7/7) — Jobs Board");
+    app.paletteSelected = jobsIdx;
+    app.palettePick(false);
+    expect(focused).toBe("+market/jobs");
+  });
 });
