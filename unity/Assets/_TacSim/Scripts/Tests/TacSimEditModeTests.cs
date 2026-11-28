@@ -12098,5 +12098,91 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void SailingQuestBanner_EvaluatesPreflightReadinessAndSwitchesToExchangeWhenIncomplete()
+        {
+            var rootGo = new UnityEngine.GameObject("SailingPreflightTestRoot");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                var trade = new TacSimTradeAndShipState();
+                hud.BindTradeState(trade);
+
+                var questJson = JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#17"",
+                    ""room_name"": ""Exchange Hall"",
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"",
+                        ""title"": ""Metals Down the Corridor"",
+                        ""checkpoints"": [{
+                            ""id"": ""deliver_metals"",
+                            ""title"": ""Deliver 5t metals to Stickney Yards"",
+                            ""instructions"": ""Check +ship/plan stickney and sell at Stickney Yards."",
+                            ""checked"": false,
+                            ""live_ready"": false
+                        }]
+                    }],
+                    ""available"": []
+                }");
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(questJson));
+
+                // Missing fuel, stores, and only 2/5 metals -> [CHECK BEFORE UNDOCK] + EXCHANGE button visible
+                trade.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 2000, ""cargo_limit_kg"": 100000,
+                            ""cargo_l"": 1000, ""cargo_limit_l"": 120000,
+                            ""tank_kg"": 0, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 0, ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:metals"", ""label"": ""Metals"", ""qty"": 2 }]
+                        }
+                    }
+                }"));
+                hud.OpenTradeAndSailingModal("SAILING PLAN", openSailingTab: true);
+                Assert.IsTrue(hud.IsSailingQuestBannerVisible);
+                Assert.IsTrue(hud.IsSailingExchangeJumpVisible);
+                StringAssert.Contains("[CHECK BEFORE UNDOCK]", hud.SailingPreflightSummarySnapshot);
+                StringAssert.Contains("Fuel 0t!", hud.SailingPreflightSummarySnapshot);
+                StringAssert.Contains("Stores 0d!", hud.SailingPreflightSummarySnapshot);
+                StringAssert.Contains("metals 2/5!", hud.SailingPreflightSummarySnapshot);
+                StringAssert.Contains("[CHECK BEFORE UNDOCK]", hud.SailingQuestBannerText);
+
+                // Clicking Exchange jump switches to Exchange tab
+                hud.JumpFromSailingToExchange();
+                Assert.AreEqual(TacSim.UI.TradeTerminalTab.Exchange, hud.ActiveTradeTab);
+
+                // Top up fuel, stores, and 5/5 metals -> [PRE-FLIGHT OK] and hides EXCHANGE jump button
+                trade.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 5000, ""cargo_limit_kg"": 100000,
+                            ""cargo_l"": 2500, ""cargo_limit_l"": 120000,
+                            ""tank_kg"": 14000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 12, ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:metals"", ""label"": ""Metals"", ""qty"": 5 }]
+                        }
+                    }
+                }"));
+                hud.OpenTradeAndSailingModal("SAILING PLAN", openSailingTab: true);
+                Assert.IsFalse(hud.IsSailingExchangeJumpVisible);
+                StringAssert.Contains("[PRE-FLIGHT OK]", hud.SailingPreflightSummarySnapshot);
+                StringAssert.Contains("Fuel 14t", hud.SailingPreflightSummarySnapshot);
+                StringAssert.Contains("Stores 12d", hud.SailingPreflightSummarySnapshot);
+                StringAssert.Contains("metals 5/5 OK", hud.SailingPreflightSummarySnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
