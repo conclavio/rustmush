@@ -5,6 +5,7 @@
   // or a quick-accept prompt when a quest NPC in the room has an available quest.
   import type { GameApp } from "$lib/game.svelte";
   import {
+    inferStationPortFromRoomEntry,
     needsOriginPortProcurement,
     needsSurfaceExpeditionBoarding,
     resolveQuestShipTargetCompartment,
@@ -22,6 +23,7 @@
   const suggested = $derived(q.suggestedAction);
   const tour = $derived(q.guidedTourProgress);
   const firstOffer = $derived(q.available[0] ?? null);
+  const nextOffer = $derived(q.nextGuidedOffer);
   const doneCount = $derived(
     tracked ? tracked.checkpoints.filter((cp) => cp.checked).length : 0,
   );
@@ -30,7 +32,31 @@
   );
   const routeCrumb = $derived.by(() => {
     const tacsim = app.tacsim;
-    if (!tracked || !tacsim) return null;
+    if (!tacsim) return null;
+    if (!tracked) {
+      if (firstOffer || !nextOffer) return null;
+      if (tacsim.isAboardShip) {
+        if (tacsim.seatedAtBridgeHelm) return null;
+        const settledPad = Boolean(tacsim.ambient?.settledPad);
+        const dockedPortId =
+          tacsim.ambient?.docked && !settledPad
+            ? normalizePortVenueTarget(tacsim.ambient?.port ?? tacsim.trade?.hullPort)
+            : null;
+        const targetPort = inferStationPortFromRoomEntry(nextOffer.giverRoomEntry);
+        const targetComp =
+          dockedPortId && targetPort && dockedPortId === targetPort ? "airlock" : "bridge";
+        const currentComp =
+          (tacsim.view3dOpen ? tacsim.physicalLocationKey : null) ?? tacsim.serverShipCompartment;
+        return computeShipQuestBreadcrumb(tacsim.shipTemplate, currentComp, targetComp);
+      }
+      const currentEntry =
+        (tacsim.view3dOpen ? tacsim.physicalLocationKey : null) ?? tacsim.serverStationRoomEntry;
+      return computeNextQuestExitBreadcrumb(
+        tacsim.stationPack,
+        currentEntry,
+        nextOffer.giverRoomEntry,
+      );
+    }
     if (tacsim.isAboardShip) {
       if (tacsim.seatedAtBridgeHelm) return null;
       const settledPad = Boolean(tacsim.ambient?.settledPad);
@@ -217,6 +243,45 @@
           Completed ({q.completed.length})
         </button>
       {/if}
+    </div>
+  </section>
+{:else if nextOffer}
+  <section class="tracker offer-hint" aria-label="Next guided quest">
+    <div class="tracker-bar">
+      <span class="qmark" data-marker="available">!</span>
+      <span class="inline-next">
+        <strong>Next Guided ({nextOffer.step}/7):</strong> {nextOffer.shortLabel} — speak with <strong>{nextOffer.giverLabel}</strong> ({nextOffer.giverRoomName})
+      </span>
+      {#if tour}
+        <button
+          type="button"
+          class="tour-pill"
+          onclick={() => q.openLog("completed")}
+          title="Guided Captain's Tour progress"
+        >
+          Tour {tour.completed}/{tour.total}
+        </button>
+      {/if}
+      <span class="grow"></span>
+      {#if routeCrumb}
+        <button
+          type="button"
+          class="tbtn route"
+          title={`Quest route: ${routeCrumb.hops} ${routeCrumb.hops === 1 ? "hop" : "hops"} to ${routeCrumb.targetRoomName} (${routeCrumb.nextExitCommand})`}
+          onclick={() => onCmd(routeCrumb.nextExitCommand)}
+        >
+          {#if routeCrumb.nextExitCommand === "+ship/board"}
+            Board Ship
+          {:else if routeCrumb.nextExitCommand === "+ship/leave"}
+            Cycle Ashore
+          {:else}
+            Walk → {routeCrumb.nextRoomName} ({routeCrumb.hops}h)
+          {/if}
+        </button>
+      {/if}
+      <button type="button" class="tbtn" onclick={() => q.openLog("completed")}>
+        Quest Log ({q.completed.length})
+      </button>
     </div>
   </section>
 {:else if tour?.allDone}
