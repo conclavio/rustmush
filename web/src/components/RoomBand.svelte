@@ -13,6 +13,8 @@
     normalizePortVenueTarget,
   } from "$lib/tacsim/spatial";
   import {
+    GUIDED_TOUR_KEYS,
+    guidedStepNumber,
     inferStationPortFromRoomEntry,
     needsOriginPortProcurement,
     needsSurfaceExpeditionBoarding,
@@ -147,11 +149,12 @@
       </span>
     {/if}
     {#each sortRoomQuestMarkers(app.quests?.roomMarkers ?? []) as qm (qm.npcId)}
+      {@const stepNo = guidedStepNumber(qm.questKey)}
       <button
         type="button"
         class="qmarker"
         data-marker={qm.marker}
-        title="{qm.npcName} — {qm.questTitle}{qm.questCount > 1 ? ` (+${qm.questCount - 1} more)` : ''}"
+        title="{qm.npcName} — {qm.questTitle}{stepNo !== null ? ` [Step ${stepNo}/${GUIDED_TOUR_KEYS.length}]` : ''}{qm.questCount > 1 ? ` (+${qm.questCount - 1} more)` : ''}"
         onclick={() => app.quests?.openNpcDialog(qm.npcId)}
       >
         <span class="qsym" aria-hidden="true">{qm.symbol}</span>{qm.npcName}
@@ -159,6 +162,9 @@
           <span class="qrole">Turn In</span>
         {:else if qm.marker === "available"}
           <span class="qrole">Offer</span>
+        {/if}
+        {#if stepNo !== null}
+          <span class="qstep">Step {stepNo}/{GUIDED_TOUR_KEYS.length}</span>
         {/if}
         {#if qm.questCount > 1}
           <span class="qcount">×{qm.questCount}</span>
@@ -366,6 +372,17 @@
     text-transform: uppercase;
     letter-spacing: 0.04em;
     opacity: 0.88;
+  }
+
+  .qstep {
+    font-size: 0.64rem;
+    font-weight: 700;
+    padding: 0 0.3rem;
+    border-radius: 999px;
+    border: 1px solid rgba(52, 211, 153, 0.45);
+    background: rgba(52, 211, 153, 0.16);
+    color: #a7f3d0;
+    letter-spacing: 0.02em;
   }
 
   .qcount {

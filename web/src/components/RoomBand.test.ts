@@ -470,6 +470,78 @@ describe("room band exit buttons submit safe goto commands", () => {
     await fireEvent.click(bayBtn);
     expect(onCmd).toHaveBeenCalledWith("+tv/bay in");
   });
+
+  it("tie-breaks guided tour markers ahead of optional markers at equal urgency and shows Step n/7 badges", () => {
+    const onCmd = vi.fn();
+    const view: RoomView = {
+      id: "#12",
+      name: "Arrivals Deck",
+      zone: null,
+      desc: [],
+      exits: [],
+      contents: [],
+      ambient: {},
+    };
+    const app = {
+      roomView: view,
+      screens: { exits: new Map() },
+      presence: { prune: vi.fn(), thinking: [], composing: [] },
+      quests: {
+        roomMarkers: [
+          {
+            npcId: "#88",
+            npcName: "Dockside Broker",
+            marker: "available",
+            symbol: "!",
+            questKey: "tacsim.quests.side/quest.side_errand",
+            questTitle: "Optional Dockside Errand",
+            category: "optional",
+            questCount: 1,
+          },
+          {
+            npcId: "#42",
+            npcName: "Maren Halvorsen",
+            marker: "available",
+            symbol: "!",
+            questKey: "tacsim.quests.side/quest.extra_shift",
+            questTitle: "Extra Shift",
+            category: "optional",
+            questCount: 1,
+          },
+          {
+            npcId: "#42",
+            npcName: "Maren Halvorsen",
+            marker: "available",
+            symbol: "!",
+            questKey: "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+            questTitle: "First Papers at the Registry",
+            category: "guided",
+            questCount: 1,
+          },
+        ],
+        active: [],
+        trackedKey: null,
+        openNpcDialog: vi.fn(),
+      },
+      tacsim: null,
+    } as unknown as GameApp;
+
+    const { container } = render(RoomBand, { props: { app, onCmd } });
+    const markerBtns = Array.from(container.querySelectorAll("button.qmarker"));
+    expect(markerBtns).toHaveLength(2);
+    // Guided Step 1/7 offer sorts ahead of optional Dockside Broker at equal 'available' urgency
+    // and wins the per-NPC tie-break on Maren Halvorsen (#42) with ×2 count.
+    expect(markerBtns[0]!.textContent).toContain("Maren Halvorsen");
+    expect(markerBtns[0]!.textContent).toContain("Offer");
+    expect(markerBtns[0]!.textContent).toContain("Step 1/7");
+    expect(markerBtns[0]!.textContent).toContain("×2");
+    expect(markerBtns[0]!.getAttribute("title")).toContain("First Papers at the Registry");
+    expect(markerBtns[0]!.getAttribute("title")).toContain("[Step 1/7]");
+    expect(markerBtns[0]!.getAttribute("title")).toContain("(+1 more)");
+
+    expect(markerBtns[1]!.textContent).toContain("Dockside Broker");
+    expect(markerBtns[1]!.textContent).not.toContain("Step ");
+  });
 });
 
 describe("channel colorHex inline style sanitization", () => {
