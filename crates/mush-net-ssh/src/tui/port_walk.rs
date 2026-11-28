@@ -954,6 +954,31 @@ impl PortWalkState {
         self.quest_dest_port.as_ref()
     }
 
+    /// Resolve a room quest marker matching the currently selected NPC in the Talk drawer
+    /// (falling back to the sole room quest marker if no speaker is explicitly selected).
+    #[must_use]
+    pub fn selected_npc_quest_marker(&self) -> Option<&QuestMarker> {
+        let sel = self.selected_npc_name.trim();
+        if !sel.is_empty() {
+            if let Some(m) = self
+                .quest_markers
+                .iter()
+                .find(|m| m.npc_name.trim().eq_ignore_ascii_case(sel))
+            {
+                return Some(m);
+            }
+            let sel_low = sel.to_ascii_lowercase();
+            return self.quest_markers.iter().find(|m| {
+                let n = m.npc_name.trim().to_ascii_lowercase();
+                !n.is_empty() && (n.contains(&sel_low) || sel_low.contains(&n))
+            });
+        }
+        if self.quest_markers.len() == 1 {
+            return self.quest_markers.first();
+        }
+        None
+    }
+
     /// Evaluate active quest commodity readiness against live ship tanks, crew stores, or hold cargo lots.
     #[must_use]
     pub fn quest_stowage_readiness(&self) -> Option<QuestStowageReadiness> {
@@ -3698,6 +3723,12 @@ impl PortWalkState {
                         }
                     }
                 }
+                Key::Char('q' | 'Q') => {
+                    if let Some(m) = self.selected_npc_quest_marker().cloned() {
+                        self.close_drawer();
+                        out.open_quest_for_npc = Some((m.npc_id, m.npc_name));
+                    }
+                }
                 Key::Enter => {
                     if let Some(&(_, question)) = NPC_TOPICS.get(self.cursor_row) {
                         let cmd = if self.selected_npc_name.is_empty() {
@@ -5429,6 +5460,22 @@ impl PortWalkState {
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
                 )));
+                if let Some(m) = self.selected_npc_quest_marker() {
+                    let (prefix, col) = match m.marker.as_str() {
+                        "available" => ("[!] Quest Available", Color::Yellow),
+                        "turn_in" => ("[?] Turn In Quest", Color::Green),
+                        _ => ("[?] Quest In Progress", Color::Yellow),
+                    };
+                    let title_part = if m.quest_title.is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {}", m.quest_title)
+                    };
+                    lines.push(Line::from(Span::styled(
+                        truncate_str(&format!("{prefix}{title_part} (q: quest dialog)"), inner_w),
+                        Style::default().fg(col).add_modifier(Modifier::BOLD),
+                    )));
+                }
                 let list_rows = main_budget.saturating_sub(lines.len()).max(1);
                 let cur = self.cursor_row.min(NPC_TOPICS.len() - 1);
                 for idx in visible_window(NPC_TOPICS.len(), cur, list_rows) {
