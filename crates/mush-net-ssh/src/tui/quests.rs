@@ -44,7 +44,7 @@ pub struct QuestCheckpoint {
     pub detail_text: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ActiveQuest {
     pub key: String,
     pub title: String,
@@ -1644,6 +1644,95 @@ impl QuestsSnapshot {
         }
     }
 
+    /// Live per-checkpoint stowage/refit badge for an unchecked checkpoint row in the
+    /// HUD Quest Tracker and F11 Quest Overlay (Steps 2, 3, 4, 5, 6, 7).
+    /// Returns `(badge_text, color, is_ready)`.
+    #[must_use]
+    pub fn checkpoint_live_badge(
+        cp: &QuestCheckpoint,
+        st: &QuestStowageTelemetry,
+    ) -> Option<(String, Color, bool)> {
+        if cp.checked || cp.live_ready {
+            return None;
+        }
+        let id_low = cp.id.to_ascii_lowercase();
+        let title_low = cp.title.to_ascii_lowercase();
+        let instr_low = cp.instructions.to_ascii_lowercase();
+        let text_low = format!("{id_low} {title_low} {instr_low}");
+
+        if id_low.contains("refit_dray") || text_low.contains("+coop/refit") {
+            let cargo_empty = st.cargo_kg <= 0 && !st.cargo_lots.iter().any(|(_, _, q)| *q > 0);
+            let prov_empty = st.provisions_days <= 0;
+            return if cargo_empty && prov_empty {
+                Some(("[HOLD CLEAR]".to_string(), Color::Green, true))
+            } else {
+                Some(("[CLEAR HOLD]".to_string(), Color::Red, false))
+            };
+        }
+
+        if id_low.starts_with("mine_") || title_low.starts_with("mine ") {
+            let ore_slug = if text_low.contains("rare_earths") || text_low.contains("rare earths") {
+                "rare_earths"
+            } else if text_low.contains("metals") {
+                "metals"
+            } else if text_low.contains("volatiles") || text_low.contains("water_ice") {
+                "volatiles"
+            } else {
+                "carbon_ore"
+            };
+            let have: i64 = st
+                .cargo_lots
+                .iter()
+                .filter(|(g, l, _)| {
+                    normalize_good_slug(g) == ore_slug || normalize_good_slug(l) == ore_slug
+                })
+                .map(|(_, _, q)| (*q).max(0))
+                .sum();
+            let target = extract_leading_positive_i64(&cp.title)
+                .or_else(|| extract_leading_positive_i64(&cp.instructions))
+                .unwrap_or(1)
+                .max(1);
+            return (have >= target).then(|| ("[STOWED]".to_string(), Color::Green, true));
+        }
+
+        let single = Self {
+            active: vec![ActiveQuest {
+                checkpoints: vec![cp.clone()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let need = single.active_trade_needs(None).into_iter().next()?;
+        let target = need.target_quantity.max(1);
+        let (have, unit) = match need.commodity_slug.as_str() {
+            "propellant" => (st.propellant_kg.max(0) / 1000, "t"),
+            "provisions" => (st.provisions_days.max(0), "d"),
+            slug => {
+                let qty: i64 = st
+                    .cargo_lots
+                    .iter()
+                    .filter(|(g, l, _)| {
+                        normalize_good_slug(g) == slug || normalize_good_slug(l) == slug
+                    })
+                    .map(|(_, _, q)| (*q).max(0))
+                    .sum();
+                (qty, "u")
+            }
+        };
+        if have >= target {
+            let lbl = if need.wants_buy && need.wants_sell {
+                "[LOADED -> SAIL]"
+            } else {
+                "[STOWED]"
+            };
+            Some((lbl.to_string(), Color::Green, true))
+        } else if have > 0 {
+            Some((format!("[{have}/{target}{unit}]"), Color::Yellow, false))
+        } else {
+            None
+        }
+    }
+
     /// Order room NPC quest markers by action urgency:
     /// gold turn-in (`?`) -> gold available offer (`!`) -> silver in-progress (`?`).
     #[must_use]
@@ -2469,17 +2558,25 @@ pub fn render_quest_tracker_lines_full(
             ),
         ]));
         for cp in &q.checkpoints {
+            let live_badge = stowage.and_then(|st| QuestsSnapshot::checkpoint_live_badge(cp, st));
             let (mark, style) = if cp.checked {
                 ("[x] ", Style::default().fg(Color::Green))
-            } else if cp.live_ready {
+            } else if cp.live_ready || live_badge.as_ref().is_some_and(|(_, _, ready)| *ready) {
                 ("[*] ", Style::default().fg(Color::Yellow))
             } else {
                 ("[ ] ", Style::default())
             };
-            lines.push(Line::from(vec![
+            let mut spans = vec![
                 Span::styled(mark, style),
                 Span::styled(cp.title.clone(), style),
-            ]));
+            ];
+            if let Some((badge, col, _)) = live_badge {
+                spans.push(Span::styled(
+                    format!(" {badge}"),
+                    Style::default().fg(col).add_modifier(Modifier::BOLD),
+                ));
+            }
+            lines.push(Line::from(spans));
         }
         if let Some(st) = stowage
             && let Some((hold_txt, hold_ready)) = QuestsSnapshot::hold_readiness_line_for(q, st)
@@ -3210,17 +3307,28 @@ pub fn render_quest_overlay_full(
                         .add_modifier(Modifier::BOLD),
                 )));
                 for cp in &q.checkpoints {
+                    let live_badge =
+                        stowage.and_then(|st| QuestsSnapshot::checkpoint_live_badge(cp, st));
                     let (mark, style) = if cp.checked {
                         ("[x] ", Style::default().fg(Color::Green))
-                    } else if cp.live_ready {
+                    } else if cp.live_ready
+                        || live_badge.as_ref().is_some_and(|(_, _, ready)| *ready)
+                    {
                         ("[*] ", Style::default().fg(Color::Yellow))
                     } else {
                         ("[ ] ", Style::default())
                     };
-                    detail_lines.push(Line::from(vec![
+                    let mut spans = vec![
                         Span::styled(mark, style),
                         Span::styled(cp.title.clone(), style),
-                    ]));
+                    ];
+                    if let Some((badge, col, _)) = live_badge {
+                        spans.push(Span::styled(
+                            format!(" {badge}"),
+                            Style::default().fg(col).add_modifier(Modifier::BOLD),
+                        ));
+                    }
+                    detail_lines.push(Line::from(spans));
                     if let Some(done_text) = &cp.detail_text {
                         detail_lines.push(Line::from(Span::styled(
                             format!("    {done_text}"),
@@ -6392,5 +6500,117 @@ mod tests {
         let act_jobs = st.handle_key_with_port(Key::Char('p'), &done_snap, Some("stickney"));
         assert_eq!(act_jobs, QuestOverlayAction::Prefill("+market/jobs".into()));
         assert!(!st.open);
+    }
+
+    #[test]
+    fn tracker_and_overlay_render_live_per_checkpoint_stowage_and_refit_badges() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let render_overlay = |st: &QuestOverlayState,
+                              snap: &QuestsSnapshot,
+                              stowage: &QuestStowageTelemetry|
+         -> String {
+            let backend = TestBackend::new(110, 26);
+            let mut term = Terminal::new(backend).expect("terminal");
+            term.draw(|f| {
+                render_quest_overlay_full(f, f.area(), st, snap, Some(stowage), Some("ceres"));
+            })
+            .expect("draw");
+            let buf = term.backend().buffer();
+            (0..buf.area.height)
+                .map(|y| {
+                    (0..buf.area.width)
+                        .map(|x| buf[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let snap = parse_frame(&json!({
+            "schema": 1,
+            "active": [
+                {
+                    "key": GUIDED_TOUR_KEYS[1],
+                    "title": "Stock the Locker and Tanks",
+                    "checkpoints": [
+                        {
+                            "id": "buy_provisions",
+                            "title": "Buy 10 provisions",
+                            "instructions": "Buy 10 provisions at Chandlery.",
+                            "room_name": "Co-op Chandlery",
+                            "checked": false,
+                            "live_ready": false
+                        },
+                        {
+                            "id": "buy_propellant",
+                            "title": "Buy 5t propellant",
+                            "instructions": "Buy 5t propellant at Exchange.",
+                            "room_name": "Exchange Hall",
+                            "checked": false,
+                            "live_ready": false
+                        }
+                    ]
+                },
+                {
+                    "key": GUIDED_TOUR_KEYS[4],
+                    "title": "Refit the Dray for Surface Mining",
+                    "checkpoints": [
+                        {
+                            "id": "refit_dray_p",
+                            "title": "Refit your Dray into a Dray-P prospector",
+                            "instructions": "Run +coop/refit prospector at Registry.",
+                            "room_name": "Registry",
+                            "checked": false,
+                            "live_ready": false
+                        }
+                    ]
+                }
+            ]
+        }));
+
+        // 1. 10d provisions stowed + 2t propellant partial -> Step 2 shows [STOWED] and [2/5t]; Step 5 shows [CLEAR HOLD]
+        let stow_partial = QuestStowageTelemetry {
+            cargo_kg: 0,
+            propellant_kg: 2_000,
+            provisions_days: 10,
+            cargo_lots: vec![],
+        };
+        let tracker_lines = render_quest_tracker_lines_with_route_and_stowage(
+            &snap,
+            Some(GUIDED_TOUR_KEYS[1]),
+            None,
+            Some(&stow_partial),
+        );
+        let tracker_txt: String = tracker_lines
+            .iter()
+            .map(|l| l.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(tracker_txt.contains("[STOWED]"), "{tracker_txt}");
+        assert!(tracker_txt.contains("[2/5t]"), "{tracker_txt}");
+
+        let mut st = QuestOverlayState::default();
+        st.open_tab_index(QuestTab::Active, 0);
+        let ov_step2 = render_overlay(&st, &snap, &stow_partial);
+        assert!(ov_step2.contains("[STOWED]"), "{ov_step2}");
+        assert!(ov_step2.contains("[2/5t]"), "{ov_step2}");
+
+        st.open_tab_index(QuestTab::Active, 1);
+        let ov_step5_blocked = render_overlay(&st, &snap, &stow_partial);
+        assert!(
+            ov_step5_blocked.contains("[CLEAR HOLD]"),
+            "{ov_step5_blocked}"
+        );
+
+        // 2. Empty hold & stores -> Step 5 flips to [HOLD CLEAR]
+        let stow_clear = QuestStowageTelemetry {
+            cargo_kg: 0,
+            propellant_kg: 8_000,
+            provisions_days: 0,
+            cargo_lots: vec![],
+        };
+        let ov_step5_clear = render_overlay(&st, &snap, &stow_clear);
+        assert!(ov_step5_clear.contains("[HOLD CLEAR]"), "{ov_step5_clear}");
+        assert!(!ov_step5_clear.contains("[CLEAR HOLD]"), "{ov_step5_clear}");
     }
 }
