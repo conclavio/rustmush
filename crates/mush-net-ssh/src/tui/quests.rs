@@ -1103,6 +1103,68 @@ pub fn render_quest_tracker_lines(
     lines
 }
 
+/// Build golden Guided Quests summary lines for the TUI Character Sheet screen (`2 sheet`).
+#[must_use]
+pub fn render_quest_sheet_lines(
+    snap: &QuestsSnapshot,
+    tracked_key: Option<&str>,
+) -> Vec<Line<'static>> {
+    if snap.active.is_empty() && snap.available.is_empty() && snap.completed.is_empty() {
+        return Vec::new();
+    }
+    let mut lines: Vec<Line<'static>> = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "Guided Quests",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+    ];
+    if let Some(q) = snap.ordered_active(tracked_key).into_iter().next() {
+        let done = q.checkpoints.iter().filter(|c| c.checked).count();
+        let ready = if q.ready_to_finish || q.can_finish_now {
+            " [READY]"
+        } else {
+            ""
+        };
+        lines.push(Line::from(vec![
+            Span::styled("  Active: ", Style::default().fg(Color::Cyan)),
+            Span::styled(
+                format!("{} ({done}/{}){ready}", q.title, q.checkpoints.len()),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        if !q.next_step.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled("  Next: ", Style::default().fg(Color::Cyan)),
+                Span::raw(q.next_step.clone()),
+            ]));
+        }
+    } else if let Some(offer) = snap.available.first() {
+        lines.push(Line::from(vec![
+            Span::styled(
+                "  Available: [!] ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!("{} ({})", offer.title, offer.giver_name)),
+        ]));
+    }
+    lines.push(Line::from(vec![
+        Span::styled("  Completed: ", Style::default().fg(Color::Green)),
+        Span::raw(format!("{}  |  ", snap.completed.len())),
+        Span::styled(
+            "F11 or /quests for Quest Log",
+            Style::default().add_modifier(Modifier::DIM),
+        ),
+    ]));
+    lines
+}
+
 /// Paint the centered Quest Dialog & Journal overlay.
 pub fn render_quest_overlay(
     f: &mut Frame<'_>,
@@ -1673,5 +1735,23 @@ mod tests {
         assert!(!overlay.confirm_abandon);
         assert_eq!(overlay.tab, QuestTab::Available);
         assert_eq!(overlay.selected, 2);
+
+        let empty_lines = render_quest_sheet_lines(&QuestsSnapshot::default(), None);
+        assert!(empty_lines.is_empty());
+
+        let sheet_lines = render_quest_sheet_lines(&snap, None);
+        let sheet_text: String = sheet_lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(sheet_text.contains("Guided Quests"));
+        assert!(sheet_text.contains("First Papers (0/1)"));
+        assert!(sheet_text.contains("Completed: 0"));
     }
 }

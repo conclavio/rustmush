@@ -52,10 +52,10 @@ use super::port_walk::{PORT_TRADE_FEED, PortWalkState, TACSIM_CONTENT_FEED};
 use super::quests::{
     QUESTS_FEED, QuestMilestoneKind, QuestMilestoneTracker, QuestOverlayAction, QuestOverlayState,
     QuestTab, QuestsSnapshot, parse_frame as parse_quests_frame, parse_room_markers,
-    render_quest_overlay, render_quest_tracker_lines,
+    render_quest_overlay, render_quest_sheet_lines, render_quest_tracker_lines,
 };
 use super::render::{
-    BODY_GROUND_FEED, CHART_FEED, Entry, GUTTER_W, PaneRows, RenderCtx, SITE_MAP_FEED,
+    BODY_GROUND_FEED, CHART_FEED, Entry, GUTTER_W, PaneRow, PaneRows, RenderCtx, SITE_MAP_FEED,
     TV_STATUS_FEED, dim_span_owned, floor_line, legend_line, render_backlog_rows,
     render_channels_rows, render_chart_table_rows, render_cockpit_notices_rows, render_event,
     render_rolls_rows, render_sheet_rows, render_vitals_rows, render_who_rail, status_line,
@@ -2459,10 +2459,32 @@ impl TuiApp {
                 return queries;
             }
             OutputEvent::Room(view) => {
+                let prev_room_id = self.room.as_ref().map(|r| r.id.clone());
                 self.room = Some(view.clone());
                 self.exit_keys = exit_keys(&view.exits);
                 self.quests_snap.room_name = view.name.clone();
                 self.quests_snap.room_markers = parse_room_markers(view);
+                if prev_room_id
+                    .as_deref()
+                    .is_some_and(|prev| !prev.is_empty() && prev != view.id)
+                    && let Some(atlas_entry) = view
+                        .ambient
+                        .get("atlas")
+                        .and_then(|a| a.get("entry"))
+                        .and_then(Value::as_str)
+                    && let Some((obj_room, is_turn_in)) = self
+                        .quests_snap
+                        .active_objective_room(self.quests_overlay.tracked_key.as_deref())
+                    && atlas_entry.eq_ignore_ascii_case(&obj_room)
+                {
+                    let notice = if is_turn_in {
+                        format!("[QUEST] Turn-in ready here: {}", sanitize(&view.name))
+                    } else {
+                        format!("[QUEST] Arrived at objective: {}", sanitize(&view.name))
+                    };
+                    self.push_local_line(&notice);
+                    self.sounds.play("power_online", Instant::now());
+                }
                 if manifest_has(&self.manifest, QUESTS_FEED) {
                     queries.push((
                         QUESTS_FEED.to_string(),
@@ -5225,7 +5247,14 @@ impl TuiApp {
                 None => loading(),
             },
             PaneContent::Sheet => match self.panels.sheet() {
-                Some(data) => render_sheet_rows(data, &ctx),
+                Some(data) => {
+                    let mut rows = render_sheet_rows(data, &ctx);
+                    let tracked = self.quests_overlay.tracked_key.as_deref();
+                    for line in render_quest_sheet_lines(&self.quests_snap, tracked) {
+                        rows.rows.push(PaneRow::plain(line));
+                    }
+                    rows
+                }
                 None => loading(),
             },
             PaneContent::Channels { ic } => match self.panels.get("comsys") {
@@ -13111,5 +13140,105 @@ mod tests {
         assert!(app.quests_overlay.open);
         assert_eq!(app.quests_overlay.tab, QuestTab::Active);
         assert_eq!(app.quests_overlay.selected, 0);
+    }
+
+    #[test]
+    fn sheet_displays_guided_quests_and_room_arrival_emits_notice() {
+        let mut app = app();
+        let dump = |b: &ratatui::buffer::Buffer| -> String {
+            (0..b.area.height)
+                .map(|y| {
+                    (0..b.area.width)
+                        .map(|x| b[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static("tacsim.sheet"),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "ruleset": "tacsim",
+                "character": "#5",
+                "approved": true,
+                "sections": [
+                    { "label": "Identity", "fields": { "Callsign": "Maren" } }
+                ]
+            }),
+        });
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "active": [{
+                    "key": "q2",
+                    "title": "Provisions and Reaction Mass",
+                    "next_step": "Buy 2 provisions",
+                    "next_room_entry": "room.c04_coop_registry",
+                    "ready_to_finish": false,
+                    "checkpoints": [
+                        { "id": "cp1", "title": "Buy provisions", "checked": false, "live_ready": false }
+                    ]
+                }],
+                "completed": [{ "key": "q1", "title": "First Berth" }]
+            }),
+        });
+
+        // 1. Sheet screen (2) displays Guided Quests summary beneath sheet fields
+        app.active = ScreenId(2);
+        let sbuf = painted(&mut app, 120, 32);
+        assert!(
+            find_in(&sbuf, "Guided Quests", 0).is_some()
+                && find_in(&sbuf, "Provisions and Reaction Mass (0/1)", 0).is_some()
+                && find_in(&sbuf, "Completed: 1", 0).is_some(),
+            "sheet screen must display Guided Quests summary:\n{}",
+            dump(&sbuf)
+        );
+
+        // 2. Initial room hydration does not fire arrival notice, moving to objective room does
+        let make_room = |id: &str, name: &str, entry: &str| {
+            let mut ambient = std::collections::BTreeMap::new();
+            ambient.insert(
+                "atlas".into(),
+                serde_json::json!({ "pack": "neighborhood.ceres_freeport", "entry": entry }),
+            );
+            OutputEvent::Room(RoomView {
+                id: id.into(),
+                name: name.into(),
+                desc: RichText::plain("Station deck."),
+                exits: Vec::new(),
+                contents: Vec::new(),
+                zone: None,
+                ambient,
+            })
+        };
+        app.apply_event(&make_room(
+            "#10",
+            "Port Watch Arrivals",
+            "room.c03_arrivals",
+        ));
+        assert!(
+            !app.scrollback.iter().any(|e| {
+                let s: String = e.body.iter().map(|sp| sp.content.as_ref()).collect();
+                s.contains("[QUEST] Arrived at objective:")
+            }),
+            "initial room must not emit arrival callout"
+        );
+        app.apply_event(&make_room(
+            "#11",
+            "Co-op Registry",
+            "room.c04_coop_registry",
+        ));
+        assert!(
+            app.scrollback.iter().any(|e| {
+                let s: String = e.body.iter().map(|sp| sp.content.as_ref()).collect();
+                s.contains("[QUEST] Arrived at objective: Co-op Registry")
+            }),
+            "moving into tracked quest objective room must emit [QUEST] arrival notice"
+        );
     }
 }
