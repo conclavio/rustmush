@@ -674,8 +674,10 @@ impl QuestsSnapshot {
     }
 
     #[must_use]
-    pub fn active_trade_need(&self, tracked_key: Option<&str>) -> Option<QuestTradeNeed> {
+    pub fn active_trade_needs(&self, tracked_key: Option<&str>) -> Vec<QuestTradeNeed> {
         for q in self.ordered_active(tracked_key) {
+            let mut out = Vec::new();
+            let mut seen = HashSet::new();
             for cp in &q.checkpoints {
                 if cp.checked || cp.live_ready {
                     continue;
@@ -691,10 +693,13 @@ impl QuestsSnapshot {
                     continue;
                 }
                 let combined = format!("{id_low} {title_low} {instr_low}");
-                let slug = KNOWN_TRADE_COMMODITIES
+                let Some(slug) = KNOWN_TRADE_COMMODITIES
                     .iter()
                     .find(|(_, pats)| pats.iter().any(|p| combined.contains(p)))
-                    .map(|(slug, _)| *slug)?;
+                    .map(|(slug, _)| *slug)
+                else {
+                    continue;
+                };
                 let wants_buy = id_low.starts_with("buy_")
                     || id_low.starts_with("deliver_")
                     || id_low.starts_with("return_")
@@ -711,10 +716,14 @@ impl QuestsSnapshot {
                 if !wants_buy && !wants_sell {
                     continue;
                 }
+                let dedup = (slug, wants_buy, wants_sell);
+                if !seen.insert(dedup) {
+                    continue;
+                }
                 let target_quantity = extract_leading_positive_i64(&cp.title)
                     .or_else(|| extract_leading_positive_i64(&cp.instructions))
                     .unwrap_or(1);
-                return Some(QuestTradeNeed {
+                out.push(QuestTradeNeed {
                     quest_title: q.title.clone(),
                     checkpoint_title: cp.title.clone(),
                     commodity_slug: slug.to_string(),
@@ -723,8 +732,16 @@ impl QuestsSnapshot {
                     wants_sell,
                 });
             }
+            if !out.is_empty() {
+                return out;
+            }
         }
-        None
+        Vec::new()
+    }
+
+    #[must_use]
+    pub fn active_trade_need(&self, tracked_key: Option<&str>) -> Option<QuestTradeNeed> {
+        self.active_trade_needs(tracked_key).into_iter().next()
     }
 
     #[must_use]
@@ -1261,27 +1278,57 @@ impl QuestsSnapshot {
             active: vec![q.clone()],
             ..Default::default()
         };
-        let need = single.active_trade_need(Some(&q.key))?;
-        let target = need.target_quantity.max(1);
-        let label = need.commodity_slug.replace('_', " ").to_ascii_uppercase();
-        let (current, unit) = match need.commodity_slug.as_str() {
-            "propellant" => (stowage.propellant_kg.max(0) / 1000, "t"),
-            "provisions" => (stowage.provisions_days.max(0), "d"),
-            slug => {
-                let sum: i64 = stowage
-                    .cargo_lots
-                    .iter()
-                    .filter(|(id, name, _)| {
-                        normalize_good_slug(id) == slug || normalize_good_slug(name) == slug
-                    })
-                    .map(|(_, _, qty)| (*qty).max(0))
-                    .sum();
-                (sum, "u")
-            }
+        let needs = single.active_trade_needs(Some(&q.key));
+        if needs.is_empty() {
+            return None;
+        }
+        let eval_need = |need: &QuestTradeNeed| -> (String, i64, i64, &'static str, bool) {
+            let target = need.target_quantity.max(1);
+            let label = need.commodity_slug.replace('_', " ").to_ascii_uppercase();
+            let (current, unit) = match need.commodity_slug.as_str() {
+                "propellant" => (stowage.propellant_kg.max(0) / 1000, "t"),
+                "provisions" => (stowage.provisions_days.max(0), "d"),
+                slug => {
+                    let sum: i64 = stowage
+                        .cargo_lots
+                        .iter()
+                        .filter(|(id, name, _)| {
+                            normalize_good_slug(id) == slug || normalize_good_slug(name) == slug
+                        })
+                        .map(|(_, _, qty)| (*qty).max(0))
+                        .sum();
+                    (sum, "u")
+                }
+            };
+            (label, current, target, unit, current >= target)
         };
-        let ready = current >= target;
-        let tag = if ready { "[HOLD READY]" } else { "[HOLD]" };
-        Some((format!("{tag} {label}: {current}/{target} {unit}"), ready))
+        let evaluated: Vec<_> = needs.iter().map(eval_need).collect();
+        let primary_idx = evaluated
+            .iter()
+            .position(|(_, _, _, _, ready)| !*ready)
+            .unwrap_or(0);
+        let (label, current, target, unit, ready) = &evaluated[primary_idx];
+        let tag = if *ready { "[HOLD READY]" } else { "[HOLD]" };
+        let mut text = format!("{tag} {label}: {current}/{target} {unit}");
+        if evaluated.len() > 1 {
+            let extras: Vec<String> = evaluated
+                .iter()
+                .enumerate()
+                .filter(|(idx, _)| *idx != primary_idx)
+                .map(|(_, (l, c, t, u, r))| {
+                    if *r {
+                        format!("{l} {c}/{t}{u} OK")
+                    } else {
+                        format!("{l} {c}/{t}{u}")
+                    }
+                })
+                .collect();
+            if !extras.is_empty() {
+                text.push_str(" | ");
+                text.push_str(&extras.join(", "));
+            }
+        }
+        Some((text, *ready))
     }
 }
 
@@ -3501,5 +3548,50 @@ mod tests {
         );
         assert!(done_txt.contains("[Step 1/7]"), "{done_txt}");
         assert!(done_txt.contains("Tour Step 1/7"), "{done_txt}");
+    }
+
+    #[test]
+    fn active_trade_needs_extracts_both_step2_items_and_advances_hold_readiness() {
+        let snap = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[1],
+                "title": "Stock the Locker and Tanks",
+                "checkpoints": [
+                    {
+                        "id": "buy_provisions",
+                        "title": "Buy at least 10 provisions at Ceres Co-op Chandlery",
+                        "instructions": "Buy 10 provisions.",
+                        "checked": false,
+                        "live_ready": false
+                    },
+                    {
+                        "id": "buy_propellant",
+                        "title": "Buy at least 5 tonnes of propellant at Ceres Exchange Hall",
+                        "instructions": "Buy 5 propellant.",
+                        "checked": false,
+                        "live_ready": false
+                    }
+                ]
+            }]
+        }));
+        let needs = snap.active_trade_needs(None);
+        assert_eq!(needs.len(), 2);
+        assert_eq!(needs[0].commodity_slug, "provisions");
+        assert_eq!(needs[1].commodity_slug, "propellant");
+
+        let (line, ready) = QuestsSnapshot::hold_readiness_line_for(
+            &snap.active[0],
+            &QuestStowageTelemetry {
+                cargo_kg: 0,
+                propellant_kg: 0,
+                provisions_days: 10,
+                cargo_lots: Vec::new(),
+            },
+        )
+        .expect("hold readiness");
+        assert!(!ready);
+        assert!(line.contains("[HOLD] PROPELLANT: 0/5 t"), "{line}");
+        assert!(line.contains("PROVISIONS 10/10d OK"), "{line}");
     }
 }

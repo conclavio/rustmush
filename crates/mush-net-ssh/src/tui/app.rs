@@ -4982,8 +4982,10 @@ impl TuiApp {
             .quests_snap
             .active_destination_port(tracked)
             .or_else(|| self.quests_snap.next_guided_offer_destination(cur_port));
+        let trade_needs = self.quests_snap.active_trade_needs(tracked);
         self.port_walk
-            .observe_quest_guidance(self.quests_snap.active_trade_need(tracked), dest_port);
+            .observe_quest_guidance(trade_needs.first().cloned(), dest_port);
+        self.port_walk.observe_quest_trade_needs(trade_needs);
         self.port_walk
             .observe_quest_objective_room(self.quests_snap.active_objective_room(tracked));
         self.port_walk.observe_quest_ship_target(
