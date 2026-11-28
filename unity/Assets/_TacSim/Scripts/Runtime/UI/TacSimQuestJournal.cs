@@ -893,6 +893,18 @@ namespace TacSim.UI
             }
         }
 
+        public static string FormatPortDisplayName(string portId)
+        {
+            if (string.IsNullOrWhiteSpace(portId)) return "Ceres Freeport";
+            string trimmed = portId.Trim();
+            for (int d = 0; d < KnownDestinations.Length; d++)
+            {
+                if (string.Equals(KnownDestinations[d].portId, trimmed, StringComparison.OrdinalIgnoreCase))
+                    return KnownDestinations[d].portLabel;
+            }
+            return trimmed;
+        }
+
         public bool NeedsSurfaceExpeditionBoarding()
         {
             var active = GetTrackedActiveQuest();

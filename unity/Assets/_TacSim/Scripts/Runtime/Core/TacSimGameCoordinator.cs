@@ -2270,10 +2270,63 @@ namespace TacSim.Core
                                            Hud.QuestJournal.TryGetActiveSurfaceMiningStatus(out bayMining);
                         if (hasBayQuest)
                         {
-                            bayQuestBanner = FormatVehicleBayQuestBannerMarkup(bayMining) + "\n\n";
+                            var trackedBay = Hud.QuestJournal.GetTrackedActiveQuest();
+                            int stepNo = TacSimQuestJournal.GuidedStepNumber(trackedBay?.Key);
+                            int holdOre = TradeState != null ? TradeState.GetHoldCommodityQuantity(bayMining.TargetOreSlug) : -1;
+                            string retPortId = null;
+                            string retPortLabel = null;
                             if (bayMining.MineDone)
                             {
-                                bayActions.Add(("Recover Rig (+tv/1 recover go)", () => ExecutePlayerCommand("+tv/1 recover go")));
+                                if (Hud.QuestJournal.TryGetActiveDestinationPort(out var destPort))
+                                {
+                                    retPortId = destPort.PortId;
+                                    retPortLabel = destPort.PortLabel;
+                                }
+                                else
+                                {
+                                    retPortId = TacSimQuestJournal.InferStationPortFromRoomEntry(trackedBay?.NextRoomEntry) ?? "ceres";
+                                    retPortLabel = TacSimQuestJournal.FormatPortDisplayName(retPortId);
+                                }
+                            }
+                            bayQuestBanner = FormatVehicleBayQuestBannerMarkup(bayMining, holdOre, retPortId, retPortLabel, stepNo) + "\n\n";
+                            if (bayMining.MineDone)
+                            {
+                                bool oreStowed = holdOre > 0;
+                                if (oreStowed)
+                                {
+                                    if (trackedBay != null && trackedBay.CanFinishNow && !string.IsNullOrEmpty(trackedBay.FinishCmd))
+                                    {
+                                        string finishCmd = trackedBay.FinishCmd;
+                                        bayActions.Add(("Turn In Now (?)", () =>
+                                        {
+                                            Hud.CloseDetailModal(cancelServerRequest: false);
+                                            ExecutePlayerCommand(finishCmd);
+                                        }));
+                                    }
+                                    if (!string.IsNullOrEmpty(retPortId))
+                                    {
+                                        string capPortId = retPortId;
+                                        bayActions.Add(($"Return to {retPortLabel} (+ship/plan {capPortId})", () => ExecutePlayerCommand($"+ship/plan {capPortId}")));
+                                    }
+                                    if (trackedBay != null && (trackedBay.CanFinishNow || trackedBay.ReadyToFinish))
+                                    {
+                                        bayActions.Add(("Step Ashore (+ship/leave)", () =>
+                                        {
+                                            Hud.CloseDetailModal(cancelServerRequest: false);
+                                            ExecutePlayerCommand("+ship/leave");
+                                        }));
+                                    }
+                                    bayActions.Add(("Recover Rig (+tv/1 recover go)", () => ExecutePlayerCommand("+tv/1 recover go")));
+                                }
+                                else
+                                {
+                                    bayActions.Add(("Recover Rig First (+tv/1 recover go)", () => ExecutePlayerCommand("+tv/1 recover go")));
+                                    if (!string.IsNullOrEmpty(retPortId))
+                                    {
+                                        string capPortId = retPortId;
+                                        bayActions.Add(($"Return to {retPortLabel} (+ship/plan {capPortId})", () => ExecutePlayerCommand($"+ship/plan {capPortId}")));
+                                    }
+                                }
                             }
                             else if (!bayMining.ScanDone)
                             {
@@ -2379,13 +2432,35 @@ namespace TacSim.Core
             return $"{prefixes[seed % prefixes.Length]} {nouns[(seed / 13) % nouns.Length]} {(seed % 89) + 10}";
         }
 
-        public static string FormatVehicleBayQuestBannerMarkup(QuestSurfaceMiningStatus mining)
+        public static string FormatVehicleBayQuestBannerMarkup(
+            QuestSurfaceMiningStatus mining,
+            int holdOreQty = -1,
+            string returnPortId = null,
+            string returnPortLabel = null,
+            int guidedStep = 0)
         {
             string scanMark = mining.ScanDone ? "<color=#55EE99>[✓]</color>" : "<color=#99BBCC>[ ]</color>";
             string soundMark = mining.SoundDone ? "<color=#55EE99>[✓]</color>" : "<color=#99BBCC>[ ]</color>";
             string mineMark = mining.MineDone ? "<color=#55EE99>[✓]</color>" : "<color=#99BBCC>[ ]</color>";
-            return $"<color=#FFDD44><b>[QUEST] {MushProtocol.EscapeUnityRichText(mining.QuestTitle)}</b></color>\n" +
-                   $"{scanMark} Scan Site   {soundMark} Sound Pocket   {mineMark} Mine {MushProtocol.EscapeUnityRichText(mining.TargetOreSlug)}\n" +
+            string stepTag = guidedStep > 0 ? $" [Step {guidedStep}/7]" : string.Empty;
+            string headerTag;
+            if (mining.MineDone && holdOreQty > 0)
+                headerTag = $"<color=#55EE99><b>[ORE HOLD READY]{stepTag} {MushProtocol.EscapeUnityRichText(mining.QuestTitle)}</b></color>";
+            else if (mining.MineDone && holdOreQty == 0)
+                headerTag = $"<color=#FFCC44><b>[RECOVER RIG FIRST]{stepTag} {MushProtocol.EscapeUnityRichText(mining.QuestTitle)}</b></color>";
+            else
+                headerTag = $"<color=#FFDD44><b>[QUEST]{stepTag} {MushProtocol.EscapeUnityRichText(mining.QuestTitle)}</b></color>";
+
+            string oreName = (mining.TargetOreSlug ?? string.Empty).Replace('_', ' ');
+            string holdLine = holdOreQty >= 0
+                ? $"\n<color=#FFEE88>Hold: {holdOreQty}t {MushProtocol.EscapeUnityRichText(oreName)}</color>"
+                : string.Empty;
+            string returnLine = mining.MineDone && !string.IsNullOrEmpty(returnPortId)
+                ? $"\n<color=#66FFAA><b>Return:</b> {MushProtocol.EscapeUnityRichText(string.IsNullOrEmpty(returnPortLabel) ? returnPortId : returnPortLabel)} (+ship/plan {MushProtocol.EscapeUnityRichText(returnPortId)})</color>"
+                : string.Empty;
+            return $"{headerTag}\n" +
+                   $"{scanMark} Scan Site   {soundMark} Sound Pocket   {mineMark} Mine {MushProtocol.EscapeUnityRichText(mining.TargetOreSlug)}" +
+                   $"{holdLine}{returnLine}\n" +
                    $"<color=#77DDFF>{MushProtocol.EscapeUnityRichText(mining.FormatPrepHintLine())}</color>";
         }
 

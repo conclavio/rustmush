@@ -17457,5 +17457,103 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void Step6VehicleBayAndSurfaceHud_DistinguishRecoverRigFirstVsOreHoldReady()
+        {
+            // 1. Vehicle Bay banner formatting: 0t hold -> [RECOVER RIG FIRST]; 1t stowed -> [ORE HOLD READY]
+            var postMine = new TacSim.UI.QuestSurfaceMiningStatus(
+                "Scan, Sound, and Mine a Landing Site",
+                "carbon_ore",
+                "carbon",
+                hasScanStep: true,
+                scanDone: true,
+                hasSoundStep: true,
+                soundDone: true,
+                hasMineStep: true,
+                mineDone: true,
+                nextStepText: "Recover rig and return to Ceres");
+            string recoverBanner = TacSimGameCoordinator.FormatVehicleBayQuestBannerMarkup(postMine, holdOreQty: 0, returnPortId: "ceres", returnPortLabel: "Ceres Freeport", guidedStep: 6);
+            StringAssert.Contains("[RECOVER RIG FIRST]", recoverBanner);
+            StringAssert.Contains("[Step 6/7]", recoverBanner);
+            StringAssert.Contains("Hold: 0t carbon ore", recoverBanner);
+            StringAssert.Contains("<b>Return:</b> Ceres Freeport (+ship/plan ceres)", recoverBanner);
+
+            string readyBanner = TacSimGameCoordinator.FormatVehicleBayQuestBannerMarkup(postMine, holdOreQty: 1, returnPortId: "ceres", returnPortLabel: "Ceres Freeport", guidedStep: 6);
+            StringAssert.Contains("[ORE HOLD READY]", readyBanner);
+            StringAssert.Contains("Hold: 1t carbon ore", readyBanner);
+
+            // 2. Surface Mining HUD: ore still in rig hopper vs transferred to ship hold
+            var rootGo = new UnityEngine.GameObject("Step6SurfaceOreHoldReadyTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                var surfGo = new UnityEngine.GameObject("SurfaceStage");
+                surfGo.transform.SetParent(rootGo.transform, false);
+                var surface = surfGo.AddComponent<TacSim.Surface.SurfaceMiningController>();
+                surface.EnterSurfaceMode();
+                hud.Overlays.BindControllers(surface, null, null);
+                var tradeState = new TacSimTradeAndShipState();
+                hud.BindTradeState(tradeState);
+
+                surface.ApplySiteMapFrame(JsonNode.Parse(@"{
+                    ""site"": {
+                        ""title"": ""Freeport Commons"",
+                        ""width"": 12,
+                        ""height"": 12,
+                        ""family"": ""carbon"",
+                        ""grid"": [],
+                        ""rigs"": [{ ""slot"": 1, ""x"": 4, ""y"": 4, ""load_t"": 1, ""cap_t"": 4, ""battery_pct"": 88, ""on_ground"": true }],
+                        ""hold"": { ""unreserved_t"": 90 }
+                    }
+                }"));
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""next_room_entry"": ""room.c07_exchange"",
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Scan"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""sound_mineral_pocket"", ""title"": ""Sound"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""checked"": true, ""live_ready"": true }
+                        ]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+
+                // Mined ore still in rig hopper (hold 0t, hopper 1t) -> [RECOVER RIG FIRST] & recover highlighted
+                StringAssert.Contains("[RECOVER RIG FIRST]", hud.Overlays.SurfaceReadingsTextForTests);
+                Assert.AreEqual("recover", hud.Overlays.HighlightedSurfaceQuestStepForTests);
+
+                // Rig recovered -> hopper 0t, ship hold 1t carbon_ore -> [ORE HOLD READY] & return highlighted
+                surface.ApplySiteMapFrame(JsonNode.Parse(@"{
+                    ""site"": {
+                        ""title"": ""Freeport Commons"",
+                        ""width"": 12,
+                        ""height"": 12,
+                        ""family"": ""carbon"",
+                        ""grid"": [],
+                        ""rigs"": [{ ""slot"": 1, ""x"": 4, ""y"": 4, ""load_t"": 0, ""cap_t"": 4, ""battery_pct"": 88, ""on_ground"": true }],
+                        ""hold"": { ""unreserved_t"": 89 }
+                    }
+                }"));
+                tradeState.CargoLots.Add(new TacSim.World.HoldCargoLot
+                {
+                    GoodId = "tacsim:carbon_ore",
+                    Label = "Carbon Ore",
+                    Quantity = 1
+                });
+                hud.Overlays.RefreshSurfaceHud();
+                StringAssert.Contains("[ORE HOLD READY]", hud.Overlays.SurfaceReadingsTextForTests);
+                Assert.AreEqual("return", hud.Overlays.HighlightedSurfaceQuestStepForTests);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
