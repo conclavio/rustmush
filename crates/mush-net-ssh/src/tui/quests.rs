@@ -2907,13 +2907,7 @@ pub fn render_quest_tracker_lines_full(
         if let Some(st) = stowage
             && let Some((hold_txt, hold_ready)) = QuestsSnapshot::hold_readiness_line_for(q, st)
         {
-            let style = if hold_ready {
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::Yellow)
-            };
+            let style = hold_readiness_style(&hold_txt, hold_ready);
             lines.push(Line::from(Span::styled(hold_txt, style)));
         }
         if let Some(st) = stowage
@@ -3151,6 +3145,20 @@ pub fn render_quest_sheet_lines(
     render_quest_sheet_lines_with_stowage(snap, tracked_key, None)
 }
 
+fn hold_readiness_style(hold_txt: &str, ready: bool) -> Style {
+    if ready {
+        Style::default()
+            .fg(Color::Green)
+            .add_modifier(Modifier::BOLD)
+    } else if hold_txt.starts_with("[RECOVER RIG FIRST]") {
+        Style::default()
+            .fg(Color::LightRed)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::Yellow)
+    }
+}
+
 /// Build golden Guided Quests summary lines for the TUI Character Sheet screen (`2 sheet`),
 /// including live ship hold / Step 5 refit / cross-port pre-flight readiness and the
 /// post-graduation `Corridor Captain (7/7)` Jobs Board pointer.
@@ -3237,13 +3245,7 @@ pub fn render_quest_sheet_lines_full(
         if let Some(st) = stowage
             && let Some((hold_txt, hold_ready)) = QuestsSnapshot::hold_readiness_line_for(q, st)
         {
-            let style = if hold_ready {
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::Yellow)
-            };
+            let style = hold_readiness_style(&hold_txt, hold_ready);
             lines.push(Line::from(Span::styled(format!("  {hold_txt}"), style)));
         }
         if let Some(st) = stowage
@@ -3259,6 +3261,17 @@ pub fn render_quest_sheet_lines_full(
                     .add_modifier(Modifier::BOLD)
             };
             lines.push(Line::from(Span::styled(format!("  {pf_txt}"), style)));
+        }
+        if let Some(st) = stowage {
+            let cargo_t = st.cargo_kg.max(0) as f64 / 1000.0;
+            let tank_t = st.propellant_kg.max(0) / 1000;
+            let prov_d = st.provisions_days.max(0);
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "  Ship Hold: {cargo_t:.1}t cargo | {tank_t}t propellant | {prov_d}d provisions"
+                ),
+                Style::default().fg(Color::DarkGray),
+            )));
         }
         if q.can_finish_now {
             lines.push(Line::from(Span::styled(
@@ -3772,12 +3785,9 @@ pub fn render_quest_overlay_full(
                 if let Some(st) = stowage
                     && let Some((hold_line, ready)) = QuestsSnapshot::hold_readiness_line_for(q, st)
                 {
-                    detail_lines.push(Line::from(Span::styled(
-                        hold_line,
-                        Style::default()
-                            .fg(if ready { Color::Green } else { Color::Yellow })
-                            .add_modifier(Modifier::BOLD),
-                    )));
+                    let style =
+                        hold_readiness_style(&hold_line, ready).add_modifier(Modifier::BOLD);
+                    detail_lines.push(Line::from(Span::styled(hold_line, style)));
                 }
                 if let Some(st) = stowage
                     && let Some((pf_line, pf_ready)) =
@@ -7377,13 +7387,24 @@ mod tests {
             }],
             "available": []
         }));
-        let txt_s6_recover = join(render_quest_sheet_lines_with_stowage(
-            &step6,
-            None,
-            Some(&stow_empty),
-        ));
+        let s6_recover_lines =
+            render_quest_sheet_lines_with_stowage(&step6, None, Some(&stow_empty));
+        let has_red_recover = s6_recover_lines.iter().any(|l| {
+            l.spans.iter().any(|s| {
+                s.content.contains("[RECOVER RIG FIRST]") && s.style.fg == Some(Color::LightRed)
+            })
+        });
+        assert!(
+            has_red_recover,
+            "expected LightRed styling on [RECOVER RIG FIRST]"
+        );
+        let txt_s6_recover = join(s6_recover_lines);
         assert!(
             txt_s6_recover.contains("[RECOVER RIG FIRST] CARBON ORE: 0/1 t (run +tv/1 recover go)"),
+            "{txt_s6_recover}"
+        );
+        assert!(
+            txt_s6_recover.contains("Ship Hold: 0.0t cargo | 10t propellant | 10d provisions"),
             "{txt_s6_recover}"
         );
         assert!(
@@ -7409,6 +7430,10 @@ mod tests {
         ));
         assert!(
             txt_s6_ready.contains("[ORE HOLD READY] CARBON ORE: 1/1 t"),
+            "{txt_s6_ready}"
+        );
+        assert!(
+            txt_s6_ready.contains("Ship Hold: 1.0t cargo | 10t propellant | 10d provisions"),
             "{txt_s6_ready}"
         );
         assert!(txt_s6_ready.contains("[PRE-FLIGHT OK]"), "{txt_s6_ready}");
