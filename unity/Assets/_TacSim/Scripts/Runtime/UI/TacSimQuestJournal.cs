@@ -205,6 +205,8 @@ namespace TacSim.UI
         public readonly string Key;
         public readonly string ShortLabel;
         public readonly string GiverLabel;
+        public readonly string GiverRoomEntry;
+        public readonly string GiverRoomName;
         public readonly string LocationLabel;
         public readonly GuidedTourStepStatus Status;
         public readonly bool ReadyToTurnIn;
@@ -214,6 +216,8 @@ namespace TacSim.UI
             string key,
             string shortLabel,
             string giverLabel,
+            string giverRoomEntry,
+            string giverRoomName,
             string locationLabel,
             GuidedTourStepStatus status,
             bool readyToTurnIn)
@@ -222,6 +226,8 @@ namespace TacSim.UI
             Key = key ?? string.Empty;
             ShortLabel = shortLabel ?? string.Empty;
             GiverLabel = giverLabel ?? string.Empty;
+            GiverRoomEntry = giverRoomEntry ?? string.Empty;
+            GiverRoomName = giverRoomName ?? string.Empty;
             LocationLabel = locationLabel ?? string.Empty;
             Status = status;
             ReadyToTurnIn = readyToTurnIn;
@@ -567,6 +573,19 @@ namespace TacSim.UI
             }
             if (TryGetActiveDestinationPort(out _))
             {
+                targetCompartment = "bridge";
+                return true;
+            }
+            if (TryGetNextGuidedOffer(out var nextOffer))
+            {
+                string nextPort = InferStationPortFromRoomEntry(nextOffer.GiverRoomEntry);
+                if (!string.IsNullOrWhiteSpace(dockedStation) &&
+                    !string.IsNullOrEmpty(nextPort) &&
+                    string.Equals(nextPort, dockedStation.Trim(), StringComparison.OrdinalIgnoreCase))
+                {
+                    targetCompartment = "airlock";
+                    return true;
+                }
                 targetCompartment = "bridge";
                 return true;
             }
@@ -1226,6 +1245,12 @@ namespace TacSim.UI
                 }
                 return !string.IsNullOrEmpty(roomEntry) || currentRoomHasOffer;
             }
+            if (!currentRoomHasOffer && TryGetNextGuidedOffer(out var nextOffer) && !string.IsNullOrEmpty(nextOffer.GiverRoomEntry))
+            {
+                roomEntry = nextOffer.GiverRoomEntry;
+                isTurnIn = false;
+                return true;
+            }
             return currentRoomHasOffer;
         }
 
@@ -1726,6 +1751,48 @@ namespace TacSim.UI
                 return;
             }
 
+            if (TryGetNextGuidedOffer(out var nextOffer))
+            {
+                string tourSuffix = hasTour ? $" · TOUR {tourDone}/{tourTotal}" : string.Empty;
+                PinnedCategory = $"NEXT GUIDED ({nextOffer.Step}/7) [!]{tourSuffix}";
+                PinnedTitle = nextOffer.ShortLabel;
+                PinnedDetail = $"Speak with {nextOffer.GiverLabel} ({nextOffer.GiverRoomName})";
+                if (_trackerHeaderText != null) _trackerHeaderText.text = PinnedCategory;
+                if (_trackerDetailText != null)
+                {
+                    var sb = new StringBuilder(160);
+                    sb.Append($"<b><color=#FFDD44>[!] {MushProtocol.EscapeUnityRichText(nextOffer.ShortLabel)}</color></b>\n");
+                    sb.Append($"<color=#77DDFF>Speak:</color> {MushProtocol.EscapeUnityRichText(nextOffer.GiverLabel)} ({MushProtocol.EscapeUnityRichText(nextOffer.GiverRoomName)})");
+                    if (!string.IsNullOrEmpty(_trackerRouteRoomName) && _trackerRouteHops > 0)
+                    {
+                        sb.Append($"\n<color=#FFDD44>Route:</color> -> {MushProtocol.EscapeUnityRichText(_trackerRouteRoomName)} ({_trackerRouteHops}h)");
+                    }
+                    _trackerDetailText.text = sb.ToString();
+                }
+                if (_trackerActionBtn != null)
+                {
+                    _trackerActionBtn.gameObject.SetActive(true);
+                    if (_trackerActionLbl != null)
+                    {
+                        if (!string.IsNullOrEmpty(_trackerRouteCommand))
+                        {
+                            if (string.Equals(_trackerRouteCommand, "+ship/board", StringComparison.OrdinalIgnoreCase))
+                                _trackerActionLbl.text = "BOARD SHIP";
+                            else if (string.Equals(_trackerRouteCommand, "+ship/leave", StringComparison.OrdinalIgnoreCase))
+                                _trackerActionLbl.text = "ASHORE";
+                            else
+                                _trackerActionLbl.text = $"WALK ({_trackerRouteHops}h)";
+                        }
+                        else
+                        {
+                            _trackerActionLbl.text = "WAYFINDER";
+                        }
+                    }
+                }
+                if (_trackerNavBtn != null) _trackerNavBtn.gameObject.SetActive(!string.IsNullOrEmpty(nextOffer.GiverRoomEntry));
+                return;
+            }
+
             if (hasTour && tourAllDone)
             {
                 PinnedCategory = $"CORRIDOR CAPTAIN ({tourDone}/{tourTotal}) [J]";
@@ -1769,6 +1836,8 @@ namespace TacSim.UI
         {
             var active = GetTrackedActiveQuest();
             string roomEntry = ResolveObjectiveRoomEntry(active);
+            if (string.IsNullOrEmpty(roomEntry) && TryGetNextGuidedOffer(out var nextOffer))
+                roomEntry = nextOffer.GiverRoomEntry;
             if (string.IsNullOrEmpty(roomEntry)) return false;
             OnWayfinderRoomRequested?.Invoke(roomEntry);
             return true;
@@ -1815,6 +1884,19 @@ namespace TacSim.UI
                 }
                 OpenNpcQuestDialog(offer.GiverId);
                 return;
+            }
+            if (TryGetNextGuidedOffer(out var nextOffer))
+            {
+                if (!string.IsNullOrEmpty(_trackerRouteCommand))
+                {
+                    OnCommandRequested?.Invoke(_trackerRouteCommand);
+                    return;
+                }
+                if (!string.IsNullOrEmpty(nextOffer.GiverRoomEntry))
+                {
+                    OnWayfinderRoomRequested?.Invoke(nextOffer.GiverRoomEntry);
+                    return;
+                }
             }
             if (TryGetGuidedTourProgress(out _, out _, out _, out bool allDone) && allDone)
             {
@@ -1870,15 +1952,15 @@ namespace TacSim.UI
             return keys;
         }
 
-        private static readonly (string key, string shortLabel, string giverLabel, string locationLabel)[] GuidedTourRoadmapMeta =
+        private static readonly (string key, string shortLabel, string giverLabel, string giverRoomEntry, string giverRoomName, string locationLabel)[] GuidedTourRoadmapMeta =
         {
-            ("tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll", "Co-op Charter", "Maren Halvorsen", "Ceres Arrivals -> Registry"),
-            ("tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel", "Locker & Tanks", "Ilse Oduya-Brandt", "Ceres Chandlery & Exchange"),
-            ("tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery", "Metals Haul", "Ilse Oduya-Brandt", "Ceres -> Stickney Receiving"),
-            ("tacsim.quests.guided_onboarding/quest.guide_04_return_haul", "Return Load", "Jonas Achterberg-Nkemelu", "Stickney -> Ceres Chandlery"),
-            ("tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector", "Dray-P Refit", "Ilse Oduya-Brandt", "Ceres Registry -> Exchange"),
-            ("tacsim.quests.guided_onboarding/quest.guide_06_surface_mining", "Surface Mining", "Rosalind Qureshi-Mbeki", "Ceres Surface Landing Site"),
-            ("tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore", "Sell Mined Ore", "Rosalind Qureshi-Mbeki", "Ceres -> Stickney Service")
+            ("tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll", "Co-op Charter", "Maren Halvorsen", "room.c03_arrivals", "Port Watch Arrivals", "Ceres Arrivals -> Registry"),
+            ("tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel", "Locker & Tanks", "Ilse Oduya-Brandt", "room.c05_registry", "Registry & Co-op Desk", "Ceres Chandlery & Exchange"),
+            ("tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery", "Metals Haul", "Ilse Oduya-Brandt", "room.c05_registry", "Registry & Co-op Desk", "Ceres -> Stickney Receiving"),
+            ("tacsim.quests.guided_onboarding/quest.guide_04_return_haul", "Return Load", "Jonas Achterberg-Nkemelu", "room.p07_receiving", "Receiving Counter", "Stickney -> Ceres Chandlery"),
+            ("tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector", "Dray-P Refit", "Ilse Oduya-Brandt", "room.c05_registry", "Registry & Co-op Desk", "Ceres Registry -> Exchange"),
+            ("tacsim.quests.guided_onboarding/quest.guide_06_surface_mining", "Surface Mining", "Rosalind Qureshi-Mbeki", "room.c07_exchange", "Exchange Hall", "Ceres Surface Landing Site"),
+            ("tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore", "Sell Mined Ore", "Rosalind Qureshi-Mbeki", "room.c07_exchange", "Exchange Hall", "Ceres -> Stickney Service")
         };
 
         private static readonly string[] GuidedTourKeys =
@@ -1923,9 +2005,33 @@ namespace TacSim.UI
                             ? GuidedTourStepStatus.Available
                             : GuidedTourStepStatus.Upcoming;
                 bool ready = activeMatch != null && (activeMatch.CanFinishNow || activeMatch.ReadyToFinish);
-                dest.Add(new GuidedTourRoadmapStep(i + 1, m.key, m.shortLabel, m.giverLabel, m.locationLabel, status, ready));
+                dest.Add(new GuidedTourRoadmapStep(i + 1, m.key, m.shortLabel, m.giverLabel, m.giverRoomEntry, m.giverRoomName, m.locationLabel, status, ready));
             }
             return true;
+        }
+
+        public bool TryGetNextGuidedOffer(out GuidedTourRoadmapStep nextOffer)
+        {
+            nextOffer = default;
+            if (LatestPanel == null || LatestPanel.Active.Count > 0 || LatestPanel.Available.Count > 0)
+                return false;
+            var steps = new List<GuidedTourRoadmapStep>(GuidedTourRoadmapMeta.Length);
+            if (!TryGetGuidedTourRoadmap(steps))
+                return false;
+            int doneCount = 0;
+            for (int i = 0; i < steps.Count; i++)
+                if (steps[i].Status == GuidedTourStepStatus.Completed) doneCount++;
+            if (doneCount == 0 || doneCount >= steps.Count)
+                return false;
+            for (int i = 0; i < steps.Count; i++)
+            {
+                if (steps[i].Status == GuidedTourStepStatus.Upcoming)
+                {
+                    nextOffer = steps[i];
+                    return true;
+                }
+            }
+            return false;
         }
 
         private static int GuidedStepNumber(string key)
@@ -2315,7 +2421,14 @@ namespace TacSim.UI
                 {
                     if (LatestPanel.Active.Count == 0)
                     {
-                        sb.Append("<color=#88AAC8>No active quests. Look for NPCs with a floating golden <b>!</b> marker (such as Maren Halvorsen in Port Watch Arrivals).</color>");
+                        if (TryGetNextGuidedOffer(out var nextOffer))
+                        {
+                            sb.Append($"<color=#88AAC8>No active quests. <b><color=#FFDD44>Next Guided Step ({nextOffer.Step}/7): {MushProtocol.EscapeUnityRichText(nextOffer.ShortLabel)}</color></b> — speak with <b>{MushProtocol.EscapeUnityRichText(nextOffer.GiverLabel)}</b> in <color=#77DDFF>{MushProtocol.EscapeUnityRichText(nextOffer.GiverRoomName)}</color> ({MushProtocol.EscapeUnityRichText(nextOffer.LocationLabel)}).</color>");
+                        }
+                        else
+                        {
+                            sb.Append("<color=#88AAC8>No active quests. Look for NPCs with a floating golden <b>!</b> marker (such as Maren Halvorsen in Port Watch Arrivals).</color>");
+                        }
                         if (_qPrimaryBtn != null) _qPrimaryBtn.gameObject.SetActive(false);
                         if (_qPrefillBtn != null) _qPrefillBtn.gameObject.SetActive(false);
                         if (_qWayfinderBtn != null) _qWayfinderBtn.gameObject.SetActive(false);

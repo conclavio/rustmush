@@ -12448,5 +12448,72 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestNextGuidedOfferLocator_RoutesTrackerWayfinderAndShipBetweenSteps()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestNextGuidedOfferTestRoot");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                var submitted = new List<string>();
+                string wayfinderRoom = string.Empty;
+                hud.QuestJournal.OnCommandRequested += cmd => submitted.Add(cmd);
+                hud.QuestJournal.OnWayfinderRoomRequested += room => wayfinderRoom = room;
+
+                // Steps 1–3 completed, no active quest, no room offers -> locates Step 4 Jonas at Stickney Receiving
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#40"",
+                    ""room_name"": ""Stickney Concourse"",
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""S1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""S2"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""S3"" }
+                    ],
+                    ""active"": [],
+                    ""available"": []
+                }")));
+
+                Assert.IsTrue(hud.QuestJournal.TryGetNextGuidedOffer(out var nextOffer));
+                Assert.AreEqual(4, nextOffer.Step);
+                Assert.AreEqual("Return Load", nextOffer.ShortLabel);
+                Assert.AreEqual("Jonas Achterberg-Nkemelu", nextOffer.GiverLabel);
+                Assert.AreEqual("room.p07_receiving", nextOffer.GiverRoomEntry);
+
+                // Minimap objective & ship compartment resolve to giver room / airlock when docked at Stickney
+                Assert.IsTrue(hud.QuestJournal.TryGetMinimapObjective(out string objRoom, out bool isTurnIn, out _));
+                Assert.AreEqual("room.p07_receiving", objRoom);
+                Assert.IsFalse(isTurnIn);
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveShipTargetCompartment("stickney", out string dockedTarget, settledPad: false));
+                Assert.AreEqual("airlock", dockedTarget);
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveShipTargetCompartment("ceres", out string otherPortTarget, settledPad: false));
+                Assert.AreEqual("bridge", otherPortTarget);
+
+                // Tracker stays pinned with Next Guided card, wayfinder, and 1-click route walk
+                Assert.IsTrue(hud.QuestJournal.HasPinnedObjective);
+                Assert.IsTrue(hud.QuestJournal.PinnedCategory.Contains("NEXT GUIDED (4/7)"), hud.QuestJournal.PinnedCategory);
+                Assert.IsTrue(hud.QuestJournal.IsTrackerWayfinderVisible);
+                Assert.IsTrue(hud.QuestJournal.TriggerTrackerWayfinder());
+                Assert.AreEqual("room.p07_receiving", wayfinderRoom);
+
+                hud.QuestJournal.SetTrackerRouteBreadcrumb("Receiving Counter", "goto receiving", 1);
+                Assert.AreEqual("WALK (1h)", hud.QuestJournal.TrackerActionLabelSnapshot);
+                hud.QuestJournal.TriggerTrackerQuickAction();
+                Assert.Contains("goto receiving", submitted);
+
+                // Fresh player (0 completed) -> false so non-guided worlds remain quiet
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1, ""completed"": [], ""active"": [], ""available"": []
+                }")));
+                Assert.IsFalse(hud.QuestJournal.TryGetNextGuidedOffer(out _));
+                Assert.IsFalse(hud.QuestJournal.HasPinnedObjective);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
