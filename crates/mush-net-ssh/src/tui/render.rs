@@ -511,6 +511,8 @@ fn render_room(w: &mut EntryAcc<'_>, view: &RoomView, quest_exit: Option<&QuestE
             Some("[Q] Board Ship (+ship/board)")
         } else if c.next_exit_command == "+ship/leave" {
             Some("[Q] Cycle Ashore (+ship/leave)")
+        } else if c.next_exit_command == "+tv/bay in" || c.next_exit_command == "+tv/bay" {
+            Some("[Q] Enter Vehicle Bay (+tv/bay in)")
         } else {
             None
         }
@@ -9046,6 +9048,41 @@ mod tests {
         assert!(
             text.contains("[Q] Board Ship (+ship/board)"),
             "Exits row must append Board Ship quest action hint:\n{text}"
+        );
+
+        let bay_crumb = QuestExitBreadcrumb {
+            next_room_entry: "bay".into(),
+            next_room_name: "Vehicle Bay".into(),
+            next_exit_command: "+tv/bay in".into(),
+            target_room_name: "Vehicle Bay".into(),
+            hops: 1,
+        };
+        let bay_entries = render_event_with_quest_exit(
+            &OutputEvent::Room(RoomView {
+                id: "#70".into(),
+                name: "Cargo Hold".into(),
+                desc: RichText::plain(""),
+                contents: vec![],
+                exits: vec![mush_proto::ExitRef {
+                    name: "Passage".into(),
+                    aliases: vec!["passage".into()],
+                }],
+                ambient: std::collections::BTreeMap::new(),
+                zone: None,
+            }),
+            &caps(ColorDepth::Ansi16),
+            &AnsiTheme::classic(),
+            0,
+            Some(&bay_crumb),
+        );
+        let bay_text = bay_entries
+            .iter()
+            .map(body_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            bay_text.contains("[Q] Enter Vehicle Bay (+tv/bay in)"),
+            "Exits row must append Enter Vehicle Bay quest action hint:\n{bay_text}"
         );
     }
 
