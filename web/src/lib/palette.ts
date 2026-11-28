@@ -21,6 +21,7 @@ export interface PaletteQuestAction {
   title: string;
   detail: string;
   ready?: boolean;
+  offer?: boolean;
 }
 
 /** What the palette merges. */
@@ -98,7 +99,9 @@ export function paletteEntries(query: string, sources: PaletteSources): PaletteE
             : qa.kind === "step"
               ? qa.ready
                 ? "[?]"
-                : "[▸]"
+                : qa.offer
+                  ? "[!]"
+                  : "[▸]"
               : qa.kind === "cycle"
                 ? "[↻]"
                 : qa.ready
@@ -111,7 +114,9 @@ export function paletteEntries(query: string, sources: PaletteSources): PaletteE
         qa.kind === "route"
           ? "route walk board ashore"
           : qa.kind === "step"
-            ? "next step action sail"
+            ? qa.offer
+              ? "accept offer next step action"
+              : "complete finish verify next step action sail"
             : qa.kind === "cycle"
               ? "cycle switch next tracked"
               : qa.kind === "nextGuided"
