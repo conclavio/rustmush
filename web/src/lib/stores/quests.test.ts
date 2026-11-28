@@ -8,6 +8,8 @@ import {
   evaluateSailingPreflightReadiness,
   extractActiveTradeNeeds,
   extractSurfaceMiningPrepActions,
+  formatQuestHoldReadinessSummary,
+  GUIDED_TOUR_KEYS,
   inferStationPortFromRoomEntry,
   matchesQuestTradeRow,
   needsOriginPortProcurement,
@@ -999,5 +1001,335 @@ describe("QuestsStore", () => {
     });
     expect(store.hasTurnInHere).toBe(false);
     expect(store.hasAvailableHere).toBe(true);
+  });
+
+  it("prioritizes guided tour quest on auto-track and synchronizes all selectors atomically when cycling tracked quests", () => {
+    const store = new QuestsStore();
+    store.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "q.side_deimos",
+          title: "Deliver Water Ice to Deimos",
+          category: "optional",
+          next_room_entry: "room.d02_concourse",
+          checkpoints: [
+            {
+              id: "deliver_water_ice",
+              title: "Deliver 3t water ice to Voltaire Anchorage",
+              instructions: "Run +ship/plan deimos and +market/sell water_ice.",
+              room_entry: "room.d02_concourse",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+        {
+          key: GUIDED_TOUR_KEYS[5],
+          title: "Scan, Sound, and Mine a Landing Site",
+          category: "guided",
+          next_room_entry: "room.c07_exchange",
+          checkpoints: [
+            {
+              id: "scan_landing_site",
+              title: "Surface scan",
+              instructions: "+tv/1 scan go",
+              room_entry: "room.c07_exchange",
+              checked: false,
+              live_ready: false,
+            },
+            {
+              id: "mine_carbon_ore",
+              title: "Mine 1t carbon_ore",
+              instructions: "+tv/1 mine go",
+              room_entry: "room.c07_exchange",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+      available: [],
+      completed: [],
+    });
+
+    // Auto-track prefers Guided Step 6 even though side job is at index 0
+    expect(store.trackedKey).toBe(GUIDED_TOUR_KEYS[5]);
+    expect(store.surfaceMiningStatus?.targetOreSlug).toBe("carbon_ore");
+    expect(needsSurfaceExpeditionBoarding(store.active, store.trackedKey)).toBe(true);
+    expect(resolveQuestShipTargetCompartment(store.active, store.trackedKey, null, true)).toBe("bay");
+
+    // Cycle to side job -> selectors flip atomically to Deimos flight + water_ice trade
+    expect(store.cycleTracked()).toBe("q.side_deimos");
+    expect(store.trackedQuest?.key).toBe("q.side_deimos");
+    expect(store.activeDestinationPort?.portId).toBe("deimos");
+    expect(store.activeTradeNeeds[0]?.commoditySlug).toBe("water_ice");
+    expect(needsSurfaceExpeditionBoarding(store.active, store.trackedKey)).toBe(false);
+    expect(resolveQuestShipTargetCompartment(store.active, store.trackedKey, "ceres", false)).toBe("bridge");
+
+    // Cycle wraps back cleanly to Guided Step 6
+    expect(store.cycleTracked()).toBe(GUIDED_TOUR_KEYS[5]);
+    expect(store.trackedQuest?.key).toBe(GUIDED_TOUR_KEYS[5]);
+  });
+
+  it("walks all 7 guided onboarding steps end-to-end from Maren Arrivals offer through Corridor Captain mastery", () => {
+    const store = new QuestsStore();
+    const done: Array<{ key: string; title: string }> = [];
+
+    // Step 1: Maren [!] at Port Watch Arrivals -> Enroll in Co-op -> Ilse [?]
+    store.applyFrame({
+      schema: 1,
+      room_id: "#10",
+      room_name: "Port Watch Arrivals",
+      room_markers: [
+        {
+          npc_id: "#101",
+          npc_name: "Maren Halvorsen",
+          marker: "available",
+          quest_key: GUIDED_TOUR_KEYS[0],
+          quest_title: "First Papers at the Registry",
+        },
+      ],
+      active: [],
+      available: [
+        {
+          key: GUIDED_TOUR_KEYS[0],
+          title: "First Papers at the Registry",
+          category: "guided",
+          giver_id: "#101",
+          giver_name: "Maren Halvorsen",
+          turn_in_id: "#102",
+          turn_in_name: "Ilse Oduya-Brandt",
+          allow_restart: true,
+          accept_cmd: "+quest/accept #101 tok1",
+          checkpoints: [],
+        },
+      ],
+      completed: done,
+    });
+    expect(store.hasAvailableHere).toBe(true);
+    expect(store.guidedTourProgress?.completed).toBe(0);
+    expect(store.guidedTourProgress?.currentStep).toBe(1);
+
+    const m1 = store.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[0],
+          title: "First Papers at the Registry",
+          category: "guided",
+          next_room_entry: "room.c05_registry",
+          checkpoints: [
+            {
+              id: "enroll_coop",
+              title: "Enroll in the Co-op",
+              instructions: "Run +coop/enroll <vessel> at Registry.",
+              room_entry: "room.c05_registry",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+      available: [],
+      completed: done,
+    });
+    expect(m1.some((m) => m.kind === "accepted" && m.key === GUIDED_TOUR_KEYS[0])).toBe(true);
+    expect(store.suggestedAction?.command).toBe("+coop/enroll ");
+
+    done.push({ key: GUIDED_TOUR_KEYS[0]!, title: "First Papers at the Registry" });
+    const m1Done = store.applyFrame({ schema: 1, active: [], available: [], completed: [...done] });
+    expect(m1Done.some((m) => m.kind === "completed" && m.key === GUIDED_TOUR_KEYS[0])).toBe(true);
+    expect(store.nextGuidedOffer?.step).toBe(2);
+
+    // Step 2: Buy 10 provisions & 5t propellant
+    store.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[1],
+          title: "Stock the Locker and Tanks",
+          category: "guided",
+          checkpoints: [
+            { id: "buy_provisions", title: "Buy 10 provisions", instructions: "Buy 10 provisions.", checked: false, live_ready: false },
+            { id: "buy_propellant", title: "Buy 5t propellant", instructions: "Buy 5t propellant.", checked: false, live_ready: false },
+          ],
+        },
+      ],
+      available: [],
+      completed: [...done],
+    });
+    const step2Half = formatQuestHoldReadinessSummary(store.trackedQuest, {
+      cargoKg: 0,
+      propellantKg: 1000,
+      provisionsCrewDays: 10,
+      cargoLines: [],
+    });
+    expect(step2Half?.tag).toBe("[HOLD]");
+    expect(step2Half?.text).toContain("PROPELLANT: 1/5 t");
+    expect(step2Half?.text).toContain("PROVISIONS 10/10d OK");
+    done.push({ key: GUIDED_TOUR_KEYS[1]!, title: "Stock the Locker and Tanks" });
+
+    // Step 3: Buy 5t metals at Ceres & deliver to Stickney Yards
+    store.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[2],
+          title: "Metals Down the Corridor",
+          category: "guided",
+          next_room_entry: "room.p07_receiving",
+          checkpoints: [
+            {
+              id: "deliver_metals",
+              title: "Deliver 5t metals to Stickney Yards",
+              instructions: "Buy 5t metals at Ceres, +ship/plan stickney, and +market/sell.",
+              room_entry: "room.p07_receiving",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+      available: [],
+      completed: [...done],
+    });
+    expect(
+      needsOriginPortProcurement(store.active, store.trackedKey, {
+        propellantKg: 10_000,
+        provisionsCrewDays: 10,
+        cargoLines: [],
+      }),
+    ).toBe(true);
+    expect(store.activeDestinationPort?.portId).toBe("stickney");
+    expect(resolveQuestShipTargetCompartment(store.active, store.trackedKey, "stickney", false)).toBe("airlock");
+    done.push({ key: GUIDED_TOUR_KEYS[2]!, title: "Metals Down the Corridor" });
+
+    // Step 4: Return 2t industrial_parts to Ceres Chandlery
+    store.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[3],
+          title: "A Return Load for Ceres",
+          category: "guided",
+          next_room_entry: "room.c08_chandlery",
+          checkpoints: [
+            {
+              id: "return_industrial_parts",
+              title: "Return 2t industrial parts to Ceres Freeport",
+              instructions: "Buy 2t industrial_parts, +ship/plan ceres, and +market/sell at Chandlery.",
+              room_entry: "room.c08_chandlery",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+      available: [],
+      completed: [...done],
+    });
+    expect(store.activeDestinationPort?.portId).toBe("ceres");
+    const step4Loaded = resolveContextualTradeNeed(store.activeTradeNeeds, {
+      propellantKg: 10_000,
+      provisionsCrewDays: 10,
+      cargoLines: [{ good: "tacsim:industrial_parts", label: "Industrial Parts", qty: 2 }],
+    });
+    expect(step4Loaded?.wantsBuy).toBe(false);
+    expect(step4Loaded?.wantsSell).toBe(true);
+    done.push({ key: GUIDED_TOUR_KEYS[3]!, title: "A Return Load for Ceres" });
+
+    // Step 5: Empty hold & refit Dray to Dray-P prospector
+    store.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[4],
+          title: "Refit the Dray for Surface Mining",
+          category: "guided",
+          next_room_entry: "room.c05_registry",
+          checkpoints: [
+            {
+              id: "refit_dray_p",
+              title: "Refit Dray into Dray-P",
+              instructions: "Empty cargo and stores and run +coop/refit prospector.",
+              room_entry: "room.c05_registry",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+      available: [],
+      completed: [...done],
+    });
+    expect(store.suggestedAction?.command).toBe("+coop/refit prospector");
+    expect(
+      formatQuestHoldReadinessSummary(store.trackedQuest, {
+        cargoKg: 0,
+        propellantKg: 10_000,
+        provisionsCrewDays: 0,
+        cargoLines: [],
+      })?.tag,
+    ).toBe("[READY]");
+    done.push({ key: GUIDED_TOUR_KEYS[4]!, title: "Refit the Dray for Surface Mining" });
+
+    // Step 6: Land at Ceres site, scan/sound/mine carbon_ore, recover & return to Ceres
+    store.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[5],
+          title: "Scan, Sound, and Mine a Landing Site",
+          category: "guided",
+          next_room_entry: "room.c07_exchange",
+          checkpoints: [
+            { id: "scan_landing_site", title: "Surface scan", instructions: "+tv/1 scan go", checked: false, live_ready: false },
+            { id: "sound_mineral_pocket", title: "Sound pocket", instructions: "+tv/1 sound go", checked: false, live_ready: false },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", instructions: "+tv/1 mine go", checked: false, live_ready: false },
+          ],
+        },
+      ],
+      available: [],
+      completed: [...done],
+    });
+    expect(store.surfaceMiningStatus?.recommendedFamily).toBe("carbon");
+    expect(resolveQuestShipTargetCompartment(store.active, store.trackedKey, "ceres", false)).toBe("bridge");
+    expect(resolveQuestShipTargetCompartment(store.active, store.trackedKey, null, true)).toBe("bay");
+    done.push({ key: GUIDED_TOUR_KEYS[5]!, title: "Scan, Sound, and Mine a Landing Site" });
+
+    // Step 7: Sell mined carbon_ore at Stickney Service Counter -> 7/7 Corridor Captain mastery
+    store.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[6],
+          title: "Deliver Your Mined Ore to Market",
+          category: "guided",
+          next_room_entry: "room.p11_service",
+          checkpoints: [
+            {
+              id: "sell_carbon_ore",
+              title: "Sell 1t carbon_ore at Stickney Yards",
+              instructions: "Run +ship/plan stickney and +market/sell carbon_ore.",
+              room_entry: "room.p11_service",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+      available: [],
+      completed: [...done],
+    });
+    expect(store.activeDestinationPort?.portId).toBe("stickney");
+    expect(store.activeTradeNeeds[0]?.commoditySlug).toBe("carbon_ore");
+    expect(store.activeTradeNeeds[0]?.wantsBuy).toBe(false);
+    expect(store.activeTradeNeeds[0]?.wantsSell).toBe(true);
+
+    done.push({ key: GUIDED_TOUR_KEYS[6]!, title: "Deliver Your Mined Ore to Market" });
+    store.applyFrame({ schema: 1, active: [], available: [], completed: [...done] });
+    expect(store.guidedTourProgress).toMatchObject({ completed: 7, total: 7, allDone: true });
+    expect(store.nextGuidedOffer).toBeNull();
   });
 });
