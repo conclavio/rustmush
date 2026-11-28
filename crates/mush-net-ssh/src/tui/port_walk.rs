@@ -939,12 +939,25 @@ impl PortWalkState {
         self.quest_trade_need = trade_need.clone();
         self.quest_trade_needs = trade_need.into_iter().collect();
         self.quest_dest_port = dest_port;
+        self.sort_trade_listings_for_quest();
     }
 
     /// Sync all pending trade needs on the tracked quest (e.g. Step 2 provisions + propellant).
     pub fn observe_quest_trade_needs(&mut self, needs: Vec<QuestTradeNeed>) {
         self.quest_trade_need = needs.first().cloned();
         self.quest_trade_needs = needs;
+        self.sort_trade_listings_for_quest();
+    }
+
+    /// Stably float quest-matching asks and bids to the top of the Port Trade drawer lists.
+    fn sort_trade_listings_for_quest(&mut self) {
+        let Some(need) = self.effective_quest_trade_need() else {
+            return;
+        };
+        self.asks
+            .sort_by_key(|a| !need.matches_listing(&a.good_id, &a.good_name, false));
+        self.bids
+            .sort_by_key(|b| !need.matches_listing(&b.good_id, &b.good_name, true));
     }
 
     /// Sync the tracked active quest's next station room target onto the 2.5D station cutaway feed.
@@ -2552,6 +2565,7 @@ impl PortWalkState {
             }
         }
 
+        self.sort_trade_listings_for_quest();
         if visual_changed {
             self.bump_scene();
         }
@@ -10299,5 +10313,43 @@ mod tests {
             rendered.contains("[?] Turn In Quest: First Papers at the Registry (+2 more)"),
             "{rendered}"
         );
+    }
+
+    #[test]
+    fn port_trade_drawer_sorts_quest_matching_asks_and_bids_first() {
+        let mut st = PortWalkState::new();
+        let now = Instant::now();
+        let trade_frame = json!({
+            "enabled": true,
+            "venue": "ceres",
+            "listings": [
+                { "id": 10, "side": "ask", "good": "tacsim:silicates", "good_label": "Silicates", "available_qty": 20, "unit_price_minor": 500, "funded": true },
+                { "id": 11, "side": "ask", "good": "tacsim:metals", "good_label": "Metals", "available_qty": 15, "unit_price_minor": 1500, "funded": true },
+                { "id": 20, "side": "bid", "good": "tacsim:water_ice", "good_label": "Water Ice", "available_qty": 30, "unit_price_minor": 800, "funded": true },
+                { "id": 21, "side": "bid", "good": "tacsim:metals", "good_label": "Metals", "available_qty": 12, "unit_price_minor": 2200, "funded": true }
+            ]
+        });
+
+        // 1. No active quest -> raw server order preserved
+        let _ = st.observe_port_trade(&trade_frame, now);
+        assert_eq!(st.asks[0].listing_id, 10);
+        assert_eq!(st.bids[0].listing_id, 20);
+
+        // 2. Sync Step 3 metals buy/sell need -> matching metals ask (#11) and bid (#21) sort first
+        st.observe_quest_trade_needs(vec![QuestTradeNeed {
+            quest_title: "Metals Down the Corridor".into(),
+            checkpoint_title: "Deliver 5t metals".into(),
+            commodity_slug: "metals".into(),
+            target_quantity: 5,
+            wants_buy: true,
+            wants_sell: true,
+        }]);
+        assert_eq!(st.asks[0].listing_id, 11);
+        assert_eq!(st.bids[0].listing_id, 21);
+
+        // 3. Re-observing port.trade keeps metals sorted first automatically
+        let _ = st.observe_port_trade(&trade_frame, now);
+        assert_eq!(st.asks[0].listing_id, 11);
+        assert_eq!(st.bids[0].listing_id, 21);
     }
 }
