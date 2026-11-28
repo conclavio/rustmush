@@ -12,6 +12,7 @@
     extractSurfaceMiningPrepActions,
     matchesQuestTradeRow,
     normalizeGoodSlug,
+    resolveContextualTradeNeed,
     resolveNextGuidedOfferDestination,
   } from "$lib/stores/quests.svelte";
   import {
@@ -100,7 +101,17 @@
   const modal = $derived(app.tacsim.activeModal);
   const trade = $derived(app.tacsim.trade);
   const st = $derived(trade.stowage);
-  const questTradeNeed = $derived(app.quests.activeTradeNeed);
+  const allQuestTradeNeeds = $derived(
+    app.quests.activeTradeNeeds ?? (app.quests.activeTradeNeed ? [app.quests.activeTradeNeed] : []),
+  );
+  const questTradeNeed = $derived(
+    resolveContextualTradeNeed(allQuestTradeNeeds, st, trade.asks, trade.bids),
+  );
+  const secondaryTradeNeeds = $derived(
+    allQuestTradeNeeds.filter(
+      (n) => questTradeNeed === null || n.commoditySlug !== questTradeNeed.commoditySlug,
+    ),
+  );
   const questDestPort = $derived(
     app.quests.activeDestinationPort ??
       resolveNextGuidedOfferDestination(
@@ -357,6 +368,12 @@
                   {questTradeNeed.targetQuantity} × {questTradeNeed.commoditySlug.replaceAll("_", " ").toUpperCase()}
                 </strong>
                 <span class="muted">— {questTradeNeed.questTitle}</span>
+                {#each secondaryTradeNeeds as extra (extra.commoditySlug)}
+                  {@const extraReady = evaluateQuestStowageReadiness(extra, st)?.ready === true}
+                  <span class="muted">
+                    · Also: {extra.targetQuantity} {extra.commoditySlug.replaceAll("_", " ").toUpperCase()}{extraReady ? " [✓]" : ""}
+                  </span>
+                {/each}
               </div>
               <button
                 type="button"

@@ -642,11 +642,13 @@ function orderedActiveQuests(
   return tracked ? [tracked, ...active.filter((q) => q !== tracked)] : [...active];
 }
 
-export function extractActiveTradeNeed(
+export function extractActiveTradeNeeds(
   active: readonly ActiveQuestView[],
   trackedKey: string | null,
-): QuestTradeNeed | null {
+): QuestTradeNeed[] {
   for (const q of orderedActiveQuests(active, trackedKey)) {
+    const out: QuestTradeNeed[] = [];
+    const seen = new Set<string>();
     for (const cp of q.checkpoints) {
       if (cp.checked || cp.liveReady) continue;
       const idLow = cp.id.toLowerCase();
@@ -687,19 +689,77 @@ export function extractActiveTradeNeed(
         instrLow.includes("+market/sell");
       if (!wantsBuy && !wantsSell) continue;
 
+      const dedupKey = `${slug}|${wantsBuy ? 1 : 0}|${wantsSell ? 1 : 0}`;
+      if (seen.has(dedupKey)) continue;
+      seen.add(dedupKey);
+
       const qty =
         extractLeadingPositiveInt(cp.title) || extractLeadingPositiveInt(cp.instructions) || 1;
-      return {
+      out.push({
         questTitle: q.title,
         checkpointTitle: cp.title,
         commoditySlug: slug,
         targetQuantity: qty,
         wantsBuy,
         wantsSell,
-      };
+      });
+    }
+    if (out.length > 0) return out;
+  }
+  return [];
+}
+
+export function extractActiveTradeNeed(
+  active: readonly ActiveQuestView[],
+  trackedKey: string | null,
+): QuestTradeNeed | null {
+  return extractActiveTradeNeeds(active, trackedKey)[0] ?? null;
+}
+
+/**
+ * Resolves the most relevant Exchange trade need for the pilot's current stowage and venue book:
+ * - For multi-item buy quests (e.g. Step 2: 10 provisions + 5 propellant), advances past items
+ *   already satisfied in live stowage and prefers an unsatisfied item present on the current book.
+ * - For dual buy+sell delivery runs (Steps 3 & 4), narrows to SELL-only once the required cargo
+ *   quantity is already loaded in the ship's hold so only Standing Bids are highlighted.
+ */
+export function resolveContextualTradeNeed(
+  needs: readonly QuestTradeNeed[],
+  stowage:
+    | {
+        propellantKg: number;
+        provisionsCrewDays: number;
+        cargoLines: ReadonlyArray<{ good: string; label: string; qty: number }>;
+      }
+    | null
+    | undefined,
+  asks: ReadonlyArray<{ goodCode?: string; itemName?: string }> = [],
+  bids: ReadonlyArray<{ goodCode?: string; itemName?: string }> = [],
+): QuestTradeNeed | null {
+  if (needs.length === 0) return null;
+
+  const isBuyAlreadySatisfied = (n: QuestTradeNeed): boolean => {
+    if (!n.wantsBuy || n.wantsSell || !stowage) return false;
+    return evaluateQuestStowageReadiness(n, stowage)?.ready === true;
+  };
+
+  const unsatisfied = needs.filter((n) => !isBuyAlreadySatisfied(n));
+  const pool = unsatisfied.length > 0 ? unsatisfied : needs;
+
+  const matchesBook = (n: QuestTradeNeed): boolean =>
+    asks.some((row) => matchesQuestTradeRow(n, row, false)) ||
+    bids.some((row) => matchesQuestTradeRow(n, row, true));
+
+  const picked =
+    (asks.length > 0 || bids.length > 0 ? pool.find((n) => matchesBook(n)) : undefined) ?? pool[0]!;
+
+  if (picked.wantsBuy && picked.wantsSell && stowage) {
+    const r = evaluateQuestStowageReadiness(picked, stowage);
+    if (r?.ready) {
+      return { ...picked, wantsBuy: false, wantsSell: true };
     }
   }
-  return null;
+  return picked;
 }
 
 export function extractActiveDestinationPort(
@@ -1086,6 +1146,10 @@ export class QuestsStore {
 
   get activeTradeNeed(): QuestTradeNeed | null {
     return extractActiveTradeNeed(this.active, this.trackedKey);
+  }
+
+  get activeTradeNeeds(): QuestTradeNeed[] {
+    return extractActiveTradeNeeds(this.active, this.trackedKey);
   }
 
   get activeDestinationPort(): QuestDestinationHint | null {
