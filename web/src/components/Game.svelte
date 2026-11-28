@@ -219,13 +219,21 @@
       {statusLabel}
     </span>
     {#if app.session.hasPanel("tacsim.quests") || app.quests.badgeCount > 0 || app.quests.completed.length > 0}
+      {@const turnInHere = app.quests.hasTurnInHere}
+      {@const offerHere = !turnInHere && app.quests.hasAvailableHere}
       <button
         type="button"
         class="railbtn text"
-        title="Open quest log (/quests)"
+        class:quest-turnin={turnInHere}
+        class:quest-offer={offerHere}
+        title={turnInHere
+          ? "Quest ready to turn in here (/quests)"
+          : offerHere
+            ? "Quest offer available here (/quests)"
+            : "Open quest log (/quests)"}
         onclick={() => app.quests.openLog()}
       >
-        quests{#if app.quests.active.length > 0} ({app.quests.active.length}){:else if app.quests.available.length > 0} (!){/if}
+        quests{#if turnInHere} (?){:else if offerHere} (!){:else if app.quests.active.length > 0} ({app.quests.active.length}){/if}
       </button>
     {/if}
     {#if app.session.hasPanel("arena.mind")}<button type="button" class="railbtn text" title="Mind workshop (F10)" onclick={() => void app.minds.show()}>minds</button>{/if}
@@ -543,6 +551,20 @@
 
   .railbtn:hover {
     color: var(--fg);
+  }
+
+  .railbtn.quest-offer {
+    border-color: #fbbf24;
+    background: rgba(251, 191, 36, 0.16);
+    color: #fde68a;
+    font-weight: 700;
+  }
+
+  .railbtn.quest-turnin {
+    border-color: #34d399;
+    background: rgba(16, 185, 129, 0.2);
+    color: #a7f3d0;
+    font-weight: 700;
   }
 
   .cols {

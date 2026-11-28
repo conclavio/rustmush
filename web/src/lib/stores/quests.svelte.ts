@@ -1068,6 +1068,23 @@ export function parseQuestMarkers(raw: unknown): NpcQuestMarker[] {
   return out;
 }
 
+const MARKER_PRIORITY: Record<QuestMarkerKind, number> = {
+  turn_in: 0,
+  available: 1,
+  in_progress: 2,
+};
+
+/**
+ * Orders NPC quest markers in the current room by action urgency:
+ * gold turn-in (`?`) -> gold available offer (`!`) -> silver in-progress (`?`).
+ */
+export function sortRoomQuestMarkers(
+  markers: readonly NpcQuestMarker[],
+): NpcQuestMarker[] {
+  if (markers.length <= 1) return [...markers];
+  return [...markers].sort((a, b) => MARKER_PRIORITY[a.marker] - MARKER_PRIORITY[b.marker]);
+}
+
 function parseCheckpoints(raw: unknown): QuestCheckpointView[] {
   if (!Array.isArray(raw)) return [];
   const out: QuestCheckpointView[] = [];
@@ -1207,6 +1224,24 @@ export class QuestsStore {
 
   get badgeCount(): number {
     return this.active.length + this.available.length;
+  }
+
+  get prioritizedRoomMarkers(): NpcQuestMarker[] {
+    return sortRoomQuestMarkers(this.roomMarkers);
+  }
+
+  get hasTurnInHere(): boolean {
+    return (
+      this.active.some((q) => q.canFinishNow) ||
+      this.roomMarkers.some((m) => m.marker === "turn_in")
+    );
+  }
+
+  get hasAvailableHere(): boolean {
+    return (
+      this.available.length > 0 ||
+      this.roomMarkers.some((m) => m.marker === "available")
+    );
   }
 
   get hasOpenOverlay(): boolean {
