@@ -1010,6 +1010,24 @@ impl PortWalkState {
         })
     }
 
+    /// Live stowage telemetry for F11 Quest Overlay trade & Step 5 refit readiness lines.
+    #[must_use]
+    pub fn quest_stowage_telemetry(&self) -> Option<super::quests::QuestStowageTelemetry> {
+        if !self.stowage_loaded {
+            return None;
+        }
+        Some(super::quests::QuestStowageTelemetry {
+            cargo_kg: self.stowage.cargo_kg.max(0),
+            propellant_kg: self.stowage.reaction_kg.max(0),
+            provisions_days: self.stowage.stores_days.max(0),
+            cargo_lots: self
+                .cargo_lots
+                .iter()
+                .map(|l| (l.good_id.clone(), l.good_name.clone(), l.quantity))
+                .collect(),
+        })
+    }
+
     /// Evaluate Step 5 Dray-P refit empty-hold readiness (cargo & crew stores must be empty; propellant tank OK).
     #[must_use]
     pub fn quest_refit_hold_readiness(&self) -> Option<QuestRefitHoldReadiness> {

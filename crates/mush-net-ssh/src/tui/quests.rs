@@ -112,6 +112,16 @@ pub struct QuestTradeNeed {
     pub wants_sell: bool,
 }
 
+/// Snapshot of live ship stowage passed into the F11 Quest Overlay so Steps 2, 3, 4, 5, and 7
+/// display live hold quantity and Step 5 empty-hold refit readiness beside the quest objectives.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct QuestStowageTelemetry {
+    pub cargo_kg: i64,
+    pub propellant_kg: i64,
+    pub provisions_days: i64,
+    pub cargo_lots: Vec<(String, String, i64)>,
+}
+
 impl QuestTradeNeed {
     #[must_use]
     pub fn matches_listing(&self, good_id: &str, good_name: &str, is_bid: bool) -> bool {
@@ -1182,6 +1192,66 @@ impl QuestsSnapshot {
         }
         None
     }
+
+    /// Format a live hold-progress or Step 5 empty-hold refit readiness line for an active quest
+    /// inside the F11 Quest Overlay. Returns `(formatted_text, is_ready)`.
+    #[must_use]
+    pub fn hold_readiness_line_for(
+        q: &ActiveQuest,
+        stowage: &QuestStowageTelemetry,
+    ) -> Option<(String, bool)> {
+        if let Some(act) = Self::suggested_action_for(q)
+            && act.command.starts_with("+coop/refit")
+        {
+            let cargo_kg = stowage.cargo_kg.max(0);
+            let has_cargo_lots = stowage.cargo_lots.iter().any(|(_, _, qty)| *qty > 0);
+            let cargo_empty = cargo_kg == 0 && !has_cargo_lots;
+            let prov_days = stowage.provisions_days.max(0);
+            let prov_empty = prov_days == 0;
+            let tank_t = stowage.propellant_kg.max(0) / 1000;
+            let ready = cargo_empty && prov_empty;
+            let cargo_txt = if cargo_empty {
+                "Cargo empty".to_string()
+            } else {
+                format!("Cargo {:.1}t", cargo_kg as f64 / 1000.0)
+            };
+            let stores_txt = if prov_empty {
+                "Stores empty".to_string()
+            } else {
+                format!("Stores {prov_days}d")
+            };
+            let tag = if ready { "[READY]" } else { "[REFIT CHECK]" };
+            return Some((
+                format!("{tag} {cargo_txt} | {stores_txt} | Tank {tank_t}t OK"),
+                ready,
+            ));
+        }
+        let single = QuestsSnapshot {
+            active: vec![q.clone()],
+            ..Default::default()
+        };
+        let need = single.active_trade_need(Some(&q.key))?;
+        let target = need.target_quantity.max(1);
+        let label = need.commodity_slug.replace('_', " ").to_ascii_uppercase();
+        let (current, unit) = match need.commodity_slug.as_str() {
+            "propellant" => (stowage.propellant_kg.max(0) / 1000, "t"),
+            "provisions" => (stowage.provisions_days.max(0), "d"),
+            slug => {
+                let sum: i64 = stowage
+                    .cargo_lots
+                    .iter()
+                    .filter(|(id, name, _)| {
+                        normalize_good_slug(id) == slug || normalize_good_slug(name) == slug
+                    })
+                    .map(|(_, _, qty)| (*qty).max(0))
+                    .sum();
+                (sum, "u")
+            }
+        };
+        let ready = current >= target;
+        let tag = if ready { "[HOLD READY]" } else { "[HOLD]" };
+        Some((format!("{tag} {label}: {current}/{target} {unit}"), ready))
+    }
 }
 
 fn str_field(v: &Value, key: &str) -> String {
@@ -1978,6 +2048,17 @@ pub fn render_quest_overlay(
     state: &QuestOverlayState,
     snap: &QuestsSnapshot,
 ) {
+    render_quest_overlay_with_stowage(f, area, state, snap, None);
+}
+
+/// Paint the centered Quest Dialog & Journal overlay with live ship stowage & refit hold telemetry.
+pub fn render_quest_overlay_with_stowage(
+    f: &mut Frame<'_>,
+    area: Rect,
+    state: &QuestOverlayState,
+    snap: &QuestsSnapshot,
+    stowage: Option<&QuestStowageTelemetry>,
+) {
     let w = area.width.saturating_sub(6).min(96);
     let h = area.height.saturating_sub(4).min(28);
     if w < 30 || h < 10 {
@@ -2250,6 +2331,16 @@ pub fn render_quest_overlay(
                             Style::default().add_modifier(Modifier::DIM),
                         ),
                     ]));
+                }
+                if let Some(st) = stowage
+                    && let Some((hold_line, ready)) = QuestsSnapshot::hold_readiness_line_for(q, st)
+                {
+                    detail_lines.push(Line::from(Span::styled(
+                        hold_line,
+                        Style::default()
+                            .fg(if ready { Color::Green } else { Color::Yellow })
+                            .add_modifier(Modifier::BOLD),
+                    )));
                 }
                 let single_for_mine = QuestsSnapshot {
                     active: vec![q.clone()],
@@ -3133,5 +3224,78 @@ mod tests {
             .expect("expected Freeport Commons starter site");
         assert_eq!(starter.venue, "commons");
         assert_eq!(starter.site_name, "Freeport Commons");
+    }
+
+    #[test]
+    fn hold_readiness_line_formats_trade_and_refit_progress() {
+        let trade_snap = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[2],
+                "title": "Metals Down the Corridor",
+                "checkpoints": [{
+                    "id": "deliver_metals",
+                    "title": "Buy 5 tonnes of metals at Ceres and deliver to Stickney",
+                    "instructions": "Buy 5t metals and +market/sell at Stickney.",
+                    "checked": false,
+                    "live_ready": false
+                }]
+            }]
+        }));
+        let partial = QuestStowageTelemetry {
+            cargo_kg: 2000,
+            propellant_kg: 10000,
+            provisions_days: 8,
+            cargo_lots: vec![("tacsim:metals".into(), "Metals".into(), 2)],
+        };
+        let (txt, ready) = QuestsSnapshot::hold_readiness_line_for(&trade_snap.active[0], &partial)
+            .expect("expected trade hold progress");
+        assert!(!ready);
+        assert_eq!(txt, "[HOLD] METALS: 2/5 u");
+
+        let full = QuestStowageTelemetry {
+            cargo_kg: 5000,
+            propellant_kg: 10000,
+            provisions_days: 8,
+            cargo_lots: vec![("tacsim:metals".into(), "Metals".into(), 5)],
+        };
+        let (txt_ok, ready_ok) =
+            QuestsSnapshot::hold_readiness_line_for(&trade_snap.active[0], &full)
+                .expect("expected full trade hold progress");
+        assert!(ready_ok);
+        assert_eq!(txt_ok, "[HOLD READY] METALS: 5/5 u");
+
+        let refit_snap = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[4],
+                "title": "Refit the Dray for Surface Mining",
+                "checkpoints": [{
+                    "id": "refit_dray_p",
+                    "title": "Refit Dray-P",
+                    "instructions": "Run +coop/refit prospector.",
+                    "checked": false,
+                    "live_ready": false
+                }]
+            }]
+        }));
+        let (refit_warn, refit_rdy) =
+            QuestsSnapshot::hold_readiness_line_for(&refit_snap.active[0], &partial)
+                .expect("expected refit hold check");
+        assert!(!refit_rdy);
+        assert!(refit_warn.contains("[REFIT CHECK]"), "{refit_warn}");
+        assert!(refit_warn.contains("Stores 8d"), "{refit_warn}");
+
+        let empty_hold = QuestStowageTelemetry {
+            cargo_kg: 0,
+            propellant_kg: 6000,
+            provisions_days: 0,
+            cargo_lots: Vec::new(),
+        };
+        let (refit_ok, refit_ok_flag) =
+            QuestsSnapshot::hold_readiness_line_for(&refit_snap.active[0], &empty_hold)
+                .expect("expected refit ready");
+        assert!(refit_ok_flag);
+        assert_eq!(refit_ok, "[READY] Cargo empty | Stores empty | Tank 6t OK");
     }
 }

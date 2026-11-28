@@ -52,7 +52,8 @@ use super::port_walk::{PORT_TRADE_FEED, PortWalkState, TACSIM_CONTENT_FEED};
 use super::quests::{
     QUESTS_FEED, QuestMilestoneKind, QuestMilestoneTracker, QuestOverlayAction, QuestOverlayState,
     QuestTab, QuestsSnapshot, parse_frame as parse_quests_frame, parse_room_markers,
-    render_quest_overlay, render_quest_sheet_lines, render_quest_tracker_lines_with_route,
+    render_quest_overlay_with_stowage, render_quest_sheet_lines,
+    render_quest_tracker_lines_with_route,
 };
 use super::render::{
     BODY_GROUND_FEED, CHART_FEED, Entry, GUTTER_W, PaneRow, PaneRows, RenderCtx, SITE_MAP_FEED,
@@ -5718,7 +5719,14 @@ impl TuiApp {
             && self.answering.is_none()
             && self.input_mode == InputMode::Normal
         {
-            render_quest_overlay(frame, area, &self.quests_overlay, &self.quests_snap);
+            let stowage = self.port_walk.quest_stowage_telemetry();
+            render_quest_overlay_with_stowage(
+                frame,
+                area,
+                &self.quests_overlay,
+                &self.quests_snap,
+                stowage.as_ref(),
+            );
         }
         // An ask the engine has already expired is never painted: it would
         // stand in front of every live one behind it (I10).
@@ -6148,7 +6156,14 @@ impl TuiApp {
             && self.answering.is_none()
             && self.input_mode == InputMode::Normal
         {
-            render_quest_overlay(frame, area, &self.quests_overlay, &self.quests_snap);
+            let stowage = self.port_walk.quest_stowage_telemetry();
+            render_quest_overlay_with_stowage(
+                frame,
+                area,
+                &self.quests_overlay,
+                &self.quests_snap,
+                stowage.as_ref(),
+            );
         }
         self.evict_expired_requests(now);
         if self.answering.is_none() && !self.requests.is_empty() {
