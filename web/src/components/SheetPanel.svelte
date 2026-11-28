@@ -11,6 +11,7 @@
     evaluateSailingPreflightReadiness,
     extractActiveDestinationPort,
     extractActiveTradeNeed,
+    extractQuestSuggestedAction,
     formatQuestHoldReadinessSummary,
   } from "$lib/stores/quests.svelte";
   import {
@@ -70,6 +71,9 @@
           liveStowage,
         )
       : null,
+  );
+  const suggestedAction = $derived(
+    trackedQuest ? extractQuestSuggestedAction(trackedQuest, liveStowage) : null,
   );
   const otherReadyHere = $derived(
     (app.quests?.active ?? []).filter((item) => item.key !== trackedQuest?.key && item.canFinishNow),
@@ -259,10 +263,10 @@
               <div class="qsum-readiness" class:ready={trackedPreflight.ready} aria-label="sheet quest sailing preflight">
                 <strong>{trackedPreflight.ready ? "[PRE-FLIGHT OK]" : "[CHECK BEFORE UNDOCK]"}</strong>
                 {trackedPreflight.propellantOk ? " ✓" : " ✗"} Propellant {trackedPreflight.propellantTonnes}t ·
-                {trackedPreflight.provisionsOk ? " ✓" : " ✗"} Provisions {trackedPreflight.provisionsDays}d → {trackedDest.portLabel}
+                {trackedPreflight.provisionsOk ? " ✓" : " ✗"} Provisions {trackedPreflight.provisionsDays}d{#if trackedPreflight.cargoRequired} · {trackedPreflight.cargoOk ? "✓" : "✗"} {trackedPreflight.cargoLabel} {trackedPreflight.cargoQty}/{trackedPreflight.cargoTarget}{/if} → {trackedDest.portLabel}
               </div>
             {/if}
-            {#if trackedQuest.canFinishNow || otherReadyHere.length > 0 || availableQuestsCount > 0}
+            {#if trackedQuest.canFinishNow || suggestedAction || otherReadyHere.length > 0 || availableQuestsCount > 0}
               <div class="qsum-actions">
                 {#if trackedQuest.canFinishNow}
                   <button
@@ -271,6 +275,16 @@
                     onclick={() => app.quests?.openQuestDialog(trackedQuest.key)}
                   >
                     [?] Ready to turn in here
+                  </button>
+                {:else if suggestedAction}
+                  {@const sugCmd = suggestedAction.command.trim()}
+                  <button
+                    type="button"
+                    class="qsum-action-btn step"
+                    title={`Prefill ${sugCmd}`}
+                    onclick={() => app.focusComposer?.(suggestedAction.command)}
+                  >
+                    Next: {suggestedAction.label}{suggestedAction.label.includes(sugCmd) ? "" : ` (${sugCmd})`}
                   </button>
                 {/if}
                 {#if otherReadyHere.length === 1}
@@ -757,6 +771,16 @@
 
   .qsum-action-btn.offer:hover {
     background: rgba(212, 166, 74, 0.34);
+  }
+
+  .qsum-action-btn.step {
+    border-color: rgba(125, 211, 252, 0.65);
+    background: rgba(14, 116, 144, 0.22);
+    color: #bae6fd;
+  }
+
+  .qsum-action-btn.step:hover {
+    background: rgba(14, 116, 144, 0.36);
   }
 
   .qsum-next,
