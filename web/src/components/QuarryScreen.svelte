@@ -42,7 +42,7 @@
     return { label: "Recover Rig", verb: "recover go" };
   });
 
-  function matchesQuestOre(text: string): boolean {
+  function matchesQuestOre(text: string | null | undefined): boolean {
     if (!questMining || !text) return false;
     const low = text.toLowerCase();
     const slug = questMining.targetOreSlug.toLowerCase();
@@ -51,8 +51,37 @@
     return low.includes(slug) || low.includes(spaced) || (fam.length > 0 && low.includes(fam));
   }
 
+  function matchesQuestSite(s: { best?: string | null; best_line?: string | null }): boolean {
+    return matchesQuestOre(s.best_line) || matchesQuestOre(s.best);
+  }
+
+  const recommendedQuestSite = $derived.by(() => {
+    if (!questMining || questMining.mineDone || !groundBlock) return null;
+    const matched = groundBlock.sites.find((s) => !s.here && matchesQuestSite(s));
+    if (matched) return matched;
+    // Before the player has surface readings at any site, guide them to the open Ceres
+    // starter sites named in Step 6 (Freeport Commons / Ahuna Flank), or first open site.
+    return (
+      groundBlock.sites.find((s) => !s.here && s.venue.toLowerCase() === "commons") ??
+      groundBlock.sites.find((s) => !s.here && s.venue.toLowerCase() === "ahuna") ??
+      groundBlock.sites.find((s) => !s.here && s.tenure.toLowerCase().includes("open")) ??
+      null
+    );
+  });
+
+  const questReturnDest = $derived(
+    questMining?.mineDone ? (app.quests?.activeDestinationPort ?? null) : null,
+  );
+
   function selectQuestWash(): void {
     if (!questMining) return;
+    app.quarry.family = questMining.recommendedFamily;
+    app.refreshQuarry();
+  }
+
+  function openQuestGroundChart(): void {
+    if (!questMining) return;
+    app.quarry.mode = "ground";
     app.quarry.family = questMining.recommendedFamily;
     app.refreshQuarry();
   }
@@ -142,6 +171,33 @@
               Next: {questNextRigCmd.label}
             </button>
           {/if}
+          {#if questReturnDest}
+            <button
+              type="button"
+              class="qm-return"
+              title={`Prefill +ship/plan ${questReturnDest.portId}`}
+              onclick={() => prefill(`+ship/plan ${questReturnDest.portId}`)}
+            >
+              Return: {questReturnDest.portLabel}
+            </button>
+          {:else if recommendedQuestSite}
+            <button
+              type="button"
+              class="qm-plan"
+              title={`Prefill +ship/plan ${recommendedQuestSite.venue}`}
+              onclick={() => prefill(`+ship/plan ${recommendedQuestSite.venue}`)}
+            >
+              Plan: {recommendedQuestSite.site}
+            </button>
+          {:else if q.mode !== "ground" && !block}
+            <button
+              type="button"
+              class="qm-plan"
+              onclick={openQuestGroundChart}
+            >
+              View Ground
+            </button>
+          {/if}
           <button type="button" class="qm-wash" onclick={selectQuestWash}>
             {questMining.recommendedFamily.toUpperCase()} wash
           </button>
@@ -195,7 +251,7 @@
             {/each}
             {#each groundBlock.sites as s (s.letter)}
               {@const at = groundPoint(s, GW, GH)}
-              {@const isQuestSite = matchesQuestOre(s.best_line)}
+              {@const isQuestSite = matchesQuestSite(s)}
               {#if isQuestSite}
                 <circle cx={at.x} cy={at.y} r="8" fill="none" stroke="#f2c94c" stroke-width="2" />
               {/if}
@@ -290,7 +346,7 @@
       {#if groundBlock}
         <ul>
           {#each groundBlock.sites as s (s.letter)}
-            {@const isQuestSite = matchesQuestOre(s.best_line)}
+            {@const isQuestSite = matchesQuestSite(s)}
             <li>
               <button
                 type="button"
@@ -477,8 +533,32 @@
     font-weight: 700;
     cursor: pointer;
   }
-  .qm-action + .qm-wash {
+  .qm-action + .qm-wash,
+  .qm-plan + .qm-wash,
+  .qm-return + .qm-wash {
     margin-left: 0;
+  }
+  .qm-plan {
+    padding: 0.15rem 0.55rem;
+    border-radius: 4px;
+    border: 1px solid #ffd84d;
+    background: #8a6412;
+    color: #fff6d4;
+    font: inherit;
+    font-size: 0.75rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .qm-return {
+    padding: 0.15rem 0.55rem;
+    border-radius: 4px;
+    border: 1px solid #34d399;
+    background: #0d6e4c;
+    color: #e6fff5;
+    font: inherit;
+    font-size: 0.75rem;
+    font-weight: 700;
+    cursor: pointer;
   }
   button.row.quest-match {
     border-color: rgba(242, 201, 76, 0.75);

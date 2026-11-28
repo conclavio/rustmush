@@ -164,4 +164,62 @@ describe("QuarryScreen's side pane", () => {
     screen.getByRole("button", { name: /Next: Recover Rig/i }).click();
     expect(focusComposer).toHaveBeenCalledWith("+tv recover go");
   });
+
+  it("offers 1-click Plan button for matching carbon landing site on Ground Chart and Return button after mining", () => {
+    const rawGround = fixture("body_ground.json") as unknown as {
+      ground: { sites: Array<{ venue: string; site: string; best: string | null; best_line: string }> };
+    };
+    const commons = rawGround.ground.sites.find((s) => s.venue === "commons");
+    if (commons) {
+      commons.best = "carbon_ore";
+      commons.best_line = "Your readings: carbon_ore rich.";
+    }
+    const quarry = new QuarryStore();
+    quarry.mode = "ground";
+    quarry.applyGround(rawGround);
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+          title: "Scan, Sound, and Mine a Landing Site",
+          next_room_entry: "room.c07_exchange",
+          checkpoints: [
+            { id: "scan_landing_site", title: "Surface scan", instructions: "+tv/1 scan go", checked: false, live_ready: false },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", instructions: "+tv/1 mine go", checked: false, live_ready: false },
+          ],
+        },
+      ],
+    });
+    const focusComposer = vi.fn();
+    const app = { quarry, quests, focusComposer, refreshQuarry: vi.fn() } as unknown as GameApp;
+    const first = render(QuarryScreen, { props: { app } });
+
+    const planBtn = screen.getByRole("button", { name: /Plan: Freeport Commons/i });
+    planBtn.click();
+    expect(focusComposer).toHaveBeenCalledWith("+ship/plan commons");
+    first.unmount();
+
+    // Once carbon_ore is mined, pill offers 1-click Return to Ceres Freeport
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+          title: "Scan, Sound, and Mine a Landing Site",
+          next_room_entry: "room.c07_exchange",
+          ready_to_finish: true,
+          checkpoints: [
+            { id: "scan_landing_site", title: "Surface scan", instructions: "+tv/1 scan go", checked: true, live_ready: true },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", instructions: "+tv/1 mine go", checked: true, live_ready: true },
+          ],
+        },
+      ],
+    });
+    render(QuarryScreen, { props: { app } });
+    const retBtn = screen.getByRole("button", { name: /Return: Ceres Freeport/i });
+    retBtn.click();
+    expect(focusComposer).toHaveBeenCalledWith("+ship/plan ceres");
+  });
 });
