@@ -12,11 +12,12 @@ export interface PaletteCommand {
   summary: string;
 }
 
-/** One live active or room-available quest shortcut in the palette. */
+/** One live active, available, route, next-step, or cycle quest shortcut in the palette. */
 export interface PaletteQuestAction {
-  kind: "active" | "available";
+  kind: "active" | "available" | "route" | "step" | "cycle";
   key: string;
   npcId?: string;
+  command?: string;
   title: string;
   detail: string;
   ready?: boolean;
@@ -43,8 +44,13 @@ export interface PaletteEntry {
   detail: string;
   /** A client-local command (keeps its slash). */
   local: boolean;
-  /** Optional client-local quest dialog action opened directly on pick. */
-  questAction?: { kind: "active" | "available"; key: string; npcId?: string };
+  /** Optional client-local or command quest action opened/prefilled/run on pick. */
+  questAction?: {
+    kind: "active" | "available" | "route" | "step" | "cycle";
+    key: string;
+    npcId?: string;
+    command?: string;
+  };
 }
 
 /** The client's own commands; they keep their slash when picked. */
@@ -84,17 +90,40 @@ export function paletteEntries(query: string, sources: PaletteSources): PaletteE
   }
   if (sources.quests) {
     for (const qa of sources.quests) {
-      const tag = qa.kind === "available" ? "[!]" : qa.ready ? "[?]" : "quest";
+      const tag =
+        qa.kind === "available"
+          ? "[!]"
+          : qa.kind === "route"
+            ? "[→]"
+            : qa.kind === "step"
+              ? qa.ready
+                ? "[?]"
+                : "[▸]"
+              : qa.kind === "cycle"
+                ? "[↻]"
+                : qa.ready
+                  ? "[?]"
+                  : "quest";
       const label = `${tag} ${qa.title}`;
+      const isCmd = qa.kind === "route" || qa.kind === "step";
+      const insert = isCmd && qa.command ? qa.command : "/quests";
+      const extraKw =
+        qa.kind === "route"
+          ? "route walk board ashore"
+          : qa.kind === "step"
+            ? "next step action"
+            : qa.kind === "cycle"
+              ? "cycle switch next tracked"
+              : "";
       consider(
         {
-          insert: "/quests",
+          insert,
           label,
           detail: qa.detail,
-          local: true,
-          questAction: { kind: qa.kind, key: qa.key, npcId: qa.npcId },
+          local: !isCmd,
+          questAction: { kind: qa.kind, key: qa.key, npcId: qa.npcId, command: qa.command },
         },
-        `quest ${qa.title} ${qa.detail}`,
+        `quest ${qa.title} ${qa.detail} ${qa.command ?? ""} ${extraKw}`,
       );
     }
   }

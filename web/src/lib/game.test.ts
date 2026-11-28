@@ -2862,3 +2862,111 @@ describe("the unit.looks feed (doc 31 cut UD.3b)", () => {
     expect(ws.reqs().length).toBe(before);
   });
 });
+
+describe("quest command palette route, step and cycle shortcuts", () => {
+  it("surfaces tracked quest next step, finish verb, and cycle shortcut in paletteQuery and handles palettePick", () => {
+    const { app, ws } = boot();
+    let focused = "";
+    const fakeComposer = {
+      focus: (prefill?: string) => {
+        if (prefill !== undefined) focused = prefill;
+      },
+      blur: () => {},
+      cycleMode: () => {},
+      text: () => focused,
+      setText: (s: string) => {
+        focused = s;
+      },
+    };
+    app.composer = fakeComposer;
+
+    app.quests.applyFrame({
+      active: [
+        {
+          key: "q.refit",
+          title: "Refit the Dray",
+          category: "guided_tour",
+          introduction: "Refit for surface mining.",
+          reward_summary: "Dray-P hull",
+          giver_id: "#10",
+          giver_name: "Maren Halvorsen",
+          turn_in_id: "#10",
+          turn_in_name: "Maren Halvorsen",
+          turn_in_here: false,
+          allow_restart: false,
+          ready_to_finish: false,
+          next_step: "Refit your Dray at Stickney Yards (+coop/refit prospector)",
+          next_instructions: "Use +coop/refit prospector with an empty hold.",
+          next_room_entry: "",
+          next_room_name: "",
+          next_objective_ready: false,
+          can_check_now: false,
+          can_finish_now: false,
+          check_cmd: "",
+          finish_cmd: "",
+          abandon_cmd: "+quest/abandon q.refit",
+          checkpoints: [],
+        },
+        {
+          key: "q.sell",
+          title: "Deliver Carbon Ore",
+          category: "guided_tour",
+          introduction: "Sell mined ore.",
+          reward_summary: "2500 cr",
+          giver_id: "#12",
+          giver_name: "Kowalski",
+          turn_in_id: "#12",
+          turn_in_name: "Kowalski",
+          turn_in_here: true,
+          allow_restart: false,
+          ready_to_finish: true,
+          next_step: "Turn in to Kowalski",
+          next_instructions: "",
+          next_room_entry: "",
+          next_room_name: "",
+          next_objective_ready: true,
+          can_check_now: false,
+          can_finish_now: true,
+          check_cmd: "",
+          finish_cmd: "+quest/finish q.sell",
+          abandon_cmd: "+quest/abandon q.sell",
+          checkpoints: [],
+        },
+      ],
+      available: [],
+      completed: [],
+    });
+
+    app.paletteQuery("/quest");
+    const stepIdx = app.paletteEntries.findIndex(
+      (e) => e.questAction?.kind === "step" && e.questAction.command === "+coop/refit prospector",
+    );
+    expect(stepIdx).toBeGreaterThanOrEqual(0);
+    app.paletteSelected = stepIdx;
+    app.palettePick(false);
+    expect(focused).toBe("+coop/refit prospector");
+
+    app.paletteQuery("/cycle");
+    const cycleIdx = app.paletteEntries.findIndex((e) => e.questAction?.kind === "cycle");
+    expect(cycleIdx).toBeGreaterThanOrEqual(0);
+    app.paletteSelected = cycleIdx;
+    app.palettePick(false);
+    expect(app.quests.trackedKey).toBe("q.sell");
+
+    // Now q.sell is tracked and canFinishNow -> Ctrl+Enter runs +quest/finish q.sell
+    app.paletteQuery("/complete");
+    const finishIdx = app.paletteEntries.findIndex(
+      (e) => e.questAction?.kind === "step" && e.questAction.command === "+quest/finish q.sell",
+    );
+    expect(finishIdx).toBeGreaterThanOrEqual(0);
+    const beforeLines = ws.sentJson().length;
+    app.paletteSelected = finishIdx;
+    app.palettePick(true);
+    const frames = ws.sentJson();
+    expect(frames.length).toBeGreaterThan(beforeLines);
+    expect(frames[frames.length - 1]).toEqual({
+      t: "line",
+      d: "+quest/finish q.sell",
+    });
+  });
+});

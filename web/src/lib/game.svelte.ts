@@ -54,7 +54,7 @@ import { OBSERVER_FEED, REPLAY_FEED, decodeReplayGrid } from "./replay";
 import type { PixelModule } from "./pixel/wasm";
 
 import { exitCommand, exitKeys, type NavIntent } from "./keys";
-import { paletteEntries, type PaletteEntry } from "./palette";
+import { paletteEntries, type PaletteEntry, type PaletteQuestAction } from "./palette";
 import { storageDel, storageGet, storageGetJson, storageSet, storageSetJson } from "./storage";
 import { ChannelsStore } from "./stores/channels.svelte";
 import { CockpitStore, MAP_ASK_MS } from "./stores/cockpit.svelte";
@@ -106,7 +106,16 @@ import { parseResolutionOutcome } from "./view";
 import { TacsimPortStore } from "./stores/tacsim.svelte";
 import { tacsimAudio } from "./tacsim/audio";
 import { PORT_TRADE_FEED, TACSIM_CONTENT_FEED } from "./tacsim/trade";
-import { QUESTS_FEED, QuestsStore } from "./stores/quests.svelte";
+import {
+  QUESTS_FEED,
+  QuestsStore,
+  resolveQuestShipTargetCompartment,
+} from "./stores/quests.svelte";
+import {
+  computeNextQuestExitBreadcrumb,
+  computeShipQuestBreadcrumb,
+  normalizePortVenueTarget,
+} from "./tacsim/spatial";
 
 /** Doc 31 cut UD.3b: the pulled feed of published unit designs' looks. */
 export const UNIT_LOOKS_FEED = "unit.looks";
@@ -2094,22 +2103,122 @@ export class GameApp {
   /** Refilter the palette on the box's text (the part after the slash). */
   paletteQuery(text: string): void {
     const q = text.startsWith("/") ? text.slice(1) : text;
-    const questItems = [
-      ...this.quests.active.map((aq) => ({
-        kind: "active" as const,
+    const questItems: PaletteQuestAction[] = [];
+    const tracked = this.quests.trackedQuest;
+    if (tracked) {
+      if (tracked.canFinishNow && tracked.finishCmd) {
+        questItems.push({
+          kind: "step",
+          key: tracked.key,
+          command: tracked.finishCmd,
+          title: `Complete: ${tracked.title}`,
+          detail: tracked.finishCmd,
+          ready: true,
+        });
+      } else if (tracked.canCheckNow && tracked.checkCmd) {
+        questItems.push({
+          kind: "step",
+          key: tracked.key,
+          command: tracked.checkCmd,
+          title: `Verify Step: ${tracked.title}`,
+          detail: tracked.checkCmd,
+          ready: true,
+        });
+      }
+
+      let routeCrumb = null;
+      if (this.tacsim.isAboardShip) {
+        if (!this.tacsim.seatedAtBridgeHelm) {
+          const dockedPortId = this.tacsim.ambient?.docked
+            ? normalizePortVenueTarget(this.tacsim.ambient?.port ?? this.tacsim.trade?.hullPort)
+            : null;
+          const targetComp = resolveQuestShipTargetCompartment(
+            this.quests.active,
+            this.quests.trackedKey,
+            dockedPortId,
+          );
+          const currentComp =
+            (this.tacsim.view3dOpen ? this.tacsim.physicalLocationKey : null) ??
+            this.tacsim.serverShipCompartment;
+          routeCrumb = computeShipQuestBreadcrumb(this.tacsim.shipTemplate, currentComp, targetComp);
+        }
+      } else {
+        const targetEntry =
+          tracked.nextRoomEntry ||
+          tracked.checkpoints.find((c) => !c.checked && !c.liveReady && c.roomEntry)?.roomEntry ||
+          null;
+        const currentEntry =
+          (this.tacsim.view3dOpen ? this.tacsim.physicalLocationKey : null) ??
+          this.tacsim.serverStationRoomEntry;
+        routeCrumb = computeNextQuestExitBreadcrumb(
+          this.tacsim.stationPack,
+          currentEntry,
+          targetEntry,
+        );
+      }
+
+      if (routeCrumb) {
+        const routeTitle =
+          routeCrumb.nextExitCommand === "+ship/board"
+            ? "Board Ship"
+            : routeCrumb.nextExitCommand === "+ship/leave"
+              ? "Cycle Ashore"
+              : `Walk → ${routeCrumb.nextRoomName} (${routeCrumb.hops}h)`;
+        questItems.push({
+          kind: "route",
+          key: tracked.key,
+          command: routeCrumb.nextExitCommand,
+          title: routeTitle,
+          detail: `${routeCrumb.hops} ${routeCrumb.hops === 1 ? "hop" : "hops"} to ${routeCrumb.targetRoomName} · ${routeCrumb.nextExitCommand}`,
+        });
+      } else {
+        const suggested = this.quests.suggestedAction;
+        if (suggested) {
+          questItems.push({
+            kind: "step",
+            key: tracked.key,
+            command: suggested.command,
+            title: `Next: ${suggested.label}`,
+            detail: tracked.nextStep
+              ? `${suggested.command} — ${tracked.nextStep}`
+              : suggested.command,
+          });
+        }
+      }
+
+      if (this.quests.active.length > 1) {
+        const idx = Math.max(
+          0,
+          this.quests.active.findIndex((item) => item.key === tracked.key),
+        );
+        const nextQuest = this.quests.active[(idx + 1) % this.quests.active.length];
+        questItems.push({
+          kind: "cycle",
+          key: tracked.key,
+          title: `Cycle Tracked Quest (${idx + 1}/${this.quests.active.length})`,
+          detail: nextQuest ? `Switch tracker to ${nextQuest.title}` : "Switch active quest tracker",
+        });
+      }
+    }
+
+    for (const aq of this.quests.active) {
+      questItems.push({
+        kind: "active",
         key: aq.key,
         title: aq.title,
         detail: aq.nextStep || `Turn in to ${aq.turnInName}`,
         ready: aq.readyToFinish || aq.canFinishNow,
-      })),
-      ...this.quests.available.map((av) => ({
-        kind: "available" as const,
+      });
+    }
+    for (const av of this.quests.available) {
+      questItems.push({
+        kind: "available",
         key: av.key,
         npcId: av.giverId,
         title: av.title,
         detail: `Offered by ${av.giverName}`,
-      })),
-    ];
+      });
+    }
     this.paletteEntries = paletteEntries(q, {
       commands: this.commands.entries,
       aliases: this.channels.list.map((c) => c.alias).filter((a) => a.length > 0),
@@ -2136,6 +2245,23 @@ export class GameApp {
       return;
     }
     if (entry.questAction) {
+      if (entry.questAction.kind === "cycle") {
+        this.quests.cycleTracked();
+        return;
+      }
+      if (entry.questAction.kind === "route" || entry.questAction.kind === "step") {
+        const cmd = entry.questAction.command?.trim() ?? "";
+        if (!cmd) {
+          return;
+        }
+        if (run) {
+          this.composer?.setText("");
+          this.submit(cmd);
+          return;
+        }
+        this.composer?.focus(cmd);
+        return;
+      }
       if (entry.questAction.kind === "available" && entry.questAction.npcId) {
         this.quests.openNpcDialog(entry.questAction.npcId);
       } else {

@@ -107,4 +107,50 @@ describe("paletteEntries", () => {
     expect(availRow?.label).toBe("[!] First Papers at the Registry");
     expect(availRow?.questAction?.npcId).toBe("#42");
   });
+
+  it("includes quest route, suggested step, and multi-quest cycle shortcuts", () => {
+    const entries = paletteEntries("", {
+      ...sources,
+      quests: [
+        {
+          kind: "route",
+          key: "q.metals",
+          command: "+ship/board",
+          title: "Board Ship",
+          detail: "1 hop to Board Ship · +ship/board",
+        },
+        {
+          kind: "step",
+          key: "q.refit",
+          command: "+coop/refit prospector",
+          title: "Next: Refit Dray-P",
+          detail: "+coop/refit prospector — Refit your Dray at the yard",
+        },
+        {
+          kind: "cycle",
+          key: "q.metals",
+          title: "Cycle Tracked Quest (1/2)",
+          detail: "Switch tracker to Refit the Dray",
+        },
+      ],
+    });
+    const routeRow = entries.find((e) => e.questAction?.kind === "route");
+    expect(routeRow?.label).toBe("[→] Board Ship");
+    expect(routeRow?.insert).toBe("+ship/board");
+    expect(routeRow?.local).toBe(false);
+    const stepRow = entries.find((e) => e.questAction?.kind === "step");
+    expect(stepRow?.label).toBe("[▸] Next: Refit Dray-P");
+    expect(stepRow?.insert).toBe("+coop/refit prospector");
+    expect(stepRow?.local).toBe(false);
+    const cycleRow = entries.find((e) => e.questAction?.kind === "cycle");
+    expect(cycleRow?.label).toBe("[↻] Cycle Tracked Quest (1/2)");
+    expect(cycleRow?.local).toBe(true);
+
+    expect(paletteEntries("board", { ...sources, quests: [
+      { kind: "route", key: "q.metals", command: "+ship/board", title: "Board Ship", detail: "1 hop" },
+    ] }).some((e) => e.questAction?.command === "+ship/board")).toBe(true);
+    expect(paletteEntries("cycle", { ...sources, quests: [
+      { kind: "cycle", key: "q.metals", title: "Cycle Tracked Quest (1/2)", detail: "Switch" },
+    ] }).some((e) => e.questAction?.kind === "cycle")).toBe(true);
+  });
 });
