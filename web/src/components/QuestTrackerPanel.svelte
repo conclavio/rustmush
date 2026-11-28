@@ -1,18 +1,32 @@
 <script lang="ts">
   // Collapsible HUD Quest Tracker bar mounted on the Scene screen.
-  // Shows the currently tracked active quest, objective checklist, 1-click Verify/Complete/Abandon,
-  // or a subtle prompt when a quest NPC in the room has an available quest.
+  // Shows the currently tracked active quest, 7-step Guided Tour progress pill,
+  // turn-by-turn 1-click station route step, objective checklist, 1-click Verify/Complete/Abandon,
+  // or a quick-accept prompt when a quest NPC in the room has an available quest.
   import type { GameApp } from "$lib/game.svelte";
+  import { computeNextQuestExitBreadcrumb } from "$lib/tacsim/spatial";
 
   let { app, onCmd }: { app: GameApp; onCmd: (cmd: string) => void } = $props();
 
   const q = $derived(app.quests);
   const tracked = $derived(q.trackedQuest);
   const suggested = $derived(q.suggestedAction);
+  const tour = $derived(q.guidedTourProgress);
   const firstOffer = $derived(q.available[0] ?? null);
   const doneCount = $derived(
     tracked ? tracked.checkpoints.filter((cp) => cp.checked).length : 0,
   );
+  const routeCrumb = $derived.by(() => {
+    const tacsim = app.tacsim;
+    if (!tracked || !tacsim || tacsim.isAboardShip) return null;
+    const targetEntry =
+      tracked.nextRoomEntry ||
+      tracked.checkpoints.find((c) => !c.checked && !c.liveReady && c.roomEntry)?.roomEntry ||
+      null;
+    const currentEntry =
+      (tacsim.view3dOpen ? tacsim.physicalLocationKey : null) ?? tacsim.serverStationRoomEntry;
+    return computeNextQuestExitBreadcrumb(tacsim.stationPack, currentEntry, targetEntry);
+  });
 </script>
 
 {#if tracked}
@@ -33,6 +47,17 @@
       <span class="progress">
         ({doneCount}/{tracked.checkpoints.length})
       </span>
+      {#if tour}
+        <button
+          type="button"
+          class="tour-pill"
+          class:mastered={tour.allDone}
+          onclick={() => q.openLog("active")}
+          title="Guided Captain's Tour progress"
+        >
+          {tour.allDone ? `Corridor Captain ${tour.completed}/${tour.total}` : `Tour ${tour.completed}/${tour.total}`}
+        </button>
+      {/if}
       {#if q.trackerCollapsed}
         <span class="inline-next">{tracked.nextStep}</span>
       {/if}
@@ -44,6 +69,15 @@
       {:else if tracked.canCheckNow}
         <button type="button" class="tbtn primary" onclick={() => onCmd(tracked.checkCmd)}>
           Verify Step
+        </button>
+      {:else if routeCrumb}
+        <button
+          type="button"
+          class="tbtn route"
+          title={`Quest route: ${routeCrumb.hops} ${routeCrumb.hops === 1 ? "hop" : "hops"} to ${routeCrumb.targetRoomName} (${routeCrumb.nextExitCommand})`}
+          onclick={() => onCmd(routeCrumb.nextExitCommand)}
+        >
+          Walk → {routeCrumb.nextRoomName} ({routeCrumb.hops}h)
         </button>
       {:else if suggested}
         <button
@@ -94,8 +128,18 @@
       <span class="inline-next">
         <strong>{firstOffer.giverName}</strong> offers: <em>{firstOffer.title}</em>
       </span>
+      {#if tour}
+        <span class="tour-pill">
+          Tour {tour.completed}/{tour.total}
+        </span>
+      {/if}
       <span class="grow"></span>
-      <button type="button" class="tbtn primary" onclick={() => q.openNpcDialog(firstOffer.giverId)}>
+      {#if firstOffer.acceptCmd}
+        <button type="button" class="tbtn primary" onclick={() => onCmd(firstOffer.acceptCmd)}>
+          Accept Quest
+        </button>
+      {/if}
+      <button type="button" class="tbtn" onclick={() => q.openNpcDialog(firstOffer.giverId)}>
         Open Quest Dialog
       </button>
       {#if q.completed.length > 0}
@@ -103,6 +147,19 @@
           Completed ({q.completed.length})
         </button>
       {/if}
+    </div>
+  </section>
+{:else if tour?.allDone}
+  <section class="tracker mastered-hint" aria-label="Guided tour complete">
+    <div class="tracker-bar">
+      <span class="qmark mastered-mark" aria-hidden="true">★</span>
+      <span class="inline-next mastered-text">
+        <strong>Corridor Captain</strong> — Guided Tour Complete ({tour.completed}/{tour.total})
+      </span>
+      <span class="grow"></span>
+      <button type="button" class="tbtn" onclick={() => q.openLog("completed")}>
+        Completed ({q.completed.length})
+      </button>
     </div>
   </section>
 {/if}
@@ -192,6 +249,42 @@
     background: #10b981;
     border-color: #34d399;
     color: #031911;
+  }
+  .tbtn.route {
+    background: rgba(251, 191, 36, 0.18);
+    border-color: #fbbf24;
+    color: #fef3c7;
+  }
+  .tbtn.route:hover {
+    filter: brightness(1.14);
+  }
+  .tour-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.08rem 0.45rem;
+    border-radius: 999px;
+    border: 1px solid rgba(251, 191, 36, 0.55);
+    background: rgba(251, 191, 36, 0.12);
+    color: #fde68a;
+    font: inherit;
+    font-size: 0.7rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .tour-pill.mastered {
+    border-color: #34d399;
+    background: rgba(16, 185, 129, 0.18);
+    color: #a7f3d0;
+  }
+  .tracker.mastered-hint {
+    background: linear-gradient(90deg, rgba(16, 185, 129, 0.14), rgba(15, 23, 36, 0.92));
+  }
+  .qmark.mastered-mark {
+    background: #10b981;
+    color: #031911;
+  }
+  .mastered-text {
+    color: #a7f3d0;
   }
   .tracker-body {
     padding: 0.25rem 0.75rem 0.45rem 1.8rem;
