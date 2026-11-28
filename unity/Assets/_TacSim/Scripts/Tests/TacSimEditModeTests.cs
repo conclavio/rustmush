@@ -11623,5 +11623,94 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestShipInteriorWayfinding_GuidesAirlockToBridge_AndHoldToVehicleBay()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestShipWayfindingTestRoot");
+            try
+            {
+                var ship = rootGo.AddComponent<ShipInteriorController>();
+                ship.BuildInterior(null, "tacsim.unit.dray_p");
+
+                // 1. Airlock -> Bridge multi-hop breadcrumb
+                Assert.IsTrue(
+                    ship.TryGetNextQuestCompartmentBreadcrumb(
+                        "airlock",
+                        "bridge",
+                        out string nextCompId,
+                        out string nextCompName,
+                        out string nextCmd,
+                        out int hops));
+                Assert.AreEqual("passage", nextCompId);
+                Assert.IsFalse(string.IsNullOrEmpty(nextCompName));
+                Assert.IsTrue(nextCmd.StartsWith("goto ", System.StringComparison.OrdinalIgnoreCase), $"Unexpected ship cmd: {nextCmd}");
+                Assert.GreaterOrEqual(hops, 2);
+
+                // Already on Bridge -> clears cleanly
+                Assert.IsFalse(
+                    ship.TryGetNextQuestCompartmentBreadcrumb(
+                        "bridge",
+                        "bridge",
+                        out _, out _, out _, out _));
+
+                // 2. Cargo Hold -> Dray-P Vehicle Bay (+tv/bay in)
+                if (ship.Template.Compartments.ContainsKey("bay"))
+                {
+                    Assert.IsTrue(
+                        ship.TryGetNextQuestCompartmentBreadcrumb(
+                            "hold",
+                            "bay",
+                            out string bayId,
+                            out _,
+                            out string bayCmd,
+                            out int bayHops));
+                    Assert.AreEqual("bay", bayId);
+                    Assert.AreEqual("+tv/bay in", bayCmd);
+                    Assert.AreEqual(1, bayHops);
+                }
+
+                // 3. QuestJournal resolves "bridge" for flight quests and "bay" for active surface mining quests
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"",
+                        ""title"": ""Metals Down the Corridor"",
+                        ""checkpoints"": [{
+                            ""id"": ""sail_stickney"",
+                            ""title"": ""Sail to Stickney Yards"",
+                            ""instructions"": ""Run +ship/plan stickney and depart."",
+                            ""checked"": false,
+                            ""live_ready"": false
+                        }]
+                    }]
+                }")));
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveShipTargetCompartment(out string flightTarget));
+                Assert.AreEqual("bridge", flightTarget);
+
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan and Mine Carbon Ore"",
+                        ""checkpoints"": [{
+                            ""id"": ""mine_carbon_ore"",
+                            ""title"": ""Mine 1t carbon ore"",
+                            ""instructions"": ""Run +tv/1 mine go."",
+                            ""checked"": false,
+                            ""live_ready"": false
+                        }]
+                    }]
+                }")));
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveShipTargetCompartment(out string mineTarget));
+                Assert.AreEqual("bay", mineTarget);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

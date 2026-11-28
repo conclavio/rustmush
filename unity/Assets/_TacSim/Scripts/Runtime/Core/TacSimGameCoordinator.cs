@@ -1299,14 +1299,46 @@ namespace TacSim.Core
             else
             {
                 Hud.Minimap.SetQuestObjectiveRoom(string.Empty, isTurnIn: false, currentRoomHasOffer: false);
-                Hud.SetQuestExitBreadcrumb(string.Empty, string.Empty, 0);
+                SyncStationQuestBreadcrumb(string.Empty);
             }
         }
 
         private void SyncStationQuestBreadcrumb(string targetRoomEntry)
         {
             if (Hud == null) return;
-            if (_isAboardShip || StationWorld == null || string.IsNullOrEmpty(targetRoomEntry))
+            if (_isAboardShip)
+            {
+                if ((Player != null && Player.IsSeatedAtHelm) ||
+                    ShipInterior == null ||
+                    Hud.QuestJournal == null ||
+                    !Hud.QuestJournal.TryGetActiveShipTargetCompartment(out string shipTarget))
+                {
+                    Hud.SetQuestExitBreadcrumb(string.Empty, string.Empty, 0);
+                    Hud.QuestJournal?.SetTrackerRouteBreadcrumb(string.Empty, string.Empty, 0);
+                    return;
+                }
+                string currentComp = !string.IsNullOrEmpty(ShipInterior.ActiveCompartmentId)
+                    ? ShipInterior.ActiveCompartmentId
+                    : _serverShipCompartment;
+                if (ShipInterior.TryGetNextQuestCompartmentBreadcrumb(
+                        currentComp,
+                        shipTarget,
+                        out _,
+                        out string nextCompName,
+                        out string nextShipCmd,
+                        out int shipHops))
+                {
+                    Hud.SetQuestExitBreadcrumb(nextCompName, nextShipCmd, shipHops);
+                    Hud.QuestJournal.SetTrackerRouteBreadcrumb(nextCompName, nextShipCmd, shipHops);
+                }
+                else
+                {
+                    Hud.SetQuestExitBreadcrumb(string.Empty, string.Empty, 0);
+                    Hud.QuestJournal.SetTrackerRouteBreadcrumb(string.Empty, string.Empty, 0);
+                }
+                return;
+            }
+            if (StationWorld == null || string.IsNullOrEmpty(targetRoomEntry))
             {
                 Hud.SetQuestExitBreadcrumb(string.Empty, string.Empty, 0);
                 Hud.QuestJournal?.SetTrackerRouteBreadcrumb(string.Empty, string.Empty, 0);

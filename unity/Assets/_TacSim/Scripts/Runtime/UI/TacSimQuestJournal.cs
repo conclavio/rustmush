@@ -289,6 +289,22 @@ namespace TacSim.UI
             }
             return false;
         }
+
+        public bool TryGetActiveShipTargetCompartment(out string targetCompartment)
+        {
+            targetCompartment = string.Empty;
+            if (TryGetActiveSurfaceMiningStatus(out var mining) && !mining.MineDone)
+            {
+                targetCompartment = "bay";
+                return true;
+            }
+            if (TryGetActiveDestinationPort(out _))
+            {
+                targetCompartment = "bridge";
+                return true;
+            }
+            return false;
+        }
         public string PinnedCategory { get; private set; } = string.Empty;
         public string PinnedTitle { get; private set; } = string.Empty;
         public string PinnedDetail { get; private set; } = string.Empty;
