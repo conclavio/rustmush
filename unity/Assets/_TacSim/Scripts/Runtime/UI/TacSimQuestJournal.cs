@@ -1036,6 +1036,9 @@ namespace TacSim.UI
             DialogNpcId = string.Empty;
             DialogQuestKey = string.Empty;
             _confirmAbandonKey = string.Empty;
+            _trackerRouteRoomName = string.Empty;
+            _trackerRouteCommand = string.Empty;
+            _trackerRouteHops = 0;
             _hasHydratedPanel = false;
             _seenActiveKeys.Clear();
             _seenReadyKeys.Clear();
@@ -1240,14 +1243,40 @@ namespace TacSim.UI
             return true;
         }
 
+        private string _trackerRouteRoomName = string.Empty;
+        private string _trackerRouteCommand = string.Empty;
+        private int _trackerRouteHops;
+
+        public string TrackerDetailSnapshot => _trackerDetailText != null ? _trackerDetailText.text : string.Empty;
+        public string TrackerActionLabelSnapshot => _trackerActionLbl != null ? _trackerActionLbl.text : string.Empty;
+
+        public void SetTrackerRouteBreadcrumb(string nextRoomName, string command, int hops)
+        {
+            string normName = hops > 0 && !string.IsNullOrWhiteSpace(nextRoomName) && !string.IsNullOrWhiteSpace(command)
+                ? nextRoomName.Trim()
+                : string.Empty;
+            string normCmd = !string.IsNullOrEmpty(normName) ? command.Trim() : string.Empty;
+            int normHops = !string.IsNullOrEmpty(normName) ? hops : 0;
+            if (string.Equals(_trackerRouteRoomName, normName, StringComparison.Ordinal) &&
+                string.Equals(_trackerRouteCommand, normCmd, StringComparison.Ordinal) &&
+                _trackerRouteHops == normHops)
+                return;
+
+            _trackerRouteRoomName = normName;
+            _trackerRouteCommand = normCmd;
+            _trackerRouteHops = normHops;
+            SyncStructuredTrackerCard();
+        }
+
         private void SyncStructuredTrackerCard()
         {
             if (_manualPinActive || LatestPanel == null) return;
+            bool hasTour = TryGetGuidedTourProgress(out int tourDone, out int tourTotal, out _, out bool tourAllDone);
             var active = FindActiveByKey(TrackedQuestKey) ?? (LatestPanel.Active.Count > 0 ? LatestPanel.Active[0] : null);
             if (active != null)
             {
                 int done = 0;
-                var sb = new StringBuilder(160);
+                var sb = new StringBuilder(192);
                 for (int i = 0; i < active.Checkpoints.Count; i++)
                 {
                     var cp = active.Checkpoints[i];
@@ -1255,10 +1284,17 @@ namespace TacSim.UI
                     string sym = cp.Checked ? "<color=#55EE99>[✓]</color>" : (cp.LiveReady ? "<color=#FFDD55>[◆]</color>" : "<color=#99BBCC>[ ]</color>");
                     sb.Append(sym).Append(' ').Append(MushProtocol.EscapeUnityRichText(cp.Title)).Append('\n');
                 }
+                if (!active.CanFinishNow && !active.CanCheckNow && !string.IsNullOrEmpty(_trackerRouteRoomName) && _trackerRouteHops > 0)
+                {
+                    sb.Append("<color=#FFDD44>Route:</color> -> ")
+                      .Append(MushProtocol.EscapeUnityRichText(_trackerRouteRoomName))
+                      .Append(" (").Append(_trackerRouteHops).Append("h)\n");
+                }
                 if (!string.IsNullOrEmpty(active.NextStep))
                     sb.Append("<color=#77DDFF>Next:</color> ").Append(MushProtocol.EscapeUnityRichText(active.NextStep));
 
-                PinnedCategory = $"QUEST ({done}/{active.Checkpoints.Count}) [J]";
+                string tourSuffix = hasTour ? $" · TOUR {tourDone}/{tourTotal}" : string.Empty;
+                PinnedCategory = $"QUEST ({done}/{active.Checkpoints.Count}){tourSuffix} [J]";
                 PinnedTitle = active.Title;
                 PinnedDetail = active.NextStep;
                 if (_trackerHeaderText != null) _trackerHeaderText.text = PinnedCategory;
@@ -1273,6 +1309,7 @@ namespace TacSim.UI
                     {
                         if (active.CanFinishNow) _trackerActionLbl.text = "COMPLETE [?]";
                         else if (active.CanCheckNow) _trackerActionLbl.text = "VERIFY STEP";
+                        else if (!string.IsNullOrEmpty(_trackerRouteCommand)) _trackerActionLbl.text = $"WALK ({_trackerRouteHops}h)";
                         else if (!string.IsNullOrEmpty(active.NextRoomEntry)) _trackerActionLbl.text = "WAYFINDER";
                         else _trackerActionLbl.text = "OPEN DIALOG";
                     }
@@ -1287,7 +1324,8 @@ namespace TacSim.UI
             if (LatestPanel.Available.Count > 0)
             {
                 var offer = LatestPanel.Available[0];
-                PinnedCategory = "QUEST AVAILABLE [!]";
+                string tourSuffix = hasTour ? $" · TOUR {tourDone}/{tourTotal}" : string.Empty;
+                PinnedCategory = $"QUEST AVAILABLE [!]{tourSuffix}";
                 PinnedTitle = offer.Title;
                 PinnedDetail = $"Speak with {offer.GiverName}";
                 if (_trackerHeaderText != null) _trackerHeaderText.text = PinnedCategory;
@@ -1298,7 +1336,27 @@ namespace TacSim.UI
                 if (_trackerActionBtn != null)
                 {
                     _trackerActionBtn.gameObject.SetActive(true);
-                    if (_trackerActionLbl != null) _trackerActionLbl.text = "OPEN DIALOG";
+                    if (_trackerActionLbl != null)
+                        _trackerActionLbl.text = !string.IsNullOrEmpty(offer.AcceptCmd) ? "ACCEPT [!]" : "OPEN DIALOG";
+                }
+                if (_trackerNavBtn != null) _trackerNavBtn.gameObject.SetActive(false);
+                return;
+            }
+
+            if (hasTour && tourAllDone)
+            {
+                PinnedCategory = $"CORRIDOR CAPTAIN ({tourDone}/{tourTotal}) [J]";
+                PinnedTitle = "Guided Tour Complete";
+                PinnedDetail = $"{tourDone}/{tourTotal} Guided Quests Completed";
+                if (_trackerHeaderText != null) _trackerHeaderText.text = PinnedCategory;
+                if (_trackerDetailText != null)
+                {
+                    _trackerDetailText.text = $"<b><color=#55EE99>★ CORRIDOR CAPTAIN</color></b>\nGuided Tour Complete ({tourDone}/{tourTotal}).";
+                }
+                if (_trackerActionBtn != null)
+                {
+                    _trackerActionBtn.gameObject.SetActive(true);
+                    if (_trackerActionLbl != null) _trackerActionLbl.text = "LOG [J]";
                 }
                 if (_trackerNavBtn != null) _trackerNavBtn.gameObject.SetActive(false);
                 return;
@@ -1333,7 +1391,7 @@ namespace TacSim.UI
             return true;
         }
 
-        private void TriggerTrackerQuickAction()
+        public void TriggerTrackerQuickAction()
         {
             if (LatestPanel == null) return;
             var active = FindActiveByKey(TrackedQuestKey) ?? (LatestPanel.Active.Count > 0 ? LatestPanel.Active[0] : null);
@@ -1349,6 +1407,11 @@ namespace TacSim.UI
                     OnCommandRequested?.Invoke(active.CheckCmd);
                     return;
                 }
+                if (!string.IsNullOrEmpty(_trackerRouteCommand))
+                {
+                    OnCommandRequested?.Invoke(_trackerRouteCommand);
+                    return;
+                }
                 if (!string.IsNullOrEmpty(active.NextRoomEntry))
                 {
                     OnWayfinderRoomRequested?.Invoke(active.NextRoomEntry);
@@ -1358,7 +1421,24 @@ namespace TacSim.UI
                 return;
             }
             if (LatestPanel.Available.Count > 0)
-                OpenNpcQuestDialog(LatestPanel.Available[0].GiverId);
+            {
+                var offer = LatestPanel.Available[0];
+                if (!string.IsNullOrEmpty(offer.AcceptCmd))
+                {
+                    TrackedQuestKey = offer.Key;
+                    _manualPinActive = false;
+                    OnCommandRequested?.Invoke(offer.AcceptCmd);
+                    return;
+                }
+                OpenNpcQuestDialog(offer.GiverId);
+                return;
+            }
+            if (TryGetGuidedTourProgress(out _, out _, out _, out bool allDone) && allDone)
+            {
+                ActiveQuestSubTab = "completed";
+                SelectTab(QuestJournalTab.Quests);
+                SetOpen(true);
+            }
         }
 
         public void TriggerDialogWayfinder()
