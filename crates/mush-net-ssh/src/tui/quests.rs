@@ -2304,8 +2304,8 @@ pub fn render_quest_tracker_lines_full(
                 "+ship/board (Board Ship)".to_string()
             } else if hop.next_exit_command == "+ship/leave" {
                 "+ship/leave (Cycle Ashore)".to_string()
-            } else if hop.next_exit_command == "+tv/bay" {
-                "+tv/bay (Vehicle Bay)".to_string()
+            } else if hop.next_exit_command == "+tv/bay in" || hop.next_exit_command == "+tv/bay" {
+                format!("{} (Vehicle Bay)", hop.next_exit_command)
             } else {
                 format!("-> {} ({}h)", hop.next_room_name, hop.hops)
             };
@@ -2647,12 +2647,16 @@ pub fn render_quest_overlay(
     render_quest_overlay_with_stowage(f, area, state, snap, None);
 }
 
-fn guided_step_badge(key: &str) -> String {
+pub(crate) fn guided_step_badge(key: &str) -> String {
     GUIDED_TOUR_KEYS
         .iter()
         .position(|&k| k == key)
         .map(|i| format!(" [Step {}/7]", i + 1))
         .unwrap_or_default()
+}
+
+pub(crate) fn is_guided_quest(key: &str, category: &str) -> bool {
+    category.eq_ignore_ascii_case("guided") || GUIDED_TOUR_KEYS.contains(&key)
 }
 
 /// Paint the centered Quest Dialog & Journal overlay with live ship stowage & refit hold telemetry.
