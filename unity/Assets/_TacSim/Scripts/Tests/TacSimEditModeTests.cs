@@ -14024,5 +14024,110 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestJournal_PrioritizesNpcTurnInCyclesDialogAndConfirmsPermanentDecline()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestDialogPickerDeclineTest");
+            try
+            {
+                var journal = rootGo.AddComponent<TacSim.UI.TacSimQuestJournal>();
+                journal.BuildUi(rootGo.transform, null);
+                var emitted = new List<string>();
+                journal.OnCommandRequested += cmd => emitted.Add(cmd);
+
+                journal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#15"",
+                    ""room_name"": ""Registry & Co-op Desk"",
+                    ""room_markers"": [
+                        {
+                            ""npc_id"": ""#18"", ""npc_name"": ""Ilse Oduya-Brandt"",
+                            ""marker"": ""available"", ""symbol"": ""!"",
+                            ""quest_key"": ""side.one_shot"", ""quest_title"": ""One-Shot Audit""
+                        },
+                        {
+                            ""npc_id"": ""#18"", ""npc_name"": ""Ilse Oduya-Brandt"",
+                            ""marker"": ""turn_in"", ""symbol"": ""?"",
+                            ""quest_key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""quest_title"": ""First Papers at the Registry""
+                        }
+                    ],
+                    ""active"": [
+                        {
+                            ""key"": ""side.in_progress"", ""title"": ""In-Progress Favor"",
+                            ""giver_id"": ""#18"", ""giver_name"": ""Ilse Oduya-Brandt"",
+                            ""turn_in_id"": ""#18"", ""turn_in_name"": ""Ilse Oduya-Brandt"",
+                            ""ready_to_finish"": false, ""can_finish_now"": false,
+                            ""abandon_cmd"": ""+quest/abandon side.in_progress""
+                        },
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                            ""title"": ""First Papers at the Registry"",
+                            ""giver_id"": ""#11"", ""giver_name"": ""Maren Halvorsen"",
+                            ""turn_in_id"": ""#18"", ""turn_in_name"": ""Ilse Oduya-Brandt"",
+                            ""ready_to_finish"": true, ""can_finish_now"": true,
+                            ""finish_cmd"": ""+quest/finish #18 tok1"",
+                            ""abandon_cmd"": ""+quest/abandon q1""
+                        }
+                    ],
+                    ""available"": [
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"",
+                            ""title"": ""Stock the Locker and Tanks"",
+                            ""giver_id"": ""#18"", ""giver_name"": ""Ilse Oduya-Brandt"",
+                            ""turn_in_id"": ""#18"", ""turn_in_name"": ""Ilse Oduya-Brandt"",
+                            ""allow_restart"": true,
+                            ""accept_cmd"": ""+quest/accept #18 tok_g2"",
+                            ""decline_cmd"": ""+quest/decline #18 tok_g2""
+                        },
+                        {
+                            ""key"": ""side.one_shot"",
+                            ""title"": ""One-Shot Audit"",
+                            ""giver_id"": ""#18"", ""giver_name"": ""Ilse Oduya-Brandt"",
+                            ""turn_in_id"": ""#18"", ""turn_in_name"": ""Ilse Oduya-Brandt"",
+                            ""allow_restart"": false,
+                            ""accept_cmd"": ""+quest/accept #18 tok_side"",
+                            ""decline_cmd"": ""+quest/decline #18 tok_side""
+                        }
+                    ]
+                }")));
+
+                // 1. Opening Ilse's NPC dialog picks turn-in [?] FIRST even though available [!] appeared earlier
+                Assert.IsTrue(journal.OpenNpcQuestDialog("#18"));
+                Assert.AreEqual("tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll", journal.DialogQuestKey);
+                Assert.AreEqual("QUEST 1/4", journal.DialogCycleLabelSnapshot);
+
+                // 2. Cycle to restartable guided offer -> permanent decline button stays hidden
+                journal.CycleNpcDialogQuest();
+                Assert.AreEqual("tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel", journal.DialogQuestKey);
+                Assert.AreEqual("QUEST 2/4", journal.DialogCycleLabelSnapshot);
+                Assert.IsFalse(journal.IsDialogAbandonVisible, "Restartable guided offer must not expose permanent decline");
+
+                // 3. Cycle to non-restartable offer -> 2-click DECLINE -> CONFIRM DECLINE emits +quest/decline
+                journal.CycleNpcDialogQuest();
+                Assert.AreEqual("side.one_shot", journal.DialogQuestKey);
+                Assert.AreEqual("QUEST 3/4", journal.DialogCycleLabelSnapshot);
+                Assert.IsTrue(journal.IsDialogAbandonVisible);
+                Assert.AreEqual("DECLINE", journal.DialogAbandonLabelSnapshot);
+
+                Assert.IsFalse(journal.AbandonDialogQuest(), "First click arms confirmation without submitting");
+                Assert.AreEqual("CONFIRM DECLINE", journal.DialogAbandonLabelSnapshot);
+                Assert.AreEqual(0, emitted.Count);
+
+                // Cycling away and back resets confirmation
+                journal.CycleNpcDialogQuest();
+                Assert.AreEqual("side.in_progress", journal.DialogQuestKey);
+                journal.OpenQuestDialogByKey("side.one_shot");
+                Assert.AreEqual("DECLINE", journal.DialogAbandonLabelSnapshot);
+
+                Assert.IsFalse(journal.AbandonDialogQuest());
+                Assert.IsTrue(journal.AbandonDialogQuest());
+                CollectionAssert.Contains(emitted, "+quest/decline #18 tok_side");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
