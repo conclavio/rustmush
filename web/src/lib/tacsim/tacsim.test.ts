@@ -2845,4 +2845,83 @@ describe("PR #693 Web review regressions (items 1-7, 9-11)", () => {
     expect(board?.nextExitCommand).toBe("+ship/board");
     expect(board?.nextRoomName).toBe("Board Ship");
   });
+
+  it("Bridge Flight Visor displays between-steps Next Guided destination chip and Step 6 Ground Chart shortcut", async () => {
+    let ws: FakeSocket | null = null;
+    const app = new GameApp({
+      url: "ws://test/ws",
+      webSocketFactory: (u) => (ws = new FakeSocket(u)),
+      random: () => 1,
+    });
+    app.client.connect("tok", "7");
+    const socket = ws as unknown as FakeSocket;
+    socket.readyState = 1;
+    socket.onopen?.();
+    socket.deliver(
+      {
+        t: "hello",
+        d: {
+          proto: 1,
+          server: "test",
+          features: [],
+          panels: [PORT_TRADE_FEED, TACSIM_CONTENT_FEED],
+        },
+      } as OutputEvent,
+      0,
+    );
+    app.tacsim.view3dOpen = true;
+    app.tacsim.isAboardShip = true;
+    app.tacsim.seatedAtBridgeHelm = true;
+    app.tacsim.ambient = {
+      ...app.tacsim.ambient,
+      docked: true,
+      port: "Ceres Freeport",
+      settledPad: false,
+    };
+    app.quests.applyFrame({
+      schema: 1,
+      completed: [
+        { key: "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll", title: "S1" },
+        { key: "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel", title: "S2" },
+        { key: "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery", title: "S3" },
+      ],
+      active: [],
+      available: [],
+    });
+
+    const sent: string[] = [];
+    const deck = render(TacsimSceneDeck, {
+      props: { app, onCmd: (c: string) => sent.push(c) },
+    });
+    await tick();
+    const destChips = screen.getAllByRole("button", { name: /\[QUEST\]\s+Dest: Stickney Yards/i });
+    expect(destChips.length).toBeGreaterThanOrEqual(2);
+    await fireEvent.click(destChips[0]!);
+    expect(sent).toContain("+ship/plan stickney");
+
+    // Step 6 surface mining active -> visor shows Ground Chart (CARBON) shortcut
+    app.quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+          title: "Scan, Sound, and Mine a Landing Site",
+          checkpoints: [
+            { id: "scan_landing_site", title: "Surface scan", instructions: "+tv/1 scan go", checked: false, live_ready: false },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", instructions: "+tv/1 mine go", checked: false, live_ready: false },
+          ],
+        },
+      ],
+      available: [],
+      completed: [],
+    });
+    await tick();
+    const mineChips = screen.getAllByRole("button", { name: /\[QUEST\]\s+Mine carbon_ore · Ground Chart/i });
+    expect(mineChips.length).toBeGreaterThanOrEqual(1);
+    await fireEvent.click(mineChips[0]!);
+    expect(app.quarry.mode).toBe("ground");
+    expect(app.quarry.family).toBe("carbon");
+    expect(sent).toContain("+chart/ground");
+    deck.unmount();
+  });
 });
