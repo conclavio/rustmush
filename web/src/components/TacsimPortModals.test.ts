@@ -1171,4 +1171,78 @@ describe("TacsimPortModals Dray-P Vehicle Bay and Co-op Refit quest guidance", (
     expect(remoteApp.tacsim.closeModal).toHaveBeenCalled();
     expect(questsRemote.dialogQuestKey).toBe(GUIDED_TOUR_KEYS[1]);
   });
+
+  it("shows [QUEST READY] turn-in handoff in Co-op Desk (Step 1) and Works & Yard (Step 5) once action completes", async () => {
+    // 1. Step 1 enrolled at Registry -> Ilse is right here -> Turn In Now (?) inside Co-op Desk
+    const qStep1 = new QuestsStore();
+    qStep1.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[0],
+          title: "First Papers at the Registry",
+          turn_in_name: "Ilse Oduya-Brandt",
+          next_room_entry: "room.c05_registry",
+          next_room_name: "Registry & Co-op Desk",
+          ready_to_finish: true,
+          can_finish_now: true,
+          finish_cmd: "+quest/finish #55=tok-step1",
+          checkpoints: [
+            {
+              id: "enroll_coop",
+              title: "Enroll in Belt Co-op",
+              instructions: "Run +coop/enroll.",
+              checked: true,
+              live_ready: true,
+            },
+          ],
+        },
+      ],
+    });
+    const onCmd = vi.fn();
+    const coopApp = makeApp(qStep1, "coop");
+    const rCoop = render(TacsimPortModals, { props: { app: coopApp, onCmd } });
+    const coopBanner = screen.getByRole("status", { name: "active quest coop ready to turn in" });
+    expect(coopBanner.textContent).toContain("[QUEST READY] Step 1/7");
+    expect(coopBanner.textContent).toContain("Ready to turn in to Ilse Oduya-Brandt here");
+    await fireEvent.click(screen.getByRole("button", { name: /Turn In Now \(\?\)/i }));
+    expect(onCmd).toHaveBeenCalledWith("+quest/finish #55=tok-step1");
+    expect(coopApp.tacsim.closeModal).toHaveBeenCalled();
+    rCoop.unmount();
+
+    // 2. Step 5 refitted at Works & Yard -> Return to Rosalind in Exchange Hall
+    const qStep5 = new QuestsStore();
+    qStep5.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[4],
+          title: "Refit the Dray for Surface Mining",
+          turn_in_name: "Rosalind Qureshi-Mbeki",
+          next_room_entry: "room.c07_exchange",
+          next_room_name: "Exchange Hall",
+          ready_to_finish: true,
+          can_finish_now: false,
+          checkpoints: [
+            {
+              id: "refit_dray_p",
+              title: "Refit your Dray into a Dray-P prospector",
+              instructions: "Run +coop/refit prospector.",
+              checked: true,
+              live_ready: true,
+            },
+          ],
+        },
+      ],
+    });
+    const indApp = makeApp(qStep5, "trade");
+    render(TacsimPortModals, { props: { app: indApp, onCmd: vi.fn() } });
+    await fireEvent.click(screen.getByRole("button", { name: /Works & Yard/i }));
+    const indBanner = screen.getByRole("status", { name: "active quest industry ready to turn in" });
+    expect(indBanner.textContent).toContain("[QUEST READY] Step 5/7");
+    expect(indBanner.textContent).toContain("Return to Rosalind Qureshi-Mbeki (Exchange Hall)");
+    await fireEvent.click(screen.getByRole("button", { name: /Open Quest Dialog/i }));
+    expect(indApp.tacsim.closeModal).toHaveBeenCalled();
+    expect(qStep5.dialogQuestKey).toBe(GUIDED_TOUR_KEYS[4]);
+  });
 });

@@ -1040,6 +1040,46 @@
                   <span class="muted">Propellant {refitHoldReadiness.propellantTonnes} t OK</span>
                 </div>
               {/if}
+            {:else if questReadyTurnIn}
+              <div class="quest-banner" role="status" aria-label="active quest industry ready to turn in">
+                <div class="qb-text">
+                  <span class="qtag">[QUEST READY]{questStepTag}</span>
+                  <strong>{questReadyTurnIn.title}</strong>
+                  <span class="muted">
+                    {#if questReadyTurnIn.canFinishNow}
+                      — Ready to turn in to {questReadyTurnIn.turnInName} here
+                    {:else}
+                      — Return to {questReadyTurnIn.turnInName}{questReadyTurnIn.nextRoomName
+                        ? ` (${questReadyTurnIn.nextRoomName})`
+                        : ""}
+                    {/if}
+                  </span>
+                </div>
+                <div class="qb-text">
+                  {#if questReadyTurnIn.canFinishNow}
+                    <button
+                      type="button"
+                      class="buybtn"
+                      onclick={() => {
+                        onCmd(questReadyTurnIn.finishCmd);
+                        app.tacsim.closeModal();
+                      }}
+                    >
+                      Turn In Now (?)
+                    </button>
+                  {/if}
+                  <button
+                    type="button"
+                    class="qbtn-gold"
+                    onclick={() => {
+                      app.tacsim.closeModal();
+                      app.quests.openQuestDialog(questReadyTurnIn.key);
+                    }}
+                  >
+                    Open Quest Dialog
+                  </button>
+                </div>
+              </div>
             {/if}
             <div class="act-row">
               <button type="button" class="ghost sm" onclick={() => onCmd("+works")}>Works Status (+works)</button>
@@ -1323,6 +1363,46 @@
               <span class="muted">Propellant {refitHoldReadiness.propellantTonnes} t OK</span>
             </div>
           {/if}
+        {:else if questReadyTurnIn}
+          <div class="quest-banner" role="status" aria-label="active quest coop ready to turn in">
+            <div class="qb-text">
+              <span class="qtag">[QUEST READY]{questStepTag}</span>
+              <strong>{questReadyTurnIn.title}</strong>
+              <span class="muted">
+                {#if questReadyTurnIn.canFinishNow}
+                  — Ready to turn in to {questReadyTurnIn.turnInName} here
+                {:else}
+                  — Return to {questReadyTurnIn.turnInName}{questReadyTurnIn.nextRoomName
+                    ? ` (${questReadyTurnIn.nextRoomName})`
+                    : ""}
+                {/if}
+              </span>
+            </div>
+            <div class="qb-text">
+              {#if questReadyTurnIn.canFinishNow}
+                <button
+                  type="button"
+                  class="buybtn"
+                  onclick={() => {
+                    onCmd(questReadyTurnIn.finishCmd);
+                    app.tacsim.closeModal();
+                  }}
+                >
+                  Turn In Now (?)
+                </button>
+              {/if}
+              <button
+                type="button"
+                class="qbtn-gold"
+                onclick={() => {
+                  app.tacsim.closeModal();
+                  app.quests.openQuestDialog(questReadyTurnIn.key);
+                }}
+              >
+                Open Quest Dialog
+              </button>
+            </div>
+          </div>
         {/if}
         <p class="prose">
           The Co-op stakes a Stickney-built Dray bulk hauler and your initial hold; it takes its lay
