@@ -26,7 +26,8 @@ use serde_json::{Value, json};
 use super::backend::sanitize_control_sequences as sanitize;
 use super::keys::{Arrow, Key};
 use super::quests::{
-    QuestDestinationHint, QuestMarker, QuestSuggestedAction, QuestTradeNeed, parse_room_markers,
+    QuestDestinationHint, QuestMarker, QuestSuggestedAction, QuestTradeNeed,
+    infer_station_port_from_room_entry, parse_room_markers,
 };
 
 /// Panel/query name for port trade & stowage telemetry.
@@ -460,6 +461,7 @@ pub struct PortWalkState {
     berth_docked_hulls: Vec<DockedHullInfo>,
     simulator: Option<SimulatorState>,
     docked: bool,
+    docked_port: Option<String>,
     server_location_key: String,
     active_location_key: String,
     room_title: String,
@@ -571,6 +573,7 @@ impl PortWalkState {
             berth_docked_hulls: Vec::new(),
             simulator: None,
             docked: true,
+            docked_port: None,
             server_location_key: "room.c03_arrivals".to_string(),
             active_location_key: "room.c03_arrivals".to_string(),
             room_title: "Port Watch Arrivals".to_string(),
@@ -1008,7 +1011,40 @@ impl PortWalkState {
         })
     }
 
-    /// Sync the active quest's target ship interior compartment (`"bridge"` or `"bay"`).
+    /// Normalized corridor port slug while aboard a docked ship (e.g. `"ceres"`, `"stickney"`).
+    #[must_use]
+    pub fn docked_port_slug(&self) -> Option<&str> {
+        if self.aboard_ship && self.docked {
+            self.docked_port.as_deref()
+        } else {
+            None
+        }
+    }
+
+    fn normalize_port_slug(raw: &str) -> Option<String> {
+        let low = raw.trim().to_ascii_lowercase();
+        if low.is_empty() {
+            return None;
+        }
+        if low.contains("stickney") || low.contains("phobos") {
+            return Some("stickney".to_string());
+        }
+        if low.contains("aitken") || low.contains("luna") {
+            return Some("luna".to_string());
+        }
+        if low.contains("voltaire") || low.contains("deimos") {
+            return Some("deimos".to_string());
+        }
+        if low.contains("ligeia") || low.contains("titan") {
+            return Some("titan".to_string());
+        }
+        if low.contains("ceres") || low.contains("freeport") {
+            return Some("ceres".to_string());
+        }
+        None
+    }
+
+    /// Sync the active quest's target ship interior compartment (`"airlock"`, `"bridge"`, or `"bay"`).
     pub fn observe_quest_ship_target(&mut self, target: Option<&str>) {
         let next = target.filter(|s| !s.is_empty()).map(str::to_string);
         if self.quest_ship_target != next {
@@ -1019,16 +1055,41 @@ impl PortWalkState {
 
     /// Compute the immediate next station exit OR ship interior compartment hatch
     /// along the shortest BFS path to the tracked quest's objective room/compartment.
+    /// Supports cross-port Berth Gallery boarding (`+ship/board`) and docked Airlock
+    /// disembark (`+ship/leave`).
     #[must_use]
     pub fn next_quest_hop(&self) -> Option<QuestExitBreadcrumb> {
+        let mut extra_step_label: Option<&'static str> = None;
         let (target_id, portals): (String, &[PortalGeom]) = if self.aboard_ship {
             if self.seated_at_helm {
                 return None;
             }
-            let raw_target = self
-                .quest_ship_target
-                .as_deref()
-                .or_else(|| self.quest_dest_port.as_ref().map(|_| "bridge"))?;
+            let docked_at_objective_port = self
+                .docked_port_slug()
+                .zip(
+                    self.quest_room_entry
+                        .as_deref()
+                        .and_then(infer_station_port_from_room_entry),
+                )
+                .is_some_and(|(docked, want)| docked.eq_ignore_ascii_case(want));
+            let raw_target = if self.quest_ship_target.as_deref() == Some("airlock")
+                || (docked_at_objective_port && self.quest_ship_target.as_deref() != Some("bay"))
+            {
+                "airlock"
+            } else {
+                self.quest_ship_target
+                    .as_deref()
+                    .or_else(|| self.quest_dest_port.as_ref().map(|_| "bridge"))?
+            };
+            if raw_target == "airlock" && self.active_location_key == "airlock" {
+                return Some(QuestExitBreadcrumb {
+                    next_room_entry: "ashore".into(),
+                    next_room_name: "Cycle Ashore".into(),
+                    next_exit_command: "+ship/leave".into(),
+                    target_room_name: "Cycle Ashore".into(),
+                    hops: 1,
+                });
+            }
             let resolved = if self.ship_rooms.iter().any(|r| r.entry_id == raw_target) {
                 raw_target
             } else if raw_target == "bay" && self.ship_rooms.iter().any(|r| r.entry_id == "hold") {
@@ -1036,10 +1097,33 @@ impl PortWalkState {
             } else {
                 return None;
             };
+            if resolved == "airlock" {
+                extra_step_label = Some("Cycle Ashore");
+            }
             (resolved.to_string(), &self.ship_portals)
         } else {
-            let target_id = self.quest_room_entry.as_deref()?;
-            (target_id.to_string(), &self.portals)
+            let raw_target = self.quest_room_entry.as_deref()?;
+            if self.rooms.iter().any(|r| r.entry_id == raw_target) {
+                (raw_target.to_string(), &self.portals)
+            } else if infer_station_port_from_room_entry(raw_target).is_some() {
+                let berth = self
+                    .rooms
+                    .iter()
+                    .find(|r| r.entry_id.to_ascii_lowercase().contains("berth_gallery"))?;
+                if self.active_location_key == berth.entry_id {
+                    return Some(QuestExitBreadcrumb {
+                        next_room_entry: "ship".into(),
+                        next_room_name: "Board Ship".into(),
+                        next_exit_command: "+ship/board".into(),
+                        target_room_name: "Board Ship".into(),
+                        hops: 1,
+                    });
+                }
+                extra_step_label = Some("Board Ship");
+                (berth.entry_id.clone(), &self.portals)
+            } else {
+                return None;
+            }
         };
         if target_id.is_empty() || self.active_location_key == target_id {
             return None;
@@ -1066,15 +1150,20 @@ impl PortWalkState {
                     let next_room_name = self
                         .find_room(&next_room_entry)
                         .map_or_else(|| next_room_entry.clone(), |r| r.name.clone());
-                    let target_room_name = self
+                    let base_target_name = self
                         .find_room(&target_id)
                         .map_or_else(|| target_id.clone(), |r| r.name.clone());
+                    let (target_room_name, hops) = if let Some(suffix) = extra_step_label {
+                        (format!("{base_target_name} ({suffix})"), next_depth + 1)
+                    } else {
+                        (base_target_name, next_depth)
+                    };
                     return Some(QuestExitBreadcrumb {
                         next_room_entry,
                         next_room_name,
                         next_exit_command: cmd,
                         target_room_name,
-                        hops: next_depth,
+                        hops,
                     });
                 }
                 visited.insert(p.to_room.clone());
@@ -1304,6 +1393,14 @@ impl PortWalkState {
                 .and_then(|t| t.get("docked"))
                 .and_then(Value::as_bool)
                 .unwrap_or(true);
+            if !self.docked {
+                self.docked_port = None;
+            } else if let Some(raw_port) = tac
+                .and_then(|t| t.get("port").or_else(|| t.get("port_entry")))
+                .and_then(Value::as_str)
+            {
+                self.docked_port = Self::normalize_port_slug(&sanitize(raw_port));
+            }
             if comp != "bridge" {
                 self.seated_at_helm = false;
             }
@@ -1602,6 +1699,15 @@ impl PortWalkState {
                 self.port_name.clear();
             } else if let Some(pn) = pn_val.as_str() {
                 self.port_name = sanitize(pn);
+            }
+        }
+        if let Some(adp_val) = obj.get("aboard_docked_port") {
+            if adp_val.is_null() {
+                if !self.docked {
+                    self.docked_port = None;
+                }
+            } else if let Some(adp) = adp_val.as_str() {
+                self.docked_port = Self::normalize_port_slug(&sanitize(adp));
             }
         }
         self.trade_next_after = obj.get("next_after").and_then(Value::as_u64);
@@ -8427,6 +8533,97 @@ mod tests {
             ready_txt.contains("[READY] Hold empty | Stores empty | Tank 12t OK"),
             "expected ready refit hold line: {ready_txt}"
         );
+    }
+
+    #[test]
+    fn cross_port_quest_routes_to_berth_boarding_and_docked_airlock_disembark() {
+        let mut st = PortWalkState::new();
+        let make_station_room = |entry: &str, name: &str| {
+            let mut ambient = std::collections::BTreeMap::new();
+            ambient.insert(
+                "atlas".into(),
+                json!({ "pack": "neighborhood.ceres_freeport", "entry": entry }),
+            );
+            RoomView {
+                id: "#10".into(),
+                name: name.into(),
+                desc: mush_proto::RichText::plain("Station room."),
+                exits: Vec::new(),
+                contents: Vec::new(),
+                zone: None,
+                ambient,
+            }
+        };
+
+        // 1. Standing at Ceres Registry with a Stickney objective -> walks toward Berth Gallery
+        st.observe_room(
+            &make_station_room("room.c05_registry", "Registry & Co-op Desk"),
+            Some("Pilot"),
+        );
+        st.observe_quest_objective_room(Some(("room.p07_receiving".into(), false)));
+        let hop_to_berth = st
+            .next_quest_hop()
+            .expect("expected cross-port hop toward berth gallery");
+        assert!(hop_to_berth.next_exit_command.starts_with("goto "));
+        assert!(
+            hop_to_berth.target_room_name.contains("Board Ship"),
+            "{:?}",
+            hop_to_berth
+        );
+        assert!(hop_to_berth.hops >= 2);
+
+        // 2. Arriving at Ceres Berth Gallery -> 1-hop +ship/board
+        st.observe_room(
+            &make_station_room("room.c01_berth_gallery", "Visiting Berth Gallery"),
+            Some("Pilot"),
+        );
+        let board_hop = st
+            .next_quest_hop()
+            .expect("expected Board Ship hop at berth gallery");
+        assert_eq!(board_hop.next_room_name, "Board Ship");
+        assert_eq!(board_hop.next_exit_command, "+ship/board");
+        assert_eq!(board_hop.hops, 1);
+
+        // 3. Aboard ship docked at Stickney on Bridge -> routes toward Airlock
+        let make_ship_room = |comp: &str| {
+            let mut ambient = std::collections::BTreeMap::new();
+            ambient.insert(
+                "tacsim".into(),
+                json!({
+                    "mode": "interior",
+                    "room": comp,
+                    "hull_name": "Salt Moth",
+                    "docked": true,
+                    "port": "stickney"
+                }),
+            );
+            RoomView {
+                id: "#50".into(),
+                name: format!("Salt Moth - {comp}"),
+                desc: mush_proto::RichText::plain("Ship deck."),
+                exits: Vec::new(),
+                contents: Vec::new(),
+                zone: None,
+                ambient,
+            }
+        };
+        st.observe_room(&make_ship_room("bridge"), Some("Pilot"));
+        assert_eq!(st.docked_port_slug(), Some("stickney"));
+        let to_airlock = st
+            .next_quest_hop()
+            .expect("expected bridge -> airlock hop when docked at Stickney");
+        assert_eq!(to_airlock.next_room_entry, "passage");
+        assert!(to_airlock.target_room_name.contains("Cycle Ashore"));
+        assert!(to_airlock.hops >= 2);
+
+        // 4. In Airlock while docked at Stickney -> 1-hop +ship/leave
+        st.observe_room(&make_ship_room("airlock"), Some("Pilot"));
+        let leave_hop = st
+            .next_quest_hop()
+            .expect("expected Cycle Ashore hop in airlock");
+        assert_eq!(leave_hop.next_room_name, "Cycle Ashore");
+        assert_eq!(leave_hop.next_exit_command, "+ship/leave");
+        assert_eq!(leave_hop.hops, 1);
     }
 
     #[test]
