@@ -856,8 +856,16 @@ namespace TacSim.Core
                 Hud.QuestJournal.OnPrefillCommandRequested += cmd => Hud?.PrefillChatInput(cmd);
                 Hud.QuestJournal.OnWayfinderRoomRequested += targetRoom =>
                 {
-                    if (!string.IsNullOrEmpty(targetRoom))
-                        PlotStationWayfinderRoute(targetRoom, autoWalk: false, isQuestObjective: true);
+                    string resolvedRoom = targetRoom;
+                    if (StationWorld != null)
+                    {
+                        bool needsOrigin = Hud.QuestJournal.NeedsOriginPortProcurement(TradeState);
+                        bool needsExp = Hud.QuestJournal.NeedsSurfaceExpeditionBoarding();
+                        if (StationWorld.TryResolveLocalQuestRoom(targetRoom, needsOrigin, needsExp, out string localRoom, out _))
+                            resolvedRoom = localRoom;
+                    }
+                    if (!string.IsNullOrEmpty(resolvedRoom))
+                        PlotStationWayfinderRoute(resolvedRoom, autoWalk: false, isQuestObjective: true);
                 };
                 Hud.QuestJournal.OnQuestsPanelUpdated += () =>
                 {
@@ -1306,7 +1314,20 @@ namespace TacSim.Core
             if (Hud.QuestJournal != null &&
                 Hud.QuestJournal.TryGetMinimapObjective(out string roomEntry, out bool isTurnIn, out bool hasOffer))
             {
-                Hud.Minimap.SetQuestObjectiveRoom(roomEntry, isTurnIn, hasOffer);
+                string minimapRoom = roomEntry;
+                bool minimapTurnIn = isTurnIn;
+                if (!_isAboardShip && StationWorld != null)
+                {
+                    bool needsOrigin = Hud.QuestJournal.NeedsOriginPortProcurement(TradeState);
+                    bool needsExp = Hud.QuestJournal.NeedsSurfaceExpeditionBoarding();
+                    if (StationWorld.TryResolveLocalQuestRoom(roomEntry, needsOrigin, needsExp, out string localRoom, out _))
+                    {
+                        if (!string.Equals(localRoom, roomEntry, StringComparison.OrdinalIgnoreCase))
+                            minimapTurnIn = false;
+                        minimapRoom = localRoom;
+                    }
+                }
+                Hud.Minimap.SetQuestObjectiveRoom(minimapRoom, minimapTurnIn, hasOffer);
                 SyncStationQuestBreadcrumb(roomEntry);
             }
             else
@@ -3193,17 +3214,34 @@ namespace TacSim.Core
                                 2.6f);
                             Audio?.PlayUiClick();
                         }
-                        else if (Hud.QuestJournal.TryGetMinimapObjective(out string questRoom, out bool questTurnIn, out _) &&
-                            !string.IsNullOrEmpty(questRoom) &&
-                            string.Equals(questRoom, matchedStationEntry, StringComparison.OrdinalIgnoreCase))
+                        else if (Hud.QuestJournal.TryGetMinimapObjective(out string questRoom, out bool questTurnIn, out _))
                         {
-                            Hud.FloatingCallouts?.ShowCallout(
-                                TacSimFloatingCallouts.FormatQuestRoomArrivalCallout(
-                                    rv.Name ?? matchedStationEntry,
-                                    questTurnIn),
-                                new Color(1f, 0.86f, 0.32f, 1f),
-                                2.4f);
-                            Audio?.PlayUiClick();
+                            string resolvedRoom = questRoom;
+                            bool resolvedTurnIn = questTurnIn;
+                            bool isBoarding = false;
+                            if (StationWorld != null)
+                            {
+                                bool needsOrigin = Hud.QuestJournal.NeedsOriginPortProcurement(TradeState);
+                                bool needsExp = Hud.QuestJournal.NeedsSurfaceExpeditionBoarding();
+                                if (StationWorld.TryResolveLocalQuestRoom(questRoom, needsOrigin, needsExp, out string localRoom, out isBoarding))
+                                {
+                                    if (!string.Equals(localRoom, questRoom, StringComparison.OrdinalIgnoreCase))
+                                        resolvedTurnIn = false;
+                                    resolvedRoom = localRoom;
+                                }
+                            }
+                            if (!string.IsNullOrEmpty(resolvedRoom) &&
+                                string.Equals(resolvedRoom, matchedStationEntry, StringComparison.OrdinalIgnoreCase))
+                            {
+                                Hud.FloatingCallouts?.ShowCallout(
+                                    TacSimFloatingCallouts.FormatQuestRoomArrivalCallout(
+                                        rv.Name ?? matchedStationEntry,
+                                        resolvedTurnIn,
+                                        isBoarding: isBoarding),
+                                    new Color(1f, 0.86f, 0.32f, 1f),
+                                    isBoarding ? 2.6f : 2.4f);
+                                Audio?.PlayUiClick();
+                            }
                         }
                     }
                 }

@@ -14258,5 +14258,111 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void Coordinator_ResolvesLocalStationQuestRoomForMinimapWayfinderAndBoardingCallout()
+        {
+            var rootGo = new UnityEngine.GameObject("LocalStationQuestResolutionTest");
+            try
+            {
+                var coord = rootGo.AddComponent<TacSimGameCoordinator>();
+                var hudGo = new UnityEngine.GameObject("Hud");
+                hudGo.transform.SetParent(rootGo.transform, false);
+                coord.Hud = hudGo.AddComponent<TacSim.UI.TacSimHudController>();
+                coord.EnsureSubsystems();
+
+                var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+                var onRoom = typeof(TacSimGameCoordinator).GetMethod("HandleServerRoomView", flags);
+                Assert.IsNotNull(onRoom);
+
+                // Stand at Registry & Co-op Desk on Ceres with 0/5t metals loaded for Step 3 (Stickney target)
+                onRoom.Invoke(coord, new object[]
+                {
+                    MushProtocol.ParseRoomView(JsonNode.Parse(@"{
+                        ""id"": ""#15"",
+                        ""name"": ""Registry & Co-op Desk"",
+                        ""ambient"": { ""atlas"": { ""pack"": ""neighborhood.ceres_freeport"", ""entry"": ""room.c05_registry"" } }
+                    }"))
+                });
+                coord.TradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""ceres"",
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 0, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 10000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": []
+                        }
+                    }
+                }"));
+                coord.Hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"",
+                        ""title"": ""Metals Down the Corridor"",
+                        ""next_room_entry"": ""room.p07_receiving"",
+                        ""checkpoints"": [{
+                            ""id"": ""deliver_metals"",
+                            ""title"": ""Buy 5 tonnes of metals at Ceres and deliver to Stickney"",
+                            ""instructions"": ""Buy 5 metals and +market/sell at Stickney."",
+                            ""room_entry"": ""room.p07_receiving"",
+                            ""checked"": false, ""live_ready"": false
+                        }]
+                    }]
+                }")));
+
+                // 1. Minimap beacon resolves off-station Stickney target to Ceres Exchange Hall while procuring
+                Assert.AreEqual("room.c07_exchange", coord.Hud.Minimap.QuestObjectiveRoomEntry);
+
+                // Clicking tracker Wayfinder plots a real 3D trail to Exchange Hall (not failing on off-station Stickney!)
+                Assert.IsTrue(coord.Hud.QuestJournal.TriggerTrackerWayfinder());
+                Assert.IsTrue(coord.Wayfinder.HasActiveRoute);
+                Assert.AreEqual("room.c07_exchange", coord.Wayfinder.TargetId);
+
+                // Walking into Exchange Hall fires objective arrival callout
+                onRoom.Invoke(coord, new object[]
+                {
+                    MushProtocol.ParseRoomView(JsonNode.Parse(@"{
+                        ""id"": ""#17"",
+                        ""name"": ""Exchange Hall"",
+                        ""ambient"": { ""atlas"": { ""pack"": ""neighborhood.ceres_freeport"", ""entry"": ""room.c07_exchange"" } }
+                    }"))
+                });
+                Assert.AreEqual("QUEST OBJECTIVE: EXCHANGE HALL", coord.Hud.FloatingCallouts.LastShownText);
+
+                // 2. Load 5/5t metals -> Minimap beacon immediately pivots to Berth Gallery
+                coord.TradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""ceres"",
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 5000, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 10000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:metals"", ""label"": ""Metals"", ""qty"": 5 }]
+                        }
+                    }
+                }"));
+                Assert.AreEqual("room.c01_berth_gallery", coord.Hud.Minimap.QuestObjectiveRoomEntry);
+
+                // Walking into Visiting Berth Gallery fires Board Ship arrival callout
+                onRoom.Invoke(coord, new object[]
+                {
+                    MushProtocol.ParseRoomView(JsonNode.Parse(@"{
+                        ""id"": ""#19"",
+                        ""name"": ""Visiting Berth Gallery"",
+                        ""ambient"": { ""atlas"": { ""pack"": ""neighborhood.ceres_freeport"", ""entry"": ""room.c01_berth_gallery"" } }
+                    }"))
+                });
+                Assert.AreEqual(
+                    "BOARD SHIP FOR QUEST: VISITING BERTH GALLERY (+ship/board)",
+                    coord.Hud.FloatingCallouts.LastShownText);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
