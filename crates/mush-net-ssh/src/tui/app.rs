@@ -6537,14 +6537,32 @@ impl TuiApp {
                 )];
                 if let Some(dest) = dest {
                     if docking_live {
+                        let dock_hold = tracked_quest.and_then(|q| {
+                            self.port_walk.quest_stowage_telemetry().and_then(|st| {
+                                super::quests::QuestsSnapshot::hold_readiness_line_for(q, &st)
+                            })
+                        });
                         spans.push(Span::styled(
-                            format!("Approach: {} ", dest.port_label),
+                            format!("Approach: {}{step_badge}  ", dest.port_label),
                             Style::default()
                                 .fg(Color::White)
                                 .add_modifier(Modifier::BOLD),
                         ));
+                        if let Some((hold_txt, hold_ok)) = dock_hold {
+                            let hold_col = if hold_ok {
+                                Color::Green
+                            } else if hold_txt.contains("RECOVER RIG") {
+                                Color::LightRed
+                            } else {
+                                Color::LightYellow
+                            };
+                            spans.push(Span::styled(
+                                format!("{hold_txt}  "),
+                                Style::default().fg(hold_col).add_modifier(Modifier::BOLD),
+                            ));
+                        }
                         spans.push(Span::styled(
-                            format!("— {}{step_badge}  ", dest.quest_title),
+                            format!("— {}  ", dest.quest_title),
                             Style::default().fg(Color::Gray),
                         ));
                         spans.push(Span::styled(
@@ -6765,18 +6783,42 @@ impl TuiApp {
                         Color::Green,
                     )
                 } else if self.pixel.kind() == PictureKind::Docking {
-                    let s = if self.pixel.docking_active() {
-                        format!(
-                            "  |  [QUEST DOCK]{step_badge} {} — {} (+ship/leave once docked)",
-                            dest.port_label, dest.quest_title
+                    let hold_info = tracked_q.zip(stowage.as_ref()).and_then(|(q, st)| {
+                        super::quests::QuestsSnapshot::hold_readiness_line_for(q, st)
+                    });
+                    if self.pixel.docking_active() {
+                        status_spans.push(Span::styled(
+                            format!("  |  [QUEST DOCK]{step_badge} {}", dest.port_label),
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ));
+                        if let Some((hold_txt, hold_ok)) = hold_info {
+                            let hold_col = if hold_ok {
+                                Color::Green
+                            } else if hold_txt.contains("RECOVER RIG") {
+                                Color::LightRed
+                            } else {
+                                Color::LightYellow
+                            };
+                            status_spans.push(Span::styled(
+                                format!(" · {hold_txt}"),
+                                Style::default().fg(hold_col).add_modifier(Modifier::BOLD),
+                            ));
+                        }
+                        (
+                            format!(" — {} (+ship/leave once docked)", dest.quest_title),
+                            Color::Yellow,
                         )
                     } else {
-                        format!(
-                            "  |  [QUEST DOCK] {} (+helm/dock {}){step_badge}",
-                            dest.port_label, dest.port_id
+                        (
+                            format!(
+                                "  |  [QUEST DOCK] {} (+helm/dock {}){step_badge}",
+                                dest.port_label, dest.port_id
+                            ),
+                            Color::Yellow,
                         )
-                    };
-                    (s, Color::Yellow)
+                    }
                 } else if step6_ore_held.is_some_and(|n| n > 0) {
                     (
                         format!(
@@ -6853,15 +6895,39 @@ impl TuiApp {
                             Color::Green,
                         )
                     } else if self.pixel.kind() == PictureKind::Docking {
-                        let s = if self.pixel.docking_active() {
-                            format!(
-                                "  |  [QUEST DOCK]{step_badge} {lbl} — {} (+ship/leave once docked)",
-                                qm.quest_title
+                        let hold_info = tracked_q.zip(stowage.as_ref()).and_then(|(q, st)| {
+                            super::quests::QuestsSnapshot::hold_readiness_line_for(q, st)
+                        });
+                        if self.pixel.docking_active() {
+                            status_spans.push(Span::styled(
+                                format!("  |  [QUEST DOCK]{step_badge} {lbl}"),
+                                Style::default()
+                                    .fg(Color::Yellow)
+                                    .add_modifier(Modifier::BOLD),
+                            ));
+                            if let Some((hold_txt, hold_ok)) = hold_info {
+                                let hold_col = if hold_ok {
+                                    Color::Green
+                                } else if hold_txt.contains("RECOVER RIG") {
+                                    Color::LightRed
+                                } else {
+                                    Color::LightYellow
+                                };
+                                status_spans.push(Span::styled(
+                                    format!(" · {hold_txt}"),
+                                    Style::default().fg(hold_col).add_modifier(Modifier::BOLD),
+                                ));
+                            }
+                            (
+                                format!(" — {} (+ship/leave once docked)", qm.quest_title),
+                                Color::Yellow,
                             )
                         } else {
-                            format!("  |  [QUEST DOCK] {lbl} (+helm/dock {slug}){step_badge}")
-                        };
-                        (s, Color::Yellow)
+                            (
+                                format!("  |  [QUEST DOCK] {lbl} (+helm/dock {slug}){step_badge}"),
+                                Color::Yellow,
+                            )
+                        }
                     } else if ore_held.is_some_and(|n| n > 0) {
                         (
                             format!(
@@ -15114,7 +15180,46 @@ mod tests {
             "expected post-mine Step 6 Ceres return Docking bar:\n{step6_dock_txt}"
         );
 
-        // Text-mode CHART_SCREEN (no Kitty picture) also switches its quest bar to live Quest Dock Approach
+        // Live stowage with 0t ore -> [RECOVER RIG FIRST] on Kitty Docking bar; 1t carbon_ore -> [ORE HOLD READY]
+        app.apply_event(&OutputEvent::Panel {
+            feed: "port.trade".into(),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "enabled": true,
+                "venue": "ceres",
+                "ship": {
+                    "hull_id": "#99",
+                    "stowage": { "cargo_kg": 0, "tank_kg": 10000, "stores_days": 10, "items": [] }
+                }
+            }),
+        });
+        let step6_rec_txt = dump_buf(&mut app);
+        assert!(
+            step6_rec_txt.contains("[RECOVER RIG FIRST]"),
+            "expected [RECOVER RIG FIRST] on live Docking bar:\n{step6_rec_txt}"
+        );
+        app.apply_event(&OutputEvent::Panel {
+            feed: "port.trade".into(),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "enabled": true,
+                "venue": "ceres",
+                "ship": {
+                    "hull_id": "#99",
+                    "stowage": {
+                        "cargo_kg": 1000, "tank_kg": 10000, "stores_days": 10,
+                        "items": [{ "good": "tacsim:carbon_ore", "label": "Carbon Ore", "qty": 1 }]
+                    }
+                }
+            }),
+        });
+        let step6_ore_txt = dump_buf(&mut app);
+        assert!(
+            step6_ore_txt.contains("[ORE HOLD READY]"),
+            "expected [ORE HOLD READY] on live Docking bar:\n{step6_ore_txt}"
+        );
+
+        // Text-mode CHART_SCREEN (no Kitty picture) also switches its quest bar to live Quest Dock Approach with [ORE HOLD READY]
         let _ = app.feed_input(b"\x07");
         let text_mode_txt = dump_buf(&mut app);
         assert!(
@@ -15122,8 +15227,8 @@ mod tests {
             "expected live text-mode CHART_SCREEN Quest Dock Approach bar:\n{text_mode_txt}"
         );
         assert!(
-            text_mode_txt.contains("[Step 6/7]"),
-            "expected [Step 6/7] on text-mode CHART_SCREEN Quest Dock Approach bar:\n{text_mode_txt}"
+            text_mode_txt.contains("[Step 6/7]") && text_mode_txt.contains("[ORE HOLD READY]"),
+            "expected [Step 6/7] and [ORE HOLD READY] on text-mode CHART_SCREEN Quest Dock Approach bar:\n{text_mode_txt}"
         );
     }
 
