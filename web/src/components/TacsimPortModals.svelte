@@ -1957,15 +1957,6 @@
                     Open Quest Dialog
                   </button>
                 {/if}
-                {#if questRigNextCmd}
-                  <button
-                    type="button"
-                    class="ghost sm"
-                    onclick={() => onCmd(questRigNextCmd.command)}
-                  >
-                    {questRigNextCmd.label}
-                  </button>
-                {/if}
               {:else if questMiningHoldState === "recover"}
                 <button
                   type="button"
@@ -1974,15 +1965,6 @@
                 >
                   Recover Rig First (+tv/1 recover go)
                 </button>
-                {#if questMiningReturnDest}
-                  <button
-                    type="button"
-                    class="ghost sm"
-                    onclick={() => onCmd(`+ship/plan ${questMiningReturnDest.portId}`)}
-                  >
-                    Return → {questMiningReturnDest.portLabel} (+ship/plan {questMiningReturnDest.portId})
-                  </button>
-                {/if}
               {:else}
                 {#if questRigNextCmd}
                   <button
@@ -2005,7 +1987,7 @@
               {/if}
             </div>
           </div>
-          {#if questMiningPrep.length > 0}
+          {#if questMiningPrep.length > 0 && questMiningHoldState === null}
             <div class="act-row" aria-label="rig bay prospecting prep actions">
               {#each questMiningPrep as act (act.command)}
                 <button type="button" class="ghost sm" onclick={() => onCmd(act.command)}>
