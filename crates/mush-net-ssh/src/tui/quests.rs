@@ -2380,6 +2380,20 @@ pub fn render_quest_tracker_lines_full(
             };
             lines.push(Line::from(Span::styled(hold_txt, style)));
         }
+        if let Some(st) = stowage
+            && let Some((pf_txt, pf_ready)) = QuestsSnapshot::preflight_readiness_line_for(q, st)
+        {
+            let style = if pf_ready {
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+                    .fg(Color::LightYellow)
+                    .add_modifier(Modifier::BOLD)
+            };
+            lines.push(Line::from(Span::styled(pf_txt, style)));
+        }
         if !q.can_finish_now
             && !q.can_check_now
             && let Some(hop) = route_hop
@@ -2570,6 +2584,10 @@ pub fn render_quest_tracker_lines_full(
         lines.push(Line::from(Span::styled(
             "Guided Tour Complete",
             Style::default().fg(Color::Green),
+        )));
+        lines.push(Line::from(Span::styled(
+            "Jobs: +market/jobs",
+            Style::default().fg(Color::Cyan),
         )));
     }
     lines
@@ -5422,6 +5440,70 @@ mod tests {
         assert!(
             txt_ok.contains("[PRE-FLIGHT OK] Fuel 12t | Provisions 15d"),
             "expected Step 7 pre-flight OK line in overlay:\n{txt_ok}"
+        );
+    }
+
+    #[test]
+    fn quest_tracker_shows_cross_port_preflight_and_mastery_jobs_hint() {
+        let step7 = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[6],
+                "title": "Deliver Your Mined Ore to Market",
+                "checkpoints": [{
+                    "id": "sell_carbon_ore",
+                    "title": "Sell 1t carbon_ore at Stickney Yards",
+                    "instructions": "Fly to Stickney Yards (+ship/plan stickney) and +market/sell carbon_ore.",
+                    "checked": false,
+                    "live_ready": false
+                }]
+            }],
+            "available": [],
+            "completed": []
+        }));
+        let stow_missing = QuestStowageTelemetry {
+            cargo_kg: 2000,
+            propellant_kg: 12_000,
+            provisions_days: 0,
+            cargo_lots: vec![("tacsim:carbon_ore".into(), "Carbon Ore".into(), 2)],
+        };
+        let lines =
+            render_quest_tracker_lines_full(&step7, None, None, Some(&stow_missing), Some("ceres"));
+        let joined = lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            joined.contains("[CHECK BEFORE UNDOCK] Fuel 12t OK | Provisions 0d! -> Stickney Yards"),
+            "expected tracker pre-flight warning:\n{joined}"
+        );
+
+        let completed_all: Vec<serde_json::Value> = GUIDED_TOUR_KEYS
+            .iter()
+            .enumerate()
+            .map(|(i, k)| json!({ "key": k, "title": format!("Step {}", i + 1) }))
+            .collect();
+        let mastered = parse_frame(&json!({
+            "schema": 1,
+            "active": [],
+            "available": [],
+            "completed": completed_all
+        }));
+        let m_lines =
+            render_quest_tracker_lines_full(&mastered, None, None, None, Some("stickney"));
+        let m_joined = m_lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            m_joined.contains("Corridor Captain (7/7)"),
+            "expected mastery tracker header:\n{m_joined}"
+        );
+        assert!(
+            m_joined.contains("Jobs: +market/jobs"),
+            "expected mastery tracker Jobs hint:\n{m_joined}"
         );
     }
 }
