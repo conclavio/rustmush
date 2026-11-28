@@ -1090,4 +1090,85 @@ describe("TacsimPortModals Dray-P Vehicle Bay and Co-op Refit quest guidance", (
     await fireEvent.click(coopBtn);
     expect(clearApp.tacsim.activeModal).toBe("coop");
   });
+
+  it("shows [QUEST READY] turn-in handoff inside Port Exchange when trade checkpoints finish (Steps 2, 3, 4, 7)", async () => {
+    // 1. Same-room turn-in (e.g., Step 3 sold metals at Stickney Receiving -> Jonas right here)
+    const questsHere = new QuestsStore();
+    questsHere.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[2],
+          title: "First Corridor Run: Metals to Stickney",
+          turn_in_name: "Jonas Achterberg-Nkemelu",
+          next_room_entry: "room.p07_receiving",
+          next_room_name: "Receiving Counter",
+          ready_to_finish: true,
+          can_finish_now: true,
+          finish_cmd: "+quest/finish #77=tok-step3",
+          checkpoints: [
+            {
+              id: "deliver_metals",
+              title: "Deliver 5t metals to Stickney",
+              instructions: "Sell 5t metals at Stickney Receiving.",
+              checked: true,
+              live_ready: true,
+            },
+          ],
+        },
+      ],
+    });
+    const onCmd = vi.fn();
+    const hereApp = makeApp(questsHere, "trade");
+    const rHere = render(TacsimPortModals, { props: { app: hereApp, onCmd } });
+    const readyBanner = screen.getByRole("status", { name: "active quest ready to turn in" });
+    expect(readyBanner.textContent).toContain("[QUEST READY] Step 3/7");
+    expect(readyBanner.textContent).toContain("Ready to turn in to Jonas Achterberg-Nkemelu here");
+    await fireEvent.click(screen.getByRole("button", { name: /Turn In Now \(\?\)/i }));
+    expect(onCmd).toHaveBeenCalledWith("+quest/finish #77=tok-step3");
+    expect(hereApp.tacsim.closeModal).toHaveBeenCalled();
+    rHere.unmount();
+
+    // 2. Different-room turn-in (e.g., Step 2 bought provisions & fuel -> return to Ilse at Co-op Registry)
+    const questsRemote = new QuestsStore();
+    questsRemote.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[1],
+          title: "Stock the Dray: Provisions and Fuel",
+          turn_in_name: "Ilse Oduya-Brandt",
+          next_room_entry: "room.c05_registry",
+          next_room_name: "Co-op Registry",
+          ready_to_finish: true,
+          can_finish_now: false,
+          checkpoints: [
+            {
+              id: "buy_provisions",
+              title: "Buy 10 crew-days of provisions",
+              instructions: "Buy provisions at Co-op Chandlery.",
+              checked: true,
+              live_ready: true,
+            },
+            {
+              id: "buy_propellant",
+              title: "Buy 5t propellant",
+              instructions: "Buy propellant at Exchange Hall.",
+              checked: true,
+              live_ready: true,
+            },
+          ],
+        },
+      ],
+    });
+    const remoteApp = makeApp(questsRemote, "trade");
+    render(TacsimPortModals, { props: { app: remoteApp, onCmd: vi.fn() } });
+    const remoteBanner = screen.getByRole("status", { name: "active quest ready to turn in" });
+    expect(remoteBanner.textContent).toContain("[QUEST READY] Step 2/7");
+    expect(remoteBanner.textContent).toContain("Return to Ilse Oduya-Brandt (Co-op Registry)");
+    expect(screen.queryByRole("button", { name: /Turn In Now \(\?\)/i })).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: /Open Quest Dialog/i }));
+    expect(remoteApp.tacsim.closeModal).toHaveBeenCalled();
+    expect(questsRemote.dialogQuestKey).toBe(GUIDED_TOUR_KEYS[1]);
+  });
 });
