@@ -107,6 +107,7 @@ import { TacsimPortStore } from "./stores/tacsim.svelte";
 import { tacsimAudio } from "./tacsim/audio";
 import { PORT_TRADE_FEED, TACSIM_CONTENT_FEED } from "./tacsim/trade";
 import {
+  GUIDED_TOUR_KEYS,
   QUESTS_FEED,
   QuestsStore,
   needsOriginPortProcurement,
@@ -2140,6 +2141,13 @@ export class GameApp {
     const questItems: PaletteQuestAction[] = [];
     const tracked = this.quests.trackedQuest;
 
+    const stepSuffix = (key: string): string => {
+      const idx = (GUIDED_TOUR_KEYS as readonly string[]).indexOf(key);
+      return idx >= 0 ? ` [Step ${idx + 1}/7]` : "";
+    };
+    const isGuidedQuest = (key: string, category: string): boolean =>
+      category.toLowerCase() === "guided" || (GUIDED_TOUR_KEYS as readonly string[]).includes(key);
+
     // 1. Surface immediate 1-click Complete / Verify actions across ALL active quests (turn-in first),
     // so ready-to-finish secondary quests are never hidden behind whichever quest is currently tracked.
     const orderedActives = [...this.quests.active].sort((a, b) => {
@@ -2151,12 +2159,13 @@ export class GameApp {
       return aTracked - bTracked;
     });
     for (const aq of orderedActives) {
+      const sfx = stepSuffix(aq.key);
       if (aq.canFinishNow && aq.finishCmd) {
         questItems.push({
           kind: "step",
           key: aq.key,
           command: aq.finishCmd,
-          title: `Complete: ${aq.title}`,
+          title: `Complete: ${aq.title}${sfx}`,
           detail: aq.finishCmd,
           ready: true,
         });
@@ -2165,7 +2174,7 @@ export class GameApp {
           kind: "step",
           key: aq.key,
           command: aq.checkCmd,
-          title: `Verify Step: ${aq.title}`,
+          title: `Verify Step: ${aq.title}${sfx}`,
           detail: aq.checkCmd,
           ready: true,
         });
@@ -2228,7 +2237,9 @@ export class GameApp {
             ? "Board Ship"
             : routeCrumb.nextExitCommand === "+ship/leave"
               ? "Cycle Ashore"
-              : `Walk → ${routeCrumb.nextRoomName} (${routeCrumb.hops}h)`;
+              : routeCrumb.nextExitCommand === "+tv/bay in" || routeCrumb.nextExitCommand === "+tv/bay"
+                ? "Enter Vehicle Bay"
+                : `Walk → ${routeCrumb.nextRoomName} (${routeCrumb.hops}h)`;
         questItems.push({
           kind: "route",
           key: tracked.key,
@@ -2305,7 +2316,9 @@ export class GameApp {
             ? "Board Ship"
             : routeCrumb.nextExitCommand === "+ship/leave"
               ? "Cycle Ashore"
-              : `Walk → ${routeCrumb.nextRoomName} (${routeCrumb.hops}h)`;
+              : routeCrumb.nextExitCommand === "+tv/bay in" || routeCrumb.nextExitCommand === "+tv/bay"
+                ? "Enter Vehicle Bay"
+                : `Walk → ${routeCrumb.nextRoomName} (${routeCrumb.hops}h)`;
         questItems.push({
           kind: "route",
           key: nextGuided.key,
@@ -2343,17 +2356,23 @@ export class GameApp {
       questItems.push({
         kind: "active",
         key: aq.key,
-        title: aq.title,
+        title: `${aq.title}${stepSuffix(aq.key)}`,
         detail: aq.nextStep || `Turn in to ${aq.turnInName}`,
         ready: aq.readyToFinish || aq.canFinishNow,
       });
     }
-    for (const av of this.quests.available) {
+    const orderedAvailable = [...this.quests.available].sort((a, b) => {
+      const ag = isGuidedQuest(a.key, a.category) ? 0 : 1;
+      const bg = isGuidedQuest(b.key, b.category) ? 0 : 1;
+      return ag - bg;
+    });
+    for (const av of orderedAvailable) {
+      const sfx = stepSuffix(av.key);
       questItems.push({
         kind: "available",
         key: av.key,
         npcId: av.giverId,
-        title: av.title,
+        title: `${av.title}${sfx}`,
         detail: `Offered by ${av.giverName}`,
       });
       if (av.acceptCmd) {
@@ -2362,7 +2381,7 @@ export class GameApp {
           key: av.key,
           npcId: av.giverId,
           command: av.acceptCmd,
-          title: `Accept: ${av.title}`,
+          title: `Accept: ${av.title}${sfx}`,
           detail: `${av.acceptCmd} — ${av.giverName}`,
           offer: true,
         });
