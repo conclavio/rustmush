@@ -3602,6 +3602,19 @@ impl PortWalkState {
             ));
         }
         if self.aboard_ship
+            && let Some(ref target_comp) = self.quest_ship_target
+            && !target_comp.eq_ignore_ascii_case(&self.active_location_key)
+        {
+            let lower = target_comp.to_ascii_lowercase();
+            let deck_lbl = match lower.as_str() {
+                "bridge" => "Bridge",
+                "bay" => "Vehicle Bay (+tv/bay)",
+                "airlock" => "Airlock (+ship/leave)",
+                other => other,
+            };
+            top.push_str(&format!("  |  [QUEST -> Deck: {deck_lbl}]"));
+        }
+        if self.aboard_ship
             && self.active_location_key == "bay"
             && let Some(qm) = &self.quest_mining_status
         {
@@ -10519,6 +10532,38 @@ mod tests {
             key_out.commands.iter().any(|c| c == "+chart/ground"),
             "expected 'c' in Sailing drawer to emit +chart/ground, got {:?}",
             key_out.commands
+        );
+    }
+
+    #[test]
+    fn ship_top_bar_shows_quest_target_deck_when_in_different_compartment() {
+        let mut st = PortWalkState::new();
+        st.aboard_ship = true;
+        st.active_location_key = "airlock".into();
+        st.room_title = "Airlock".into();
+
+        // Target Bridge while in Airlock -> shows [QUEST -> Deck: Bridge]
+        st.observe_quest_ship_target(Some("bridge"));
+        let (top_bridge, _) = st.hud_lines("kitty");
+        assert!(
+            top_bridge.contains("[QUEST -> Deck: Bridge]"),
+            "expected Bridge deck cue in ship top bar:\n{top_bridge}"
+        );
+
+        // Target Vehicle Bay while in Airlock -> shows [QUEST -> Deck: Vehicle Bay (+tv/bay)]
+        st.observe_quest_ship_target(Some("bay"));
+        let (top_bay, _) = st.hud_lines("kitty");
+        assert!(
+            top_bay.contains("[QUEST -> Deck: Vehicle Bay (+tv/bay)]"),
+            "expected Vehicle Bay deck cue in ship top bar:\n{top_bay}"
+        );
+
+        // Once inside target compartment -> suppresses redundant Go to Deck cue
+        st.active_location_key = "bay".into();
+        let (top_in_bay, _) = st.hud_lines("kitty");
+        assert!(
+            !top_in_bay.contains("[QUEST -> Deck:"),
+            "expected no redundant Deck cue once inside bay:\n{top_in_bay}"
         );
     }
 }
