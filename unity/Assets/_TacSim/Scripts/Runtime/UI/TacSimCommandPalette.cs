@@ -587,15 +587,16 @@ namespace TacSim.UI
                     bool isTracked = tracked != null && q.Key == tracked.Key;
                     bool needsOrigin = isTracked && _quests.NeedsOriginPortProcurement(_trade);
                     bool needsExp = isTracked && _quests.NeedsSurfaceExpeditionBoarding();
-                    string rawRoom = q.NextRoomEntry;
+                    string rawRoom = _quests != null ? _quests.ResolveObjectiveRoomEntry(q) : q.NextRoomEntry;
                     string targetRoom = rawRoom;
-                    string destLabel = !string.IsNullOrEmpty(q.NextRoomName) ? q.NextRoomName : rawRoom;
+                    bool redirectedFromServerRoom = !string.Equals(rawRoom, q.NextRoomEntry, StringComparison.OrdinalIgnoreCase);
+                    string destLabel = (!redirectedFromServerRoom && !string.IsNullOrEmpty(q.NextRoomName)) ? q.NextRoomName : rawRoom;
                     bool isBoarding = false;
                     if (_station?.Pack != null &&
                         (!string.IsNullOrEmpty(rawRoom) || needsExp) &&
                         _station.TryResolveLocalQuestRoom(rawRoom, needsOrigin, needsExp, out string localRoom, out isBoarding))
                     {
-                        bool redirected = !string.Equals(localRoom, rawRoom, StringComparison.OrdinalIgnoreCase);
+                        bool redirected = redirectedFromServerRoom || !string.Equals(localRoom, rawRoom, StringComparison.OrdinalIgnoreCase);
                         targetRoom = localRoom;
                         if ((redirected || string.IsNullOrEmpty(q.NextRoomName)) &&
                             _station.Pack.Rooms.TryGetValue(localRoom, out var roomDef) &&

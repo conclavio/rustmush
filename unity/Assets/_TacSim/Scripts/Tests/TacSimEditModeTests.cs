@@ -16873,5 +16873,92 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void Step5RefitHoldClearingWayfinding_RoutesExchangeChandleryThenRegistryAndMatchesSameStationRole()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave94PR3_Step5WayfindingTest");
+            try
+            {
+                var stGo = new UnityEngine.GameObject("StationStep5");
+                stGo.transform.SetParent(rootGo.transform, false);
+                var station = stGo.AddComponent<TacSim.World.StationWorldController>();
+                station.BuildStation(null, "neighborhood.ceres_freeport");
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                var tradeState = new TacSimTradeAndShipState();
+                hud.QuestJournal.BindTradeState(tradeState);
+                hud.CommandPalette.BindWorldSources(station, null, null);
+                hud.CommandPalette.BindQuestJournal(hud.QuestJournal);
+                hud.CommandPalette.BindTradeState(tradeState);
+
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"",
+                        ""title"": ""Refit the Dray-P"",
+                        ""category"": ""onboarding"",
+                        ""next_room_entry"": ""room.c05_registry"",
+                        ""next_room_name"": ""Co-op Registry"",
+                        ""next_step"": ""Empty cargo and provisions, then run +coop/refit prospector"",
+                        ""checkpoints"": [{
+                            ""id"": ""refit"",
+                            ""title"": ""Refit Dray-P at Registry"",
+                            ""instructions"": ""Empty hold and run +coop/refit prospector"",
+                            ""room_entry"": ""room.c05_registry"",
+                            ""checked"": false
+                        }]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+
+                string wayfinderRoom = null;
+                hud.QuestJournal.OnWayfinderRoomRequested += r => wayfinderRoom = r;
+
+                // 1. Both cargo & provisions stowed -> routes to Exchange Hall (`room.c07_exchange`)
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{""enabled"":true,""venue"":""ceres"",""listings"":[],""ship"":{""hull_id"":""#99"",""stowage"":{""cargo_kg"":2000,""cargo_limit_kg"":100000,""tank_kg"":10000,""tank_limit_kg"":80000,""stores_days"":8,""stores_limit_days"":120,""items"":[{""good"":""tacsim:metals"",""label"":""Metals"",""qty"":2}]}}}"));
+                Assert.IsTrue(hud.QuestJournal.TryGetMinimapObjective(out string obj1, out bool ti1, out _));
+                Assert.AreEqual("room.c07_exchange", obj1);
+                Assert.IsFalse(ti1);
+                Assert.IsTrue(hud.QuestJournal.TriggerTrackerWayfinder());
+                Assert.AreEqual("room.c07_exchange", wayfinderRoom);
+
+                string plottedRoom = null;
+                hud.CommandPalette.OnPlotStationRoomRequested += r => plottedRoom = r;
+                hud.CommandPalette.SetOpen(true);
+                hud.CommandPalette.SetQuery("Wayfinder to Quest Objective");
+                Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
+                Assert.AreEqual("room.c07_exchange", plottedRoom);
+
+                // 2. Cargo sold, provisions still stowed -> routes to Co-op Chandlery (`room.c08_chandlery`)
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{""enabled"":true,""venue"":""ceres"",""listings"":[],""ship"":{""hull_id"":""#99"",""stowage"":{""cargo_kg"":0,""cargo_limit_kg"":100000,""tank_kg"":10000,""tank_limit_kg"":80000,""stores_days"":6,""stores_limit_days"":120,""items"":[]}}}"));
+                Assert.IsTrue(hud.QuestJournal.TryGetMinimapObjective(out string obj2, out _, out _));
+                Assert.AreEqual("room.c08_chandlery", obj2);
+
+                // Same-station role fallback: rename chandlery slot on Ceres and confirm match without cross-port leak
+                if (station.Pack.Rooms.TryGetValue("room.c08_chandlery", out var chandDef))
+                {
+                    station.Pack.Rooms.Remove("room.c08_chandlery");
+                    station.Pack.Rooms["room.c06_chandlery"] = chandDef;
+                }
+                Assert.IsTrue(station.TryResolveLocalQuestRoom("room.c08_chandlery", false, false, out string localChand, out bool isBoardChand));
+                Assert.AreEqual("room.c06_chandlery", localChand);
+                Assert.IsFalse(isBoardChand);
+                Assert.IsTrue(station.TryResolveLocalQuestRoom("room.p08_chandlery", false, false, out string crossPortRoom, out bool isBoardCross));
+                StringAssert.Contains("berth_gallery", crossPortRoom);
+                Assert.IsTrue(isBoardCross);
+
+                // 3. Provisions cleared (propellant OK) -> flips back to Co-op Registry (`room.c05_registry`)
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{""enabled"":true,""venue"":""ceres"",""listings"":[],""ship"":{""hull_id"":""#99"",""stowage"":{""cargo_kg"":0,""cargo_limit_kg"":100000,""tank_kg"":10000,""tank_limit_kg"":80000,""stores_days"":0,""stores_limit_days"":120,""items"":[]}}}"));
+                Assert.IsTrue(hud.QuestJournal.TryGetMinimapObjective(out string obj3, out _, out _));
+                Assert.AreEqual("room.c05_registry", obj3);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

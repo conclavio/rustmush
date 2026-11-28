@@ -166,6 +166,42 @@ namespace TacSim.World
         /// same-station targets resolve directly, and cross-port targets resolve to the local Exchange /
         /// Chandlery / Service room while `needsOriginExchangeFirst` is true or to `berth_gallery` once ready to sail.
         /// </summary>
+        private static bool TryParseStationRoomPrefixRole(string entry, out string prefix, out string role)
+        {
+            prefix = string.Empty;
+            role = string.Empty;
+            if (string.IsNullOrEmpty(entry) || !entry.StartsWith("room.", StringComparison.OrdinalIgnoreCase) || entry.Length < 8)
+                return false;
+            char code = char.ToLowerInvariant(entry[5]);
+            if (code != 'c' && code != 'p' && code != 'l' && code != 'd' && code != 't')
+                return false;
+            int i = 6;
+            while (i < entry.Length && char.IsDigit(entry[i])) i++;
+            if (i == 6 || i >= entry.Length - 1 || entry[i] != '_')
+                return false;
+            prefix = entry.Substring(0, 6);
+            role = entry.Substring(i + 1);
+            return !string.IsNullOrEmpty(role);
+        }
+
+        private bool TryFindSameStationRoleRoom(string targetRoomEntry, out string matchedRoomEntry)
+        {
+            matchedRoomEntry = string.Empty;
+            if (Pack == null || !TryParseStationRoomPrefixRole(targetRoomEntry, out string wantPrefix, out string wantRole))
+                return false;
+            foreach (var kv in Pack.Rooms)
+            {
+                if (TryParseStationRoomPrefixRole(kv.Key, out string p, out string r) &&
+                    string.Equals(p, wantPrefix, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(r, wantRole, StringComparison.OrdinalIgnoreCase))
+                {
+                    matchedRoomEntry = kv.Key;
+                    return true;
+                }
+            }
+            return false;
+        }
+
         public bool TryResolveLocalQuestRoom(
             string targetRoomEntry,
             bool needsOriginExchangeFirst,
@@ -195,6 +231,12 @@ namespace TacSim.World
             if (Pack.Rooms.ContainsKey(targetRoomEntry))
             {
                 localRoomEntry = targetRoomEntry;
+                return true;
+            }
+
+            if (TryFindSameStationRoleRoom(targetRoomEntry, out string roleMatch))
+            {
+                localRoomEntry = roleMatch;
                 return true;
             }
 
@@ -285,6 +327,12 @@ namespace TacSim.World
                 }
                 effectiveTarget = berthEntry;
                 boardingCrossPort = true;
+            }
+            else if (!Pack.Rooms.ContainsKey(effectiveTarget) && TryFindSameStationRoleRoom(effectiveTarget, out string roleMatch))
+            {
+                if (string.Equals(fromRoomEntry, roleMatch, StringComparison.Ordinal))
+                    return false;
+                effectiveTarget = roleMatch;
             }
             else if (!Pack.Rooms.ContainsKey(effectiveTarget))
             {
