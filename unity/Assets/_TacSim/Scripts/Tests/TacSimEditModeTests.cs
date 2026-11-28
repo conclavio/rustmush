@@ -15072,5 +15072,59 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void SolarSystemMap_SortsQuestDestinationRouteFirstAndMatchesVenueSlug()
+        {
+            var rootGo = new UnityEngine.GameObject("SolarMapQuestRouteSortFirstTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                var chartJson = JsonNode.Parse(@"{
+                    ""width"": 16,
+                    ""height"": 16,
+                    ""chart"": {
+                        ""vantage"": { ""port"": ""ceres"", ""body"": ""ceres"" },
+                        ""bodies"": [
+                            { ""id"": ""earth"", ""label"": ""Earth"", ""radius_au"": 1.0, ""x_au"": 1.0, ""y_au"": 0.0, ""here"": false },
+                            { ""id"": ""mars"", ""label"": ""Mars"", ""radius_au"": 1.52, ""x_au"": 1.5, ""y_au"": 0.2, ""here"": false },
+                            { ""id"": ""ceres"", ""label"": ""Ceres"", ""radius_au"": 2.77, ""x_au"": 2.7, ""y_au"": -0.3, ""here"": true }
+                        ],
+                        ""routes"": [
+                            { ""to"": ""Aitken Highport"", ""venue"": ""luna"", ""body"": ""earth"", ""loaded"": { ""total_s"": 64800, ""burn_t"": 1.2, ""crew_days"": 1 } },
+                            { ""to"": ""Stickney Yards"", ""venue"": ""stickney"", ""body"": ""mars"", ""loaded"": { ""total_s"": 151200, ""burn_t"": 3.8, ""crew_days"": 2 } }
+                        ]
+                    }
+                }");
+
+                // 1. Without active destination quest -> raw route order preserved (Aitken Highport first)
+                hud.SolarMap.ApplyChartFrame(TacSim.Space.TacSimSolarChartFrame.FromJson(chartJson));
+                StringAssert.StartsWith("ROUTE: AITKEN HIGHPORT", hud.SolarMap.FirstSidebarRouteLabelSnapshot);
+
+                // 2. Activate Step 3 heading to Stickney -> Stickney Yards (matched via venue slug) sorts first with [QUEST]
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"",
+                        ""title"": ""Metals Down the Corridor"",
+                        ""checkpoints"": [{
+                            ""id"": ""deliver_metals"",
+                            ""title"": ""Deliver 5t metals to Stickney"",
+                            ""instructions"": ""+ship/plan stickney"",
+                            ""checked"": false, ""live_ready"": false
+                        }]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                StringAssert.StartsWith("[QUEST] ROUTE: STICKNEY YARDS", hud.SolarMap.FirstSidebarRouteLabelSnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
