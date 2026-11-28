@@ -14806,5 +14806,102 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestTracker_SurfacesSecondaryTurnInGuidedOfferPriorityAndOffPortSailHint()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestTrackerSecondaryTurnInAndSailTest");
+            try
+            {
+                var journal = rootGo.AddComponent<TacSim.UI.TacSimQuestJournal>();
+                journal.BuildUi(rootGo.transform, null);
+                var trade = new TacSim.World.TacSimTradeAndShipState();
+                trade.ApplyPortTradeFeed(JsonNode.Parse(@"{""enabled"":true,""venue"":""ceres""}"));
+                journal.BindTradeState(trade);
+
+                string sentCmd = string.Empty;
+                journal.OnCommandRequested += cmd => sentCmd = cmd;
+
+                // 1. Secondary non-tracked active quest ready to turn in here
+                journal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"",
+                            ""title"": ""Metals Down the Corridor"",
+                            ""next_step"": ""Buy 5t metals"",
+                            ""can_finish_now"": false
+                        },
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"",
+                            ""title"": ""Stock the Locker and Tanks"",
+                            ""next_step"": ""Turn in to Ilse"",
+                            ""can_finish_now"": true,
+                            ""finish_cmd"": ""+quest/complete #41 tok_s2""
+                        }
+                    ],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                journal.TrackQuest("tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery");
+                StringAssert.Contains("[?] Ready here: Stock the Locker and Tanks", journal.TrackerDetailSnapshot);
+
+                // 2. Guided offer prioritized ahead of optional offer + (+1 more) + QuickAction accepts guided offer
+                journal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [],
+                    ""completed"": [],
+                    ""available"": [
+                        {
+                            ""key"": ""quest.side_patrol"",
+                            ""title"": ""Optional Dock Sweep"",
+                            ""category"": ""optional"",
+                            ""giver_id"": ""#88"",
+                            ""giver_name"": ""Harbor Clerk"",
+                            ""accept_cmd"": ""+quest/accept #88 tok_side""
+                        },
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                            ""title"": ""First Papers at the Registry"",
+                            ""category"": ""guided"",
+                            ""giver_id"": ""#99"",
+                            ""giver_name"": ""Maren Halvorsen"",
+                            ""accept_cmd"": ""+quest/accept #99 tok_guided""
+                        }
+                    ]
+                }")));
+                StringAssert.Contains("First Papers at the Registry", journal.TrackerDetailSnapshot);
+                StringAssert.Contains("(+1 more)", journal.TrackerDetailSnapshot);
+                journal.TriggerTrackerQuickAction();
+                Assert.AreEqual("+quest/accept #99 tok_guided", sentCmd);
+
+                // 3. Between Steps 3 & 4 at Ceres -> Sail hint & quick action to Stickney Yards
+                sentCmd = string.Empty;
+                journal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [],
+                    ""available"": [],
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""S1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""S2"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""S3"" }
+                    ]
+                }")));
+                StringAssert.Contains("Sail:", journal.TrackerDetailSnapshot);
+                StringAssert.Contains("+ship/plan stickney", journal.TrackerDetailSnapshot);
+                Assert.AreEqual("SAIL STICKNEY", journal.TrackerActionLabelSnapshot);
+                journal.TriggerTrackerQuickAction();
+                Assert.AreEqual("+ship/plan stickney", sentCmd);
+
+                // 4. Already at Stickney -> Sail hint disappears
+                trade.ApplyPortTradeFeed(JsonNode.Parse(@"{""enabled"":true,""venue"":""stickney""}"));
+                Assert.IsFalse(journal.TrackerDetailSnapshot.Contains("+ship/plan stickney"));
+                Assert.AreEqual("WAYFINDER", journal.TrackerActionLabelSnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

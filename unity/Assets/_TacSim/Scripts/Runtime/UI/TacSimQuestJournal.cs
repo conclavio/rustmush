@@ -466,9 +466,9 @@ namespace TacSim.UI
                 }
             }
 
-            if (panel.Available.Count > 0)
+            var offer = GetPrioritizedAvailableOffer(panel);
+            if (offer != null)
             {
-                var offer = panel.Available[0];
                 symbol = "!";
                 npcName = offer.GiverName ?? string.Empty;
                 questTitle = offer.Title ?? string.Empty;
@@ -479,6 +479,27 @@ namespace TacSim.UI
             }
 
             return false;
+        }
+
+        public MushAvailableQuest GetPrioritizedAvailableOffer()
+        {
+            return GetPrioritizedAvailableOffer(LatestPanel);
+        }
+
+        private static MushAvailableQuest GetPrioritizedAvailableOffer(MushQuestsPanel panel)
+        {
+            if (panel == null || panel.Available.Count == 0) return null;
+            for (int i = 0; i < panel.Available.Count; i++)
+            {
+                var av = panel.Available[i];
+                if (av != null &&
+                    (string.Equals(av.Category, "guided", StringComparison.OrdinalIgnoreCase) ||
+                     GuidedStepNumber(av.Key) > 0))
+                {
+                    return av;
+                }
+            }
+            return panel.Available[0];
         }
 
         /// <summary>
@@ -2159,6 +2180,28 @@ namespace TacSim.UI
                 }
                 if (!string.IsNullOrEmpty(active.NextStep))
                     sb.Append("<color=#77DDFF>Next:</color> ").Append(MushProtocol.EscapeUnityRichText(active.NextStep));
+                int otherReadyCount = 0;
+                MushActiveQuest firstOtherReady = null;
+                for (int i = 0; i < LatestPanel.Active.Count; i++)
+                {
+                    var otherQ = LatestPanel.Active[i];
+                    if (otherQ != null &&
+                        !string.Equals(otherQ.Key, active.Key, StringComparison.Ordinal) &&
+                        otherQ.CanFinishNow)
+                    {
+                        if (firstOtherReady == null) firstOtherReady = otherQ;
+                        otherReadyCount++;
+                    }
+                }
+                if (otherReadyCount > 0)
+                {
+                    sb.Append("\n<color=#55EE99><b>[?] ");
+                    if (otherReadyCount == 1)
+                        sb.Append("Ready here: ").Append(MushProtocol.EscapeUnityRichText(firstOtherReady.Title));
+                    else
+                        sb.Append(otherReadyCount).Append(" ready to turn in here");
+                    sb.Append("</b></color>");
+                }
                 if (LatestPanel.Available.Count > 0)
                 {
                     int availCount = LatestPanel.Available.Count;
@@ -2218,23 +2261,27 @@ namespace TacSim.UI
 
             if (_trackerCycleBtn != null) _trackerCycleBtn.gameObject.SetActive(false);
 
-            if (LatestPanel.Available.Count > 0)
+            var topOffer = GetPrioritizedAvailableOffer(LatestPanel);
+            if (topOffer != null)
             {
-                var offer = LatestPanel.Available[0];
                 string tourSuffix = hasTour ? $" · TOUR {tourDone}/{tourTotal}" : string.Empty;
+                int extraOffers = Mathf.Max(0, LatestPanel.Available.Count - 1);
+                string extraSuffix = extraOffers > 0 ? $" (+{extraOffers} more)" : string.Empty;
+                bool isGuided = string.Equals(topOffer.Category, "guided", StringComparison.OrdinalIgnoreCase) || GuidedStepNumber(topOffer.Key) > 0;
                 PinnedCategory = $"QUEST AVAILABLE [!]{tourSuffix}";
-                PinnedTitle = offer.Title;
-                PinnedDetail = $"Speak with {offer.GiverName}";
+                PinnedTitle = topOffer.Title;
+                PinnedDetail = $"Speak with {topOffer.GiverName}";
                 if (_trackerHeaderText != null) _trackerHeaderText.text = PinnedCategory;
                 if (_trackerDetailText != null)
                 {
-                    _trackerDetailText.text = $"<b><color=#FFDD44>[!] {MushProtocol.EscapeUnityRichText(offer.Title)}</color></b>\n{MushProtocol.EscapeUnityRichText(offer.GiverName)} has an optional quest.";
+                    string kindWord = isGuided ? "guided" : "optional";
+                    _trackerDetailText.text = $"<b><color=#FFDD44>[!] {MushProtocol.EscapeUnityRichText(topOffer.Title)}{extraSuffix}</color></b>\n{MushProtocol.EscapeUnityRichText(topOffer.GiverName)} has a {kindWord} quest.";
                 }
                 if (_trackerActionBtn != null)
                 {
                     _trackerActionBtn.gameObject.SetActive(true);
                     if (_trackerActionLbl != null)
-                        _trackerActionLbl.text = !string.IsNullOrEmpty(offer.AcceptCmd) ? "ACCEPT [!]" : "OPEN DIALOG";
+                        _trackerActionLbl.text = !string.IsNullOrEmpty(topOffer.AcceptCmd) ? "ACCEPT [!]" : "OPEN DIALOG";
                 }
                 if (_trackerNavBtn != null) _trackerNavBtn.gameObject.SetActive(false);
                 return;
@@ -2243,6 +2290,14 @@ namespace TacSim.UI
             if (TryGetNextGuidedOffer(out var nextOffer))
             {
                 string tourSuffix = hasTour ? $" · TOUR {tourDone}/{tourTotal}" : string.Empty;
+                string curPort = _boundTradeState != null
+                    ? (!string.IsNullOrEmpty(_boundTradeState.ActiveVenue)
+                        ? _boundTradeState.ActiveVenue
+                        : _boundTradeState.AboardDockedPortHint)
+                    : string.Empty;
+                QuestDestinationHint sailDest = default;
+                bool hasSailDest = !string.IsNullOrEmpty(curPort) &&
+                    TryGetNextGuidedOfferDestination(curPort, out sailDest);
                 PinnedCategory = $"NEXT GUIDED ({nextOffer.Step}/7) [!]{tourSuffix}";
                 PinnedTitle = nextOffer.ShortLabel;
                 PinnedDetail = $"Speak with {nextOffer.GiverLabel} ({nextOffer.GiverRoomName})";
@@ -2255,6 +2310,10 @@ namespace TacSim.UI
                     if (!string.IsNullOrEmpty(_trackerRouteRoomName) && _trackerRouteHops > 0)
                     {
                         sb.Append($"\n<color=#FFDD44>Route:</color> -> {MushProtocol.EscapeUnityRichText(_trackerRouteRoomName)} ({_trackerRouteHops}h)");
+                    }
+                    if (hasSailDest)
+                    {
+                        sb.Append($"\n<color=#77DDFF>Sail:</color> +ship/plan {MushProtocol.EscapeUnityRichText(sailDest.PortId)} ({MushProtocol.EscapeUnityRichText(sailDest.PortLabel)})");
                     }
                     _trackerDetailText.text = sb.ToString();
                 }
@@ -2271,6 +2330,10 @@ namespace TacSim.UI
                                 _trackerActionLbl.text = "ASHORE";
                             else
                                 _trackerActionLbl.text = $"WALK ({_trackerRouteHops}h)";
+                        }
+                        else if (hasSailDest)
+                        {
+                            _trackerActionLbl.text = $"SAIL {sailDest.PortId.ToUpperInvariant()}";
                         }
                         else
                         {
@@ -2361,17 +2424,17 @@ namespace TacSim.UI
                 OpenQuestDialogByKey(active.Key);
                 return;
             }
-            if (LatestPanel.Available.Count > 0)
+            var topOffer = GetPrioritizedAvailableOffer(LatestPanel);
+            if (topOffer != null)
             {
-                var offer = LatestPanel.Available[0];
-                if (!string.IsNullOrEmpty(offer.AcceptCmd))
+                if (!string.IsNullOrEmpty(topOffer.AcceptCmd))
                 {
-                    TrackedQuestKey = offer.Key;
+                    TrackedQuestKey = topOffer.Key;
                     _manualPinActive = false;
-                    OnCommandRequested?.Invoke(offer.AcceptCmd);
+                    OnCommandRequested?.Invoke(topOffer.AcceptCmd);
                     return;
                 }
-                OpenNpcQuestDialog(offer.GiverId);
+                OpenNpcQuestDialog(topOffer.GiverId);
                 return;
             }
             if (TryGetNextGuidedOffer(out var nextOffer))
@@ -2379,6 +2442,17 @@ namespace TacSim.UI
                 if (!string.IsNullOrEmpty(_trackerRouteCommand))
                 {
                     OnCommandRequested?.Invoke(_trackerRouteCommand);
+                    return;
+                }
+                string curPort = _boundTradeState != null
+                    ? (!string.IsNullOrEmpty(_boundTradeState.ActiveVenue)
+                        ? _boundTradeState.ActiveVenue
+                        : _boundTradeState.AboardDockedPortHint)
+                    : string.Empty;
+                if (!string.IsNullOrEmpty(curPort) &&
+                    TryGetNextGuidedOfferDestination(curPort, out var sailDest))
+                {
+                    OnCommandRequested?.Invoke($"+ship/plan {sailDest.PortId}");
                     return;
                 }
                 if (!string.IsNullOrEmpty(nextOffer.GiverRoomEntry))
