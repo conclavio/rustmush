@@ -603,6 +603,49 @@
                   </div>
                 {/if}
               </article>
+            {:else if tour?.allDone}
+              <article class="qcard next-guided-card" aria-label="guided tour mastery">
+                <div class="qcard-top">
+                  <strong>
+                    <span class="mini-sym" data-marker="turn_in">★</span>{" "}
+                    Corridor Captain — Guided Tour Complete ({tour.completed}/{tour.total})
+                  </strong>
+                  <span class="qcard-meta">
+                    <span class="cat-pill guided">Mastered</span>
+                  </span>
+                </div>
+                <p class="next-line">
+                  All 7 guided onboarding steps complete. Take corridor haulage, survey commissions, or optional NPC contracts next.
+                </p>
+                <div class="qcard-actions">
+                  <button
+                    type="button"
+                    class="btn sm primary"
+                    onclick={() => switchLogTab("completed")}
+                  >
+                    Completed Log ({q.completed.length})
+                  </button>
+                  <button
+                    type="button"
+                    class="btn sm"
+                    onclick={() => {
+                      onCmd("+market/jobs");
+                      q.closeModals();
+                    }}
+                  >
+                    Jobs Board (+market/jobs)
+                  </button>
+                  {#if q.available.length > 0}
+                    <button
+                      type="button"
+                      class="btn sm"
+                      onclick={() => switchLogTab("available")}
+                    >
+                      View {q.available.length} Offer{q.available.length === 1 ? "" : "s"} Here
+                    </button>
+                  {/if}
+                </div>
+              </article>
             {:else}
               <p class="empty">No active quests. Look for NPCs with a golden <strong>!</strong> badge (like Maren Halvorsen in Port Watch Arrivals).</p>
               {#if q.available.length > 0}
