@@ -382,4 +382,72 @@ describe("QuarryScreen's side pane", () => {
     retBtn.click();
     expect(focusComposer).toHaveBeenCalledWith("+ship/plan ceres");
   });
+
+  it("distinguishes [RECOVER RIG FIRST] when hold is empty vs [ORE HOLD READY] once mined ore is stowed", () => {
+    const quarry = new QuarryStore();
+    quarry.rig = 1;
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+          title: "Prospect the Surface",
+          next_room_entry: "room.c07_exchange",
+          checkpoints: [
+            { id: "scan_landing_site", title: "Surface scan", instructions: "+tv/1 scan go", checked: true, live_ready: true },
+            { id: "sound_pocket", title: "Sound pocket", instructions: "+tv/1 sound go", checked: true, live_ready: true },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", instructions: "+tv/1 mine go", checked: true, live_ready: true },
+          ],
+        },
+      ],
+    });
+    const focusComposer = vi.fn();
+
+    // 1. Mined ore still in rig hopper (0t in ship hold)
+    const r1 = render(QuarryScreen, {
+      props: {
+        app: {
+          quarry,
+          quests,
+          tacsim: {
+            trade: {
+              stowage: { cargoKg: 0, propellantKg: 5000, provisionsCrewDays: 10, cargoLines: [] },
+            },
+          },
+          focusComposer,
+          refreshQuarry: vi.fn(),
+        } as unknown as GameApp,
+      },
+    });
+    const c1 = screen.getByRole("status", { name: "quest mining checklist" });
+    expect(c1.textContent).toContain("[RECOVER RIG FIRST]");
+    screen.getByRole("button", { name: /Next: Recover Rig First/i }).click();
+    expect(focusComposer).toHaveBeenCalledWith("+tv/1 recover go");
+    r1.unmount();
+
+    // 2. Mined ore recovered into ship hold (1t carbon_ore stowed)
+    render(QuarryScreen, {
+      props: {
+        app: {
+          quarry,
+          quests,
+          tacsim: {
+            trade: {
+              stowage: {
+                cargoKg: 1000,
+                propellantKg: 5000,
+                provisionsCrewDays: 10,
+                cargoLines: [{ good: "tacsim:carbon_ore", label: "Carbon Ore", qty: 1, unit: "t", massKg: 1000 }],
+              },
+            },
+          },
+          focusComposer,
+          refreshQuarry: vi.fn(),
+        } as unknown as GameApp,
+      },
+    });
+    const c2 = screen.getByRole("status", { name: "quest mining checklist" });
+    expect(c2.textContent).toContain("[ORE HOLD READY]");
+  });
 });

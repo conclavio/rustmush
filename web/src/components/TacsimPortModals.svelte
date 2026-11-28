@@ -216,6 +216,10 @@
     const dest = CORRIDOR_DESTINATIONS.find((d) => d.id === inferred);
     return { portId: inferred, portLabel: dest?.label ?? "Ceres Freeport" };
   });
+  const questMiningHoldState = $derived.by((): "stowed" | "recover" | null => {
+    if (!questMining?.mineDone) return null;
+    return questMiningHoldQty > 0 ? "stowed" : "recover";
+  });
   const stowageReadiness = $derived(evaluateQuestStowageReadiness(questTradeNeed, st));
   const sailingPreflight = $derived(
     evaluateSailingPreflightReadiness(questDestPort, questTradeNeed, st),
@@ -1743,7 +1747,15 @@
         {#if questMining}
           <div class="quest-banner" role="status" aria-label="active quest rig bay guidance">
             <div class="qb-text">
-              <span class="qtag">[QUEST]{questStepTag}</span>
+              <span class="qtag">
+                {#if questMiningHoldState === "stowed"}
+                  [ORE HOLD READY]
+                {:else if questMiningHoldState === "recover"}
+                  [RECOVER RIG FIRST]
+                {:else}
+                  [QUEST]
+                {/if}{questStepTag}
+              </span>
               <strong>{questMining.questTitle}</strong>
               <span class="muted">
                 {questMining.scanDone ? "[✓]" : "[ ]"} Scan · {questMining.soundDone ? "[✓]" : "[ ]"} Sound · {questMining.mineDone ? "[✓]" : "[ ]"} Mine {questMining.targetOreSlug}
@@ -1751,23 +1763,96 @@
               </span>
             </div>
             <div class="act-row">
-              {#if questRigNextCmd}
+              {#if questMiningHoldState === "stowed"}
+                {#if questReadyTurnIn?.canFinishNow}
+                  <button
+                    type="button"
+                    class="buybtn"
+                    onclick={() => {
+                      onCmd(questReadyTurnIn.finishCmd);
+                      app.tacsim.closeModal();
+                    }}
+                  >
+                    Turn In Now (?)
+                  </button>
+                {:else if questMiningReturnDest}
+                  <button
+                    type="button"
+                    class="qbtn-gold"
+                    onclick={() => onCmd(`+ship/plan ${questMiningReturnDest.portId}`)}
+                  >
+                    Return → {questMiningReturnDest.portLabel} (+ship/plan {questMiningReturnDest.portId})
+                  </button>
+                {/if}
+                {#if questReadyTurnIn && !questReadyTurnIn.canFinishNow && app.tacsim.isAboardShip}
+                  <button
+                    type="button"
+                    class="buybtn sm"
+                    onclick={() => {
+                      onCmd("+ship/leave");
+                      app.tacsim.closeModal();
+                    }}
+                  >
+                    Step Ashore (+ship/leave)
+                  </button>
+                {/if}
+                {#if questReadyTurnIn}
+                  <button
+                    type="button"
+                    class="ghost sm"
+                    onclick={() => {
+                      app.tacsim.closeModal();
+                      app.quests.openQuestDialog(questReadyTurnIn.key);
+                    }}
+                  >
+                    Open Quest Dialog
+                  </button>
+                {/if}
+                {#if questRigNextCmd}
+                  <button
+                    type="button"
+                    class="ghost sm"
+                    onclick={() => onCmd(questRigNextCmd.command)}
+                  >
+                    {questRigNextCmd.label}
+                  </button>
+                {/if}
+              {:else if questMiningHoldState === "recover"}
                 <button
                   type="button"
                   class="qbtn-gold"
-                  onclick={() => onCmd(questRigNextCmd.command)}
+                  onclick={() => onCmd("+tv/1 recover go")}
                 >
-                  {questRigNextCmd.label}
+                  Recover Rig First (+tv/1 recover go)
                 </button>
-              {/if}
-              {#if questMiningReturnDest}
-                <button
-                  type="button"
-                  class="buybtn sm"
-                  onclick={() => onCmd(`+ship/plan ${questMiningReturnDest.portId}`)}
-                >
-                  Return → {questMiningReturnDest.portLabel} (+ship/plan {questMiningReturnDest.portId})
-                </button>
+                {#if questMiningReturnDest}
+                  <button
+                    type="button"
+                    class="ghost sm"
+                    onclick={() => onCmd(`+ship/plan ${questMiningReturnDest.portId}`)}
+                  >
+                    Return → {questMiningReturnDest.portLabel} (+ship/plan {questMiningReturnDest.portId})
+                  </button>
+                {/if}
+              {:else}
+                {#if questRigNextCmd}
+                  <button
+                    type="button"
+                    class="qbtn-gold"
+                    onclick={() => onCmd(questRigNextCmd.command)}
+                  >
+                    {questRigNextCmd.label}
+                  </button>
+                {/if}
+                {#if questMiningReturnDest}
+                  <button
+                    type="button"
+                    class="buybtn sm"
+                    onclick={() => onCmd(`+ship/plan ${questMiningReturnDest.portId}`)}
+                  >
+                    Return → {questMiningReturnDest.portLabel} (+ship/plan {questMiningReturnDest.portId})
+                  </button>
+                {/if}
               {/if}
             </div>
           </div>

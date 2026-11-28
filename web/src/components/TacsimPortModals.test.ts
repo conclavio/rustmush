@@ -1396,4 +1396,77 @@ describe("TacsimPortModals Dray-P Vehicle Bay and Co-op Refit quest guidance", (
     await fireEvent.click(screen.getByRole("button", { name: /Open Exchange/i }));
     expect(aboardApp.tacsim.activeModal).toBe("trade");
   });
+
+  it("distinguishes [RECOVER RIG FIRST] vs [ORE HOLD READY] and ready turn-in inside Step 6 Rig Bay", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[5],
+          title: "Scan, Sound, and Mine a Landing Site",
+          turn_in_name: "Rosalind Qureshi-Mbeki",
+          next_room_entry: "room.c07_exchange",
+          next_room_name: "Exchange Hall",
+          ready_to_finish: false,
+          can_finish_now: false,
+          checkpoints: [
+            { id: "scan_landing_site", title: "Surface scan", instructions: "+tv/1 scan go", checked: true, live_ready: true },
+            { id: "sound_mineral_pocket", title: "Sound pocket", instructions: "+tv/1 sound go", checked: true, live_ready: true },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", instructions: "+tv/1 mine go", checked: true, live_ready: true },
+          ],
+        },
+      ],
+    });
+
+    // 1. Mined ore still in rig hopper (hold 0t) -> prompts [RECOVER RIG FIRST]
+    const onCmd1 = vi.fn();
+    const hopperApp = makeApp(quests, "rig");
+    const r1 = render(TacsimPortModals, { props: { app: hopperApp, onCmd: onCmd1 } });
+    const b1 = screen.getByRole("status", { name: "active quest rig bay guidance" });
+    expect(b1.textContent).toContain("[RECOVER RIG FIRST] Step 6/7");
+    await fireEvent.click(screen.getByRole("button", { name: /Recover Rig First \(\+tv\/1 recover go\)/i }));
+    expect(onCmd1).toHaveBeenCalledWith("+tv/1 recover go");
+    r1.unmount();
+
+    // 2. Ore transferred to ship hold & ready to finish aboard ship -> [ORE HOLD READY] + Step Ashore + Open Quest Dialog
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[5],
+          title: "Scan, Sound, and Mine a Landing Site",
+          turn_in_name: "Rosalind Qureshi-Mbeki",
+          next_room_entry: "room.c07_exchange",
+          next_room_name: "Exchange Hall",
+          ready_to_finish: true,
+          can_finish_now: false,
+          checkpoints: [
+            { id: "scan_landing_site", title: "Surface scan", instructions: "+tv/1 scan go", checked: true, live_ready: true },
+            { id: "sound_mineral_pocket", title: "Sound pocket", instructions: "+tv/1 sound go", checked: true, live_ready: true },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", instructions: "+tv/1 mine go", checked: true, live_ready: true },
+          ],
+        },
+      ],
+    });
+    const onCmd2 = vi.fn();
+    const stowedApp = makeApp(quests, "rig", {
+      cargoKg: 1000,
+      cargoMaxKg: 100_000,
+      cargoL: 1000,
+      cargoMaxL: 120_000,
+      propellantKg: 8000,
+      propellantMaxKg: 80_000,
+      provisionsCrewDays: 10,
+      provisionsMaxCrewDays: 120,
+      cargoLines: [{ good: "tacsim:carbon_ore", label: "Carbon Ore", qty: 1, unit: "t", massKg: 1000 }],
+    });
+    stowedApp.tacsim.isAboardShip = true;
+    render(TacsimPortModals, { props: { app: stowedApp, onCmd: onCmd2 } });
+    const b2 = screen.getByRole("status", { name: "active quest rig bay guidance" });
+    expect(b2.textContent).toContain("[ORE HOLD READY] Step 6/7");
+    await fireEvent.click(screen.getByRole("button", { name: /Step Ashore \(\+ship\/leave\)/i }));
+    expect(onCmd2).toHaveBeenCalledWith("+ship/leave");
+    expect(stowedApp.tacsim.closeModal).toHaveBeenCalled();
+  });
 });
