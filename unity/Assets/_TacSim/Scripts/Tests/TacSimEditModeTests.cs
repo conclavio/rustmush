@@ -12284,5 +12284,88 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void Step6SurfaceExpeditionWayfinding_RoutesBerthBridgeBayBridgeAirlock()
+        {
+            var rootGo = new UnityEngine.GameObject("Step6ExpeditionWayfindingTestRoot");
+            try
+            {
+                var stGo = new UnityEngine.GameObject("CeresStationStep6");
+                stGo.transform.SetParent(rootGo.transform, false);
+                var station = stGo.AddComponent<TacSim.World.StationWorldController>();
+                station.BuildStation(null, "neighborhood.ceres_freeport");
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#17"",
+                    ""room_name"": ""Exchange Hall"",
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""next_room_entry"": ""room.c07_exchange"",
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Surface scan"", ""instructions"": ""+tv/1 scan go"", ""room_entry"": ""room.c07_exchange"", ""checked"": false, ""live_ready"": false },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""instructions"": ""+tv/1 mine go"", ""room_entry"": ""room.c07_exchange"", ""checked"": false, ""live_ready"": false }
+                        ]
+                    }],
+                    ""available"": []
+                }")));
+
+                // 1. Standing right in Rosalind's Exchange Hall ashore -> NeedsSurfaceExpeditionBoarding routes to Berth Gallery
+                Assert.IsTrue(hud.QuestJournal.NeedsSurfaceExpeditionBoarding());
+                Assert.IsTrue(station.TryGetNextQuestExitBreadcrumb(
+                    "room.c07_exchange", "room.c07_exchange",
+                    out _, out _, out _, out int hopsToBerth,
+                    needsOriginExchangeFirst: false,
+                    needsShipExpedition: true));
+                Assert.GreaterOrEqual(hopsToBerth, 2);
+                Assert.IsTrue(station.TryGetNextQuestExitBreadcrumb(
+                    "room.c01_berth_gallery", "room.c07_exchange",
+                    out _, out string boardName, out string boardCmd, out int boardHops,
+                    needsOriginExchangeFirst: false,
+                    needsShipExpedition: true));
+                Assert.AreEqual("Board Ship", boardName);
+                Assert.AreEqual("+ship/board", boardCmd);
+                Assert.AreEqual(1, boardHops);
+
+                // 2. Aboard Dray-P still docked at Ceres station -> bridge (fly to landing site first)
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveShipTargetCompartment("ceres", out string dockedTarget, settledPad: false));
+                Assert.AreEqual("bridge", dockedTarget);
+
+                // 3. Settled on a surface landing pad -> bay (launch & operate rig)
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveShipTargetCompartment("ceres", out string padTarget, settledPad: true));
+                Assert.AreEqual("bay", padTarget);
+
+                // 4. Mining finished -> bridge while still on pad, airlock once docked back at Ceres
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#50"",
+                    ""room_name"": ""M/V Starling - Passage"",
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""next_room_entry"": ""room.c07_exchange"",
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Surface scan"", ""instructions"": ""+tv/1 scan go"", ""room_entry"": ""room.c07_exchange"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""instructions"": ""+tv/1 mine go"", ""room_entry"": ""room.c07_exchange"", ""checked"": true, ""live_ready"": true }
+                        ]
+                    }],
+                    ""available"": []
+                }")));
+                Assert.IsFalse(hud.QuestJournal.NeedsSurfaceExpeditionBoarding());
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveShipTargetCompartment(null, out string liftOffTarget, settledPad: true));
+                Assert.AreEqual("bridge", liftOffTarget);
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveShipTargetCompartment("ceres", out string returnTarget, settledPad: false));
+                Assert.AreEqual("airlock", returnTarget);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

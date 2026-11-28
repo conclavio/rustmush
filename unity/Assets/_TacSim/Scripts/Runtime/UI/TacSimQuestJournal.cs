@@ -463,16 +463,24 @@ namespace TacSim.UI
             }
         }
 
-        public bool TryGetActiveShipTargetCompartment(out string targetCompartment)
+        public bool NeedsSurfaceExpeditionBoarding()
         {
-            return TryGetActiveShipTargetCompartment(null, out targetCompartment);
+            var active = GetTrackedActiveQuest();
+            if (active == null || active.ReadyToFinish || active.CanFinishNow) return false;
+            return TryGetActiveSurfaceMiningStatus(out var mining) && !mining.MineDone;
         }
 
-        public bool TryGetActiveShipTargetCompartment(string dockedPortSlug, out string targetCompartment)
+        public bool TryGetActiveShipTargetCompartment(out string targetCompartment)
+        {
+            return TryGetActiveShipTargetCompartment(null, out targetCompartment, settledPad: false);
+        }
+
+        public bool TryGetActiveShipTargetCompartment(string dockedPortSlug, out string targetCompartment, bool settledPad = false)
         {
             targetCompartment = string.Empty;
             bool hasMining = TryGetActiveSurfaceMiningStatus(out var mining);
-            if (!string.IsNullOrWhiteSpace(dockedPortSlug))
+            string dockedStation = settledPad ? null : dockedPortSlug;
+            if (!string.IsNullOrWhiteSpace(dockedStation))
             {
                 var active = GetTrackedActiveQuest();
                 bool miningBlocking = hasMining && !mining.MineDone;
@@ -482,16 +490,21 @@ namespace TacSim.UI
                 {
                     string targetPort = InferStationPortFromRoomEntry(objRoom);
                     if (!string.IsNullOrEmpty(targetPort) &&
-                        string.Equals(targetPort, dockedPortSlug.Trim(), StringComparison.OrdinalIgnoreCase))
+                        string.Equals(targetPort, dockedStation.Trim(), StringComparison.OrdinalIgnoreCase))
                     {
                         targetCompartment = "airlock";
                         return true;
                     }
                 }
             }
-            if (hasMining && !mining.MineDone)
+            if (hasMining)
             {
-                targetCompartment = "bay";
+                if (!mining.MineDone)
+                {
+                    targetCompartment = !string.IsNullOrWhiteSpace(dockedStation) ? "bridge" : "bay";
+                    return true;
+                }
+                targetCompartment = "bridge";
                 return true;
             }
             if (TryGetActiveDestinationPort(out _))

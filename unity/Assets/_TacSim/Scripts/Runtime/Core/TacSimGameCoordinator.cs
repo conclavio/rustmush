@@ -1309,7 +1309,8 @@ namespace TacSim.Core
             if (Hud == null) return;
             if (_isAboardShip)
             {
-                string dockedPortSlug = _hullIsDocked
+                bool settledPad = _lastRoomView?.TacSim?.SettledPad == true;
+                string dockedPortSlug = (_hullIsDocked && !settledPad)
                     ? (NormalizeCorridorPortSlug(_lastRoomView?.TacSim?.Port)
                        ?? NormalizeCorridorPortSlug(_lastRoomView?.TacSim?.PortEntry)
                        ?? NormalizeCorridorPortSlug(TradeState?.AboardDockedPortHint))
@@ -1317,7 +1318,7 @@ namespace TacSim.Core
                 if ((Player != null && Player.IsSeatedAtHelm) ||
                     ShipInterior == null ||
                     Hud.QuestJournal == null ||
-                    !Hud.QuestJournal.TryGetActiveShipTargetCompartment(dockedPortSlug, out string shipTarget))
+                    !Hud.QuestJournal.TryGetActiveShipTargetCompartment(dockedPortSlug, out string shipTarget, settledPad: settledPad))
                 {
                     Hud.SetQuestExitBreadcrumb(string.Empty, string.Empty, 0);
                     Hud.QuestJournal?.SetTrackerRouteBreadcrumb(string.Empty, string.Empty, 0);
@@ -1344,7 +1345,8 @@ namespace TacSim.Core
                 }
                 return;
             }
-            if (StationWorld == null || string.IsNullOrEmpty(targetRoomEntry))
+            bool needsShipExpedition = Hud.QuestJournal != null && Hud.QuestJournal.NeedsSurfaceExpeditionBoarding();
+            if (StationWorld == null || (string.IsNullOrEmpty(targetRoomEntry) && !needsShipExpedition))
             {
                 Hud.SetQuestExitBreadcrumb(string.Empty, string.Empty, 0);
                 Hud.QuestJournal?.SetTrackerRouteBreadcrumb(string.Empty, string.Empty, 0);
@@ -1361,7 +1363,8 @@ namespace TacSim.Core
                     out string nextRoomName,
                     out string nextCmd,
                     out int hops,
-                    needsOriginExchangeFirst: needsOriginExchange))
+                    needsOriginExchangeFirst: needsOriginExchange,
+                    needsShipExpedition: needsShipExpedition))
             {
                 Hud.SetQuestExitBreadcrumb(nextRoomName, nextCmd, hops);
                 Hud.QuestJournal?.SetTrackerRouteBreadcrumb(nextRoomName, nextCmd, hops);
