@@ -2969,4 +2969,79 @@ describe("quest command palette route, step and cycle shortcuts", () => {
       d: "+quest/finish q.sell",
     });
   });
+
+  it("command palette surfaces between-steps Next Guided Offer info, ship disembark route, and cross-port Sail shortcut", () => {
+    const { app } = boot();
+    let focused = "";
+    app.composer = {
+      focus: (prefill?: string) => {
+        focused = prefill ?? "";
+      },
+      blur: () => {},
+      cycleMode: () => {},
+      text: () => "",
+      setText: () => {},
+    };
+
+    // Steps 1-3 complete -> Step 4 (Return Load) offered by Jonas at Stickney Yards (room.p07_receiving)
+    app.quests.applyFrame({
+      schema: 1,
+      completed: [
+        { key: "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll", title: "S1" },
+        { key: "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel", title: "S2" },
+        { key: "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery", title: "S3" },
+      ],
+      active: [],
+      available: [],
+    });
+
+    // At Ceres Freeport (off-station from Jonas at Stickney) -> Sail shortcut + Next Guided info entry
+    app.tacsim.ambient = {
+      docked: true,
+      port: "Ceres Freeport",
+      settledPad: false,
+      ownStowage: null,
+      stowage: null,
+    } as unknown as typeof app.tacsim.ambient;
+    app.paletteQuery("/quest");
+
+    const sailIdx = app.paletteEntries.findIndex(
+      (e) => e.questAction?.kind === "step" && e.questAction.command === "+ship/plan stickney",
+    );
+    expect(sailIdx).toBeGreaterThanOrEqual(0);
+    app.paletteSelected = sailIdx;
+    app.palettePick(false);
+    expect(focused).toBe("+ship/plan stickney");
+
+    app.paletteQuery("/guided");
+    const nextIdx = app.paletteEntries.findIndex((e) => e.questAction?.kind === "nextGuided");
+    expect(nextIdx).toBeGreaterThanOrEqual(0);
+    expect(app.paletteEntries[nextIdx]?.label).toContain("Next Guided (4/7): Return Load");
+    expect(app.paletteEntries[nextIdx]?.detail).toContain("Jonas Achterberg-Nkemelu");
+    app.paletteSelected = nextIdx;
+    app.palettePick(false);
+    expect(app.quests.logOpen).toBe(true);
+    expect(app.quests.logTab).toBe("active");
+
+    // Docked at Stickney Yards aboard ship -> palette offers Cycle Ashore (+ship/leave) toward Jonas
+    app.tacsim.ambient = {
+      docked: true,
+      port: "Stickney Yards",
+      settledPad: false,
+      ownStowage: null,
+      stowage: null,
+    } as unknown as typeof app.tacsim.ambient;
+    app.tacsim.isAboardShip = true;
+    app.tacsim.serverShipCompartment = "airlock";
+    app.tacsim.shipTemplate = {
+      compartments: new Map([["airlock", { id: "airlock", name: "Main Airlock" }]]),
+      exits: [],
+    } as unknown as typeof app.tacsim.shipTemplate;
+    app.paletteQuery("/ashore");
+    const ashoreEntry = app.paletteEntries.find(
+      (e) => e.questAction?.kind === "route" && e.questAction.command === "+ship/leave",
+    );
+    expect(ashoreEntry).toBeDefined();
+    expect(ashoreEntry?.label).toContain("Cycle Ashore");
+  });
 });

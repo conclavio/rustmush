@@ -111,6 +111,7 @@ import {
   QuestsStore,
   needsOriginPortProcurement,
   needsSurfaceExpeditionBoarding,
+  resolveNextGuidedOfferDestination,
   resolveQuestShipTargetCompartment,
 } from "./stores/quests.svelte";
 import {
@@ -2219,6 +2220,80 @@ export class GameApp {
           detail: nextQuest ? `Switch tracker to ${nextQuest.title}` : "Switch active quest tracker",
         });
       }
+    } else if (this.quests.nextGuidedOffer) {
+      const nextGuided = this.quests.nextGuidedOffer;
+      let routeCrumb = null;
+      const settledPad = Boolean(this.tacsim.ambient?.settledPad);
+      const dockedPortId =
+        this.tacsim.ambient?.docked && !settledPad
+          ? normalizePortVenueTarget(this.tacsim.ambient?.port ?? this.tacsim.trade?.hullPort)
+          : null;
+      if (this.tacsim.isAboardShip) {
+        if (!this.tacsim.seatedAtBridgeHelm) {
+          const targetComp = resolveQuestShipTargetCompartment(
+            this.quests.active,
+            this.quests.trackedKey,
+            dockedPortId,
+            settledPad,
+            nextGuided,
+          );
+          const currentComp =
+            (this.tacsim.view3dOpen ? this.tacsim.physicalLocationKey : null) ??
+            this.tacsim.serverShipCompartment;
+          routeCrumb = computeShipQuestBreadcrumb(this.tacsim.shipTemplate, currentComp, targetComp);
+        }
+      } else {
+        const currentEntry =
+          (this.tacsim.view3dOpen ? this.tacsim.physicalLocationKey : null) ??
+          this.tacsim.serverStationRoomEntry;
+        routeCrumb = computeNextQuestExitBreadcrumb(
+          this.tacsim.stationPack,
+          currentEntry,
+          nextGuided.giverRoomEntry,
+          false,
+          false,
+        );
+      }
+
+      if (routeCrumb) {
+        const routeTitle =
+          routeCrumb.nextExitCommand === "+ship/board"
+            ? "Board Ship"
+            : routeCrumb.nextExitCommand === "+ship/leave"
+              ? "Cycle Ashore"
+              : `Walk → ${routeCrumb.nextRoomName} (${routeCrumb.hops}h)`;
+        questItems.push({
+          kind: "route",
+          key: nextGuided.key,
+          command: routeCrumb.nextExitCommand,
+          title: routeTitle,
+          detail: `${routeCrumb.hops} ${routeCrumb.hops === 1 ? "hop" : "hops"} to ${nextGuided.giverRoomName} · ${routeCrumb.nextExitCommand}`,
+        });
+      } else {
+        const curPort =
+          this.chart.frame?.chart?.vantage.port ||
+          this.chart.frame?.chart?.vantage.body ||
+          this.tacsim.ambient?.port ||
+          this.tacsim.trade?.hullPort ||
+          null;
+        const nextDest = resolveNextGuidedOfferDestination(nextGuided, curPort);
+        if (nextDest) {
+          questItems.push({
+            kind: "step",
+            key: nextGuided.key,
+            command: `+ship/plan ${nextDest.portId}`,
+            title: `Sail → ${nextDest.portLabel}`,
+            detail: `+ship/plan ${nextDest.portId} — ${nextDest.questTitle}`,
+          });
+        }
+      }
+
+      questItems.push({
+        kind: "nextGuided",
+        key: nextGuided.key,
+        title: `Next Guided (${nextGuided.step}/7): ${nextGuided.shortLabel}`,
+        detail: `Speak with ${nextGuided.giverLabel} (${nextGuided.giverRoomName})`,
+      });
     }
 
     for (const aq of this.quests.active) {
@@ -2267,6 +2342,10 @@ export class GameApp {
     if (entry.questAction) {
       if (entry.questAction.kind === "cycle") {
         this.quests.cycleTracked();
+        return;
+      }
+      if (entry.questAction.kind === "nextGuided") {
+        this.quests.openLog("active");
         return;
       }
       if (entry.questAction.kind === "route" || entry.questAction.kind === "step") {
