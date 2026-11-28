@@ -222,4 +222,53 @@ describe("QuarryScreen's side pane", () => {
     retBtn.click();
     expect(focusComposer).toHaveBeenCalledWith("+ship/plan ceres");
   });
+
+  it("highlights unsurveyed starter site Freeport Commons on Ground Chart and offers 1-click Drive to matching pocket on Site Map", () => {
+    // 1. Unsurveyed Ground Chart (best: null everywhere) still highlights Freeport Commons as [QUEST]
+    const rawGround = fixture("body_ground.json") as unknown as {
+      ground: { sites: Array<{ venue: string; site: string; best: string | null; best_line: string; here?: boolean }> };
+    };
+    for (const s of rawGround.ground.sites) {
+      s.best = null;
+      s.best_line = "No readings yet.";
+      s.here = false;
+    }
+    const quarryGround = new QuarryStore();
+    quarryGround.mode = "ground";
+    quarryGround.applyGround(rawGround);
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+          title: "Scan, Sound, and Mine a Landing Site",
+          checkpoints: [
+            { id: "scan_landing_site", title: "Surface scan", instructions: "+tv/1 scan go", checked: false, live_ready: false },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", instructions: "+tv/1 mine go", checked: false, live_ready: false },
+          ],
+        },
+      ],
+    });
+    const focusComposer = vi.fn();
+    const groundView = render(QuarryScreen, {
+      props: { app: { quarry: quarryGround, quests, focusComposer, refreshQuarry: vi.fn() } as unknown as GameApp },
+    });
+    const commonsRow = screen.getByRole("button", { name: /\[QUEST\].*Freeport Commons/i });
+    expect(commonsRow.classList.contains("quest-match")).toBe(true);
+    groundView.unmount();
+
+    // 2. Site Map with a matching carbon pocket exposes 1-click Drive: B prefill button
+    const rawSite = fixture("site_map_other.json");
+    rawSite.site.family = "carbon";
+    rawSite.site.readings = [{ target: "B", line: "B · 140 m N — rich carbon_ore pocket" }];
+    const quarrySite = new QuarryStore();
+    quarrySite.applySite(rawSite, Date.now());
+    render(QuarryScreen, {
+      props: { app: { quarry: quarrySite, quests, focusComposer, refreshQuarry: vi.fn() } as unknown as GameApp },
+    });
+    const driveBtn = screen.getByRole("button", { name: /Drive: B/i });
+    driveBtn.click();
+    expect(focusComposer).toHaveBeenCalledWith("+tv drive B");
+  });
 });
