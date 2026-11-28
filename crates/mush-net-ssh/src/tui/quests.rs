@@ -1997,6 +1997,10 @@ pub fn render_quest_sheet_lines(
                 .add_modifier(Modifier::BOLD),
         )),
     ];
+    if let Some(mut roadmap_line) = snap.render_guided_tour_roadmap_line() {
+        roadmap_line.spans.insert(0, Span::raw("  "));
+        lines.push(roadmap_line);
+    }
     if let Some(q) = snap.ordered_active(tracked_key).into_iter().next() {
         let done = q.checkpoints.iter().filter(|c| c.checked).count();
         let ready = if q.ready_to_finish || q.can_finish_now {
@@ -2028,6 +2032,19 @@ pub fn render_quest_sheet_lines(
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(format!("{} ({})", offer.title, offer.giver_name)),
+        ]));
+    } else if let Some(next) = snap.next_guided_offer() {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("  Next Guided ({}/7): ", next.step),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!(
+                "{} — speak with {} ({})",
+                next.short_label, next.giver_label, next.giver_room_name
+            )),
         ]));
     }
     lines.push(Line::from(vec![
@@ -3297,5 +3314,36 @@ mod tests {
                 .expect("expected refit ready");
         assert!(refit_ok_flag);
         assert_eq!(refit_ok, "[READY] Cargo empty | Stores empty | Tank 6t OK");
+    }
+
+    #[test]
+    fn render_quest_sheet_lines_includes_roadmap_and_between_steps_next_guided_offer() {
+        let snap = parse_frame(&json!({
+            "schema": 1,
+            "completed": [
+                { "key": GUIDED_TOUR_KEYS[0], "title": "S1" },
+                { "key": GUIDED_TOUR_KEYS[1], "title": "S2" },
+                { "key": GUIDED_TOUR_KEYS[2], "title": "S3" }
+            ],
+            "active": [],
+            "available": []
+        }));
+        let txt: String = render_quest_sheet_lines(&snap, None)
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(txt.contains("Tour [###----] 3/7"), "{txt}");
+        assert!(txt.contains("[x] 1. Co-op Charter"), "{txt}");
+        assert!(txt.contains("[ ] 4. Return Load"), "{txt}");
+        assert!(
+            txt.contains("Next Guided (4/7): Return Load — speak with Jonas Achterberg-Nkemelu (Receiving Counter)"),
+            "{txt}"
+        );
     }
 }
