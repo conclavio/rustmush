@@ -5,10 +5,12 @@
   // or a quick-accept prompt when a quest NPC in the room has an available quest.
   import type { GameApp } from "$lib/game.svelte";
   import {
+    GUIDED_TOUR_KEYS,
     formatQuestHoldReadinessSummary,
     inferStationPortFromRoomEntry,
     needsOriginPortProcurement,
     needsSurfaceExpeditionBoarding,
+    resolveNextGuidedOfferDestination,
     resolveQuestShipTargetCompartment,
   } from "$lib/stores/quests.svelte";
   import {
@@ -23,8 +25,33 @@
   const tracked = $derived(q.trackedQuest);
   const suggested = $derived(q.suggestedAction);
   const tour = $derived(q.guidedTourProgress);
-  const firstOffer = $derived(q.available[0] ?? null);
+  const firstOffer = $derived(
+    q.available.find(
+      (item) => item.category === "guided" || GUIDED_TOUR_KEYS.includes(item.key),
+    ) ??
+      q.available[0] ??
+      null,
+  );
+  const extraOfferCount = $derived(Math.max(0, q.available.length - 1));
+  const otherReadyHere = $derived(
+    tracked
+      ? q.active.filter((item) => item.key !== tracked.key && item.canFinishNow)
+      : [],
+  );
   const nextOffer = $derived(q.nextGuidedOffer);
+  const currentPort = $derived(
+    app.tacsim?.ambient?.port ??
+      app.tacsim?.trade?.hullPort ??
+      inferStationPortFromRoomEntry(
+        (app.tacsim?.view3dOpen ? app.tacsim?.physicalLocationKey : null) ??
+          app.tacsim?.serverStationRoomEntry,
+      ),
+  );
+  const nextOfferDest = $derived(
+    !tracked && !firstOffer && nextOffer && (currentPort || app.tacsim?.isAboardShip)
+      ? resolveNextGuidedOfferDestination(nextOffer, currentPort)
+      : null,
+  );
   const doneCount = $derived(
     tracked ? tracked.checkpoints.filter((cp) => cp.checked).length : 0,
   );
@@ -140,6 +167,30 @@
           {tour.allDone ? `Corridor Captain ${tour.completed}/${tour.total}` : `Tour ${tour.completed}/${tour.total}`}
         </button>
       {/if}
+      {#if otherReadyHere.length > 0}
+        <button
+          type="button"
+          class="ready-here-pill"
+          onclick={() => {
+            const target = otherReadyHere[0]!;
+            if (otherReadyHere.length === 1 && target.finishCmd) {
+              onCmd(target.finishCmd);
+            } else if (otherReadyHere.length === 1) {
+              q.track(target.key);
+              q.openQuestDialog(target.key);
+            } else {
+              q.openLog("active");
+            }
+          }}
+          title={otherReadyHere.length === 1
+            ? `Complete ${otherReadyHere[0]!.title} in this room`
+            : `${otherReadyHere.length} other quests ready to turn in here`}
+        >
+          [?] {otherReadyHere.length === 1
+            ? `Turn In: ${otherReadyHere[0]!.title}`
+            : `${otherReadyHere.length} ready to turn in`}
+        </button>
+      {/if}
       {#if firstOffer}
         <button
           type="button"
@@ -246,7 +297,7 @@
     <div class="tracker-bar">
       <span class="qmark" data-marker="available">!</span>
       <span class="inline-next">
-        <strong>{firstOffer.giverName}</strong> offers: <em>{firstOffer.title}</em>
+        <strong>{firstOffer.giverName}</strong> offers: <em>{firstOffer.title}</em>{#if extraOfferCount > 0}{" "}<span class="extra-count">(+{extraOfferCount} more)</span>{/if}
       </span>
       {#if tour}
         <span class="tour-pill">
@@ -262,6 +313,11 @@
       <button type="button" class="tbtn" onclick={() => q.openNpcDialog(firstOffer.giverId)}>
         Open Quest Dialog
       </button>
+      {#if extraOfferCount > 0}
+        <button type="button" class="tbtn" onclick={() => q.openLog("available")}>
+          All Offers ({q.available.length})
+        </button>
+      {/if}
       {#if q.completed.length > 0}
         <button type="button" class="tbtn" onclick={() => q.openLog("completed")}>
           Completed ({q.completed.length})
@@ -301,6 +357,23 @@
           {:else}
             Walk → {routeCrumb.nextRoomName} ({routeCrumb.hops}h)
           {/if}
+        </button>
+      {/if}
+      {#if nextOfferDest}
+        <button
+          type="button"
+          class="tbtn primary"
+          title={`Prefill +ship/plan ${nextOfferDest.portId}`}
+          onclick={() => {
+            const cmd = `+ship/plan ${nextOfferDest.portId}`;
+            if (app.focusComposer) {
+              app.focusComposer(cmd);
+            } else {
+              onCmd(cmd);
+            }
+          }}
+        >
+          Sail → {nextOfferDest.portLabel}
         </button>
       {/if}
       <button type="button" class="tbtn" onclick={() => q.openLog("completed")}>
@@ -467,6 +540,27 @@
   }
   .offer-pill:hover {
     filter: brightness(1.14);
+  }
+  .ready-here-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.08rem 0.48rem;
+    border-radius: 999px;
+    border: 1px solid #34d399;
+    background: rgba(16, 185, 129, 0.22);
+    color: #a7f3d0;
+    font: inherit;
+    font-size: 0.7rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .ready-here-pill:hover {
+    filter: brightness(1.14);
+  }
+  .extra-count {
+    color: #fde68a;
+    font-weight: 700;
+    font-size: 0.74rem;
   }
   .tracker.mastered-hint {
     background: linear-gradient(90deg, rgba(16, 185, 129, 0.14), rgba(15, 23, 36, 0.92));
