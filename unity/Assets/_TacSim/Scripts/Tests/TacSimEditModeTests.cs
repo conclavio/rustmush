@@ -14192,5 +14192,71 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void Coordinator_EmitsBetweenStepsNextGuidedArrivalCalloutWhenEnteringGiverRoom()
+        {
+            Assert.AreEqual(
+                "QUEST OBJECTIVE: EXCHANGE HALL",
+                TacSim.UI.TacSimFloatingCallouts.FormatQuestRoomArrivalCallout("Exchange Hall", isTurnIn: false));
+            Assert.AreEqual(
+                "QUEST TURN-IN: REGISTRY & CO-OP DESK",
+                TacSim.UI.TacSimFloatingCallouts.FormatQuestRoomArrivalCallout("Registry & Co-op Desk", isTurnIn: true));
+            Assert.AreEqual(
+                "NEXT GUIDED (2/7) [!]: ILSE ODUYA-BRANDT — REGISTRY & CO-OP DESK",
+                TacSim.UI.TacSimFloatingCallouts.FormatQuestRoomArrivalCallout("Registry & Co-op Desk", isTurnIn: false, 2, "Ilse Oduya-Brandt"));
+
+            var rootGo = new UnityEngine.GameObject("BetweenStepsArrivalTest");
+            try
+            {
+                var coord = rootGo.AddComponent<TacSimGameCoordinator>();
+                var hudGo = new UnityEngine.GameObject("Hud");
+                hudGo.transform.SetParent(rootGo.transform, false);
+                coord.Hud = hudGo.AddComponent<TacSim.UI.TacSimHudController>();
+                coord.EnsureSubsystems();
+
+                var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+                var onRoom = typeof(TacSimGameCoordinator).GetMethod("HandleServerRoomView", flags);
+                Assert.IsNotNull(onRoom);
+
+                // Between Step 1 (done) and Step 2 (not yet accepted; Ilse at room.c05_registry)
+                coord.Hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [],
+                    ""available"": [],
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""First Papers at the Registry"" }
+                    ]
+                }")));
+
+                // 1. Initial room hydration must not fire a room-arrival callout
+                onRoom.Invoke(coord, new object[]
+                {
+                    MushProtocol.ParseRoomView(JsonNode.Parse(@"{
+                        ""id"": ""#10"",
+                        ""name"": ""Port Watch Arrivals"",
+                        ""ambient"": { ""atlas"": { ""pack"": ""neighborhood.ceres_freeport"", ""entry"": ""room.c03_arrivals"" } }
+                    }"))
+                });
+                Assert.AreEqual(string.Empty, coord.Hud.FloatingCallouts.LastShownText);
+
+                // 2. Stepping into Registry & Co-op Desk emits the Next Guided (2/7) giver arrival callout
+                onRoom.Invoke(coord, new object[]
+                {
+                    MushProtocol.ParseRoomView(JsonNode.Parse(@"{
+                        ""id"": ""#15"",
+                        ""name"": ""Registry & Co-op Desk"",
+                        ""ambient"": { ""atlas"": { ""pack"": ""neighborhood.ceres_freeport"", ""entry"": ""room.c05_registry"" } }
+                    }"))
+                });
+                Assert.AreEqual(
+                    "NEXT GUIDED (2/7) [!]: ILSE ODUYA-BRANDT — REGISTRY & CO-OP DESK",
+                    coord.Hud.FloatingCallouts.LastShownText);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
