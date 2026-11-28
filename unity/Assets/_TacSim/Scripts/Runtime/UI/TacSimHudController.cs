@@ -3058,6 +3058,11 @@ namespace TacSim.UI
             for (int i = _modalButtonsRoot.childCount - 1; i >= 0; i--)
                 DestroySafe(_modalButtonsRoot.GetChild(i).gameObject);
 
+            if (!string.IsNullOrWhiteSpace(npcName) && QuestJournal != null && QuestJournal.LatestPanel != null)
+            {
+                TryAddNpcQuestModalButtons(npcName.Trim());
+            }
+
             if (actions != null)
             {
                 foreach (var item in actions)
@@ -3066,6 +3071,131 @@ namespace TacSim.UI
                     CreateButton(_modalButtonsRoot, item.label, new Color(0.14f, 0.38f, 0.48f), () => act?.Invoke());
                 }
             }
+        }
+
+        private static bool NpcNamesMatch(string candidate, string target)
+        {
+            if (string.IsNullOrWhiteSpace(candidate) || string.IsNullOrWhiteSpace(target)) return false;
+            string a = candidate.Trim();
+            string b = target.Trim();
+            return string.Equals(a, b, StringComparison.OrdinalIgnoreCase) ||
+                   a.IndexOf(b, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                   b.IndexOf(a, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        private void TryAddNpcQuestModalButtons(string npcName)
+        {
+            var qp = QuestJournal.LatestPanel;
+            MushNpcQuestMarker marker = null;
+            for (int i = 0; i < qp.RoomMarkers.Count; i++)
+            {
+                if (NpcNamesMatch(qp.RoomMarkers[i].NpcName, npcName))
+                {
+                    marker = qp.RoomMarkers[i];
+                    break;
+                }
+            }
+
+            MushAvailableQuest offer = null;
+            for (int i = 0; i < qp.Available.Count; i++)
+            {
+                if ((marker != null && !string.IsNullOrEmpty(marker.NpcId) && qp.Available[i].GiverId == marker.NpcId) ||
+                    NpcNamesMatch(qp.Available[i].GiverName, npcName))
+                {
+                    offer = qp.Available[i];
+                    break;
+                }
+            }
+
+            MushActiveQuest active = null;
+            for (int i = 0; i < qp.Active.Count; i++)
+            {
+                var q = qp.Active[i];
+                if ((marker != null && !string.IsNullOrEmpty(marker.NpcId) && (q.TurnInId == marker.NpcId || q.GiverId == marker.NpcId)) ||
+                    NpcNamesMatch(q.TurnInName, npcName) ||
+                    NpcNamesMatch(q.GiverName, npcName))
+                {
+                    active = q;
+                    break;
+                }
+            }
+
+            if (marker == null && offer == null && active == null)
+                return;
+
+            string title = marker != null && !string.IsNullOrEmpty(marker.QuestTitle)
+                ? marker.QuestTitle
+                : (offer != null ? offer.Title : (active != null ? active.Title : string.Empty));
+            string titleSuffix = !string.IsNullOrEmpty(title) ? $": {title}" : string.Empty;
+            string dlgLabel;
+            if ((marker != null && marker.Marker == "available") || offer != null)
+                dlgLabel = $"[!] QUEST DIALOG{titleSuffix}";
+            else if ((marker != null && marker.Marker == "turn_in") || (active != null && (active.CanFinishNow || active.ReadyToFinish)))
+                dlgLabel = $"[?] TURN IN QUEST{titleSuffix}";
+            else
+                dlgLabel = $"[?] QUEST DIALOG{titleSuffix}";
+
+            string targetNpcId = marker != null && !string.IsNullOrEmpty(marker.NpcId)
+                ? marker.NpcId
+                : (offer != null && !string.IsNullOrEmpty(offer.GiverId)
+                    ? offer.GiverId
+                    : (active != null && !string.IsNullOrEmpty(active.TurnInId) ? active.TurnInId : active?.GiverId));
+            string targetKey = active != null ? active.Key : (offer != null ? offer.Key : marker?.QuestKey);
+
+            CreateButton(_modalButtonsRoot, dlgLabel, new Color(0.68f, 0.48f, 0.12f), () =>
+            {
+                if (_modalPanel != null) _modalPanel.SetActive(false);
+                if (!string.IsNullOrEmpty(targetNpcId) && QuestJournal.OpenNpcQuestDialog(targetNpcId))
+                    return;
+                if (!string.IsNullOrEmpty(targetKey))
+                    QuestJournal.OpenQuestDialogByKey(targetKey);
+            });
+
+            if (active != null && active.CanFinishNow && !string.IsNullOrEmpty(active.FinishCmd))
+            {
+                string cmd = active.FinishCmd;
+                CreateButton(_modalButtonsRoot, "[?] COMPLETE NOW", new Color(0.16f, 0.56f, 0.34f), () =>
+                {
+                    OnCommandSubmitted?.Invoke(cmd);
+                    if (_modalPanel != null) _modalPanel.SetActive(false);
+                });
+            }
+            else if (active != null && active.CanCheckNow && !string.IsNullOrEmpty(active.CheckCmd))
+            {
+                string cmd = active.CheckCmd;
+                CreateButton(_modalButtonsRoot, "[◆] VERIFY STEP", new Color(0.16f, 0.52f, 0.40f), () =>
+                {
+                    OnCommandSubmitted?.Invoke(cmd);
+                    if (_modalPanel != null) _modalPanel.SetActive(false);
+                });
+            }
+            else if (offer != null && !string.IsNullOrEmpty(offer.AcceptCmd))
+            {
+                string cmd = offer.AcceptCmd;
+                CreateButton(_modalButtonsRoot, "[!] ACCEPT NOW", new Color(0.16f, 0.56f, 0.34f), () =>
+                {
+                    OnCommandSubmitted?.Invoke(cmd);
+                    if (_modalPanel != null) _modalPanel.SetActive(false);
+                });
+            }
+        }
+
+        public bool TriggerDetailModalButtonContaining(string labelFragment)
+        {
+            if (_modalButtonsRoot == null || string.IsNullOrEmpty(labelFragment)) return false;
+            for (int i = 0; i < _modalButtonsRoot.childCount; i++)
+            {
+                var ch = _modalButtonsRoot.GetChild(i);
+                var lbl = ch.GetComponentInChildren<Text>();
+                var btn = ch.GetComponent<Button>();
+                if (lbl != null && btn != null &&
+                    lbl.text.IndexOf(labelFragment, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    btn.onClick.Invoke();
+                    return true;
+                }
+            }
+            return false;
         }
 
         public void SetNpcModalThinking(string npcName, bool thinking)
