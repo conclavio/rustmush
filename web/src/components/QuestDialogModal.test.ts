@@ -500,4 +500,63 @@ describe("QuestDialogModal guided corridor tour roadmap", () => {
     render(QuestDialogModal, { app, onCmd: vi.fn() });
     expect(screen.getByText("Step 3/7")).toBeTruthy();
   });
+
+  it("shows 1-click off-port Sail button for between-steps Next Guided offer and View Offers shortcut in empty Active tab", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#15",
+      room_name: "Ceres Registry",
+      completed: [
+        { key: GUIDED_TOUR_KEYS[0], title: "S1" },
+        { key: GUIDED_TOUR_KEYS[1], title: "S2" },
+        { key: GUIDED_TOUR_KEYS[2], title: "S3" },
+      ],
+      active: [],
+      available: [],
+    });
+
+    const focusComposer = vi.fn();
+    const app = {
+      quests,
+      tacsim: {
+        ambient: { port: "ceres" },
+        trade: { venueId: "ceres", hullPort: "ceres" },
+      },
+      focusComposer,
+    } as unknown as GameApp;
+
+    quests.openLog("active");
+    const first = render(QuestDialogModal, { app, onCmd: vi.fn() });
+    const sailBtn = screen.getByRole("button", { name: /Sail → Stickney Yards \(\+ship\/plan stickney\)/i });
+    await fireEvent.click(sailBtn);
+    expect(focusComposer).toHaveBeenCalledWith("+ship/plan stickney");
+    expect(quests.logOpen).toBe(false);
+    first.unmount();
+
+    // When room has offers but no active quests -> empty Active tab offers 1-click jump to Available Here
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#10",
+      room_name: "Port Watch Arrivals",
+      completed: [],
+      active: [],
+      available: [
+        {
+          key: GUIDED_TOUR_KEYS[0],
+          title: "First Papers at the Registry",
+          category: "guided",
+          giver_id: "#11",
+          giver_name: "Maren Halvorsen",
+          accept_cmd: "+quest/accept #11=tok1",
+          checkpoints: [],
+        },
+      ],
+    });
+    quests.openLog("active");
+    render(QuestDialogModal, { app, onCmd: vi.fn() });
+    const viewOffersBtn = screen.getByRole("button", { name: /View 1 Offer Here/i });
+    await fireEvent.click(viewOffersBtn);
+    expect(quests.logTab).toBe("available");
+  });
 });
