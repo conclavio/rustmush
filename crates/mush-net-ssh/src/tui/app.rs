@@ -5215,6 +5215,7 @@ impl TuiApp {
             .into_iter()
             .next()
         {
+            let mut pushed_suggested_cmd = String::new();
             if let Some(hop) = self.port_walk.next_quest_hop() {
                 let (route_label, search_head) = if hop.next_exit_command == "+ship/board" {
                     ("[>] Board Ship".to_string(), "board ship route walk")
@@ -5249,6 +5250,7 @@ impl TuiApp {
                     quest_action: Some(PaletteQuestAction::PrefillCommand),
                 });
             } else if let Some(suggested) = QuestsSnapshot::suggested_action_for(tq) {
+                pushed_suggested_cmd = suggested.command.trim().to_ascii_lowercase();
                 let detail = if tq.next_step.is_empty() {
                     suggested.command.clone()
                 } else {
@@ -5264,6 +5266,75 @@ impl TuiApp {
                     detail: detail.clone(),
                     quest_action: Some(PaletteQuestAction::PrefillCommand),
                 });
+            }
+
+            let tracked_snap = self
+                .quests_snap
+                .tracked_only(self.quests_overlay.tracked_key.as_deref());
+            if let Some(mining) = tracked_snap
+                .as_ref()
+                .and_then(|s| s.surface_mining_status(Some(tq.key.as_str())))
+            {
+                if !mining.mine_done {
+                    if pushed_suggested_cmd != "+chart/ground" {
+                        let ore_label = mining.target_ore_slug.replace('_', " ");
+                        let label = format!(
+                            "[>] Ground Chart: {ore_label} ({})",
+                            mining.recommended_family
+                        );
+                        let detail = "+chart/ground — Pick a Ceres landing site (Freeport Commons / Ahuna Flank)".to_string();
+                        let search = format!(
+                            "ground chart mining {ore_label} {} +chart/ground quest",
+                            mining.recommended_family
+                        );
+                        consider(&search, &|| PaletteEntry {
+                            insert: "+chart/ground".to_string(),
+                            label: label.clone(),
+                            detail: detail.clone(),
+                            quest_action: Some(PaletteQuestAction::PrefillCommand),
+                        });
+                    }
+                } else if !tq.can_finish_now && !tq.turn_in_here {
+                    let return_dest = tracked_snap
+                        .as_ref()
+                        .and_then(|s| s.active_destination_port(Some(tq.key.as_str())))
+                        .map(|d| (d.port_id, d.port_label))
+                        .or_else(|| {
+                            let room = if !tq.next_room_entry.is_empty() {
+                                tq.next_room_entry.as_str()
+                            } else {
+                                tq.checkpoints.last().map_or("", |c| c.room_entry.as_str())
+                            };
+                            let slug = super::quests::infer_station_port_from_room_entry(room)?;
+                            let lbl = match slug {
+                                "ceres" => "Ceres Freeport",
+                                "stickney" => "Stickney Yards",
+                                other => other,
+                            };
+                            Some((slug.to_string(), lbl.to_string()))
+                        });
+                    if let Some((port_id, port_label)) = return_dest {
+                        let plan_cmd = format!("+ship/plan {port_id}");
+                        if pushed_suggested_cmd != plan_cmd.to_ascii_lowercase() {
+                            let turn_in = if tq.turn_in_name.is_empty() {
+                                port_label.as_str()
+                            } else {
+                                tq.turn_in_name.as_str()
+                            };
+                            let label = format!("[>] Return -> {port_label}");
+                            let detail = format!("{plan_cmd} — Return to {turn_in} with mined ore");
+                            let search = format!(
+                                "return sail plan {port_id} {port_label} {plan_cmd} mined ore quest"
+                            );
+                            consider(&search, &|| PaletteEntry {
+                                insert: plan_cmd.clone(),
+                                label: label.clone(),
+                                detail: detail.clone(),
+                                quest_action: Some(PaletteQuestAction::PrefillCommand),
+                            });
+                        }
+                    }
+                }
             }
 
             if self.quests_snap.active.len() > 1 {
@@ -5368,6 +5439,23 @@ impl TuiApp {
                 label: label.clone(),
                 detail: detail.clone(),
                 quest_action: Some(PaletteQuestAction::OpenDialog(QuestTab::Active, 0)),
+            });
+        } else if self.quests_snap.available.is_empty()
+            && let Some(tour) = self.quests_snap.guided_tour_progress()
+            && tour.all_done
+        {
+            let label = format!(
+                "[*] Corridor Captain ({}/{}) — Jobs Board",
+                tour.completed, tour.total
+            );
+            let detail = "+market/jobs — Browse corridor freight & mining contracts".to_string();
+            let search =
+                "corridor captain jobs board market +market/jobs guided tour complete quest";
+            consider(search, &|| PaletteEntry {
+                insert: "+market/jobs".to_string(),
+                label: label.clone(),
+                detail: detail.clone(),
+                quest_action: Some(PaletteQuestAction::PrefillCommand),
             });
         }
 
@@ -14066,6 +14154,117 @@ mod tests {
             finish_pos < accept_pos,
             "ready turn-in must rank ahead of available accept: {inserts:?}"
         );
+    }
+
+    #[test]
+    fn palette_surfaces_step6_ground_chart_post_mine_return_and_corridor_captain_jobs() {
+        let mut app = app();
+
+        // 1. Step 6 pre-mine -> Ctrl-K + "ground" prefills +chart/ground
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "active": [{
+                    "key": "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+                    "title": "Scan, Sound, and Mine a Landing Site",
+                    "turn_in_name": "Rosalind Qureshi-Mbeki",
+                    "next_room_entry": "room.c07_exchange",
+                    "next_step": "Scan a Ceres landing site and mine 1t carbon_ore.",
+                    "checkpoints": [
+                        {
+                            "id": "scan_landing_site",
+                            "title": "Complete a surface scan",
+                            "instructions": "Run +tv/1 scan go",
+                            "checked": false,
+                            "live_ready": false
+                        },
+                        {
+                            "id": "mine_carbon_ore",
+                            "title": "Mine at least 1 tonne of carbon ore",
+                            "instructions": "Run +tv/1 mine go",
+                            "room_entry": "room.c07_exchange",
+                            "checked": false,
+                            "live_ready": false
+                        }
+                    ]
+                }],
+                "available": [],
+                "completed": []
+            }),
+        });
+        app.feed_input(b"\x0bground");
+        assert!(app.palette_open());
+        app.feed_input(b"\r");
+        assert_eq!(app.line.text(), "+chart/ground");
+
+        // 2. Step 6 post-mine off-station -> Ctrl-K + "return" prefills +ship/plan ceres
+        app.feed_input(b"\x1b");
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "active": [{
+                    "key": "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+                    "title": "Scan, Sound, and Mine a Landing Site",
+                    "turn_in_name": "Rosalind Qureshi-Mbeki",
+                    "next_room_entry": "room.c07_exchange",
+                    "ready_to_finish": true,
+                    "can_finish_now": false,
+                    "turn_in_here": false,
+                    "checkpoints": [
+                        {
+                            "id": "scan_landing_site",
+                            "title": "Complete a surface scan",
+                            "instructions": "Run +tv/1 scan go",
+                            "checked": true,
+                            "live_ready": true
+                        },
+                        {
+                            "id": "mine_carbon_ore",
+                            "title": "Mine at least 1 tonne of carbon ore",
+                            "instructions": "Run +tv/1 mine go",
+                            "room_entry": "room.c07_exchange",
+                            "checked": true,
+                            "live_ready": true
+                        }
+                    ]
+                }],
+                "available": [],
+                "completed": []
+            }),
+        });
+        app.feed_input(b"\x0breturn");
+        assert!(app.palette_open());
+        app.feed_input(b"\r");
+        assert_eq!(app.line.text(), "+ship/plan ceres");
+
+        // 3. All 7 guided quests complete -> Ctrl-K + "jobs" prefills +market/jobs
+        app.feed_input(b"\x1b");
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "active": [],
+                "available": [],
+                "completed": [
+                    { "key": "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll", "title": "S1" },
+                    { "key": "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel", "title": "S2" },
+                    { "key": "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery", "title": "S3" },
+                    { "key": "tacsim.quests.guided_onboarding/quest.guide_04_return_haul", "title": "S4" },
+                    { "key": "tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector", "title": "S5" },
+                    { "key": "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining", "title": "S6" },
+                    { "key": "tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore", "title": "S7" }
+                ]
+            }),
+        });
+        app.feed_input(b"\x0bjobs");
+        assert!(app.palette_open());
+        app.feed_input(b"\r");
+        assert_eq!(app.line.text(), "+market/jobs");
     }
 
     #[test]
