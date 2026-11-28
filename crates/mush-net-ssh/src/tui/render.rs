@@ -5562,6 +5562,15 @@ fn matches_quest_ore_text(text: &str, m: &super::quests::QuestSurfaceMiningStatu
         || (!fam.is_empty() && low.contains(&fam))
 }
 
+/// Quest guidance context for the TUI Quarry & Ground Chart side pane.
+#[derive(Default)]
+pub struct QuarryQuestContext<'a> {
+    pub quest_mining: Option<&'a super::quests::QuestSurfaceMiningStatus>,
+    pub return_dest: Option<&'a super::quests::QuestDestinationHint>,
+    pub step_badge: &'a str,
+    pub ore_stowed: Option<bool>,
+}
+
 /// Quest-aware variant of [`render_quarry_side_rows`] that surfaces matching Step 6 landing sites
 /// (`+ship/plan <venue>`) and mineral readings first in bold gold `[QUEST]` rows.
 pub fn render_quarry_side_rows_with_quest(
@@ -5569,11 +5578,74 @@ pub fn render_quarry_side_rows_with_quest(
     ctx: &RenderCtx<'_>,
     quest_mining: Option<&super::quests::QuestSurfaceMiningStatus>,
 ) -> PaneRows {
+    render_quarry_side_rows_with_quest_context(
+        data,
+        ctx,
+        &QuarryQuestContext {
+            quest_mining,
+            ..Default::default()
+        },
+    )
+}
+
+/// Full quest-aware variant of [`render_quarry_side_rows`] supporting Step 6 post-mine
+/// `[RECOVER RIG FIRST]` and `[ORE HOLD READY]` return banners on both Ground and Site views.
+pub fn render_quarry_side_rows_with_quest_context(
+    data: &Value,
+    ctx: &RenderCtx<'_>,
+    qc: &QuarryQuestContext<'_>,
+) -> PaneRows {
     let system = ctx.tag("system");
     let quest_style = Style::default()
         .fg(Color::Yellow)
         .add_modifier(Modifier::BOLD);
-    let active_mine = quest_mining.filter(|m| !m.mine_done);
+    let ready_style = Style::default()
+        .fg(Color::Green)
+        .add_modifier(Modifier::BOLD);
+    let active_mine = qc.quest_mining.filter(|m| !m.mine_done);
+    let post_mine_banner = || -> Option<PaneRow> {
+        let m = qc.quest_mining.filter(|m| m.mine_done)?;
+        let ore = m.target_ore_slug.replace('_', " ");
+        let port_label = qc
+            .return_dest
+            .map(|d| d.port_label.as_str())
+            .unwrap_or("Ceres Freeport");
+        let port_id = qc
+            .return_dest
+            .map(|d| d.port_id.as_str())
+            .unwrap_or("ceres");
+        let step_badge = qc.step_badge;
+        let line = match qc.ore_stowed {
+            Some(false) => Line::from(vec![
+                Span::styled("[RECOVER RIG FIRST] ", quest_style),
+                Span::styled(
+                    clean(&format!(
+                        "Stow mined {ore} (+tv/1 recover go) before returning to {port_label}{step_badge}"
+                    )),
+                    quest_style,
+                ),
+            ]),
+            Some(true) => Line::from(vec![
+                Span::styled("[ORE HOLD READY] ", ready_style),
+                Span::styled(
+                    clean(&format!(
+                        "Return: {port_label} (+ship/plan {port_id}){step_badge}"
+                    )),
+                    ready_style,
+                ),
+            ]),
+            None => Line::from(vec![
+                Span::styled("[QUEST] ", quest_style),
+                Span::styled(
+                    clean(&format!(
+                        "Recover rig (+tv/1 recover go) then return: {port_label} (+ship/plan {port_id}){step_badge}"
+                    )),
+                    quest_style,
+                ),
+            ]),
+        };
+        Some(PaneRow::plain(line))
+    };
     let line_rows = |lines: &[String]| -> Vec<PaneRow> {
         lines
             .iter()
@@ -5588,6 +5660,9 @@ pub fn render_quarry_side_rows_with_quest(
             return PaneRows::one(&quarry_text(frame, "/title").unwrap_or_default());
         }
         let mut rows = Vec::new();
+        if let Some(banner) = post_mine_banner() {
+            rows.push(banner);
+        }
         if let Some(m) = active_mine
             && let Some(sites) = frame.pointer("/ground/sites").and_then(Value::as_array)
         {
@@ -5663,10 +5738,14 @@ pub fn render_quarry_side_rows_with_quest(
         return PaneRows::one(&quarry_text(data, "/title").unwrap_or_default());
     }
     let family = quarry_text(data, "/site/family").unwrap_or_default();
-    let mut rows = vec![PaneRow::plain(Line::from(Span::styled(
+    let mut rows = Vec::new();
+    if let Some(banner) = post_mine_banner() {
+        rows.push(banner);
+    }
+    rows.push(PaneRow::plain(Line::from(Span::styled(
         format!("readings, {family}"),
         system,
-    )))];
+    ))));
     let readings: Vec<String> = data
         .pointer("/site/readings")
         .and_then(Value::as_array)
@@ -9478,6 +9557,127 @@ mod tests {
         assert_eq!(
             ready_rows[0],
             "[ORE HOLD READY] Return: Ceres Freeport (+ship/plan ceres) — Scan, Sound, and Mine [Step 6/7]"
+        );
+    }
+
+    #[test]
+    fn render_quarry_side_rows_with_quest_context_shows_step6_rig_recovery_and_ore_hold_ready() {
+        let row_texts = |rows: PaneRows| -> Vec<String> {
+            rows.rows
+                .into_iter()
+                .map(|r| {
+                    r.line
+                        .spans
+                        .into_iter()
+                        .map(|s| s.content.into_owned())
+                        .collect::<String>()
+                })
+                .collect()
+        };
+        let theme = AnsiTheme::classic();
+        let mine_done = super::super::quests::QuestSurfaceMiningStatus {
+            quest_title: "Scan, Sound, and Mine".into(),
+            target_ore_slug: "carbon_ore".into(),
+            recommended_family: "carbon".into(),
+            scan_done: true,
+            sound_done: true,
+            mine_done: true,
+        };
+        let ceres = super::super::quests::QuestDestinationHint {
+            quest_title: "Scan, Sound, and Mine".into(),
+            port_id: "ceres".into(),
+            port_label: "Ceres Freeport".into(),
+        };
+
+        // 1. Site view: post-mine 0t stowed -> [RECOVER RIG FIRST] (+tv/1 recover go); 1t stowed -> [ORE HOLD READY]
+        let site_data = serde_json::json!({
+            "width": 16,
+            "site": {
+                "family": "carbon",
+                "readings": [{ "target": "A", "line": "A · 90 m W — carbon_ore pocket" }],
+                "log": []
+            }
+        });
+        let store = PanelStore::default();
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::Ansi16,
+            utf8: true,
+            store: &store,
+            selected_channel: None,
+            pane: None,
+            picture: None,
+        };
+        let site_rec = row_texts(render_quarry_side_rows_with_quest_context(
+            &site_data,
+            &ctx,
+            &QuarryQuestContext {
+                quest_mining: Some(&mine_done),
+                return_dest: Some(&ceres),
+                step_badge: " [Step 6/7]",
+                ore_stowed: Some(false),
+            },
+        ));
+        assert_eq!(
+            site_rec[0],
+            "[RECOVER RIG FIRST] Stow mined carbon ore (+tv/1 recover go) before returning to Ceres Freeport [Step 6/7]"
+        );
+
+        let site_ready = row_texts(render_quarry_side_rows_with_quest_context(
+            &site_data,
+            &ctx,
+            &QuarryQuestContext {
+                quest_mining: Some(&mine_done),
+                return_dest: Some(&ceres),
+                step_badge: " [Step 6/7]",
+                ore_stowed: Some(true),
+            },
+        ));
+        assert_eq!(
+            site_ready[0],
+            "[ORE HOLD READY] Return: Ceres Freeport (+ship/plan ceres) [Step 6/7]"
+        );
+
+        // 2. Ground view: post-mine 0t stowed -> [RECOVER RIG FIRST] at top of ground side pane
+        let mut g_store = PanelStore::default();
+        g_store.set_quarry(super::super::panels::QuarryView {
+            mode: super::super::panels::QuarryMode::Ground,
+            ..Default::default()
+        });
+        g_store.apply_panel(
+            &mush_proto::SmolStr::new_static(BODY_GROUND_FEED),
+            mush_proto::PanelFrameKind::Keyframe,
+            &serde_json::json!({
+                "width": 20,
+                "ground": {
+                    "sites": [],
+                    "lines": ["A Freeport Commons — open"]
+                }
+            }),
+            0,
+        );
+        let g_ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::Ansi16,
+            utf8: true,
+            store: &g_store,
+            selected_channel: None,
+            pane: None,
+            picture: None,
+        };
+        let g_rec = row_texts(render_quarry_side_rows_with_quest_context(
+            &Value::Null,
+            &g_ctx,
+            &QuarryQuestContext {
+                quest_mining: Some(&mine_done),
+                return_dest: Some(&ceres),
+                step_badge: " [Step 6/7]",
+                ore_stowed: Some(false),
+            },
+        ));
+        assert_eq!(
+            g_rec[0],
+            "[RECOVER RIG FIRST] Stow mined carbon ore (+tv/1 recover go) before returning to Ceres Freeport [Step 6/7]"
         );
     }
 }
