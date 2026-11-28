@@ -296,5 +296,43 @@ describe("Track 6 Doc 48 Economy, Jobs, Shipyards & Parts Market UI", () => {
     await fireEvent.click(screen.getByRole("button", { name: "Works & Yard" }));
     await tick();
     expect(screen.getByRole("status", { name: "active quest refit guidance" })).toBeTruthy();
+
+    // 7. Active cargo/provisions/propellant quest highlights matching stowage gauge & live hold readiness
+    app.quests.applyFrame({
+      schema: 1,
+      room_id: "#105",
+      room_name: "Exchange Hall",
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+          title: "Metals Down the Corridor",
+          category: "guided",
+          checkpoints: [
+            {
+              id: "deliver_metals",
+              title: "Buy 5 tonnes of metals and deliver them to Stickney Yards",
+              instructions: "Buy 5 metals and sell at Stickney.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+      available: [],
+      completed: [],
+    });
+    app.tacsim.trade = {
+      ...app.tacsim.trade,
+      stowage: {
+        ...app.tacsim.trade.stowage,
+        cargoKg: 5000,
+        cargoLines: [{ good: "tacsim:metals", label: "Metals", qty: 5, unit: "t", massKg: 5000 }],
+      },
+    };
+    await tick();
+    const readiness = screen.getByLabelText("quest cargo readiness");
+    expect(readiness.textContent).toContain("METALS");
+    expect(readiness.textContent).toContain("5 / 5");
+    expect(readiness.textContent).toContain("[READY]");
   });
 });

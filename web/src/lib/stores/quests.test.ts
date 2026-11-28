@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   QUESTS_FEED,
   QuestsStore,
+  evaluateQuestStowageReadiness,
   matchesQuestTradeRow,
   parseQuestMarkers,
 } from "./quests.svelte";
@@ -433,6 +434,82 @@ describe("QuestsStore", () => {
     expect(store.suggestedAction).toEqual({
       label: "Enroll Co-op",
       command: "+coop/enroll ",
+    });
+  });
+
+  it("evaluates stowage readiness across propellant, provisions, and hold cargo lots", () => {
+    const stowage = {
+      propellantKg: 5400,
+      provisionsCrewDays: 8,
+      cargoLines: [
+        { good: "tacsim:metals", label: "Metals", qty: 3 },
+        { good: "tacsim:carbon_ore", label: "Carbon Ore", qty: 2 },
+      ],
+    };
+    expect(
+      evaluateQuestStowageReadiness(
+        {
+          questTitle: "Fuel",
+          checkpointTitle: "Buy 5 propellant",
+          commoditySlug: "propellant",
+          targetQuantity: 5,
+          wantsBuy: true,
+          wantsSell: false,
+        },
+        stowage,
+      ),
+    ).toEqual({
+      commoditySlug: "propellant",
+      label: "PROPELLANT",
+      currentQty: 5,
+      targetQty: 5,
+      unit: "t",
+      ready: true,
+      gaugeKind: "propellant",
+    });
+
+    expect(
+      evaluateQuestStowageReadiness(
+        {
+          questTitle: "Provisions",
+          checkpointTitle: "Buy 10 provisions",
+          commoditySlug: "provisions",
+          targetQuantity: 10,
+          wantsBuy: true,
+          wantsSell: false,
+        },
+        stowage,
+      ),
+    ).toEqual({
+      commoditySlug: "provisions",
+      label: "PROVISIONS",
+      currentQty: 8,
+      targetQty: 10,
+      unit: "d",
+      ready: false,
+      gaugeKind: "provisions",
+    });
+
+    expect(
+      evaluateQuestStowageReadiness(
+        {
+          questTitle: "Metals",
+          checkpointTitle: "Buy 5 metals",
+          commoditySlug: "metals",
+          targetQuantity: 5,
+          wantsBuy: true,
+          wantsSell: true,
+        },
+        stowage,
+      ),
+    ).toEqual({
+      commoditySlug: "metals",
+      label: "METALS",
+      currentQty: 3,
+      targetQty: 5,
+      unit: "u",
+      ready: false,
+      gaugeKind: "cargo",
     });
   });
 });

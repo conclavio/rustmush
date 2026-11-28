@@ -93,6 +93,74 @@ export interface QuestTradeNeed {
   wantsSell: boolean;
 }
 
+export interface QuestStowageReadiness {
+  commoditySlug: string;
+  label: string;
+  currentQty: number;
+  targetQty: number;
+  unit: string;
+  ready: boolean;
+  gaugeKind: "propellant" | "provisions" | "cargo";
+}
+
+export function evaluateQuestStowageReadiness(
+  need: QuestTradeNeed | null,
+  stowage:
+    | {
+        propellantKg: number;
+        provisionsCrewDays: number;
+        cargoLines: ReadonlyArray<{ good: string; label: string; qty: number }>;
+      }
+    | null
+    | undefined,
+): QuestStowageReadiness | null {
+  if (!need || !stowage) return null;
+  const targetQty = Math.max(1, need.targetQuantity);
+  const label = need.commoditySlug.replaceAll("_", " ").toUpperCase();
+  if (need.commoditySlug === "propellant") {
+    const currentQty = Math.floor(Math.max(0, stowage.propellantKg) / 1000);
+    return {
+      commoditySlug: need.commoditySlug,
+      label,
+      currentQty,
+      targetQty,
+      unit: "t",
+      ready: currentQty >= targetQty,
+      gaugeKind: "propellant",
+    };
+  }
+  if (need.commoditySlug === "provisions") {
+    const currentQty = Math.floor(Math.max(0, stowage.provisionsCrewDays));
+    return {
+      commoditySlug: need.commoditySlug,
+      label,
+      currentQty,
+      targetQty,
+      unit: "d",
+      ready: currentQty >= targetQty,
+      gaugeKind: "provisions",
+    };
+  }
+  let currentQty = 0;
+  for (const line of stowage.cargoLines) {
+    if (
+      normalizeGoodSlug(line.good) === need.commoditySlug ||
+      normalizeGoodSlug(line.label) === need.commoditySlug
+    ) {
+      currentQty += Math.max(0, line.qty);
+    }
+  }
+  return {
+    commoditySlug: need.commoditySlug,
+    label,
+    currentQty,
+    targetQty,
+    unit: "u",
+    ready: currentQty >= targetQty,
+    gaugeKind: "cargo",
+  };
+}
+
 export interface QuestDestinationHint {
   questTitle: string;
   portId: string;
