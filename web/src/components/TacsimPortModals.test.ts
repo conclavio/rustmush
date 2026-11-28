@@ -733,4 +733,65 @@ describe("TacsimPortModals Dray-P Vehicle Bay and Co-op Refit quest guidance", (
     expect(bidRows[0]!.classList.contains("quest-match")).toBe(true);
     expect(bidRows[0]!.textContent).toContain("[QUEST] Metals");
   });
+
+  it("sorts the quest destination card first in Sailing Plan, marks current port [HERE], and shows Step 6 ground expedition banner", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[2],
+          title: "Metals Down the Corridor",
+          checkpoints: [
+            {
+              id: "deliver_metals",
+              title: "Deliver 5t metals to Stickney Yards",
+              instructions: "File +ship/plan stickney and sell at Stickney Yards.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    const app = makeApp(quests, "sailing");
+    const first = render(TacsimPortModals, { props: { app, onCmd: vi.fn() } });
+    const cards = [...first.container.querySelectorAll(".dest-card")];
+    expect(cards.length).toBeGreaterThan(2);
+    expect(cards[0]!.classList.contains("quest-match")).toBe(true);
+    expect(cards[0]!.textContent).toContain("[QUEST]");
+    expect(cards[0]!.textContent).toContain("Stickney Yards");
+    const ceresCard = cards.find((c) => c.textContent?.includes("Ceres Freeport"));
+    expect(ceresCard?.textContent).toContain("[HERE]");
+    first.unmount();
+
+    // Step 6 active surface mining -> shows ground expedition banner with Ground Chart & Freeport Commons shortcuts
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[5],
+          title: "Scan, Sound, and Mine a Landing Site",
+          checkpoints: [
+            { id: "scan_landing_site", title: "Surface scan", instructions: "Run +tv/1 scan go.", checked: false, live_ready: false },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", instructions: "Run +tv/1 mine go.", checked: false, live_ready: false },
+          ],
+        },
+      ],
+    });
+    const step6App = makeApp(quests, "sailing");
+    step6App.tacsim.selectedDestination = "stickney";
+    const onCmd = vi.fn();
+    render(TacsimPortModals, { props: { app: step6App, onCmd } });
+    const banner = screen.getByRole("status", { name: "active quest surface expedition" });
+    expect(banner.textContent).toMatch(/carbon ore/i);
+    const step6Cards = [...document.querySelectorAll(".dest-card")];
+    expect(step6Cards[0]!.textContent).toContain("[QUEST]");
+    expect(step6Cards[0]!.textContent).toContain("Freeport Commons");
+    await fireEvent.click(screen.getByRole("button", { name: /Select Freeport Commons/i }));
+    expect(step6App.tacsim.selectedDestination).toBe("commons");
+    await fireEvent.click(screen.getByRole("button", { name: /Ground Chart \(\+chart\/ground\)/i }));
+    expect(onCmd).toHaveBeenCalledWith("+chart/ground");
+  });
 });

@@ -129,14 +129,38 @@
     ),
   );
   const questHistoryCode = $derived(questTradeNeed ? questTradeNeed.commoditySlug : null);
+  const currentVenueRaw = $derived(
+    trade.venueId || trade.venueLabel || trade.portName || app.tacsim.ambient?.port || trade.hullPort || null,
+  );
+  const currentVenueId = $derived.by(() => {
+    const low = (currentVenueRaw ?? "").trim().toLowerCase();
+    if (!low) return null;
+    const match = CORRIDOR_DESTINATIONS.find(
+      (d) =>
+        d.id === low ||
+        low.includes(d.id) ||
+        d.label.toLowerCase() === low ||
+        low.includes(d.label.toLowerCase()),
+    );
+    return match?.id ?? null;
+  });
   const questDestPort = $derived(
     app.quests.activeDestinationPort ??
       resolveNextGuidedOfferDestination(
         app.quests.nextGuidedOffer,
-        trade.venueId || trade.venueLabel || trade.portName || app.tacsim.ambient?.port || trade.hullPort || null,
+        currentVenueRaw,
       ),
   );
   const questMining = $derived(app.quests?.surfaceMiningStatus ?? null);
+  const orderedDestinations = $derived.by(() => {
+    const targetId =
+      questDestPort?.portId ?? (questMining && !questMining.mineDone ? "commons" : null);
+    if (!targetId) return CORRIDOR_DESTINATIONS;
+    return [
+      ...CORRIDOR_DESTINATIONS.filter((d) => d.id === targetId),
+      ...CORRIDOR_DESTINATIONS.filter((d) => d.id !== targetId),
+    ];
+  });
   const questMiningPrep = $derived(extractSurfaceMiningPrepActions(questMining));
   const questJobGuidance = $derived.by(() => {
     if (questMining) {
@@ -1008,19 +1032,49 @@
                   {/if}
                 </div>
               {/if}
+            {:else if questMining && !questMining.mineDone}
+              <div class="quest-banner" role="status" aria-label="active quest surface expedition">
+                <div class="qb-text">
+                  <span class="qtag">[QUEST]</span>
+                  <strong>SURFACE EXTRACTION: {questMining.targetOreSlug.replace("_", " ").toUpperCase()}</strong>
+                  <span class="muted">— pick a Ceres landing site or survey Ground Chart</span>
+                </div>
+                <div class="qb-text">
+                  <button
+                    type="button"
+                    class="qbtn-gold"
+                    onclick={() => (app.tacsim.selectedDestination = "commons")}
+                  >
+                    Select Freeport Commons (commons)
+                  </button>
+                  <button
+                    type="button"
+                    class="ghost"
+                    onclick={() => onCmd("+chart/ground")}
+                  >
+                    Ground Chart (+chart/ground)
+                  </button>
+                </div>
+              </div>
             {/if}
             <h3>Select Corridor Destination Port</h3>
             <div class="dest-grid">
-              {#each CORRIDOR_DESTINATIONS as dest (dest.id)}
-                {@const isQuestDest = questDestPort?.portId === dest.id}
+              {#each orderedDestinations as dest (dest.id)}
+                {@const isQuestDest =
+                  questDestPort?.portId === dest.id ||
+                  (!questDestPort && questMining && !questMining.mineDone && dest.id === "commons")}
+                {@const isCurrentPort = currentVenueId === dest.id}
                 <button
                   type="button"
                   class="dest-card"
                   class:on={app.tacsim.selectedDestination === dest.id}
                   class:quest-match={isQuestDest}
+                  class:here={isCurrentPort}
                   onclick={() => (app.tacsim.selectedDestination = dest.id)}
                 >
-                  <strong>{#if isQuestDest}<span class="qtag">[QUEST]</span> {/if}{dest.label}</strong>
+                  <strong>
+                    {#if isQuestDest}<span class="qtag">[QUEST]</span> {/if}{dest.label}{#if isCurrentPort} <span class="htag">[HERE]</span>{/if}
+                  </strong>
                   <span>{dest.body}</span>
                 </button>
               {/each}
@@ -1797,6 +1851,17 @@
     color: #ffd84d;
     font-weight: 700;
     font-family: var(--font-mono);
+  }
+
+  .htag {
+    color: #66d8ff;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+  }
+
+  .dest-card.here {
+    border-color: rgba(102, 216, 255, 0.55);
   }
 
   .qbtn-gold {
