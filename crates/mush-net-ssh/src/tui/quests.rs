@@ -1768,6 +1768,12 @@ impl QuestsSnapshot {
             active: vec![q.clone()],
             ..Default::default()
         };
+        if let Some(mine) = single.surface_mining_status(Some(&q.key))
+            && mine.mine_done
+            && stowage.commodity_qty(&mine.target_ore_slug) < 1
+        {
+            return None;
+        }
         let dest = single.active_destination_port(Some(&q.key))?;
         let fuel_t = stowage.propellant_kg.max(0) / 1000;
         let prov_d = stowage.provisions_days.max(0);
@@ -2803,6 +2809,8 @@ pub fn render_quest_tracker_lines_full(
             && let Some(mine) = snap
                 .tracked_only(tracked_key)
                 .and_then(|s| s.surface_mining_status(Some(q.key.as_str())))
+            && !(mine.mine_done
+                && stowage.is_some_and(|st| st.commodity_qty(&mine.target_ore_slug) >= 1))
         {
             lines.push(Line::from(Span::styled(
                 mine.prep_hint_line(),
@@ -3640,7 +3648,12 @@ pub fn render_quest_overlay_full(
                     active: vec![q.clone()],
                     ..Default::default()
                 };
-                if let Some(mine) = single_for_mine.surface_mining_status(Some(&q.key)) {
+                if !q.can_finish_now
+                    && !q.ready_to_finish
+                    && let Some(mine) = single_for_mine.surface_mining_status(Some(&q.key))
+                    && !(mine.mine_done
+                        && stowage.is_some_and(|st| st.commodity_qty(&mine.target_ore_slug) >= 1))
+                {
                     detail_lines.push(Line::from(vec![
                         Span::styled(
                             "[PROSPECTING] ",
@@ -7237,5 +7250,106 @@ mod tests {
             txt_ready.contains("[?] Ready to turn in here (F11 -> Enter)"),
             "{txt_ready}"
         );
+    }
+
+    #[test]
+    fn quest_tracker_and_overlay_guard_step6_preflight_and_hide_stowed_recover_prep() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let snap = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[5],
+                "title": "Scan, Sound, and Mine a Landing Site",
+                "next_room_entry": "room.c07_exchange",
+                "next_step": "Recover rig and return carbon_ore to Ceres Exchange",
+                "checkpoints": [
+                    { "id": "scan_site", "title": "Scan site", "checked": true, "live_ready": true },
+                    { "id": "sound_pocket", "title": "Sound pocket", "checked": true, "live_ready": true },
+                    { "id": "mine_carbon_ore", "title": "Mine 1t carbon_ore", "checked": true, "live_ready": true },
+                    { "id": "return_exchange", "title": "Return to Ceres Freeport", "instructions": "+ship/plan ceres", "room_entry": "room.c07_exchange", "checked": false, "live_ready": false }
+                ]
+            }],
+            "available": [],
+            "completed": []
+        }));
+
+        let stow_unrecovered = QuestStowageTelemetry {
+            cargo_kg: 0,
+            propellant_kg: 10_000,
+            provisions_days: 10,
+            cargo_lots: vec![],
+        };
+        let stow_stowed = QuestStowageTelemetry {
+            cargo_kg: 1_000,
+            propellant_kg: 10_000,
+            provisions_days: 10,
+            cargo_lots: vec![("tacsim:carbon_ore".into(), "Carbon Ore".into(), 1)],
+        };
+
+        let render_overlay = |st: &QuestStowageTelemetry| -> String {
+            let mut ov = QuestOverlayState::default();
+            ov.open_for(&snap);
+            let backend = TestBackend::new(110, 32);
+            let mut term = Terminal::new(backend).expect("terminal");
+            term.draw(|f| render_quest_overlay_full(f, f.area(), &ov, &snap, Some(st), None))
+                .expect("draw");
+            let buf = term.backend().buffer();
+            (0..buf.area.height)
+                .map(|y| {
+                    (0..buf.area.width)
+                        .map(|x| buf[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let join_lines = |lines: Vec<Line<'static>>| -> String {
+            lines
+                .into_iter()
+                .map(|l| l.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        // 1. Post-mine with 0t ore stowed -> suppresses premature [PRE-FLIGHT OK], keeps [RECOVER RIG FIRST] + Prep: +tv/1 recover go
+        assert!(
+            QuestsSnapshot::preflight_readiness_line_for(&snap.active[0], &stow_unrecovered)
+                .is_none()
+        );
+        let trk_rec = join_lines(render_quest_tracker_lines_full(
+            &snap,
+            None,
+            None,
+            Some(&stow_unrecovered),
+            None,
+        ));
+        assert!(trk_rec.contains("[RECOVER RIG FIRST]"), "{trk_rec}");
+        assert!(!trk_rec.contains("[PRE-FLIGHT OK]"), "{trk_rec}");
+        assert!(trk_rec.contains("+tv/1 recover go"), "{trk_rec}");
+
+        let ov_rec = render_overlay(&stow_unrecovered);
+        assert!(ov_rec.contains("[RECOVER RIG FIRST]"), "{ov_rec}");
+        assert!(!ov_rec.contains("[PRE-FLIGHT OK]"), "{ov_rec}");
+        assert!(ov_rec.contains("[PROSPECTING]"), "{ov_rec}");
+
+        // 2. Rig recovered (1t carbon_ore stowed) -> shows [ORE HOLD READY] + [PRE-FLIGHT OK] -> Ceres Freeport and hides redundant Recover Rig prep
+        let trk_ready = join_lines(render_quest_tracker_lines_full(
+            &snap,
+            None,
+            None,
+            Some(&stow_stowed),
+            None,
+        ));
+        assert!(trk_ready.contains("[ORE HOLD READY]"), "{trk_ready}");
+        assert!(trk_ready.contains("[PRE-FLIGHT OK]"), "{trk_ready}");
+        assert!(trk_ready.contains("Ceres Freeport"), "{trk_ready}");
+        assert!(!trk_ready.contains("Prep:"), "{trk_ready}");
+
+        let ov_ready = render_overlay(&stow_stowed);
+        assert!(ov_ready.contains("[ORE HOLD READY]"), "{ov_ready}");
+        assert!(ov_ready.contains("[PRE-FLIGHT OK]"), "{ov_ready}");
+        assert!(!ov_ready.contains("[PROSPECTING]"), "{ov_ready}");
     }
 }
