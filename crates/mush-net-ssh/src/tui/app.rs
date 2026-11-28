@@ -57,10 +57,10 @@ use super::quests::{
 use super::render::{
     BODY_GROUND_FEED, CHART_FEED, Entry, GUTTER_W, PaneRow, PaneRows, RenderCtx, SITE_MAP_FEED,
     TV_STATUS_FEED, dim_span_owned, floor_line, legend_line, render_backlog_rows,
-    render_channels_rows, render_chart_table_rows, render_cockpit_notices_rows, render_event,
-    render_event_with_quest_exit, render_quarry_side_rows_with_quest, render_rolls_rows,
-    render_sheet_rows, render_vitals_rows, render_who_rail, status_line, tab_strip, vitals_line,
-    wrap_spans, wrap_spans_count,
+    render_channels_rows, render_chart_table_rows, render_chart_table_rows_with_quest,
+    render_cockpit_notices_rows, render_event, render_event_with_quest_exit,
+    render_quarry_side_rows_with_quest, render_rolls_rows, render_sheet_rows, render_vitals_rows,
+    render_who_rail, status_line, tab_strip, vitals_line, wrap_spans, wrap_spans_count,
 };
 use super::replay::{Document, Live, Picture, REPLAY_DOCUMENT_SHAPE, REPLAY_GRID_SHAPE};
 use super::screen::{
@@ -5547,6 +5547,33 @@ impl TuiApp {
                         .quests_snap
                         .surface_mining_status(self.quests_overlay.tracked_key.as_deref());
                     return render_quarry_side_rows_with_quest(data, &ctx, mining.as_ref());
+                }
+                if feed == CHART_FEED
+                    && spec.id == PaneId("tables")
+                    && let Some(data) = self.panels.get(feed)
+                {
+                    let tracked = self.quests_overlay.tracked_key.as_deref();
+                    let cur_port = data
+                        .pointer("/chart/vantage/port")
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| {
+                            data.pointer("/chart/vantage/body")
+                                .and_then(Value::as_str)
+                                .filter(|s| !s.is_empty())
+                        })
+                        .or_else(|| self.port_walk.current_port_slug());
+                    let dest = self
+                        .quests_snap
+                        .active_destination_port(tracked)
+                        .or_else(|| self.quests_snap.next_guided_offer_destination(cur_port));
+                    let mining = self.quests_snap.surface_mining_status(tracked);
+                    return render_chart_table_rows_with_quest(
+                        data,
+                        &ctx,
+                        dest.as_ref(),
+                        mining.as_ref(),
+                    );
                 }
                 match self.panels.get(feed) {
                     Some(data) => render(data, &ctx),
