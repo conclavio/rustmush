@@ -1429,7 +1429,7 @@ namespace TacSim.UI
             string idLow = (cp.Id ?? string.Empty).ToLowerInvariant();
             string titleLow = (cp.Title ?? string.Empty).ToLowerInvariant();
             string instrLow = (cp.Instructions ?? string.Empty).ToLowerInvariant();
-            string combined = $"{idLow} {titleLow} {instrLow}";
+            string primary = $"{idLow} {titleLow}";
 
             // Do not treat surface mining extraction checkpoints ("Mine 1t carbon_ore") as exchange trade rows
             if (idLow.StartsWith("mine_", StringComparison.Ordinal) ||
@@ -1446,13 +1446,29 @@ namespace TacSim.UI
                 var patterns = KnownTradeCommodities[i].patterns;
                 for (int p = 0; p < patterns.Length; p++)
                 {
-                    if (combined.Contains(patterns[p], StringComparison.Ordinal))
+                    if (primary.Contains(patterns[p], StringComparison.Ordinal))
                     {
                         matchedSlug = KnownTradeCommodities[i].slug;
                         break;
                     }
                 }
                 if (matchedSlug != null) break;
+            }
+            if (matchedSlug == null)
+            {
+                for (int i = 0; i < KnownTradeCommodities.Length; i++)
+                {
+                    var patterns = KnownTradeCommodities[i].patterns;
+                    for (int p = 0; p < patterns.Length; p++)
+                    {
+                        if (instrLow.Contains(patterns[p], StringComparison.Ordinal))
+                        {
+                            matchedSlug = KnownTradeCommodities[i].slug;
+                            break;
+                        }
+                    }
+                    if (matchedSlug != null) break;
+                }
             }
             if (string.IsNullOrEmpty(matchedSlug)) return false;
 
