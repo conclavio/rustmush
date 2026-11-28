@@ -270,7 +270,7 @@
     {#if questMining}
       <div class="quest-mining-pill" role="status" aria-label="quest mining checklist">
         <div class="qm-head">
-          <span class="qm-tag">[QUEST]{#if questMiningStep !== null} Step {questMiningStep}/7{/if}</span>
+          <span class="qm-tag">{#if questMiningHoldState === "recover"}[RECOVER RIG FIRST]{:else if questMiningHoldState === "stowed"}[ORE HOLD READY]{:else}[QUEST]{/if}{#if questMiningStep !== null}{" "}Step {questMiningStep}/7{/if}</span>
           <strong>{questMining.questTitle}</strong>
           {#if questMiningHoldState === "stowed" && questReturnDest}
             <button
@@ -281,15 +281,6 @@
             >
               Return: {questReturnDest.portLabel}
             </button>
-            {#if questNextRigCmd}
-              <button
-                type="button"
-                class="qm-plan"
-                onclick={() => prefill(rigPrefill(q.selectedRig, questNextRigCmd.verb))}
-              >
-                {questNextRigCmd.label}
-              </button>
-            {/if}
           {:else}
             {#if questNextRigCmd}
               <button
@@ -297,7 +288,7 @@
                 class="qm-action"
                 onclick={() => prefill(rigPrefill(q.selectedRig, questNextRigCmd.verb))}
               >
-                Next: {questMiningHoldState === "recover" ? "Recover Rig First" : questNextRigCmd.label}
+                Next: {#if questMiningHoldState === "recover"}Recover Rig First{:else}{questNextRigCmd.label}{/if}
               </button>
             {/if}
             {#if firstQuestReading}
@@ -310,7 +301,7 @@
                 Drive: {firstQuestReading.target}
               </button>
             {/if}
-            {#if questReturnDest}
+            {#if questReturnDest && questMiningHoldState !== "recover"}
               <button
                 type="button"
                 class="qm-return"
@@ -357,7 +348,7 @@
             </span>
           {/if}
         </div>
-        {#if questMiningPrepActions.length > 0}
+        {#if questMiningPrepActions.length > 0 && questMiningHoldState !== "stowed"}
           <div class="qm-prep" aria-label="quest prospecting prep actions">
             <span class="qm-prep-label">Prep:</span>
             {#each questMiningPrepActions as act (act.command)}

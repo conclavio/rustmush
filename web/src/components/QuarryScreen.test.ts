@@ -421,12 +421,14 @@ describe("QuarryScreen's side pane", () => {
       },
     });
     const c1 = screen.getByRole("status", { name: "quest mining checklist" });
-    expect(c1.textContent).toContain("[RECOVER RIG FIRST]");
+    expect(c1.textContent).toContain("[RECOVER RIG FIRST] Step 6/7");
+    expect(screen.queryByRole("button", { name: /Return: Ceres Freeport/i })).toBeNull();
     screen.getByRole("button", { name: /Next: Recover Rig First/i }).click();
     expect(focusComposer).toHaveBeenCalledWith("+tv/1 recover go");
     r1.unmount();
 
     // 2. Mined ore recovered into ship hold (1t carbon_ore stowed)
+    focusComposer.mockClear();
     render(QuarryScreen, {
       props: {
         app: {
@@ -448,6 +450,9 @@ describe("QuarryScreen's side pane", () => {
       },
     });
     const c2 = screen.getByRole("status", { name: "quest mining checklist" });
-    expect(c2.textContent).toContain("[ORE HOLD READY]");
+    expect(c2.textContent).toContain("[ORE HOLD READY] Step 6/7");
+    expect(screen.queryByRole("button", { name: /Recover Rig/i })).toBeNull();
+    screen.getByRole("button", { name: /Return: Ceres Freeport/i }).click();
+    expect(focusComposer).toHaveBeenCalledWith("+ship/plan ceres");
   });
 });
