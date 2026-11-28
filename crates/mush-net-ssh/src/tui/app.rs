@@ -2473,6 +2473,8 @@ impl TuiApp {
                 self.exit_keys = exit_keys(&view.exits);
                 self.quests_snap.room_name = view.name.clone();
                 self.quests_snap.room_markers = parse_room_markers(view);
+                self.port_walk
+                    .observe_room(view, self.manifest.character.as_deref());
                 if prev_room_id
                     .as_deref()
                     .is_some_and(|prev| !prev.is_empty() && prev != view.id)
@@ -2506,6 +2508,20 @@ impl TuiApp {
                         };
                         self.push_local_line(&notice);
                         self.sounds.play("power_online", Instant::now());
+                    } else if let Some((local_room, is_boarding)) =
+                        self.port_walk.resolved_station_quest_target()
+                        && atlas_entry.eq_ignore_ascii_case(&local_room)
+                    {
+                        let notice = if is_boarding {
+                            format!(
+                                "[QUEST] Board Ship here: {} (+ship/board)",
+                                sanitize(&view.name)
+                            )
+                        } else {
+                            format!("[QUEST] Arrived at objective: {}", sanitize(&view.name))
+                        };
+                        self.push_local_line(&notice);
+                        self.sounds.play("power_online", Instant::now());
                     }
                 }
                 if manifest_has(&self.manifest, QUESTS_FEED) {
@@ -2514,8 +2530,6 @@ impl TuiApp {
                         Value::Object(serde_json::Map::new()),
                     ));
                 }
-                self.port_walk
-                    .observe_room(view, self.manifest.character.as_deref());
                 queries.extend(self.port_walk.drain_pack_queries(&self.manifest.panels));
                 if self.pixel.kind() == PictureKind::StationWalk {
                     self.pixel.invalidate_last_sent();
@@ -14013,6 +14027,86 @@ mod tests {
                 s.contains("[QUEST] Next Guided Step (2/7) [!]: Speak with Ilse Oduya-Brandt in Registry & Co-op Desk (F11)")
             }),
             "moving into between-steps Next Guided giver room must emit arrival notice"
+        );
+
+        // 4. Cross-port Step 3 at Ceres: 0/5t metals -> Exchange Hall emits objective arrival;
+        //    after loading 5/5t metals -> Berth Gallery emits Board Ship (+ship/board) arrival.
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "active": [{
+                    "key": "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+                    "title": "Metals Down the Corridor",
+                    "next_room_entry": "room.p07_receiving",
+                    "checkpoints": [{
+                        "id": "deliver_metals",
+                        "title": "Buy 5 tonnes of metals at Ceres and deliver to Stickney",
+                        "instructions": "Buy 5 metals and +market/sell at Stickney.",
+                        "room_entry": "room.p07_receiving",
+                        "checked": false,
+                        "live_ready": false
+                    }]
+                }],
+                "available": [],
+                "completed": []
+            }),
+        });
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(PORT_TRADE_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "enabled": true,
+                "venue": "ceres",
+                "ship": {
+                    "hull_id": "#99",
+                    "stowage": {
+                        "cargo_kg": 0, "cargo_limit_kg": 100000,
+                        "tank_kg": 10000, "tank_limit_kg": 80000,
+                        "stores_days": 10, "stores_limit_days": 120,
+                        "items": []
+                    }
+                }
+            }),
+        });
+        app.apply_event(&make_room("#17", "Exchange Hall", "room.c07_exchange"));
+        assert!(
+            app.scrollback.iter().any(|e| {
+                let s: String = e.body.iter().map(|sp| sp.content.as_ref()).collect();
+                s.contains("[QUEST] Arrived at objective: Exchange Hall")
+            }),
+            "entering Exchange Hall while procuring Step 3 metals must emit arrival notice"
+        );
+
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(PORT_TRADE_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "enabled": true,
+                "venue": "ceres",
+                "ship": {
+                    "hull_id": "#99",
+                    "stowage": {
+                        "cargo_kg": 5000, "cargo_limit_kg": 100000,
+                        "tank_kg": 10000, "tank_limit_kg": 80000,
+                        "stores_days": 10, "stores_limit_days": 120,
+                        "items": [{ "good": "tacsim:metals", "label": "Metals", "qty": 5 }]
+                    }
+                }
+            }),
+        });
+        app.apply_event(&make_room(
+            "#19",
+            "Visiting Berth Gallery",
+            "room.c01_berth_gallery",
+        ));
+        assert!(
+            app.scrollback.iter().any(|e| {
+                let s: String = e.body.iter().map(|sp| sp.content.as_ref()).collect();
+                s.contains("[QUEST] Board Ship here: Visiting Berth Gallery (+ship/board)")
+            }),
+            "entering Berth Gallery once cargo is loaded must emit Board Ship notice"
         );
     }
 
