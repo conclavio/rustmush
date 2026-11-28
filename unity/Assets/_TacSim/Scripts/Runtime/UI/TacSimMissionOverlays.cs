@@ -98,7 +98,7 @@ namespace TacSim.UI
         private Text _orbitalQuestText;
         private Button _orbitalQuestBtn;
         private Text _orbitalQuestBtnLbl;
-        private string _orbitalQuestPlanPort = string.Empty;
+        private string _orbitalQuestCommand = string.Empty;
         private bool _orbitalQuestOpenGround;
         private Text _orbitalTargetLabel;
         private GameObject _spaceFireCard;
@@ -523,7 +523,7 @@ namespace TacSim.UI
             _lastTargetDollSignature = string.Empty;
             ActiveArmorDollUnitType = string.Empty;
             _dismissedDebriefMatchId = 0;
-            _orbitalQuestPlanPort = string.Empty;
+            _orbitalQuestCommand = string.Empty;
             _orbitalQuestOpenGround = false;
             _surfReturnPortId = string.Empty;
             HighlightedSurfaceQuestStepForTests = string.Empty;
@@ -773,25 +773,45 @@ namespace TacSim.UI
             return true;
         }
 
+        private static bool MatchesOrbitalPort(string rawPort, string portId, string portLabel)
+        {
+            if (string.IsNullOrWhiteSpace(rawPort)) return false;
+            string low = rawPort.Trim().ToLowerInvariant();
+            string pid = (portId ?? string.Empty).Trim().ToLowerInvariant();
+            string plbl = (portLabel ?? string.Empty).Trim().ToLowerInvariant();
+            return (!string.IsNullOrEmpty(pid) && (low == pid || low.Contains(pid, StringComparison.Ordinal))) ||
+                   (!string.IsNullOrEmpty(plbl) && (low == plbl || low.Contains(plbl, StringComparison.Ordinal)));
+        }
+
+        private void SetOrbitalQuestButtonColor(Color color)
+        {
+            if (_orbitalQuestBtn == null) return;
+            var img = _orbitalQuestBtn.GetComponent<Image>();
+            if (img != null) img.color = color;
+        }
+
         private void RefreshOrbitalQuestStrip()
         {
             if (_orbitalQuestStrip == null) return;
             string curPort = !string.IsNullOrEmpty(_tradeState?.ActiveVenue)
                 ? _tradeState.ActiveVenue
                 : _tradeState?.AboardDockedPortHint;
+            string dockedPort = _tradeState?.AboardDockedPortHint ?? string.Empty;
+            bool hasLiveStowage = _tradeState != null && !string.IsNullOrEmpty(_tradeState.ShipHullId);
+
             QuestDestinationHint hint = default;
             bool hasDest = _questJournal != null &&
                 (_questJournal.TryGetActiveDestinationPort(out hint) ||
                  _questJournal.TryGetNextGuidedOfferDestination(curPort, out hint));
-            QuestSurfaceMiningStatus qm = default;
-            bool hasMiningStatus = !hasDest &&
-                _questJournal != null &&
-                _questJournal.TryGetActiveSurfaceMiningStatus(out qm);
+            QuestSurfaceMiningStatus activeQm = default;
+            bool hasAnyMining = _questJournal != null &&
+                _questJournal.TryGetActiveSurfaceMiningStatus(out activeQm);
+            bool hasMiningStatus = !hasDest && hasAnyMining;
 
+            var tracked = _questJournal?.GetTrackedActiveQuest();
             string stepSuffix = string.Empty;
             if (_questJournal != null)
             {
-                var tracked = _questJournal.GetTrackedActiveQuest();
                 int step = tracked != null ? TacSimQuestJournal.GuidedStepNumber(tracked.Key) : 0;
                 if (step <= 0 && _questJournal.TryGetNextGuidedOffer(out var nextOffer))
                     step = nextOffer.Step;
@@ -799,39 +819,114 @@ namespace TacSim.UI
                     stepSuffix = $" [Step {step}/7]";
             }
 
-            if (hasDest)
+            int heldOre = hasLiveStowage && hasAnyMining && activeQm.MineDone
+                ? _tradeState.GetHoldCommodityQuantity(activeQm.TargetOreSlug)
+                : -1;
+            bool recoverRigFirst = hasAnyMining && activeQm.MineDone && heldOre == 0;
+            bool oreHoldReady = hasAnyMining && activeQm.MineDone && heldOre > 0;
+
+            Color goldBtn = new Color(0.56f, 0.40f, 0.12f);
+            Color greenBtn = new Color(0.14f, 0.52f, 0.34f);
+            Color warnBtn = new Color(0.64f, 0.28f, 0.12f);
+
+            if (recoverRigFirst)
             {
-                _orbitalQuestPlanPort = hint.PortId;
+                _orbitalQuestCommand = "+tv/1 recover go";
                 _orbitalQuestOpenGround = false;
+                string oreName = string.IsNullOrEmpty(activeQm.TargetOreSlug)
+                    ? "ore"
+                    : activeQm.TargetOreSlug.Replace('_', ' ');
                 if (_orbitalQuestText != null)
-                    _orbitalQuestText.text = $"[QUEST] Dest: {hint.PortLabel.ToUpperInvariant()} — {hint.QuestTitle}{stepSuffix}";
+                    _orbitalQuestText.text = $"[RECOVER RIG FIRST] Hold 0t {oreName} — {activeQm.QuestTitle}{stepSuffix}";
                 if (_orbitalQuestBtnLbl != null)
-                    _orbitalQuestBtnLbl.text = $"PLAN: {hint.PortId.ToUpperInvariant()}";
+                    _orbitalQuestBtnLbl.text = "RECOVER RIG";
+                SetOrbitalQuestButtonColor(warnBtn);
                 _orbitalQuestStrip.SetActive(true);
             }
-            else if (hasMiningStatus && !qm.MineDone)
+            else if (hasDest)
             {
-                _orbitalQuestPlanPort = string.Empty;
+                bool arrivedAtDest = !string.IsNullOrEmpty(dockedPort) &&
+                    MatchesOrbitalPort(dockedPort, hint.PortId, hint.PortLabel) &&
+                    (!hasAnyMining || oreHoldReady || (tracked != null && (tracked.CanFinishNow || tracked.ReadyToFinish)));
+                _orbitalQuestOpenGround = false;
+                if (arrivedAtDest)
+                {
+                    _orbitalQuestCommand = "+ship/leave";
+                    if (_orbitalQuestText != null)
+                        _orbitalQuestText.text = $"[QUEST ARRIVED] At {hint.PortLabel.ToUpperInvariant()} — {hint.QuestTitle}{stepSuffix}";
+                    if (_orbitalQuestBtnLbl != null)
+                        _orbitalQuestBtnLbl.text = "LEAVE SHIP";
+                    SetOrbitalQuestButtonColor(greenBtn);
+                }
+                else if (oreHoldReady)
+                {
+                    _orbitalQuestCommand = $"+ship/plan {hint.PortId}";
+                    if (_orbitalQuestText != null)
+                        _orbitalQuestText.text = $"[ORE HOLD READY] Return: {hint.PortLabel.ToUpperInvariant()} — {hint.QuestTitle}{stepSuffix}";
+                    if (_orbitalQuestBtnLbl != null)
+                        _orbitalQuestBtnLbl.text = $"PLAN: {hint.PortId.ToUpperInvariant()}";
+                    SetOrbitalQuestButtonColor(greenBtn);
+                }
+                else
+                {
+                    _orbitalQuestCommand = $"+ship/plan {hint.PortId}";
+                    string pfTag = string.Empty;
+                    bool pfWarn = false;
+                    if (hasLiveStowage && _questJournal != null &&
+                        _questJournal.TryGetSailingPreflightReadiness(_tradeState, out var pf))
+                    {
+                        pfTag = pf.Ready ? " · [PRE-FLIGHT OK]" : " · [CHECK HOLD]";
+                        pfWarn = !pf.Ready;
+                    }
+                    if (_orbitalQuestText != null)
+                        _orbitalQuestText.text = $"[QUEST] Dest: {hint.PortLabel.ToUpperInvariant()} — {hint.QuestTitle}{stepSuffix}{pfTag}";
+                    if (_orbitalQuestBtnLbl != null)
+                        _orbitalQuestBtnLbl.text = $"PLAN: {hint.PortId.ToUpperInvariant()}";
+                    SetOrbitalQuestButtonColor(pfWarn ? warnBtn : goldBtn);
+                }
+                _orbitalQuestStrip.SetActive(true);
+            }
+            else if (hasMiningStatus && !activeQm.MineDone)
+            {
+                _orbitalQuestCommand = string.Empty;
                 _orbitalQuestOpenGround = true;
                 if (_orbitalQuestText != null)
-                    _orbitalQuestText.text = $"[QUEST] Surface Mining: {qm.TargetOreSlug} — {qm.QuestTitle}{stepSuffix}";
+                    _orbitalQuestText.text = $"[QUEST] Surface Mining: {activeQm.TargetOreSlug} — {activeQm.QuestTitle}{stepSuffix}";
                 if (_orbitalQuestBtnLbl != null)
-                    _orbitalQuestBtnLbl.text = $"GROUND [G]: {qm.RecommendedFamily.ToUpperInvariant()}";
+                    _orbitalQuestBtnLbl.text = $"GROUND [G]: {activeQm.RecommendedFamily.ToUpperInvariant()}";
+                SetOrbitalQuestButtonColor(goldBtn);
                 _orbitalQuestStrip.SetActive(true);
             }
-            else if (hasMiningStatus && TryResolvePostMineReturnPort(qm, out string retPortId, out string retPortLabel))
+            else if (hasMiningStatus && TryResolvePostMineReturnPort(activeQm, out string retPortId, out string retPortLabel))
             {
-                _orbitalQuestPlanPort = retPortId;
+                bool arrivedReturn = !string.IsNullOrEmpty(dockedPort) &&
+                    MatchesOrbitalPort(dockedPort, retPortId, retPortLabel) &&
+                    (oreHoldReady || (tracked != null && (tracked.CanFinishNow || tracked.ReadyToFinish)));
                 _orbitalQuestOpenGround = false;
-                if (_orbitalQuestText != null)
-                    _orbitalQuestText.text = $"[QUEST] Return: {retPortLabel.ToUpperInvariant()} — {qm.QuestTitle}{stepSuffix}";
-                if (_orbitalQuestBtnLbl != null)
-                    _orbitalQuestBtnLbl.text = $"PLAN: {retPortId.ToUpperInvariant()}";
+                if (arrivedReturn)
+                {
+                    _orbitalQuestCommand = "+ship/leave";
+                    if (_orbitalQuestText != null)
+                        _orbitalQuestText.text = $"[QUEST ARRIVED] At {retPortLabel.ToUpperInvariant()} — {activeQm.QuestTitle}{stepSuffix}";
+                    if (_orbitalQuestBtnLbl != null)
+                        _orbitalQuestBtnLbl.text = "LEAVE SHIP";
+                    SetOrbitalQuestButtonColor(greenBtn);
+                }
+                else
+                {
+                    _orbitalQuestCommand = $"+ship/plan {retPortId}";
+                    string tag = oreHoldReady ? "[ORE HOLD READY]" : "[QUEST]";
+                    if (_orbitalQuestText != null)
+                        _orbitalQuestText.text = $"{tag} Return: {retPortLabel.ToUpperInvariant()} — {activeQm.QuestTitle}{stepSuffix}";
+                    if (_orbitalQuestBtnLbl != null)
+                        _orbitalQuestBtnLbl.text = $"PLAN: {retPortId.ToUpperInvariant()}";
+                    SetOrbitalQuestButtonColor(oreHoldReady ? greenBtn : goldBtn);
+                }
                 _orbitalQuestStrip.SetActive(true);
             }
             else
             {
-                _orbitalQuestPlanPort = string.Empty;
+                _orbitalQuestCommand = string.Empty;
                 _orbitalQuestOpenGround = false;
                 _orbitalQuestStrip.SetActive(false);
             }
@@ -844,9 +939,9 @@ namespace TacSim.UI
                 OnOpenGroundChartRequested?.Invoke();
                 return true;
             }
-            if (!string.IsNullOrEmpty(_orbitalQuestPlanPort))
+            if (!string.IsNullOrEmpty(_orbitalQuestCommand))
             {
-                OnCommandRequested?.Invoke($"+ship/plan {_orbitalQuestPlanPort}");
+                OnCommandRequested?.Invoke(_orbitalQuestCommand);
                 return true;
             }
             return false;
