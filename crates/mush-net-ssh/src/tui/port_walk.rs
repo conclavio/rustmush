@@ -1014,6 +1014,45 @@ impl PortWalkState {
         self.quest_ready_turn_in = ready;
     }
 
+    fn format_quest_ready_banner(&self, step_suffix: &str) -> Option<(String, Color)> {
+        let ready = self.quest_ready_turn_in.as_ref()?;
+        if ready.can_finish_now && !ready.finish_cmd.is_empty() {
+            Some((
+                format!(
+                    "[QUEST READY] {} -> f:Turn In to {} (+quest/finish){step_suffix}",
+                    ready.quest_title, ready.turn_in_name
+                ),
+                Color::Green,
+            ))
+        } else {
+            let room_part = if ready.next_room_name.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", ready.next_room_name)
+            };
+            Some((
+                format!(
+                    "[QUEST READY] {} -> Return to {}{room_part} (Esc:walk){step_suffix}",
+                    ready.quest_title, ready.turn_in_name
+                ),
+                Color::Yellow,
+            ))
+        }
+    }
+
+    fn try_trigger_quest_ready_turn_in(&mut self, out: &mut WalkKeyOutcome) -> bool {
+        if let Some(ref ready) = self.quest_ready_turn_in
+            && ready.can_finish_now
+            && !ready.finish_cmd.is_empty()
+        {
+            out.commands.push(ready.finish_cmd.clone());
+            self.push_drawer_log(format!("> {}", ready.finish_cmd));
+            self.drawer = None;
+            return true;
+        }
+        false
+    }
+
     /// Active quest corridor destination hint (e.g., Stickney Yards), if any.
     #[must_use]
     pub fn quest_dest_hint(&self) -> Option<&QuestDestinationHint> {
@@ -4086,14 +4125,8 @@ impl PortWalkState {
                         }
                     }
                     Key::Char('f' | 'F') => {
-                        if self.effective_quest_trade_need().is_none()
-                            && let Some(ref ready) = self.quest_ready_turn_in
-                            && ready.can_finish_now
-                            && !ready.finish_cmd.is_empty()
-                        {
-                            out.commands.push(ready.finish_cmd.clone());
-                            self.push_drawer_log(format!("> {}", ready.finish_cmd));
-                            self.drawer = None;
+                        if self.effective_quest_trade_need().is_none() {
+                            self.try_trigger_quest_ready_turn_in(&mut out);
                         }
                     }
                     Key::Char('d' | 'D') => {
@@ -4192,6 +4225,15 @@ impl PortWalkState {
                         let cmd = format!("+market/history tacsim:{}", need.commodity_slug);
                         out.commands.push(cmd.clone());
                         self.push_drawer_log(format!("> {cmd}"));
+                    }
+                }
+                Key::Char('f' | 'F') => {
+                    let has_refit = self
+                        .quest_coop_action
+                        .as_ref()
+                        .is_some_and(|a| a.command.starts_with("+coop/refit"));
+                    if !has_refit {
+                        self.try_trigger_quest_ready_turn_in(&mut out);
                     }
                 }
                 Key::Enter => {
@@ -4300,6 +4342,11 @@ impl PortWalkState {
                 Key::Char('p') => {
                     out.commands.push("+coop/refit prospector".to_string());
                     self.push_drawer_log("> +coop/refit prospector".to_string());
+                }
+                Key::Char('f' | 'F') => {
+                    if self.quest_coop_action.is_none() {
+                        self.try_trigger_quest_ready_turn_in(&mut out);
+                    }
                 }
                 Key::Enter => {
                     let hull = self.custom_hull_input.trim();
@@ -5786,29 +5833,7 @@ impl PortWalkState {
                         truncate_str(&banner, inner_w),
                         Style::default().fg(col).add_modifier(Modifier::BOLD),
                     )));
-                } else if let Some(ref ready) = self.quest_ready_turn_in {
-                    let (banner, col) = if ready.can_finish_now && !ready.finish_cmd.is_empty() {
-                        (
-                            format!(
-                                "[QUEST READY] {} -> f:Turn In to {} (+quest/finish){step_suffix}",
-                                ready.quest_title, ready.turn_in_name
-                            ),
-                            Color::Green,
-                        )
-                    } else {
-                        let room_part = if ready.next_room_name.is_empty() {
-                            String::new()
-                        } else {
-                            format!(" ({})", ready.next_room_name)
-                        };
-                        (
-                            format!(
-                                "[QUEST READY] {} -> Return to {}{room_part} (Esc:walk){step_suffix}",
-                                ready.quest_title, ready.turn_in_name
-                            ),
-                            Color::Yellow,
-                        )
-                    };
+                } else if let Some((banner, col)) = self.format_quest_ready_banner(step_suffix) {
                     lines.push(Line::from(Span::styled(
                         truncate_str(&banner, inner_w),
                         Style::default().fg(col).add_modifier(Modifier::BOLD),
@@ -6028,6 +6053,11 @@ impl PortWalkState {
                             Style::default().fg(col).add_modifier(Modifier::BOLD),
                         )));
                     }
+                } else if let Some((banner, col)) = self.format_quest_ready_banner(step_suffix) {
+                    lines.push(Line::from(Span::styled(
+                        truncate_str(&banner, inner_w),
+                        Style::default().fg(col).add_modifier(Modifier::BOLD),
+                    )));
                 }
                 let quest_hist_need = self.effective_quest_trade_need();
                 if let Some(ref need) = quest_hist_need {
@@ -6249,6 +6279,11 @@ impl PortWalkState {
                             Style::default().fg(col).add_modifier(Modifier::BOLD),
                         )));
                     }
+                } else if let Some((banner, col)) = self.format_quest_ready_banner(step_suffix) {
+                    lines.push(Line::from(Span::styled(
+                        truncate_str(&banner, inner_w),
+                        Style::default().fg(col).add_modifier(Modifier::BOLD),
+                    )));
                 }
                 lines.push(Line::from(Span::styled(
                     truncate_str(
@@ -11604,5 +11639,68 @@ mod tests {
         let out2 = st.handle_drawer_key(Key::Char('f'), &[], Instant::now());
         assert!(out2.commands.is_empty());
         assert_eq!(st.drawer, Some(PortDrawerKind::Trade));
+    }
+
+    #[test]
+    fn coop_and_industry_drawers_show_quest_ready_turnin_banner_and_f_hotkey() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let render_drawer = |st: &mut PortWalkState| -> String {
+            let backend = TestBackend::new(120, 20);
+            let mut term = Terminal::new(backend).expect("terminal");
+            term.draw(|f| st.draw_drawer_box(f, f.area(), true))
+                .expect("draw");
+            let buf = term.backend().buffer();
+            (0..buf.area.height)
+                .map(|y| {
+                    (0..buf.area.width)
+                        .map(|x| buf[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        // 1. Step 1 enrolled in Co-op Desk -> Ilse here -> f submits +quest/finish & closes drawer
+        let mut st = PortWalkState::new();
+        st.drawer = Some(PortDrawerKind::Coop);
+        st.observe_quest_step_badge(" [Step 1/7]".into());
+        st.observe_quest_ready_turn_in(Some(QuestReadyTurnIn {
+            quest_title: "First Papers at the Registry".into(),
+            turn_in_name: "Ilse Oduya-Brandt".into(),
+            next_room_name: "Co-op Registry".into(),
+            can_finish_now: true,
+            finish_cmd: "+quest/finish #55=tok-step1".into(),
+        }));
+        let coop_txt = render_drawer(&mut st);
+        assert!(
+            coop_txt.contains(
+                "[QUEST READY] First Papers at the Registry -> f:Turn In to Ilse Oduya-Brandt"
+            ),
+            "expected Step 1 Co-op ready banner:\n{coop_txt}"
+        );
+        let out = st.handle_drawer_key(Key::Char('f'), &[], Instant::now());
+        assert_eq!(out.commands, vec!["+quest/finish #55=tok-step1"]);
+        assert_eq!(st.drawer, None);
+
+        // 2. Step 5 refitted in Works & Yard -> return to Rosalind in Exchange Hall
+        st.drawer = Some(PortDrawerKind::Industry);
+        st.observe_quest_step_badge(" [Step 5/7]".into());
+        st.observe_quest_ready_turn_in(Some(QuestReadyTurnIn {
+            quest_title: "Refit the Dray".into(),
+            turn_in_name: "Rosalind Qureshi-Mbeki".into(),
+            next_room_name: "Exchange Hall".into(),
+            can_finish_now: false,
+            finish_cmd: String::new(),
+        }));
+        let ind_txt = render_drawer(&mut st);
+        assert!(
+            ind_txt.contains(
+                "[QUEST READY] Refit the Dray -> Return to Rosalind Qureshi-Mbeki (Exchange Hall)"
+            ),
+            "expected Step 5 Industry ready banner:\n{ind_txt}"
+        );
+        let out2 = st.handle_drawer_key(Key::Char('f'), &[], Instant::now());
+        assert!(out2.commands.is_empty());
+        assert_eq!(st.drawer, Some(PortDrawerKind::Industry));
     }
 }
