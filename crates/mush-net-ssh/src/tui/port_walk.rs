@@ -708,6 +708,11 @@ impl PortWalkState {
     }
 
     #[must_use]
+    pub fn has_stowage_loaded(&self) -> bool {
+        self.stowage_loaded
+    }
+
+    #[must_use]
     pub fn credits_minor(&self) -> i64 {
         self.credits_minor
     }
