@@ -3718,6 +3718,15 @@ impl PortWalkState {
                     out.commands.push("+locker/open".to_string());
                     self.push_drawer_log("> +locker/open".to_string());
                 }
+                Key::Char('f') => {
+                    if self.quest_mining_status.is_some() {
+                        out.commands.push("+market/jobs survey".to_string());
+                        self.push_drawer_log("> +market/jobs survey".to_string());
+                    } else if self.quest_dest_port.is_some() {
+                        out.commands.push("+market/jobs haul".to_string());
+                        self.push_drawer_log("> +market/jobs haul".to_string());
+                    }
+                }
                 Key::Enter => {
                     if let Some(&(label, cmd)) = DOC48_JOB_ACTIONS.get(self.cursor_row) {
                         out.commands.push(cmd.to_string());
@@ -5309,6 +5318,31 @@ impl PortWalkState {
                 }
             }
             PortDrawerKind::Jobs => {
+                let quest_job_cmd: Option<&str> = if self.quest_mining_status.is_some() {
+                    lines.push(Line::from(Span::styled(
+                        truncate_str("[QUEST] Surface Surveys (f: +market/jobs survey)", inner_w),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                    Some("+market/jobs survey")
+                } else if let Some(ref dest) = self.quest_dest_port {
+                    lines.push(Line::from(Span::styled(
+                        truncate_str(
+                            &format!(
+                                "[QUEST] Corridor Haul -> {} (f: +market/jobs haul)",
+                                dest.port_label
+                            ),
+                            inner_w,
+                        ),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                    Some("+market/jobs haul")
+                } else {
+                    None
+                };
                 lines.push(Line::from(Span::styled(
                     truncate_str("Jobs & Crew — Up/Dn Enter:run  o:+locker/open", inner_w),
                     Style::default().fg(Color::Cyan),
@@ -5318,15 +5352,22 @@ impl PortWalkState {
                 for idx in visible_window(DOC48_JOB_ACTIONS.len(), cur, list_rows) {
                     if let Some(&(label, cmd)) = DOC48_JOB_ACTIONS.get(idx) {
                         let sel = idx == cur;
+                        let is_quest_row = quest_job_cmd == Some(cmd);
                         let mark = if sel { "> " } else { "  " };
+                        let tag = if is_quest_row { "[Q] " } else { "" };
                         let st = if sel {
                             Style::default()
                                 .fg(Color::Green)
                                 .add_modifier(Modifier::BOLD)
+                        } else if is_quest_row {
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD)
                         } else {
                             Style::default().fg(Color::Gray)
                         };
-                        let row = format!("{mark}{label:<26} ({cmd})");
+                        let disp = format!("{tag}{label}");
+                        let row = format!("{mark}{disp:<26} ({cmd})");
                         lines.push(Line::from(Span::styled(truncate_str(&row, inner_w), st)));
                     }
                 }
@@ -10024,5 +10065,68 @@ mod tests {
         }]);
         let out7 = st.handle_key(Key::Char('h'), false, false, &[], now);
         assert_eq!(out7.commands, vec!["+market/history tacsim:carbon_ore"]);
+    }
+
+    #[test]
+    fn jobs_drawer_shows_quest_haul_and_survey_cross_links_with_f_hotkey() {
+        let mut st = PortWalkState::new();
+        let now = Instant::now();
+        st.observe_quest_guidance(
+            None,
+            Some(QuestDestinationHint {
+                quest_title: "Metals Down the Corridor".into(),
+                port_id: "stickney".into(),
+                port_label: "Stickney Yards".into(),
+            }),
+        );
+        let mut queries = Vec::new();
+        st.open_drawer(PortDrawerKind::Jobs, &[], &mut queries, now);
+
+        let backend = ratatui::backend::TestBackend::new(96, 18);
+        let mut term = ratatui::Terminal::new(backend).expect("test terminal");
+        term.draw(|f| st.draw_drawer_box(f, f.area(), true))
+            .expect("draw jobs drawer");
+        let rendered: String = term
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            rendered.contains("[QUEST] Corridor Haul -> Stickney Yards (f: +market/jobs haul)"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("[Q] Haulage Contracts"), "{rendered}");
+
+        let out_haul = st.handle_key(Key::Char('f'), false, false, &[], now);
+        assert_eq!(out_haul.commands, vec!["+market/jobs haul"]);
+
+        // Step 6 surface mining switches cross-link to Survey Commissions
+        st.observe_quest_mining_status(Some(QuestSurfaceMiningStatus {
+            quest_title: "Scan, Sound, and Mine a Landing Site".into(),
+            target_ore_slug: "carbon_ore".into(),
+            recommended_family: "carbon".into(),
+            scan_done: false,
+            sound_done: false,
+            mine_done: false,
+        }));
+        term.draw(|f| st.draw_drawer_box(f, f.area(), true))
+            .expect("draw jobs drawer mining");
+        let rendered2: String = term
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            rendered2.contains("[QUEST] Surface Surveys (f: +market/jobs survey)"),
+            "{rendered2}"
+        );
+        assert!(rendered2.contains("[Q] Survey Commissions"), "{rendered2}");
+
+        let out_survey = st.handle_key(Key::Char('f'), false, false, &[], now);
+        assert_eq!(out_survey.commands, vec!["+market/jobs survey"]);
     }
 }
