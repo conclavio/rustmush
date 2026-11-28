@@ -4,12 +4,10 @@
   import type { GameApp } from "$lib/game.svelte";
   import {
     GUIDED_TOUR_KEYS,
-    evaluateQuestStowageReadiness,
-    evaluateRefitHoldReadiness,
     extractActiveSurfaceMiningStatus,
-    extractActiveTradeNeed,
     extractQuestSuggestedAction,
     extractSurfaceMiningPrepActions,
+    formatQuestHoldReadinessSummary,
     type ActiveQuestView,
     type AvailableQuestView,
   } from "$lib/stores/quests.svelte";
@@ -228,18 +226,7 @@
       {:else if selectedActive}
         {@const activeMining = extractActiveSurfaceMiningStatus([selectedActive], selectedActive.key)}
         {@const miningPrep = extractSurfaceMiningPrepActions(activeMining)}
-        {@const activeSuggested = extractQuestSuggestedAction(selectedActive)}
-        {@const activeRefitCheck =
-          activeSuggested?.command.startsWith("+coop/refit")
-            ? evaluateRefitHoldReadiness(liveStowage)
-            : null}
-        {@const activeHoldProgress =
-          !activeRefitCheck
-            ? evaluateQuestStowageReadiness(
-                extractActiveTradeNeed([selectedActive], selectedActive.key),
-                liveStowage,
-              )
-            : null}
+        {@const activeHoldSummary = formatQuestHoldReadinessSummary(selectedActive, liveStowage)}
         <div class="qbody">
           <div class="row-tags">
             {#if selectedActive.category === "guided"}
@@ -273,23 +260,32 @@
             {/each}
           </ul>
 
-          {#if activeRefitCheck}
-            <div class="prep-strip" class:ready={activeRefitCheck.ready} aria-label="refit hold readiness">
-              <span class="prep-tag">{activeRefitCheck.ready ? "[READY]" : "[REFIT CHECK]"}</span>
-              <span class:ok={activeRefitCheck.cargoEmpty}>
-                {activeRefitCheck.cargoEmpty ? "✓ Cargo empty" : `✗ Cargo ${(activeRefitCheck.cargoKg / 1000).toFixed(1)}t`}
+          {#if activeHoldSummary?.kind === "refit" && activeHoldSummary.refit}
+            <div class="prep-strip" class:ready={activeHoldSummary.ready} aria-label="refit hold readiness">
+              <span class="prep-tag">{activeHoldSummary.tag}</span>
+              <span class:ok={activeHoldSummary.refit.cargoEmpty}>
+                {activeHoldSummary.refit.cargoEmpty
+                  ? "✓ Cargo empty"
+                  : `✗ Cargo ${(activeHoldSummary.refit.cargoKg / 1000).toFixed(1)}t`}
               </span>
-              <span class:ok={activeRefitCheck.provisionsEmpty}>
-                {activeRefitCheck.provisionsEmpty ? "✓ Stores empty" : `✗ Stores ${activeRefitCheck.provisionsCrewDays}d`}
+              <span class:ok={activeHoldSummary.refit.provisionsEmpty}>
+                {activeHoldSummary.refit.provisionsEmpty
+                  ? "✓ Stores empty"
+                  : `✗ Stores ${activeHoldSummary.refit.provisionsCrewDays}d`}
               </span>
-              <span class="muted">Tank {activeRefitCheck.propellantTonnes}t OK</span>
+              <span class="muted">Tank {activeHoldSummary.refit.propellantTonnes}t OK</span>
             </div>
-          {:else if activeHoldProgress}
-            <div class="prep-strip" class:ready={activeHoldProgress.ready} aria-label="quest hold progress">
-              <span class="prep-tag">{activeHoldProgress.ready ? "[HOLD READY]" : "[HOLD]"}</span>
-              <span class:ok={activeHoldProgress.ready}>
-                {activeHoldProgress.ready ? "✓" : "○"} {activeHoldProgress.label}: {activeHoldProgress.currentQty}/{activeHoldProgress.targetQty} {activeHoldProgress.unit}
+          {:else if activeHoldSummary?.kind === "trade" && activeHoldSummary.primary}
+            <div class="prep-strip" class:ready={activeHoldSummary.ready} aria-label="quest hold progress">
+              <span class="prep-tag">{activeHoldSummary.tag}</span>
+              <span class:ok={activeHoldSummary.primary.ready}>
+                {activeHoldSummary.primary.ready ? "✓" : "○"} {activeHoldSummary.primary.label}: {activeHoldSummary.primary.currentQty}/{activeHoldSummary.primary.targetQty} {activeHoldSummary.primary.unit}
               </span>
+              {#each activeHoldSummary.secondary ?? [] as extra (extra.commoditySlug)}
+                <span class="muted" class:ok={extra.ready}>
+                  | {extra.label} {extra.currentQty}/{extra.targetQty}{extra.unit}{extra.ready ? " OK" : ""}
+                </span>
+              {/each}
             </div>
           {/if}
           {#if miningPrep.length > 0}
@@ -509,17 +505,7 @@
           {:else}
             {#each q.active as item (item.key)}
               {@const itemSuggested = extractQuestSuggestedAction(item)}
-              {@const itemRefitCheck =
-                itemSuggested?.command.startsWith("+coop/refit")
-                  ? evaluateRefitHoldReadiness(liveStowage)
-                  : null}
-              {@const itemHoldProgress =
-                !itemRefitCheck
-                  ? evaluateQuestStowageReadiness(
-                      extractActiveTradeNeed([item], item.key),
-                      liveStowage,
-                    )
-                  : null}
+              {@const itemHoldSummary = formatQuestHoldReadinessSummary(item, liveStowage)}
               <article class="qcard" class:tracked={q.trackedQuest?.key === item.key}>
                 <div class="qcard-top">
                   <strong>{item.title}</strong>
@@ -535,23 +521,32 @@
                     </span>
                   {/each}
                 </div>
-                {#if itemRefitCheck}
-                  <div class="prep-strip" class:ready={itemRefitCheck.ready} aria-label="refit hold readiness">
-                    <span class="prep-tag">{itemRefitCheck.ready ? "[READY]" : "[REFIT CHECK]"}</span>
-                    <span class:ok={itemRefitCheck.cargoEmpty}>
-                      {itemRefitCheck.cargoEmpty ? "✓ Cargo empty" : `✗ Cargo ${(itemRefitCheck.cargoKg / 1000).toFixed(1)}t`}
+                {#if itemHoldSummary?.kind === "refit" && itemHoldSummary.refit}
+                  <div class="prep-strip" class:ready={itemHoldSummary.ready} aria-label="refit hold readiness">
+                    <span class="prep-tag">{itemHoldSummary.tag}</span>
+                    <span class:ok={itemHoldSummary.refit.cargoEmpty}>
+                      {itemHoldSummary.refit.cargoEmpty
+                        ? "✓ Cargo empty"
+                        : `✗ Cargo ${(itemHoldSummary.refit.cargoKg / 1000).toFixed(1)}t`}
                     </span>
-                    <span class:ok={itemRefitCheck.provisionsEmpty}>
-                      {itemRefitCheck.provisionsEmpty ? "✓ Stores empty" : `✗ Stores ${itemRefitCheck.provisionsCrewDays}d`}
+                    <span class:ok={itemHoldSummary.refit.provisionsEmpty}>
+                      {itemHoldSummary.refit.provisionsEmpty
+                        ? "✓ Stores empty"
+                        : `✗ Stores ${itemHoldSummary.refit.provisionsCrewDays}d`}
                     </span>
-                    <span class="muted">Tank {itemRefitCheck.propellantTonnes}t OK</span>
+                    <span class="muted">Tank {itemHoldSummary.refit.propellantTonnes}t OK</span>
                   </div>
-                {:else if itemHoldProgress}
-                  <div class="prep-strip" class:ready={itemHoldProgress.ready} aria-label="quest hold progress">
-                    <span class="prep-tag">{itemHoldProgress.ready ? "[HOLD READY]" : "[HOLD]"}</span>
-                    <span class:ok={itemHoldProgress.ready}>
-                      {itemHoldProgress.ready ? "✓" : "○"} {itemHoldProgress.label}: {itemHoldProgress.currentQty}/{itemHoldProgress.targetQty} {itemHoldProgress.unit}
+                {:else if itemHoldSummary?.kind === "trade" && itemHoldSummary.primary}
+                  <div class="prep-strip" class:ready={itemHoldSummary.ready} aria-label="quest hold progress">
+                    <span class="prep-tag">{itemHoldSummary.tag}</span>
+                    <span class:ok={itemHoldSummary.primary.ready}>
+                      {itemHoldSummary.primary.ready ? "✓" : "○"} {itemHoldSummary.primary.label}: {itemHoldSummary.primary.currentQty}/{itemHoldSummary.primary.targetQty} {itemHoldSummary.primary.unit}
                     </span>
+                    {#each itemHoldSummary.secondary ?? [] as extra (extra.commoditySlug)}
+                      <span class="muted" class:ok={extra.ready}>
+                        | {extra.label} {extra.currentQty}/{extra.targetQty}{extra.unit}{extra.ready ? " OK" : ""}
+                      </span>
+                    {/each}
                   </div>
                 {/if}
                 <div class="qcard-actions">

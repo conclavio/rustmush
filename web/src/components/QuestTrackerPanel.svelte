@@ -5,6 +5,7 @@
   // or a quick-accept prompt when a quest NPC in the room has an available quest.
   import type { GameApp } from "$lib/game.svelte";
   import {
+    formatQuestHoldReadinessSummary,
     inferStationPortFromRoomEntry,
     needsOriginPortProcurement,
     needsSurfaceExpeditionBoarding,
@@ -29,6 +30,14 @@
   );
   const trackedIndex = $derived(
     tracked ? Math.max(0, q.active.findIndex((item) => item.key === tracked.key)) : 0,
+  );
+  const liveStowage = $derived(
+    app.tacsim?.ambient?.ownStowage ??
+      app.tacsim?.ambient?.stowage ??
+      (app.tacsim?.trade?.hullId ? app.tacsim.trade.stowage : null),
+  );
+  const holdReadiness = $derived(
+    tracked ? formatQuestHoldReadinessSummary(tracked, liveStowage) : null,
   );
   const routeCrumb = $derived.by(() => {
     const tacsim = app.tacsim;
@@ -80,10 +89,6 @@
       null;
     const currentEntry =
       (tacsim.view3dOpen ? tacsim.physicalLocationKey : null) ?? tacsim.serverStationRoomEntry;
-    const liveStowage =
-      tacsim.ambient?.ownStowage ??
-      tacsim.ambient?.stowage ??
-      (tacsim.trade?.hullId ? tacsim.trade.stowage : null);
     const needsOriginExchange = needsOriginPortProcurement(q.active, q.trackedKey, liveStowage);
     const needsShipExpedition = needsSurfaceExpeditionBoarding(q.active, q.trackedKey);
     return computeNextQuestExitBreadcrumb(
@@ -150,6 +155,15 @@
       {/if}
       {#if q.trackerCollapsed}
         <span class="inline-next">{tracked.nextStep}</span>
+        {#if holdReadiness}
+          <span
+            class="hold-pill"
+            class:ready={holdReadiness.ready}
+            aria-label="Tracked quest hold readiness"
+          >
+            {holdReadiness.tag} {holdReadiness.text}
+          </span>
+        {/if}
       {/if}
       <span class="grow"></span>
       {#if tracked.canFinishNow}
@@ -203,6 +217,16 @@
             </li>
           {/each}
         </ul>
+        {#if holdReadiness}
+          <div
+            class="hold-strip"
+            class:ready={holdReadiness.ready}
+            aria-label="Tracked quest hold readiness"
+          >
+            <span class="hold-tag">{holdReadiness.tag}</span>
+            <span>{holdReadiness.text}</span>
+          </div>
+        {/if}
         <div class="next-row">
           <span class="next-text">
             <strong>Next:</strong> {tracked.nextStep}
@@ -506,5 +530,44 @@
   }
   .link-btn:hover {
     text-decoration: underline;
+  }
+  .hold-strip {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    padding: 0.2rem 0.5rem;
+    border-radius: 5px;
+    border: 1px solid rgba(251, 191, 36, 0.45);
+    background: rgba(62, 46, 12, 0.36);
+    color: #fde68a;
+    font-size: 0.72rem;
+    align-self: flex-start;
+  }
+  .hold-strip.ready,
+  .hold-pill.ready {
+    border-color: rgba(52, 211, 153, 0.6);
+    background: rgba(16, 74, 52, 0.38);
+    color: #a7f3d0;
+  }
+  .hold-tag {
+    font-family: var(--mono, monospace);
+    font-weight: 700;
+    color: #fbbf24;
+  }
+  .hold-strip.ready .hold-tag {
+    color: #6ee7b7;
+  }
+  .hold-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.06rem 0.42rem;
+    border-radius: 999px;
+    border: 1px solid rgba(251, 191, 36, 0.5);
+    background: rgba(62, 46, 12, 0.4);
+    color: #fde68a;
+    font-family: var(--mono, monospace);
+    font-size: 0.68rem;
+    font-weight: 600;
   }
 </style>

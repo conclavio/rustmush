@@ -221,6 +221,75 @@ export function evaluateQuestStowageReadiness(
   };
 }
 
+export interface QuestHoldReadinessSummary {
+  kind: "refit" | "trade";
+  tag: string;
+  text: string;
+  ready: boolean;
+  refit?: QuestRefitHoldReadiness;
+  primary?: QuestStowageReadiness;
+  secondary?: QuestStowageReadiness[];
+}
+
+export function formatQuestHoldReadinessSummary(
+  quest: ActiveQuestView | null,
+  stowage:
+    | {
+        cargoKg: number;
+        propellantKg: number;
+        provisionsCrewDays: number;
+        cargoLines: ReadonlyArray<{ good: string; label: string; qty: number }>;
+      }
+    | null
+    | undefined,
+): QuestHoldReadinessSummary | null {
+  if (!quest || !stowage) return null;
+  const suggested = extractQuestSuggestedAction(quest);
+  if (suggested?.command.startsWith("+coop/refit")) {
+    const refit = evaluateRefitHoldReadiness(stowage);
+    if (!refit) return null;
+    const cargoText = refit.cargoEmpty
+      ? "✓ Cargo empty"
+      : `✗ Cargo ${(refit.cargoKg / 1000).toFixed(1)}t`;
+    const storesText = refit.provisionsEmpty
+      ? "✓ Stores empty"
+      : `✗ Stores ${refit.provisionsCrewDays}d`;
+    return {
+      kind: "refit",
+      tag: refit.ready ? "[READY]" : "[REFIT CHECK]",
+      text: `${cargoText} · ${storesText} · Tank ${refit.propellantTonnes}t OK`,
+      ready: refit.ready,
+      refit,
+    };
+  }
+
+  const needs = extractActiveTradeNeeds([quest], quest.key);
+  if (needs.length === 0) return null;
+  const items: QuestStowageReadiness[] = [];
+  for (const need of needs) {
+    const item = evaluateQuestStowageReadiness(need, stowage);
+    if (item) items.push(item);
+  }
+  if (items.length === 0) return null;
+
+  const primary = items.find((r) => !r.ready) ?? items[0]!;
+  const secondary = items.filter((r) => r !== primary);
+  const ready = items.every((r) => r.ready);
+  const primaryText = `${primary.ready ? "✓" : "○"} ${primary.label}: ${primary.currentQty}/${primary.targetQty} ${primary.unit}`;
+  const secondaryText = secondary
+    .map((s) => `${s.label} ${s.currentQty}/${s.targetQty}${s.unit}${s.ready ? " OK" : ""}`)
+    .join(" · ");
+
+  return {
+    kind: "trade",
+    tag: ready ? "[HOLD READY]" : "[HOLD]",
+    text: secondaryText ? `${primaryText} | ${secondaryText}` : primaryText,
+    ready,
+    primary,
+    secondary,
+  };
+}
+
 export interface QuestSailingPreflightReadiness {
   propellantTonnes: number;
   propellantOk: boolean;
