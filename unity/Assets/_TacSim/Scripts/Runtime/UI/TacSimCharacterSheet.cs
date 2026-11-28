@@ -672,6 +672,13 @@ namespace TacSim.UI
                         MushProtocol.EscapeUnityRichText(nextOffer.GiverRoomName),
                         qPanel.Completed.Count);
                 }
+                else if (_questJournal.TryGetGuidedTourProgress(out int tourDone, out int tourTotal, out _, out bool allTourDone) && allTourDone)
+                {
+                    sb.AppendFormat("<color=#55EE99><b>★ CORRIDOR CAPTAIN ({0}/{1})</b></color> — Guided Tour Complete  |  Completed: {2}\n",
+                        tourDone,
+                        tourTotal,
+                        qPanel.Completed.Count);
+                }
                 else if (qPanel.Completed.Count > 0)
                 {
                     sb.AppendFormat("<color=#66FFAA><b>QUESTS COMPLETED:</b></color> {0}\n", qPanel.Completed.Count);

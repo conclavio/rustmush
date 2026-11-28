@@ -15734,5 +15734,60 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void CorridorCaptainMastery_UpdatesEmptyJournalActiveTabAndCharacterSheetPilotTab()
+        {
+            var rootGo = new UnityEngine.GameObject("CorridorCaptainMasteryTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [],
+                    ""available"": [],
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""S1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""S2"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""S3"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_04_return_haul"", ""title"": ""S4"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"", ""title"": ""S5"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"", ""title"": ""S6"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore"", ""title"": ""S7"" }
+                    ]
+                }")));
+
+                // 1. Character Sheet Pilot tab celebrates Corridor Captain (7/7)
+                hud.CharacterSheet.SetOpen(true);
+                hud.CharacterSheet.RefreshContents();
+                StringAssert.Contains("CORRIDOR CAPTAIN (7/7)", hud.CharacterSheet.PilotSummarySnapshot);
+                StringAssert.Contains("Guided Tour Complete", hud.CharacterSheet.PilotSummarySnapshot);
+
+                // 2. Quest Journal empty Active tab celebrates Corridor Captain, offers JOBS BOARD (+market/jobs) & COMPLETED (7)
+                hud.QuestJournal.SetOpen(true, TacSim.UI.QuestJournalTab.Quests);
+                hud.QuestJournal.SelectQuestSubTab("active");
+                StringAssert.Contains("CORRIDOR CAPTAIN", hud.QuestJournal.JournalBodySnapshot);
+                Assert.IsFalse(hud.QuestJournal.JournalBodySnapshot.Contains("Maren Halvorsen"), "Mastered 7/7 player must not see novice Maren prompt");
+                Assert.IsTrue(hud.QuestJournal.IsJournalPrefillVisible);
+                Assert.AreEqual("JOBS BOARD", hud.QuestJournal.JournalPrefillLabelSnapshot);
+                Assert.AreEqual("COMPLETED (7)", hud.QuestJournal.JournalPrimaryLabelSnapshot);
+
+                string prefillCmd = null;
+                hud.QuestJournal.OnPrefillCommandRequested += c => prefillCmd = c;
+                Assert.IsTrue(hud.QuestJournal.TriggerJournalSuggestedPrefill());
+                Assert.AreEqual("+market/jobs", prefillCmd);
+
+                hud.QuestJournal.SetOpen(true, TacSim.UI.QuestJournalTab.Quests);
+                hud.QuestJournal.SelectQuestSubTab("active");
+                hud.QuestJournal.TriggerJournalPrimaryActionForTests();
+                Assert.AreEqual("completed", hud.QuestJournal.ActiveQuestSubTab);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
