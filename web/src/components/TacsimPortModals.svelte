@@ -5,7 +5,11 @@
   // modal field distinctly.
 
   import type { GameApp } from "$lib/game.svelte";
-  import { matchesQuestTradeRow } from "$lib/stores/quests.svelte";
+  import {
+    evaluateQuestStowageReadiness,
+    matchesQuestTradeRow,
+    normalizeGoodSlug,
+  } from "$lib/stores/quests.svelte";
   import {
     formatEscortPostCommand,
     formatHaulPostCommand,
@@ -82,6 +86,7 @@
   const st = $derived(trade.stowage);
   const questTradeNeed = $derived(app.quests.activeTradeNeed);
   const questDestPort = $derived(app.quests.activeDestinationPort);
+  const stowageReadiness = $derived(evaluateQuestStowageReadiness(questTradeNeed, st));
   const questCoopAction = $derived.by(() => {
     const sug = app.quests?.suggestedAction;
     if (!sug || !sug.command.startsWith("+coop/")) return null;
@@ -232,23 +237,74 @@
         </header>
 
         <div class="gauges">
-          <div class="gauge">
-            <div class="gtop"><span>Hold Mass</span><span>{(st.cargoKg / 1000).toFixed(1)} / {(st.cargoMaxKg / 1000).toFixed(0)} t</span></div>
+          <div
+            class="gauge"
+            class:quest-target={stowageReadiness?.gaugeKind === "cargo"}
+            class:quest-ready={stowageReadiness?.gaugeKind === "cargo" && stowageReadiness.ready}
+          >
+            <div class="gtop">
+              <span>
+                {#if stowageReadiness?.gaugeKind === "cargo"}<span class="qtag">{stowageReadiness.ready ? "[READY]" : "[QUEST]"}</span>{" "}{/if}Hold Mass
+              </span>
+              <span>{(st.cargoKg / 1000).toFixed(1)} / {(st.cargoMaxKg / 1000).toFixed(0)} t</span>
+            </div>
             <div class="gbar"><div class="gfill mass" style="width: {massPct}%"></div></div>
           </div>
           <div class="gauge">
             <div class="gtop"><span>Packed Vol</span><span>{(st.cargoL / 1000).toFixed(1)} / {(st.cargoMaxL / 1000).toFixed(0)} m³</span></div>
             <div class="gbar"><div class="gfill vol" style="width: {volPct}%"></div></div>
           </div>
-          <div class="gauge">
-            <div class="gtop"><span>Reaction Tank</span><span>{(st.propellantKg / 1000).toFixed(1)} / {(st.propellantMaxKg / 1000).toFixed(0)} t</span></div>
+          <div
+            class="gauge"
+            class:quest-target={stowageReadiness?.gaugeKind === "propellant"}
+            class:quest-ready={stowageReadiness?.gaugeKind === "propellant" && stowageReadiness.ready}
+          >
+            <div class="gtop">
+              <span>
+                {#if stowageReadiness?.gaugeKind === "propellant"}<span class="qtag">{stowageReadiness.ready ? "[READY]" : "[QUEST]"}</span>{" "}{/if}Reaction Tank
+              </span>
+              <span>{(st.propellantKg / 1000).toFixed(1)} / {(st.propellantMaxKg / 1000).toFixed(0)} t</span>
+            </div>
             <div class="gbar"><div class="gfill tank" style="width: {tankPct}%"></div></div>
           </div>
-          <div class="gauge">
-            <div class="gtop"><span>Crew Stores</span><span>{st.provisionsCrewDays} / {st.provisionsMaxCrewDays} d</span></div>
+          <div
+            class="gauge"
+            class:quest-target={stowageReadiness?.gaugeKind === "provisions"}
+            class:quest-ready={stowageReadiness?.gaugeKind === "provisions" && stowageReadiness.ready}
+          >
+            <div class="gtop">
+              <span>
+                {#if stowageReadiness?.gaugeKind === "provisions"}<span class="qtag">{stowageReadiness.ready ? "[READY]" : "[QUEST]"}</span>{" "}{/if}Crew Stores
+              </span>
+              <span>{st.provisionsCrewDays} / {st.provisionsMaxCrewDays} d</span>
+            </div>
             <div class="gbar"><div class="gfill stores" style="width: {storesPct}%"></div></div>
           </div>
         </div>
+
+        {#if stowageReadiness || st.cargoLines.length > 0}
+          <div class="hold-readiness-strip">
+            {#if stowageReadiness}
+              <span
+                class="hold-quest-pill"
+                class:ready={stowageReadiness.ready}
+                aria-label="quest cargo readiness"
+              >
+                <span class="qtag">{stowageReadiness.ready ? "[READY]" : "[QUEST]"}</span>{" "}
+                {stowageReadiness.label}: {stowageReadiness.currentQty} / {stowageReadiness.targetQty} {stowageReadiness.unit}
+              </span>
+            {/if}
+            {#each st.cargoLines as lot (`${lot.good}-${lot.label}`)}
+              {@const isQuestLot =
+                questTradeNeed !== null &&
+                (normalizeGoodSlug(lot.good) === questTradeNeed.commoditySlug ||
+                  normalizeGoodSlug(lot.label) === questTradeNeed.commoditySlug)}
+              <span class="hold-lot-chip" class:quest-lot={isQuestLot}>
+                {#if isQuestLot}<span class="qtag">[Q]</span>{" "}{/if}{lot.label}: {lot.qty} {lot.unit}
+              </span>
+            {/each}
+          </div>
+        {/if}
 
         {#if modal === "trade" && tradeSubView === "book"}
           {#if questTradeNeed}
@@ -1438,5 +1494,55 @@
   .dest-card.quest-match {
     border-color: #d4a634;
     box-shadow: inset 0 0 0 1px rgba(255, 216, 77, 0.35);
+  }
+
+  .gauge.quest-target {
+    border-color: #d4a634;
+    background: rgba(62, 48, 14, 0.45);
+  }
+
+  .gauge.quest-ready {
+    border-color: #34d399;
+    background: rgba(16, 74, 52, 0.45);
+  }
+
+  .hold-readiness-strip {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+    padding: 0.25rem 0.1rem;
+    font-family: var(--font-mono);
+    font-size: 0.74rem;
+  }
+
+  .hold-quest-pill {
+    padding: 0.15rem 0.55rem;
+    border-radius: 999px;
+    border: 1px solid #d4a634;
+    background: rgba(62, 46, 12, 0.78);
+    color: #fff2c4;
+    font-weight: 700;
+  }
+
+  .hold-quest-pill.ready {
+    border-color: #34d399;
+    background: rgba(12, 64, 45, 0.85);
+    color: #a7f3d0;
+  }
+
+  .hold-lot-chip {
+    padding: 0.12rem 0.48rem;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--fg-muted);
+  }
+
+  .hold-lot-chip.quest-lot {
+    border-color: #d4a634;
+    background: rgba(62, 48, 14, 0.48);
+    color: #fef3c7;
+    font-weight: 600;
   }
 </style>
