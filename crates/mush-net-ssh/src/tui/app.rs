@@ -2481,18 +2481,32 @@ impl TuiApp {
                         .get("atlas")
                         .and_then(|a| a.get("entry"))
                         .and_then(Value::as_str)
-                    && let Some((obj_room, is_turn_in)) = self
+                {
+                    if self.quests_snap.active.is_empty()
+                        && let Some(next_offer) = self.quests_snap.next_guided_offer()
+                        && atlas_entry.eq_ignore_ascii_case(next_offer.giver_room_entry)
+                    {
+                        let notice = format!(
+                            "[QUEST] Next Guided Step ({}/7) [!]: Speak with {} in {} (F11)",
+                            next_offer.step,
+                            next_offer.giver_label,
+                            sanitize(&view.name)
+                        );
+                        self.push_local_line(&notice);
+                        self.sounds.play("power_online", Instant::now());
+                    } else if let Some((obj_room, is_turn_in)) = self
                         .quests_snap
                         .active_objective_room(self.quests_overlay.tracked_key.as_deref())
-                    && atlas_entry.eq_ignore_ascii_case(&obj_room)
-                {
-                    let notice = if is_turn_in {
-                        format!("[QUEST] Turn-in ready here: {}", sanitize(&view.name))
-                    } else {
-                        format!("[QUEST] Arrived at objective: {}", sanitize(&view.name))
-                    };
-                    self.push_local_line(&notice);
-                    self.sounds.play("power_online", Instant::now());
+                        && atlas_entry.eq_ignore_ascii_case(&obj_room)
+                    {
+                        let notice = if is_turn_in {
+                            format!("[QUEST] Turn-in ready here: {}", sanitize(&view.name))
+                        } else {
+                            format!("[QUEST] Arrived at objective: {}", sanitize(&view.name))
+                        };
+                        self.push_local_line(&notice);
+                        self.sounds.play("power_online", Instant::now());
+                    }
                 }
                 if manifest_has(&self.manifest, QUESTS_FEED) {
                     queries.push((
@@ -13972,6 +13986,33 @@ mod tests {
                 s.contains("[QUEST] Arrived at objective: Co-op Registry")
             }),
             "moving into tracked quest objective room must emit [QUEST] arrival notice"
+        );
+
+        // 3. Between guided steps (Step 1 done, Step 2 not yet accepted): moving into
+        //    Ilse's Registry room emits Next Guided Step (2/7) arrival notice
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "active": [],
+                "available": [],
+                "completed": [
+                    { "key": "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll", "title": "First Papers" }
+                ]
+            }),
+        });
+        app.apply_event(&make_room(
+            "#15",
+            "Registry & Co-op Desk",
+            "room.c05_registry",
+        ));
+        assert!(
+            app.scrollback.iter().any(|e| {
+                let s: String = e.body.iter().map(|sp| sp.content.as_ref()).collect();
+                s.contains("[QUEST] Next Guided Step (2/7) [!]: Speak with Ilse Oduya-Brandt in Registry & Co-op Desk (F11)")
+            }),
+            "moving into between-steps Next Guided giver room must emit arrival notice"
         );
     }
 
