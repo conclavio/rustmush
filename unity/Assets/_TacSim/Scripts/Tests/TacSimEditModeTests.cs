@@ -19277,5 +19277,88 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void TargetFrame_ShowsQuestNpcCrestStepSubtitleAndDirectQuestDialogAction()
+        {
+            var rootGo = new UnityEngine.GameObject("TargetFrameQuestNpcTestRoot");
+            try
+            {
+                var coord = rootGo.AddComponent<TacSim.Core.TacSimGameCoordinator>();
+                coord.EnsureSubsystems();
+
+                var rv = new MushRoomView
+                {
+                    Id = "#10",
+                    Name = "Port Watch Arrivals",
+                    Atlas = new AtlasRoomAmbient { Pack = "neighborhood.ceres_freeport", Entry = "room.c03_arrivals" }
+                };
+                rv.Contents.Add(new MushObjRef { Id = "#11", Name = "Maren Halvorsen" });
+                rv.NpcIds.Add("#11");
+                coord.StationWorld.ApplyRoomView(rv, "#999");
+
+                var targets = coord.StationWorld.GetActiveRoomTargetables();
+                WorldInteractable marenWi = null;
+                for (int i = 0; i < targets.Count; i++)
+                {
+                    if (targets[i].actorId == "#11") { marenWi = targets[i]; break; }
+                }
+                Assert.IsNotNull(marenWi);
+
+                // 1. Plain NPC without quest marker -> green NPC crest and TALK / LOOK / SAY
+                coord.Player.SelectTarget(marenWi);
+                Assert.AreEqual("NPC", coord.Hud.UnitFrames.TargetCrestText);
+                Assert.AreEqual("TALK", coord.Hud.UnitFrames.TargetAction1Label);
+
+                // 2. Guided Step 1 offer arrives -> Target Frame updates reactively to [!] Offer [Step 1/7] + QUEST primary button
+                coord.Hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_markers"": [{
+                        ""npc_id"": ""#11"", ""npc_name"": ""Maren Halvorsen"", ""marker"": ""available"", ""symbol"": ""!"",
+                        ""quest_key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                        ""quest_title"": ""First Papers at the Registry""
+                    }],
+                    ""available"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                        ""title"": ""First Papers at the Registry"", ""giver_id"": ""#11"", ""giver_name"": ""Maren Halvorsen"",
+                        ""accept_cmd"": ""+quest/accept #11=tok1""
+                    }],
+                    ""active"": [], ""completed"": []
+                }")));
+                Assert.AreEqual("[!]", coord.Hud.UnitFrames.TargetCrestText);
+                StringAssert.Contains("Offer: First Papers at the Registry [Step 1/7]", coord.Hud.UnitFrames.TargetSubtitleText);
+                Assert.AreEqual("QUEST", coord.Hud.UnitFrames.TargetAction1Label);
+                Assert.AreEqual("TALK", coord.Hud.UnitFrames.TargetAction2Label);
+                coord.Hud.UnitFrames.TriggerTargetAction(0);
+                Assert.IsTrue(coord.Hud.QuestJournal.IsQuestDialogOpen);
+                coord.Hud.QuestJournal.CloseQuestDialog();
+
+                // 3. Turn-in ready -> flips reactively to [?] Turn In [Step 1/7] + TURN IN primary button
+                coord.Hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_markers"": [{
+                        ""npc_id"": ""#11"", ""npc_name"": ""Maren Halvorsen"", ""marker"": ""turn_in"", ""symbol"": ""?"",
+                        ""quest_key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                        ""quest_title"": ""First Papers at the Registry""
+                    }],
+                    ""available"": [],
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                        ""title"": ""First Papers at the Registry"", ""turn_in_id"": ""#11"", ""turn_in_name"": ""Maren Halvorsen"",
+                        ""can_finish_now"": true, ""ready_to_finish"": true, ""finish_cmd"": ""+quest/finish Maren""
+                    }],
+                    ""completed"": []
+                }")));
+                Assert.AreEqual("[?]", coord.Hud.UnitFrames.TargetCrestText);
+                StringAssert.Contains("Turn In: First Papers at the Registry [Step 1/7]", coord.Hud.UnitFrames.TargetSubtitleText);
+                Assert.AreEqual("TURN IN", coord.Hud.UnitFrames.TargetAction1Label);
+                coord.Hud.UnitFrames.TriggerTargetAction(0);
+                Assert.IsTrue(coord.Hud.QuestJournal.IsQuestDialogOpen);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
