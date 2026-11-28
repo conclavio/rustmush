@@ -1078,6 +1078,50 @@ impl PortWalkState {
         None
     }
 
+    /// Resolve a concise live quest subtitle `(text, color)` for the currently focused
+    /// `[E]` interactable NPC in the Nearby Interactables pane.
+    #[must_use]
+    pub fn focused_interactable_quest_subtitle(&self) -> Option<(String, Color)> {
+        let it = self.interactables.get(self.focus_idx)?;
+        let InteractAction::OpenNpc { id, name } = &it.action else {
+            return None;
+        };
+        let name_trim = name.trim();
+        if !name_trim.is_empty() {
+            let name_low = name_trim.to_ascii_lowercase();
+            let brief = self
+                .npc_quest_briefs
+                .iter()
+                .find(|b| b.npc_name.trim().eq_ignore_ascii_case(name_trim))
+                .or_else(|| {
+                    self.npc_quest_briefs.iter().find(|b| {
+                        let n = b.npc_name.trim().to_ascii_lowercase();
+                        !n.is_empty() && (n.contains(&name_low) || name_low.contains(&n))
+                    })
+                });
+            if let Some(b) = brief
+                && !b.status_line.is_empty()
+            {
+                let col = if b.ready {
+                    Color::Green
+                } else {
+                    Color::LightYellow
+                };
+                return Some((b.status_line.clone(), col));
+            }
+        }
+        if let Some(m) = self.find_quest_marker(id, name)
+            && !m.quest_title.is_empty()
+        {
+            return match m.marker.as_str() {
+                "turn_in" => Some((format!("Complete: {}", m.quest_title), Color::Green)),
+                "available" => Some((format!("Offer: {}", m.quest_title), Color::Yellow)),
+                _ => Some((format!("Active: {}", m.quest_title), Color::Cyan)),
+            };
+        }
+        None
+    }
+
     fn format_quest_ready_banner(&self, step_suffix: &str) -> Option<(String, Color)> {
         let ready = self.quest_ready_turn_in.as_ref()?;
         if ready.can_finish_now && !ready.finish_cmd.is_empty() {
@@ -4093,31 +4137,37 @@ impl PortWalkState {
         draw_titled_col(frame, stow_area, "Stowage & Wallet", stow_lines);
 
         let mut near_lines = Vec::new();
+        let focused_subtitle = self.focused_interactable_quest_subtitle();
         if self.interactables.is_empty() {
             near_lines.push(Line::from(Span::styled(
                 "Walk to a desk, hatch, or crewmate.",
                 Style::default().fg(Color::DarkGray),
             )));
         } else {
-            let win = visible_window(self.interactables.len(), self.focus_idx, 6);
+            let max_rows = if focused_subtitle.is_some() { 5 } else { 6 };
+            let win = visible_window(self.interactables.len(), self.focus_idx, max_rows);
             for idx in win {
                 if let Some(it) = self.interactables.get(idx) {
                     let focused = idx == self.focus_idx;
                     let prefix = if focused { "[E] > " } else { "      " };
-                    let is_quest = it.label.starts_with("[?]")
-                        || it.label.starts_with("[!]")
-                        || it.label.starts_with("[Q]");
-                    let style = if focused {
+                    let is_turn_in = it.label.starts_with("[?]") && it.label.contains("Turn In");
+                    let is_offer_or_q = it.label.starts_with("[!]") || it.label.starts_with("[Q]");
+                    let is_in_progress = it.label.starts_with("[?]") && !is_turn_in;
+                    let style = if is_turn_in {
                         Style::default()
-                            .fg(if is_quest {
-                                Color::Yellow
-                            } else {
-                                Color::Green
-                            })
+                            .fg(Color::Green)
                             .add_modifier(Modifier::BOLD)
-                    } else if is_quest {
+                    } else if is_offer_or_q {
                         Style::default()
                             .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
+                    } else if is_in_progress {
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD)
+                    } else if focused {
+                        Style::default()
+                            .fg(Color::Green)
                             .add_modifier(Modifier::BOLD)
                     } else {
                         Style::default().fg(Color::Gray)
@@ -4126,6 +4176,12 @@ impl PortWalkState {
                         format!("{prefix}{}", it.label),
                         style,
                     )));
+                    if focused && let Some((ref sub, scol)) = focused_subtitle {
+                        near_lines.push(Line::from(Span::styled(
+                            format!("  {sub}"),
+                            Style::default().fg(scol),
+                        )));
+                    }
                 }
             }
         }
@@ -12567,5 +12623,70 @@ mod tests {
         );
         let out_noop = st.handle_drawer_key(Key::Char('v'), &[], Instant::now());
         assert!(out_noop.commands.is_empty());
+    }
+
+    #[test]
+    fn nearby_interactables_show_focused_npc_quest_brief_and_distinct_marker_colors() {
+        let mut st = PortWalkState::new();
+        st.interactables = vec![InteractableTarget {
+            label: "[!] Maren Halvorsen — Quest Available [Step 1/7]".to_string(),
+            action: InteractAction::OpenNpc {
+                id: "#11".to_string(),
+                name: "Maren Halvorsen".to_string(),
+            },
+            x_m: 1.0,
+            y_m: 1.0,
+            floor: 0,
+        }];
+        st.focus_idx = 0;
+
+        // 1. Marker fallback subtitle when no live NpcQuestBrief is populated yet
+        st.observe_quest_markers(&[crate::tui::quests::QuestMarker {
+            npc_id: "#11".to_string(),
+            npc_name: "Maren Halvorsen".to_string(),
+            marker: "available".to_string(),
+            symbol: "!".to_string(),
+            quest_key: crate::tui::quests::GUIDED_TOUR_KEYS[0].to_string(),
+            quest_title: "First Papers at the Registry".to_string(),
+            category: "guided".to_string(),
+        }]);
+        let (sub_offer, col_offer) = st
+            .focused_interactable_quest_subtitle()
+            .expect("offer subtitle");
+        assert_eq!(sub_offer, "Offer: First Papers at the Registry");
+        assert_eq!(col_offer, Color::Yellow);
+
+        // 2. Live NpcQuestBrief overrides with real-time readiness & renders inside Nearby Interactables
+        st.observe_npc_quest_briefs(vec![NpcQuestBrief {
+            npc_name: "Maren Halvorsen".to_string(),
+            status_line: "Next: Enroll at Registry (+coop/enroll) | [READY]".to_string(),
+            ready: true,
+            quick_action_key: Some('f'),
+            quick_action_label: "Complete".to_string(),
+            quick_action_cmd: "+quest/finish Maren".to_string(),
+        }]);
+        let (sub_brief, col_brief) = st
+            .focused_interactable_quest_subtitle()
+            .expect("brief subtitle");
+        assert!(sub_brief.contains("[READY]"));
+        assert_eq!(col_brief, Color::Green);
+
+        let backend = ratatui::backend::TestBackend::new(140, 14);
+        let mut term = ratatui::Terminal::new(backend).expect("terminal");
+        term.draw(|f| st.draw_bottom_panel(f, f.area(), true, &|_| Vec::new()))
+            .expect("draw bottom panel");
+        let buf = term.backend().buffer();
+        let rendered: String = (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            rendered.contains("Next: Enroll at Registry (+coop/enroll)"),
+            "expected focused NPC quest brief inside Nearby Interactables:\n{rendered}"
+        );
     }
 }
