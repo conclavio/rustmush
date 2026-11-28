@@ -135,4 +135,54 @@ describe("ChartScreen quest destination guidance", () => {
     expect(quarry.family).toBe("carbon");
     expect(switchScreen).toHaveBeenCalledWith("quarry");
   });
+
+  it("sorts the quest destination passage row first and prefills +ship/plan when clicked", async () => {
+    const raw = skyChartFixture() as {
+      chart: { routes: Array<{ to: string; venue: string; body: string }> };
+    };
+    // Ensure a non-stickney route precedes stickney in raw server order
+    const stickneyIdx = raw.chart.routes.findIndex(
+      (r) => r.venue.toLowerCase() === "stickney" || r.to.toLowerCase().includes("stickney"),
+    );
+    if (stickneyIdx === 0 && raw.chart.routes.length > 1) {
+      const [first] = raw.chart.routes.splice(0, 1);
+      raw.chart.routes.push(first!);
+    }
+
+    const chart = new ChartStore();
+    chart.applyKeyframe(raw);
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+          title: "Metals Down the Corridor",
+          checkpoints: [
+            {
+              id: "deliver_metals",
+              title: "Deliver 5t metals to Stickney",
+              instructions: "+ship/plan stickney",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+    const focusComposer = vi.fn();
+    const tacsim = { selectedDestination: "ceres" };
+    const app = { chart, quests, tacsim, focusComposer } as unknown as GameApp;
+
+    const { container } = render(ChartScreen, { props: { app } });
+    const rows = [...container.querySelectorAll("ul.passage-list li")];
+    expect(rows.length).toBeGreaterThanOrEqual(1);
+    expect(rows[0]!.classList.contains("quest-row")).toBe(true);
+    expect(rows[0]!.textContent).toContain("[QUEST]");
+
+    const btn = rows[0]!.querySelector("button.passage-btn") as HTMLButtonElement;
+    await fireEvent.click(btn);
+    expect(tacsim.selectedDestination).toBe("stickney");
+    expect(focusComposer).toHaveBeenCalledWith("+ship/plan stickney");
+  });
 });
