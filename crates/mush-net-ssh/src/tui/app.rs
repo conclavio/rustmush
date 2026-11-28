@@ -4956,10 +4956,26 @@ impl TuiApp {
         self.port_walk
             .observe_quest_markers(&self.quests_snap.room_markers);
         let tracked = self.quests_overlay.tracked_key.as_deref();
-        self.port_walk.observe_quest_guidance(
-            self.quests_snap.active_trade_need(tracked),
-            self.quests_snap.active_destination_port(tracked),
-        );
+        let cur_port = self
+            .panels
+            .get(CHART_FEED)
+            .and_then(|v| {
+                v.pointer("/chart/vantage/port")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| {
+                        v.pointer("/chart/vantage/body")
+                            .and_then(Value::as_str)
+                            .filter(|s| !s.is_empty())
+                    })
+            })
+            .or_else(|| self.port_walk.current_port_slug());
+        let dest_port = self
+            .quests_snap
+            .active_destination_port(tracked)
+            .or_else(|| self.quests_snap.next_guided_offer_destination(cur_port));
+        self.port_walk
+            .observe_quest_guidance(self.quests_snap.active_trade_need(tracked), dest_port);
         self.port_walk
             .observe_quest_objective_room(self.quests_snap.active_objective_room(tracked));
         self.port_walk.observe_quest_ship_target(
@@ -13576,6 +13592,65 @@ mod tests {
         app.feed_input(b"\r");
         assert!(app.quests_overlay.open);
         assert_eq!(app.quests_overlay.tab, QuestTab::Active);
+    }
+
+    #[test]
+    fn sailing_drawer_auto_selects_between_steps_next_guided_offer_port_and_clears_at_port() {
+        let mut app = app();
+        // Default PortWalkState starts at Ceres Freeport; Steps 1-3 complete -> Step 4 Jonas at Stickney Yards
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "completed": [
+                    { "key": "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll", "title": "S1" },
+                    { "key": "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel", "title": "S2" },
+                    { "key": "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery", "title": "S3" }
+                ],
+                "active": [],
+                "available": []
+            }),
+        });
+        let hint = app
+            .port_walk
+            .quest_dest_hint()
+            .expect("expected off-station Next Guided destination hint");
+        assert_eq!(hint.port_id, "stickney");
+        let mut queries = Vec::new();
+        app.port_walk.open_drawer(
+            crate::tui::port_walk::PortDrawerKind::Sailing,
+            &[],
+            &mut queries,
+            std::time::Instant::now(),
+        );
+        let out = app.port_walk.handle_key(
+            crate::tui::keys::Key::Enter,
+            false,
+            false,
+            &[],
+            std::time::Instant::now(),
+        );
+        assert!(
+            out.commands
+                .iter()
+                .any(|c| c == "+ship/order depart stickney" || c == "+ship/plan stickney"),
+            "expected Sailing drawer to auto-select stickney, got {:?}",
+            out.commands
+        );
+
+        // Once reading sky chart at Stickney Yards -> off-station Next Guided destination clears
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(CHART_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "chart": {
+                    "vantage": { "port": "Stickney Yards", "body": "mars" }
+                }
+            }),
+        });
+        app.sync_port_walk_quest_state();
+        assert!(app.port_walk.quest_dest_hint().is_none());
     }
 
     #[test]
