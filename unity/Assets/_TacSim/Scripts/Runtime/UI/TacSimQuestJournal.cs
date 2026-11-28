@@ -348,6 +348,7 @@ namespace TacSim.UI
         private bool _manualPinActive;
         private int _selectedQuestIndex;
         private string _confirmAbandonKey = string.Empty;
+        private string _confirmDeclineKey = string.Empty;
         private bool _hasHydratedPanel;
         private TacSimTradeAndShipState _boundTradeState;
         private readonly HashSet<string> _seenActiveKeys = new HashSet<string>(StringComparer.Ordinal);
@@ -1032,6 +1033,7 @@ namespace TacSim.UI
             if (panel == null) return;
             LatestPanel = panel;
             _confirmAbandonKey = string.Empty;
+            _confirmDeclineKey = string.Empty;
 
             // Detect genuine server-side quest transitions after initial login hydration
             // so celebration callouts and chimes never spam on reconnect.
@@ -1706,34 +1708,20 @@ namespace TacSim.UI
         public bool OpenNpcQuestDialog(string npcId)
         {
             if (LatestPanel == null || string.IsNullOrEmpty(npcId)) return false;
-            string pickKey = string.Empty;
-            for (int i = 0; i < LatestPanel.RoomMarkers.Count; i++)
-            {
-                if (LatestPanel.RoomMarkers[i].NpcId == npcId && !string.IsNullOrEmpty(LatestPanel.RoomMarkers[i].QuestKey))
-                {
-                    pickKey = LatestPanel.RoomMarkers[i].QuestKey;
-                    break;
-                }
-            }
+            var orderedKeys = CollectNpcDialogKeys(npcId);
+            string pickKey = orderedKeys.Count > 0 ? orderedKeys[0] : string.Empty;
             if (string.IsNullOrEmpty(pickKey))
             {
-                for (int i = 0; i < LatestPanel.Active.Count; i++)
+                int bestRank = int.MaxValue;
+                for (int i = 0; i < LatestPanel.RoomMarkers.Count; i++)
                 {
-                    if (LatestPanel.Active[i].TurnInId == npcId || LatestPanel.Active[i].GiverId == npcId)
+                    var m = LatestPanel.RoomMarkers[i];
+                    if (m.NpcId != npcId || string.IsNullOrEmpty(m.QuestKey)) continue;
+                    int rank = m.Marker == "turn_in" ? 0 : (m.Marker == "available" ? 1 : 2);
+                    if (rank < bestRank)
                     {
-                        pickKey = LatestPanel.Active[i].Key;
-                        break;
-                    }
-                }
-            }
-            if (string.IsNullOrEmpty(pickKey))
-            {
-                for (int i = 0; i < LatestPanel.Available.Count; i++)
-                {
-                    if (LatestPanel.Available[i].GiverId == npcId)
-                    {
-                        pickKey = LatestPanel.Available[i].Key;
-                        break;
+                        bestRank = rank;
+                        pickKey = m.QuestKey;
                     }
                 }
             }
@@ -1742,6 +1730,7 @@ namespace TacSim.UI
             DialogNpcId = npcId;
             DialogQuestKey = pickKey;
             _confirmAbandonKey = string.Empty;
+            _confirmDeclineKey = string.Empty;
             if (_modalRoot != null) _modalRoot.SetActive(false);
             if (_questDialogRoot != null) _questDialogRoot.SetActive(true);
             RefreshQuestDialogUi();
@@ -1754,6 +1743,7 @@ namespace TacSim.UI
             DialogNpcId = string.Empty;
             DialogQuestKey = questKey;
             _confirmAbandonKey = string.Empty;
+            _confirmDeclineKey = string.Empty;
             if (_modalRoot != null) _modalRoot.SetActive(false);
             if (_questDialogRoot != null) _questDialogRoot.SetActive(true);
             RefreshQuestDialogUi();
@@ -1763,6 +1753,7 @@ namespace TacSim.UI
         public void CloseQuestDialog()
         {
             _confirmAbandonKey = string.Empty;
+            _confirmDeclineKey = string.Empty;
             if (_questDialogRoot != null)
                 _questDialogRoot.SetActive(false);
         }
@@ -1772,6 +1763,7 @@ namespace TacSim.UI
             ActiveQuestSubTab = subTab ?? "active";
             _selectedQuestIndex = 0;
             _confirmAbandonKey = string.Empty;
+            _confirmDeclineKey = string.Empty;
             RefreshJournalBody();
         }
 
@@ -1841,6 +1833,7 @@ namespace TacSim.UI
             DialogNpcId = string.Empty;
             DialogQuestKey = string.Empty;
             _confirmAbandonKey = string.Empty;
+            _confirmDeclineKey = string.Empty;
             _trackerRouteRoomName = string.Empty;
             _trackerRouteCommand = string.Empty;
             _trackerRouteHops = 0;
@@ -2037,18 +2030,41 @@ namespace TacSim.UI
         public bool AbandonDialogQuest()
         {
             var active = FindActiveByKey(DialogQuestKey);
-            if (active == null || string.IsNullOrEmpty(active.AbandonCmd)) return false;
-            if (_confirmAbandonKey != active.Key)
+            if (active != null && !string.IsNullOrEmpty(active.AbandonCmd))
             {
-                _confirmAbandonKey = active.Key;
-                RefreshQuestDialogUi();
-                return false;
+                if (_confirmAbandonKey != active.Key)
+                {
+                    _confirmAbandonKey = active.Key;
+                    _confirmDeclineKey = string.Empty;
+                    RefreshQuestDialogUi();
+                    return false;
+                }
+                _confirmAbandonKey = string.Empty;
+                OnCommandRequested?.Invoke(active.AbandonCmd);
+                CloseQuestDialog();
+                return true;
             }
-            _confirmAbandonKey = string.Empty;
-            OnCommandRequested?.Invoke(active.AbandonCmd);
-            CloseQuestDialog();
-            return true;
+            var offer = FindAvailableByKey(DialogQuestKey);
+            if (offer != null && !offer.AllowRestart && !string.IsNullOrEmpty(offer.DeclineCmd))
+            {
+                if (_confirmDeclineKey != offer.Key)
+                {
+                    _confirmDeclineKey = offer.Key;
+                    _confirmAbandonKey = string.Empty;
+                    RefreshQuestDialogUi();
+                    return false;
+                }
+                _confirmDeclineKey = string.Empty;
+                OnCommandRequested?.Invoke(offer.DeclineCmd);
+                CloseQuestDialog();
+                return true;
+            }
+            return false;
         }
+
+        public string DialogCycleLabelSnapshot => _dlgCycleLbl != null ? _dlgCycleLbl.text : string.Empty;
+        public string DialogAbandonLabelSnapshot => _dlgAbandonLbl != null ? _dlgAbandonLbl.text : string.Empty;
+        public bool IsDialogAbandonVisible => _dlgAbandonBtn != null && _dlgAbandonBtn.gameObject.activeSelf;
 
         private string _trackerRouteRoomName = string.Empty;
         private string _trackerRouteCommand = string.Empty;
@@ -2362,13 +2378,14 @@ namespace TacSim.UI
             }
         }
 
-        private void CycleNpcDialogQuest()
+        public void CycleNpcDialogQuest()
         {
             var keys = CollectNpcDialogKeys(DialogNpcId);
             if (keys.Count <= 1) return;
             int idx = keys.IndexOf(DialogQuestKey);
             DialogQuestKey = keys[(idx + 1) % keys.Count];
             _confirmAbandonKey = string.Empty;
+            _confirmDeclineKey = string.Empty;
             RefreshQuestDialogUi();
         }
 
@@ -2376,17 +2393,30 @@ namespace TacSim.UI
         {
             var keys = new List<string>();
             if (LatestPanel == null || string.IsNullOrEmpty(npcId)) return keys;
+            // 1. Ready turn-in / verifiable active quests first (`?` gold)
             for (int i = 0; i < LatestPanel.Active.Count; i++)
             {
                 var a = LatestPanel.Active[i];
-                if ((a.TurnInId == npcId || a.GiverId == npcId) && !keys.Contains(a.Key))
+                if ((a.TurnInId == npcId || a.GiverId == npcId) &&
+                    (a.CanFinishNow || a.ReadyToFinish || a.CanCheckNow) &&
+                    !keys.Contains(a.Key))
+                {
                     keys.Add(a.Key);
+                }
             }
+            // 2. Available quest offers next (`!` gold)
             for (int i = 0; i < LatestPanel.Available.Count; i++)
             {
                 var av = LatestPanel.Available[i];
                 if (av.GiverId == npcId && !keys.Contains(av.Key))
                     keys.Add(av.Key);
+            }
+            // 3. Remaining in-progress active quests (`?` silver)
+            for (int i = 0; i < LatestPanel.Active.Count; i++)
+            {
+                var a = LatestPanel.Active[i];
+                if ((a.TurnInId == npcId || a.GiverId == npcId) && !keys.Contains(a.Key))
+                    keys.Add(a.Key);
             }
             return keys;
         }
@@ -2610,7 +2640,11 @@ namespace TacSim.UI
             if (_dlgCycleBtn != null)
             {
                 _dlgCycleBtn.gameObject.SetActive(npcKeys.Count > 1);
-                if (_dlgCycleLbl != null) _dlgCycleLbl.text = $"OTHER QUEST ({npcKeys.Count})";
+                if (_dlgCycleLbl != null)
+                {
+                    int pos = Mathf.Max(0, npcKeys.IndexOf(DialogQuestKey)) + 1;
+                    _dlgCycleLbl.text = $"QUEST {pos}/{npcKeys.Count}";
+                }
             }
 
             if (offer != null)
@@ -2645,7 +2679,10 @@ namespace TacSim.UI
                 if (_dlgPrimaryBtn != null) _dlgPrimaryBtn.gameObject.SetActive(true);
                 if (_dlgPrimaryLbl != null) _dlgPrimaryLbl.text = "ACCEPT QUEST";
                 if (_dlgWayfinderBtn != null) _dlgWayfinderBtn.gameObject.SetActive(offer.Checkpoints.Count > 0 && !string.IsNullOrEmpty(offer.Checkpoints[0].RoomEntry));
-                if (_dlgAbandonBtn != null) _dlgAbandonBtn.gameObject.SetActive(false);
+                bool canDecline = !offer.AllowRestart && !string.IsNullOrEmpty(offer.DeclineCmd);
+                if (_dlgAbandonBtn != null) _dlgAbandonBtn.gameObject.SetActive(canDecline);
+                if (canDecline && _dlgAbandonLbl != null)
+                    _dlgAbandonLbl.text = _confirmDeclineKey == offer.Key ? "CONFIRM DECLINE" : "DECLINE";
                 return;
             }
 
@@ -2722,6 +2759,7 @@ namespace TacSim.UI
             if (count <= 1) return;
             _selectedQuestIndex = (_selectedQuestIndex + 1) % count;
             _confirmAbandonKey = string.Empty;
+            _confirmDeclineKey = string.Empty;
             RefreshJournalBody();
         }
 
@@ -2776,17 +2814,36 @@ namespace TacSim.UI
 
         private void TriggerJournalAbandon()
         {
-            if (LatestPanel == null || ActiveQuestSubTab != "active" || LatestPanel.Active.Count == 0) return;
-            var active = LatestPanel.Active[_selectedQuestIndex % LatestPanel.Active.Count];
-            if (string.IsNullOrEmpty(active.AbandonCmd)) return;
-            if (_confirmAbandonKey != active.Key)
+            if (LatestPanel == null) return;
+            if (ActiveQuestSubTab == "active" && LatestPanel.Active.Count > 0)
             {
-                _confirmAbandonKey = active.Key;
-                RefreshJournalBody();
+                var active = LatestPanel.Active[_selectedQuestIndex % LatestPanel.Active.Count];
+                if (string.IsNullOrEmpty(active.AbandonCmd)) return;
+                if (_confirmAbandonKey != active.Key)
+                {
+                    _confirmAbandonKey = active.Key;
+                    _confirmDeclineKey = string.Empty;
+                    RefreshJournalBody();
+                    return;
+                }
+                _confirmAbandonKey = string.Empty;
+                OnCommandRequested?.Invoke(active.AbandonCmd);
                 return;
             }
-            _confirmAbandonKey = string.Empty;
-            OnCommandRequested?.Invoke(active.AbandonCmd);
+            if (ActiveQuestSubTab == "available" && LatestPanel.Available.Count > 0)
+            {
+                var offer = LatestPanel.Available[_selectedQuestIndex % LatestPanel.Available.Count];
+                if (offer.AllowRestart || string.IsNullOrEmpty(offer.DeclineCmd)) return;
+                if (_confirmDeclineKey != offer.Key)
+                {
+                    _confirmDeclineKey = offer.Key;
+                    _confirmAbandonKey = string.Empty;
+                    RefreshJournalBody();
+                    return;
+                }
+                _confirmDeclineKey = string.Empty;
+                OnCommandRequested?.Invoke(offer.DeclineCmd);
+            }
         }
 
         private MushActiveQuest FindActiveByKey(string key)
@@ -2962,7 +3019,10 @@ namespace TacSim.UI
                         if (_qPrimaryBtn != null) _qPrimaryBtn.gameObject.SetActive(true);
                         if (_qPrimaryLbl != null) _qPrimaryLbl.text = "ACCEPT QUEST";
                         if (_qWayfinderBtn != null) _qWayfinderBtn.gameObject.SetActive(q.Checkpoints.Count > 0 && !string.IsNullOrEmpty(q.Checkpoints[0].RoomEntry));
-                        if (_qAbandonBtn != null) _qAbandonBtn.gameObject.SetActive(false);
+                        bool canDeclineOffer = !q.AllowRestart && !string.IsNullOrEmpty(q.DeclineCmd);
+                        if (_qAbandonBtn != null) _qAbandonBtn.gameObject.SetActive(canDeclineOffer);
+                        if (canDeclineOffer && _qAbandonLbl != null)
+                            _qAbandonLbl.text = _confirmDeclineKey == q.Key ? "CONFIRM DECLINE" : "DECLINE";
                     }
                 }
                 else
