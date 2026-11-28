@@ -190,12 +190,13 @@
     if (!questMining.mineDone) return { label: "Mine Ore (+tv/1 mine go)", command: "+tv/1 mine go" };
     return { label: "Recover Rig (+tv/1 recover go)", command: "+tv/1 recover go" };
   });
-  const questMiningStep = $derived.by((): number | null => {
+  const trackedQuestStep = $derived.by((): number | null => {
     const key = app.quests?.trackedQuest?.key;
     if (!key) return null;
     const idx = GUIDED_TOUR_KEYS.indexOf(key);
     return idx >= 0 ? idx + 1 : null;
   });
+  const questStepTag = $derived(trackedQuestStep !== null ? ` Step ${trackedQuestStep}/7` : "");
   const questMiningHoldQty = $derived.by((): number => {
     if (!questMining || !st?.cargoLines) return 0;
     const want = normalizeGoodSlug(questMining.targetOreSlug);
@@ -447,7 +448,7 @@
           {#if questTradeNeed}
             <div class="quest-banner" role="status" aria-label="active quest trade guidance">
               <div class="qb-text">
-                <span class="qtag">[QUEST]</span>
+                <span class="qtag">[QUEST]{questStepTag}</span>
                 <strong>
                   {questTradeNeed.wantsBuy && questTradeNeed.wantsSell
                     ? "BUY/SELL"
@@ -585,7 +586,7 @@
             {#if questTradeNeed}
               <div class="quest-banner" role="status" aria-label="active quest history guidance">
                 <div class="qb-text">
-                  <span class="qtag">[QUEST]</span>
+                  <span class="qtag">[QUEST]{questStepTag}</span>
                   <strong>24-WEEK TREND: {questTradeNeed.commoditySlug.replaceAll("_", " ").toUpperCase()}</strong>
                   <span class="muted">— {questTradeNeed.questTitle}</span>
                 </div>
@@ -690,7 +691,7 @@
             {#if questJobGuidance}
               <div class="quest-banner" role="status" aria-label="active quest jobs guidance">
                 <div class="qb-text">
-                  <span class="qtag">[QUEST]</span>
+                  <span class="qtag">[QUEST]{questStepTag}</span>
                   <strong>
                     {#if questJobGuidance.filterId === "survey"}
                       SURFACE SURVEY COMMISSIONS
@@ -862,7 +863,7 @@
             {#if questCoopAction?.kind === "refit"}
               <div class="quest-banner" role="status" aria-label="active quest refit guidance">
                 <div class="qb-text">
-                  <span class="qtag">[QUEST]</span>
+                  <span class="qtag">[QUEST]{questStepTag}</span>
                   <strong>{questCoopAction.label.toUpperCase()}</strong>
                   <span class="muted">— {questCoopAction.questTitle}</span>
                 </div>
@@ -1009,7 +1010,7 @@
             {#if questDestPort}
               <div class="quest-banner" role="status" aria-label="active quest destination">
                 <div class="qb-text">
-                  <span class="qtag">[QUEST]</span>
+                  <span class="qtag">[QUEST]{questStepTag}</span>
                   <strong>DESTINATION: {questDestPort.portLabel.toUpperCase()}</strong>
                   <span class="muted">— {questDestPort.questTitle}</span>
                 </div>
@@ -1061,7 +1062,7 @@
             {:else if questMining && !questMining.mineDone}
               <div class="quest-banner" role="status" aria-label="active quest surface expedition">
                 <div class="qb-text">
-                  <span class="qtag">[QUEST]</span>
+                  <span class="qtag">[QUEST]{questStepTag}</span>
                   <strong>SURFACE EXTRACTION: {questMining.targetOreSlug.replace("_", " ").toUpperCase()}</strong>
                   <span class="muted">— pick a Ceres landing site or survey Ground Chart</span>
                 </div>
@@ -1135,7 +1136,7 @@
         {#if questCoopAction}
           <div class="quest-banner" role="status" aria-label="active quest coop guidance">
             <div class="qb-text">
-              <span class="qtag">[QUEST]</span>
+              <span class="qtag">[QUEST]{questStepTag}</span>
               <strong>{questCoopAction.label.toUpperCase()}</strong>
               <span class="muted">— {questCoopAction.questTitle}</span>
             </div>
@@ -1268,17 +1269,29 @@
               }}
             >
               {#if npcTurnInUrgent}
+                {@const turnInKey =
+                  (npcQuestMarker?.marker === "turn_in" ? npcQuestMarker.questKey : "") ||
+                  npcActive?.key ||
+                  npcQuestMarker?.questKey ||
+                  ""}
+                {@const turnInStepIdx = turnInKey ? GUIDED_TOUR_KEYS.indexOf(turnInKey) : -1}
+                {@const turnInStepTag = turnInStepIdx >= 0 ? ` [Step ${turnInStepIdx + 1}/7]` : ""}
                 {@const turnInTitle =
                   (npcQuestMarker?.marker === "turn_in" ? npcQuestMarker.questTitle : "") ||
                   npcActive?.title ||
                   npcQuestMarker?.questTitle ||
                   ""}
-                [?] Turn In Quest{turnInTitle ? `: ${turnInTitle}` : ""}{extraNpcQuests > 0 ? ` (+${extraNpcQuests} more)` : ""}
+                [?] Turn In Quest{turnInTitle ? `: ${turnInTitle}` : ""}{extraNpcQuests > 0 ? ` (+${extraNpcQuests} more)` : ""}{turnInStepTag}
               {:else if npcQuestMarker?.marker === "available" || npcOffer}
+                {@const offerKey = npcQuestMarker?.questKey || npcOffer?.key || ""}
+                {@const offerStepIdx = offerKey ? GUIDED_TOUR_KEYS.indexOf(offerKey) : -1}
+                {@const offerStepTag = offerStepIdx >= 0 ? ` [Step ${offerStepIdx + 1}/7]` : ""}
                 {@const offerTitle = npcQuestMarker?.questTitle || npcOffer?.title || ""}
-                [!] Open Quest Dialog{offerTitle ? `: ${offerTitle}` : ""}{extraNpcQuests > 0 ? ` (+${extraNpcQuests} more)` : ""}
+                [!] Open Quest Dialog{offerTitle ? `: ${offerTitle}` : ""}{extraNpcQuests > 0 ? ` (+${extraNpcQuests} more)` : ""}{offerStepTag}
               {:else}
-                [?] Open Quest Dialog{npcActive?.title ? `: ${npcActive.title}` : ""}{extraNpcQuests > 0 ? ` (+${extraNpcQuests} more)` : ""}
+                {@const activeStepIdx = npcActive?.key ? GUIDED_TOUR_KEYS.indexOf(npcActive.key) : -1}
+                {@const activeStepTag = activeStepIdx >= 0 ? ` [Step ${activeStepIdx + 1}/7]` : ""}
+                [?] Open Quest Dialog{npcActive?.title ? `: ${npcActive.title}` : ""}{extraNpcQuests > 0 ? ` (+${extraNpcQuests} more)` : ""}{activeStepTag}
               {/if}
             </button>
             {#if npcActive?.canFinishNow && npcActive.finishCmd}
@@ -1386,7 +1399,7 @@
         {#if questMining}
           <div class="quest-banner" role="status" aria-label="active quest rig bay guidance">
             <div class="qb-text">
-              <span class="qtag">[QUEST]{#if questMiningStep !== null} Step {questMiningStep}/7{/if}</span>
+              <span class="qtag">[QUEST]{questStepTag}</span>
               <strong>{questMining.questTitle}</strong>
               <span class="muted">
                 {questMining.scanDone ? "[✓]" : "[ ]"} Scan · {questMining.soundDone ? "[✓]" : "[ ]"} Sound · {questMining.mineDone ? "[✓]" : "[ ]"} Mine {questMining.targetOreSlug}
