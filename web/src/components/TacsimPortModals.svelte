@@ -147,6 +147,14 @@
       ),
   );
   const questMining = $derived(app.quests?.surfaceMiningStatus ?? null);
+  const questArrivedAtDest = $derived(
+    Boolean(
+      questDestPort &&
+        currentVenueId &&
+        currentVenueId === questDestPort.portId &&
+        !(questMining && !questMining.mineDone),
+    ),
+  );
   const orderedDestinations = $derived.by(() => {
     const targetId =
       questDestPort?.portId ?? (questMining && !questMining.mineDone ? "commons" : null);
@@ -1220,6 +1228,89 @@
         {:else}
           <div class="sailing-body">
             {#if questDestPort}
+              {#if questArrivedAtDest}
+                <div class="quest-banner" role="status" aria-label="active quest destination">
+                  <div class="qb-text">
+                    <span class="qtag">[QUEST ARRIVED]{questStepTag}</span>
+                    {#if app.tacsim.isAboardShip}
+                      <strong>DOCKED AT {questDestPort.portLabel.toUpperCase()}</strong>
+                      <span class="muted">— Step ashore (+ship/leave) for {questDestPort.questTitle}</span>
+                    {:else if questReadyTurnIn}
+                      <strong>AT {questDestPort.portLabel.toUpperCase()}</strong>
+                      <span class="muted">
+                        {#if questReadyTurnIn.canFinishNow}
+                          — Ready to turn in to {questReadyTurnIn.turnInName} here
+                        {:else}
+                          — Return to {questReadyTurnIn.turnInName}{questReadyTurnIn.nextRoomName
+                            ? ` (${questReadyTurnIn.nextRoomName})`
+                            : ""}
+                        {/if}
+                      </span>
+                    {:else if questTradeNeed}
+                      <strong>AT {questDestPort.portLabel.toUpperCase()}</strong>
+                      <span class="muted">
+                        — {questTradeNeed.wantsSell ? "Sell" : "Buy"} {questTradeNeed.targetQuantity} × {questTradeNeed.commoditySlug.replaceAll("_", " ").toUpperCase()} at Exchange
+                      </span>
+                    {:else}
+                      <strong>AT {questDestPort.portLabel.toUpperCase()}</strong>
+                      <span class="muted">— {questDestPort.questTitle}</span>
+                    {/if}
+                  </div>
+                  <div class="qb-text">
+                    {#if app.tacsim.isAboardShip}
+                      <button
+                        type="button"
+                        class="buybtn"
+                        onclick={() => {
+                          onCmd("+ship/leave");
+                          app.tacsim.closeModal();
+                        }}
+                      >
+                        Step Ashore (+ship/leave)
+                      </button>
+                    {:else if questReadyTurnIn}
+                      {#if questReadyTurnIn.canFinishNow}
+                        <button
+                          type="button"
+                          class="buybtn"
+                          onclick={() => {
+                            onCmd(questReadyTurnIn.finishCmd);
+                            app.tacsim.closeModal();
+                          }}
+                        >
+                          Turn In Now (?)
+                        </button>
+                      {/if}
+                      <button
+                        type="button"
+                        class="qbtn-gold"
+                        onclick={() => {
+                          app.tacsim.closeModal();
+                          app.quests.openQuestDialog(questReadyTurnIn.key);
+                        }}
+                      >
+                        Open Quest Dialog
+                      </button>
+                    {:else if questTradeNeed}
+                      <button
+                        type="button"
+                        class="buybtn"
+                        onclick={() => (app.tacsim.activeModal = "trade")}
+                      >
+                        Open Exchange
+                      </button>
+                    {:else}
+                      <button
+                        type="button"
+                        class="qbtn-gold"
+                        onclick={() => app.tacsim.closeModal()}
+                      >
+                        Close &amp; Walk
+                      </button>
+                    {/if}
+                  </div>
+                </div>
+              {:else}
               <div class="quest-banner" role="status" aria-label="active quest destination">
                 <div class="qb-text">
                   <span class="qtag">[QUEST]{questStepTag}</span>
@@ -1270,6 +1361,7 @@
                     </button>
                   {/if}
                 </div>
+              {/if}
               {/if}
             {:else if questMining && !questMining.mineDone}
               <div class="quest-banner" role="status" aria-label="active quest surface expedition">

@@ -1336,4 +1336,64 @@ describe("TacsimPortModals Dray-P Vehicle Bay and Co-op Refit quest guidance", (
     expect(banner2.textContent).not.toContain("Not listed at this desk");
     expect(screen.queryByRole("button", { name: /Walk → Exchange Hall/i })).toBeNull();
   });
+
+  it("shows [QUEST ARRIVED] Step Ashore & Open Exchange handoff in Sailing modal once docked at destination port", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[2],
+          title: "Metals Down the Corridor",
+          next_room_entry: "room.p07_receiving",
+          next_room_name: "Receiving Counter",
+          checkpoints: [
+            {
+              id: "deliver_metals",
+              title: "Buy 5 tonnes of metals at Ceres and deliver them to Stickney Yards",
+              instructions: "Sell 5t metals at Stickney Yards.",
+              room_entry: "room.p07_receiving",
+              room_name: "Receiving Counter",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    const onCmd = vi.fn();
+    const aboardApp = makeApp(quests, "sailing", {
+      cargoKg: 5000,
+      cargoMaxKg: 100_000,
+      cargoL: 5000,
+      cargoMaxL: 120_000,
+      propellantKg: 8000,
+      propellantMaxKg: 80_000,
+      provisionsCrewDays: 6,
+      provisionsMaxCrewDays: 120,
+      cargoLines: [{ good: "tacsim:metals", label: "Metals", qty: 5, unit: "t", massKg: 5000 }],
+    });
+    aboardApp.tacsim.isAboardShip = true;
+    aboardApp.tacsim.trade.venueLabel = "Stickney Yards";
+
+    const r1 = render(TacsimPortModals, { props: { app: aboardApp, onCmd } });
+    const arrivedBanner = screen.getByRole("status", { name: "active quest destination" });
+    expect(arrivedBanner.textContent).toContain("[QUEST ARRIVED] Step 3/7");
+    expect(arrivedBanner.textContent).toContain("DOCKED AT STICKNEY YARDS");
+    expect(screen.queryByLabelText("sailing pre-flight readiness")).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: /Step Ashore \(\+ship\/leave\)/i }));
+    expect(onCmd).toHaveBeenCalledWith("+ship/leave");
+    expect(aboardApp.tacsim.closeModal).toHaveBeenCalled();
+    r1.unmount();
+
+    // Once ashore at Stickney Yards -> prompts Open Exchange to sell metals
+    aboardApp.tacsim.isAboardShip = false;
+    render(TacsimPortModals, { props: { app: aboardApp, onCmd: vi.fn() } });
+    const ashoreBanner = screen.getByRole("status", { name: "active quest destination" });
+    expect(ashoreBanner.textContent).toContain("AT STICKNEY YARDS");
+    expect(ashoreBanner.textContent).toContain("Sell 5 × METALS at Exchange");
+    await fireEvent.click(screen.getByRole("button", { name: /Open Exchange/i }));
+    expect(aboardApp.tacsim.activeModal).toBe("trade");
+  });
 });
