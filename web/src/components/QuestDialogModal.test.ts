@@ -587,4 +587,86 @@ describe("QuestDialogModal guided corridor tour roadmap", () => {
     expect(onCmd).toHaveBeenCalledWith("+market/jobs");
     expect(quests.logOpen).toBe(false);
   });
+
+  it("displays Step 6 live ore hold readiness and Step 7 cross-port pre-flight checks in Quest Dialog and Log", () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#19",
+      room_name: "Exchange Hall",
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[5],
+          title: "Scan, Sound, and Mine a Landing Site",
+          category: "guided",
+          giver_id: "#31",
+          giver_name: "Rosalind Qureshi-Mbeki",
+          turn_in_id: "#31",
+          turn_in_name: "Rosalind Qureshi-Mbeki",
+          next_room_entry: "room.c07_exchange",
+          checkpoints: [
+            { id: "scan_landing_site", title: "Scan site", instructions: "+tv/1 scan go", checked: true, live_ready: true },
+            { id: "sound_mineral_pocket", title: "Sound pocket", instructions: "+tv/1 sound go", checked: true, live_ready: true },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", instructions: "+tv/1 mine go", checked: false, live_ready: false },
+          ],
+        },
+        {
+          key: GUIDED_TOUR_KEYS[6],
+          title: "Deliver Your Mined Ore to Market",
+          category: "guided",
+          giver_id: "#31",
+          giver_name: "Rosalind Qureshi-Mbeki",
+          turn_in_id: "#44",
+          turn_in_name: "Wren Castillo-Haugen",
+          next_room_entry: "room.p11_service",
+          checkpoints: [
+            {
+              id: "sell_carbon_ore",
+              title: "Sell 1t carbon_ore at Stickney Yards",
+              instructions: "Fly to Stickney Yards (+ship/plan stickney) and +market/sell carbon_ore.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+      available: [],
+      completed: [],
+    });
+
+    const app = {
+      quests,
+      tacsim: {
+        trade: {
+          hullId: "#99",
+          stowage: {
+            cargoKg: 2000,
+            propellantKg: 12_000,
+            provisionsCrewDays: 0,
+            cargoLines: [{ good: "tacsim:carbon_ore", label: "Carbon Ore", qty: 2 }],
+          },
+        },
+      },
+      focusComposer: vi.fn(),
+    } as unknown as GameApp;
+
+    // 1. Quest Log Active tab shows Step 6 [ORE HOLD READY] and Step 7 [CHECK BEFORE UNDOCK]
+    quests.openLog("active");
+    const logView = render(QuestDialogModal, { app, onCmd: vi.fn() });
+    expect(logView.container.textContent).toContain("[ORE HOLD READY]");
+    expect(logView.container.textContent).toContain("CARBON ORE: 2/1 t");
+    const preflightLog = screen.getByLabelText("quest sailing preflight");
+    expect(preflightLog.textContent).toContain("[CHECK BEFORE UNDOCK]");
+    expect(preflightLog.textContent).toContain("✓ Propellant 12t");
+    expect(preflightLog.textContent).toContain("✗ Provisions 0d");
+    expect(preflightLog.textContent).toContain("→ Stickney Yards");
+    logView.unmount();
+
+    // 2. Quest Dialog for Step 7 also shows live pre-flight fuel & stores strip
+    quests.openQuestDialog(GUIDED_TOUR_KEYS[6]!);
+    render(QuestDialogModal, { app, onCmd: vi.fn() });
+    const preflightDlg = screen.getByLabelText("quest sailing preflight");
+    expect(preflightDlg.textContent).toContain("[CHECK BEFORE UNDOCK]");
+    expect(preflightDlg.textContent).toContain("✗ Provisions 0d");
+  });
 });

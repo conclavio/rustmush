@@ -264,7 +264,37 @@ export function formatQuestHoldReadinessSummary(
   }
 
   const needs = extractActiveTradeNeeds([quest], quest.key);
-  if (needs.length === 0) return null;
+  if (needs.length === 0) {
+    const mining = extractActiveSurfaceMiningStatus([quest], quest.key);
+    if (!mining) return null;
+    const want = normalizeGoodSlug(mining.targetOreSlug);
+    let currentQty = 0;
+    for (const line of stowage.cargoLines) {
+      if (normalizeGoodSlug(line.good) === want || normalizeGoodSlug(line.label) === want) {
+        currentQty += Math.max(0, Math.floor(line.qty));
+      }
+    }
+    const targetQty = 1;
+    const ready = currentQty >= targetQty;
+    const label = mining.targetOreSlug.replaceAll("_", " ").toUpperCase();
+    const primary: QuestStowageReadiness = {
+      commoditySlug: mining.targetOreSlug,
+      label,
+      currentQty,
+      targetQty,
+      unit: "t",
+      ready,
+      gaugeKind: "cargo",
+    };
+    return {
+      kind: "trade",
+      tag: ready ? "[ORE HOLD READY]" : "[ORE HOLD]",
+      text: `${ready ? "✓" : "○"} ${label}: ${currentQty}/${targetQty} t`,
+      ready,
+      primary,
+      secondary: [],
+    };
+  }
   const items: QuestStowageReadiness[] = [];
   for (const need of needs) {
     const item = evaluateQuestStowageReadiness(need, stowage);
