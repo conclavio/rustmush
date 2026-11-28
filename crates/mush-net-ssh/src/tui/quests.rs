@@ -1810,16 +1810,12 @@ impl QuestsSnapshot {
     }
 
     /// Order room NPC quest markers by action urgency:
-    /// gold turn-in (`?`) -> gold available offer (`!`) -> silver in-progress (`?`).
+    /// gold turn-in (`?`) -> gold available offer (`!`) -> silver in-progress (`?`),
+    /// tie-breaking Guided Captain's Tour steps ahead of optional side markers at equal urgency.
     #[must_use]
     pub fn prioritized_room_markers(&self) -> Vec<&QuestMarker> {
-        let rank = |m: &QuestMarker| match m.marker.as_str() {
-            "turn_in" => 0_u8,
-            "available" => 1_u8,
-            _ => 2_u8,
-        };
         let mut out: Vec<&QuestMarker> = self.room_markers.iter().collect();
-        out.sort_by_key(|m| rank(m));
+        out.sort_by_key(|m| marker_sort_key(m));
         out
     }
 
@@ -1837,45 +1833,58 @@ impl QuestsSnapshot {
     }
 
     /// Concise persistent status-bar badge when a quest can be turned in or accepted
-    /// right here in the player's current room (`[?] Turn-In (F11)` / `[!] Offer (F11)`).
+    /// right here in the player's current room (`[?] Turn-In [Step n/7] (F11)` / `[!] Offer [Step n/7] (F11)`).
     #[must_use]
     pub fn status_bar_quest_badge(&self) -> Option<(String, Color)> {
         let prioritized = self.prioritized_room_markers();
         if let Some(m) = prioritized.iter().find(|m| m.marker == "turn_in") {
+            let step = guided_step_badge(&m.quest_key);
             let text = if m.npc_name.is_empty() {
-                "[?] Turn-In (F11)".to_string()
+                format!("[?] Turn-In{step} (F11)")
             } else {
-                format!("[?] {}: Turn-In (F11)", m.npc_name)
+                format!("[?] {}: Turn-In{step} (F11)", m.npc_name)
             };
             return Some((text, Color::Green));
         }
-        if let Some(q) = self.active.iter().find(|q| q.can_finish_now) {
+        if let Some(q) = self
+            .active
+            .iter()
+            .find(|q| q.can_finish_now && is_guided_quest(&q.key, &q.category))
+            .or_else(|| self.active.iter().find(|q| q.can_finish_now))
+        {
+            let step = guided_step_badge(&q.key);
             let text = if q.turn_in_name.is_empty() {
-                "[?] Turn-In (F11)".to_string()
+                format!("[?] Turn-In{step} (F11)")
             } else {
-                format!("[?] {}: Turn-In (F11)", q.turn_in_name)
+                format!("[?] {}: Turn-In{step} (F11)", q.turn_in_name)
             };
             return Some((text, Color::Green));
         }
         if self.available.len() > 1 {
+            let step = self
+                .prioritized_available_offer()
+                .map(|offer| guided_step_badge(&offer.key))
+                .unwrap_or_default();
             return Some((
-                format!("[!] {} offers (F11)", self.available.len()),
+                format!("[!] {} offers{step} (F11)", self.available.len()),
                 Color::Yellow,
             ));
         }
         if let Some(m) = prioritized.iter().find(|m| m.marker == "available") {
+            let step = guided_step_badge(&m.quest_key);
             let text = if m.npc_name.is_empty() {
-                "[!] Offer (F11)".to_string()
+                format!("[!] Offer{step} (F11)")
             } else {
-                format!("[!] {}: Offer (F11)", m.npc_name)
+                format!("[!] {}: Offer{step} (F11)", m.npc_name)
             };
             return Some((text, Color::Yellow));
         }
         if let Some(offer) = self.prioritized_available_offer() {
+            let step = guided_step_badge(&offer.key);
             let text = if offer.giver_name.is_empty() {
-                "[!] Offer (F11)".to_string()
+                format!("[!] Offer{step} (F11)")
             } else {
-                format!("[!] {}: Offer (F11)", offer.giver_name)
+                format!("[!] {}: Offer{step} (F11)", offer.giver_name)
             };
             return Some((text, Color::Yellow));
         }
@@ -3120,6 +3129,27 @@ pub(crate) fn guided_step_badge(key: &str) -> String {
 
 pub(crate) fn is_guided_quest(key: &str, category: &str) -> bool {
     category.eq_ignore_ascii_case("guided") || GUIDED_TOUR_KEYS.contains(&key)
+}
+
+/// Composite ordering key for room NPC quest markers:
+/// `(urgency_rank, guided_rank, guided_step_index)` so Guided Captain's Tour markers
+/// win equal-urgency tie-breaks ahead of optional side quests.
+pub(crate) fn marker_sort_key(m: &QuestMarker) -> (u8, u8, usize) {
+    let urgency = match m.marker.as_str() {
+        "turn_in" => 0_u8,
+        "available" => 1_u8,
+        _ => 2_u8,
+    };
+    let guided = if is_guided_quest(&m.quest_key, &m.category) {
+        0_u8
+    } else {
+        1_u8
+    };
+    let step_idx = GUIDED_TOUR_KEYS
+        .iter()
+        .position(|&k| k == m.quest_key)
+        .unwrap_or(usize::MAX);
+    (urgency, guided, step_idx)
 }
 
 /// Paint the centered Quest Dialog & Journal overlay with live ship stowage & refit hold telemetry.
@@ -5089,7 +5119,7 @@ mod tests {
         let _ = milestones.observe(&s1_offer);
         assert_eq!(
             s1_offer.status_bar_quest_badge().map(|(b, _)| b).as_deref(),
-            Some("[!] Maren Halvorsen: Offer (F11)")
+            Some("[!] Maren Halvorsen: Offer [Step 1/7] (F11)")
         );
 
         let s1_active = parse_frame(&json!({
@@ -6804,5 +6834,67 @@ mod tests {
             st.handle_key_full(Key::Char('p'), &snap, Some("commons"), Some(&stowed_ore)),
             QuestOverlayAction::Prefill("+ship/plan ceres".into())
         );
+    }
+
+    #[test]
+    fn guided_markers_win_equal_urgency_tiebreak_and_show_step_badge_in_status_bar() {
+        let snap = parse_frame(&json!({
+            "schema": 1,
+            "room_markers": [
+                {
+                    "npc_id": "#88",
+                    "npc_name": "Dockside Broker",
+                    "marker": "available",
+                    "quest_key": "side.errand",
+                    "category": "optional"
+                },
+                {
+                    "npc_id": "#42",
+                    "npc_name": "Maren Halvorsen",
+                    "marker": "available",
+                    "quest_key": GUIDED_TOUR_KEYS[0],
+                    "category": "guided"
+                }
+            ],
+            "available": [
+                {
+                    "key": GUIDED_TOUR_KEYS[0],
+                    "title": "First Papers at the Registry",
+                    "giver_name": "Maren Halvorsen",
+                    "category": "guided"
+                }
+            ]
+        }));
+        let ordered = snap.prioritized_room_markers();
+        assert_eq!(ordered[0].npc_name, "Maren Halvorsen");
+        assert_eq!(ordered[1].npc_name, "Dockside Broker");
+        let (badge, color) = snap.status_bar_quest_badge().expect("guided offer badge");
+        assert_eq!(badge, "[!] Maren Halvorsen: Offer [Step 1/7] (F11)");
+        assert_eq!(color, Color::Yellow);
+
+        let turn_in_snap = parse_frame(&json!({
+            "schema": 1,
+            "room_markers": [
+                {
+                    "npc_id": "#90",
+                    "npc_name": "Side Clerk",
+                    "marker": "turn_in",
+                    "quest_key": "side.turnin",
+                    "category": "optional"
+                },
+                {
+                    "npc_id": "#18",
+                    "npc_name": "Ilse Oduya-Brandt",
+                    "marker": "turn_in",
+                    "quest_key": GUIDED_TOUR_KEYS[1],
+                    "category": "guided"
+                }
+            ]
+        }));
+        let (ti_badge, ti_color) = turn_in_snap
+            .status_bar_quest_badge()
+            .expect("guided turn-in badge");
+        assert_eq!(ti_badge, "[?] Ilse Oduya-Brandt: Turn-In [Step 2/7] (F11)");
+        assert_eq!(ti_color, Color::Green);
     }
 }

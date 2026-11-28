@@ -1071,8 +1071,8 @@ impl PortWalkState {
         }
     }
 
-    /// Resolve the highest-priority room quest marker (`turn_in` -> `available` -> `in_progress`)
-    /// matching the currently selected NPC in the Talk drawer.
+    /// Resolve the highest-priority room quest marker (`turn_in` -> `available` -> `in_progress`,
+    /// guided tour preferred at equal urgency) matching the currently selected NPC in the Talk drawer.
     #[must_use]
     pub fn selected_npc_quest_marker(&self) -> Option<&QuestMarker> {
         let sel = self.selected_npc_name.trim();
@@ -1081,7 +1081,7 @@ impl PortWalkState {
                 .quest_markers
                 .iter()
                 .filter(|m| m.npc_name.trim().eq_ignore_ascii_case(sel))
-                .min_by_key(|m| Self::quest_marker_priority(m))
+                .min_by_key(|m| super::quests::marker_sort_key(m))
             {
                 return Some(m);
             }
@@ -1093,7 +1093,7 @@ impl PortWalkState {
                     let n = m.npc_name.trim().to_ascii_lowercase();
                     !n.is_empty() && (n.contains(&sel_low) || sel_low.contains(&n))
                 })
-                .min_by_key(|m| Self::quest_marker_priority(m));
+                .min_by_key(|m| super::quests::marker_sort_key(m));
         }
         if self.quest_markers.len() == 1 {
             return self.quest_markers.first();
@@ -1838,7 +1838,7 @@ impl PortWalkState {
                 (!npc_id.is_empty() && m.npc_id == npc_id)
                     || (!npc_name.is_empty() && m.npc_name.eq_ignore_ascii_case(npc_name))
             })
-            .min_by_key(|m| Self::quest_marker_priority(m))
+            .min_by_key(|m| super::quests::marker_sort_key(m))
     }
 
     fn count_npc_quest_markers(&self, npc_id: &str, npc_name: &str) -> usize {
@@ -1868,10 +1868,11 @@ impl PortWalkState {
             } else {
                 String::new()
             };
+            let step = super::quests::guided_step_badge(&m.quest_key);
             return match m.marker.as_str() {
-                "turn_in" => format!("[?] {name} — Turn In Quest{more}"),
-                "available" => format!("[!] {name} — Quest Available{more}"),
-                _ => format!("[?] Talk to {name}{more}"),
+                "turn_in" => format!("[?] {name} — Turn In Quest{step}{more}"),
+                "available" => format!("[!] {name} — Quest Available{step}{more}"),
+                _ => format!("[?] Talk to {name}{step}{more}"),
             };
         }
         if npc {
@@ -9724,7 +9725,7 @@ mod tests {
         st.focus_idx = maren_idx;
         assert_eq!(
             st.focused_label(),
-            Some("[!] Maren Halvorsen — Quest Available")
+            Some("[!] Maren Halvorsen — Quest Available [Step 1/7]")
         );
 
         let now = Instant::now();
@@ -9758,7 +9759,10 @@ mod tests {
             .expect("Maren");
         assert_eq!(maren2["quest_marker"], "?");
         assert_eq!(maren2["quest_gold"], false);
-        assert_eq!(st.focused_label(), Some("[?] Talk to Maren Halvorsen"));
+        assert_eq!(
+            st.focused_label(),
+            Some("[?] Talk to Maren Halvorsen [Step 1/7]")
+        );
 
         let out2 = st.handle_key(Key::Char('e'), false, false, &[], now);
         assert!(out2.open_quest_for_npc.is_none());
@@ -10997,7 +11001,7 @@ mod tests {
         assert_eq!(best.marker, "turn_in");
         assert_eq!(
             st.format_npc_interact_label("#18", "Ilse Oduya-Brandt", true),
-            "[?] Ilse Oduya-Brandt — Turn In Quest (+2 more)"
+            "[?] Ilse Oduya-Brandt — Turn In Quest [Step 1/7] (+2 more)"
         );
 
         st.selected_npc_name = "Ilse Oduya-Brandt".into();
@@ -12048,6 +12052,47 @@ mod tests {
         assert!(
             top_ready.contains("[QUEST READY] +ship/leave -> Turn in to Rosalind Qureshi-Mbeki"),
             "{top_ready}"
+        );
+    }
+
+    #[test]
+    fn npc_interact_label_tie_breaks_guided_marker_over_optional_and_displays_step_badge() {
+        let mut st = PortWalkState::new();
+        st.observe_quest_markers(&[
+            QuestMarker {
+                npc_id: "#42".into(),
+                npc_name: "Maren Halvorsen".into(),
+                marker: "available".into(),
+                symbol: "!".into(),
+                quest_key: "side.extra_shift".into(),
+                quest_title: "Optional Dockside Shift".into(),
+                category: "optional".into(),
+            },
+            QuestMarker {
+                npc_id: "#42".into(),
+                npc_name: "Maren Halvorsen".into(),
+                marker: "available".into(),
+                symbol: "!".into(),
+                quest_key: "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll".into(),
+                quest_title: "First Papers at the Registry".into(),
+                category: "guided".into(),
+            },
+        ]);
+        let best = st
+            .find_quest_marker("#42", "Maren Halvorsen")
+            .expect("guided marker wins equal urgency");
+        assert_eq!(
+            best.quest_key,
+            "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"
+        );
+        assert_eq!(
+            st.format_npc_interact_label("#42", "Maren Halvorsen", true),
+            "[!] Maren Halvorsen — Quest Available [Step 1/7] (+1 more)"
+        );
+        st.selected_npc_name = "Maren Halvorsen".into();
+        assert_eq!(
+            st.selected_npc_quest_marker().map(|m| m.quest_key.as_str()),
+            Some("tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll")
         );
     }
 }

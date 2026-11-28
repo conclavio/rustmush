@@ -15241,7 +15241,7 @@ mod tests {
         });
         let offer_txt = dump(&painted(&mut app, 180, 24));
         assert!(
-            offer_txt.contains("[!] Maren Halvorsen: Offer (F11)"),
+            offer_txt.contains("[!] Maren Halvorsen: Offer [Step 1/7] (F11)"),
             "{offer_txt}"
         );
 
@@ -15268,7 +15268,7 @@ mod tests {
         });
         let turnin_txt = dump(&painted(&mut app, 180, 24));
         assert!(
-            turnin_txt.contains("[?] Ilse Oduya-Brandt: Turn-In (F11)"),
+            turnin_txt.contains("[?] Ilse Oduya-Brandt: Turn-In [Step 1/7] (F11)"),
             "{turnin_txt}"
         );
     }
