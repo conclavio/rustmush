@@ -18789,5 +18789,94 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestJournal_GuardsStep6PreflightAndHidesStowedRecoverPrep()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestJournalStep6PrepGuardTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.ShowLoginOverlay(false);
+                var tradeState = new TacSimTradeAndShipState();
+                hud.BindTradeState(tradeState);
+
+                // 1. Step 6 post-mine with 0t ore stowed -> suppresses premature [PRE-FLIGHT OK], keeps [RECOVER RIG FIRST] & Prep: +tv/1 recover go
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""commons"", ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 0, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 10000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": []
+                        }
+                    }
+                }"));
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""next_room_entry"": ""room.c07_exchange"",
+                        ""next_step"": ""Recover rig and return to Ceres Exchange"",
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Scan"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""sound_mineral_pocket"", ""title"": ""Sound"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""return_exchange"", ""title"": ""Return to Ceres Freeport"", ""instructions"": ""+ship/plan ceres"", ""room_entry"": ""room.c07_exchange"", ""checked"": false, ""live_ready"": false }
+                        ]
+                    }],
+                    ""available"": [], ""completed"": []
+                }")));
+
+                StringAssert.Contains("[RECOVER RIG FIRST]", hud.QuestJournal.TrackerDetailSnapshot);
+                StringAssert.DoesNotContain("[PRE-FLIGHT OK]", hud.QuestJournal.TrackerDetailSnapshot);
+                StringAssert.Contains("Recover: +tv/1 recover go", hud.QuestJournal.TrackerDetailSnapshot);
+
+                hud.QuestJournal.SetOpen(true);
+                StringAssert.Contains("[RECOVER RIG FIRST]", hud.QuestJournal.JournalBodySnapshot);
+                StringAssert.DoesNotContain("[PRE-FLIGHT OK]", hud.QuestJournal.JournalBodySnapshot);
+                StringAssert.Contains("PROSPECTING:", hud.QuestJournal.JournalBodySnapshot);
+
+                Assert.IsTrue(hud.QuestJournal.OpenQuestDialogByKey("tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"));
+                StringAssert.Contains("[RECOVER RIG FIRST]", hud.QuestJournal.DialogBodySnapshot);
+                StringAssert.DoesNotContain("[PRE-FLIGHT OK]", hud.QuestJournal.DialogBodySnapshot);
+                StringAssert.Contains("PROSPECTING:", hud.QuestJournal.DialogBodySnapshot);
+
+                // 2. Rig recovered (1t carbon_ore stowed) -> [ORE HOLD READY] + [PRE-FLIGHT OK] -> Ceres Freeport, hides redundant Prep/PROSPECTING
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""commons"", ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 1000, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 10000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:carbon_ore"", ""label"": ""Carbon Ore"", ""qty"": 1 }]
+                        }
+                    }
+                }"));
+                StringAssert.Contains("[ORE HOLD READY]", hud.QuestJournal.TrackerDetailSnapshot);
+                StringAssert.Contains("[PRE-FLIGHT OK]", hud.QuestJournal.TrackerDetailSnapshot);
+                StringAssert.Contains("Ceres Freeport", hud.QuestJournal.TrackerDetailSnapshot);
+                StringAssert.DoesNotContain("Recover: +tv/1 recover go", hud.QuestJournal.TrackerDetailSnapshot);
+
+                StringAssert.Contains("[ORE HOLD READY]", hud.QuestJournal.DialogBodySnapshot);
+                StringAssert.Contains("[PRE-FLIGHT OK]", hud.QuestJournal.DialogBodySnapshot);
+                StringAssert.DoesNotContain("PROSPECTING:", hud.QuestJournal.DialogBodySnapshot);
+
+                hud.QuestJournal.SetOpen(true);
+                StringAssert.Contains("[ORE HOLD READY]", hud.QuestJournal.JournalBodySnapshot);
+                StringAssert.Contains("[PRE-FLIGHT OK]", hud.QuestJournal.JournalBodySnapshot);
+                StringAssert.DoesNotContain("PROSPECTING:", hud.QuestJournal.JournalBodySnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
