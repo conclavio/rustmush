@@ -96,6 +96,7 @@ namespace TacSim.UI
         public CharacterSheetTab ActiveTab { get; private set; } = CharacterSheetTab.Pilot;
         public PlayerAvatarPreset SelectedAvatar => _selectedAvatar;
         public string PilotSummarySnapshot => _pilotSummaryText != null ? _pilotSummaryText.text : string.Empty;
+        public string ShipOrdersSnapshot => _shipOrdersText != null ? _shipOrdersText.text : string.Empty;
         public string SpaceMountsSnapshot => _spaceMountsText != null ? _spaceMountsText.text : string.Empty;
         public string ArenaRigDossierSnapshot => _arenaRigText != null ? _arenaRigText.text : string.Empty;
         public string RulesetSheetSnapshot => _rulesetSheetText != null ? _rulesetSheetText.text : string.Empty;
@@ -433,6 +434,16 @@ namespace TacSim.UI
             return true;
         }
 
+        public void BindTradeState(TacSimTradeAndShipState trade)
+        {
+            _trade = trade;
+            if (IsOpen)
+            {
+                RefreshPilotTab();
+                RefreshShipCargoTab();
+            }
+        }
+
         public void BindSources(
             TacSimTradeAndShipState trade,
             SpaceFlightController space,
@@ -459,7 +470,11 @@ namespace TacSim.UI
 
         private void HandleQuestsUpdated()
         {
-            if (IsOpen) RefreshPilotTab();
+            if (IsOpen)
+            {
+                RefreshPilotTab();
+                RefreshShipCargoTab();
+            }
         }
 
         private void OnDestroy()
@@ -623,7 +638,9 @@ namespace TacSim.UI
                         qPanel.Completed.Count);
                     if (_questJournal.TryGetQuestHoldReadinessSummary(activeQuest, out string holdSummary, out bool holdReady))
                     {
-                        string holdHex = holdReady ? "#55EE99" : "#FFDD44";
+                        string holdHex = holdReady
+                            ? "#55EE99"
+                            : (holdSummary.StartsWith("[RECOVER RIG FIRST]", StringComparison.Ordinal) ? "#FF7766" : "#FFDD44");
                         sb.AppendFormat("<color={0}><b>{1}</b></color>\n", holdHex, MushProtocol.EscapeUnityRichText(holdSummary));
                     }
                     if (_questJournal.TryGetQuestPreflightReadinessSummary(activeQuest, out string pfSummary, out bool pfReady))
@@ -695,6 +712,15 @@ namespace TacSim.UI
                         MushProtocol.EscapeUnityRichText(nextOffer.GiverLabel),
                         MushProtocol.EscapeUnityRichText(nextOffer.GiverRoomName),
                         qPanel.Completed.Count);
+                    string curPort = _trade != null && !string.IsNullOrEmpty(_trade.AboardDockedPortHint)
+                        ? _trade.AboardDockedPortHint
+                        : (_trade != null && !string.IsNullOrEmpty(_trade.ActiveVenue) ? _trade.ActiveVenue : _locationName);
+                    if (_questJournal.TryGetNextGuidedOfferDestination(curPort, out var nextDest))
+                    {
+                        sb.AppendFormat("<color=#77DDFF><b>SAIL TO NEXT GIVER:</b></color> +ship/plan {0} ({1})  <color=#88AAC8>[J]</color>\n",
+                            MushProtocol.EscapeUnityRichText(nextDest.PortId),
+                            MushProtocol.EscapeUnityRichText(nextDest.PortLabel));
+                    }
                 }
                 else if (_questJournal.TryGetGuidedTourProgress(out int tourDone, out int tourTotal, out _, out bool allTourDone) && allTourDone)
                 {
@@ -764,7 +790,51 @@ namespace TacSim.UI
 
             if (_shipOrdersText != null)
             {
-                var sb = new StringBuilder(384);
+                var sb = new StringBuilder(512);
+                if (_questJournal != null)
+                {
+                    var activeQ = _questJournal.GetTrackedActiveQuest();
+                    if (activeQ != null)
+                    {
+                        bool hasHold = _questJournal.TryGetQuestHoldReadinessSummary(activeQ, out string qHold, out bool qHoldReady);
+                        bool hasPf = _questJournal.TryGetQuestPreflightReadinessSummary(activeQ, out string qPf, out bool qPfReady);
+                        if (hasHold || hasPf)
+                        {
+                            int stepNo = TacSimQuestJournal.GuidedStepNumber(activeQ.Key);
+                            string stepTag = stepNo > 0 ? $" [Step {stepNo}/7]" : string.Empty;
+                            sb.AppendFormat("<color=#FFDD44><b>QUEST LOGISTICS{0}:</b></color> <b>{1}</b>\n",
+                                stepTag,
+                                MushProtocol.EscapeUnityRichText(activeQ.Title));
+                            if (hasHold)
+                            {
+                                string holdHex = qHoldReady
+                                    ? "#55EE99"
+                                    : (qHold.StartsWith("[RECOVER RIG FIRST]", StringComparison.Ordinal) ? "#FF7766" : "#FFDD44");
+                                sb.AppendFormat("• <color={0}><b>{1}</b></color>\n", holdHex, MushProtocol.EscapeUnityRichText(qHold));
+                            }
+                            if (hasPf)
+                            {
+                                string pfHex = qPfReady ? "#55EE99" : "#FFD166";
+                                sb.AppendFormat("• <color={0}><b>{1}</b></color>\n", pfHex, MushProtocol.EscapeUnityRichText(qPf));
+                            }
+                            sb.AppendLine();
+                        }
+                    }
+                    else if (_questJournal.TryGetNextGuidedOffer(out var nextOffer))
+                    {
+                        string curPort = _trade != null && !string.IsNullOrEmpty(_trade.AboardDockedPortHint)
+                            ? _trade.AboardDockedPortHint
+                            : (_trade != null && !string.IsNullOrEmpty(_trade.ActiveVenue) ? _trade.ActiveVenue : _locationName);
+                        if (_questJournal.TryGetNextGuidedOfferDestination(curPort, out var nextDest))
+                        {
+                            sb.AppendFormat("<color=#FFDD44><b>NEXT GUIDED ({0}/7):</b></color> Sail to <b>{1}</b> (+ship/plan {2}) — {3}\n\n",
+                                nextOffer.Step,
+                                MushProtocol.EscapeUnityRichText(nextDest.PortLabel),
+                                MushProtocol.EscapeUnityRichText(nextDest.PortId),
+                                MushProtocol.EscapeUnityRichText(nextOffer.GiverLabel));
+                        }
+                    }
+                }
                 sb.AppendLine("<color=#66DDFF><b>ACTIVE SAILING PLAN & BERTH REGISTRY</b></color>");
                 if (_trade != null && _trade.SailingOrderLines.Count > 0)
                 {

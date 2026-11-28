@@ -19550,5 +19550,93 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void CharacterSheet_ShowsQuestHoldReadinessRigRecoveryAlertAndBetweenStepsOffPortSail()
+        {
+            var rootGo = new UnityEngine.GameObject("CharacterSheetQuestHoldAndSailTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.ShowLoginOverlay(false);
+
+                var tradeState = new TacSimTradeAndShipState();
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""ceres"", ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 0, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 12000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": []
+                        }
+                    }
+                }"));
+                hud.BindTradeState(tradeState);
+                hud.CharacterSheet.SetOpen(true);
+
+                // 1. Step 6 post-mine with 0t carbon_ore -> coral #FF7766 [RECOVER RIG FIRST] on BOTH Pilot and Ship & Cargo tabs, no premature [PRE-FLIGHT OK]
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""next_room_entry"": ""room.c07_exchange"",
+                        ""next_step"": ""Recover rig and return to Ceres Exchange"",
+                        ""checkpoints"": [
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""return_exchange"", ""title"": ""Return to Ceres Freeport"", ""instructions"": ""+ship/plan ceres"", ""room_entry"": ""room.c07_exchange"", ""checked"": false, ""live_ready"": false }
+                        ]
+                    }],
+                    ""available"": [], ""completed"": []
+                }")));
+                hud.CharacterSheet.RefreshContents();
+                StringAssert.Contains("[RECOVER RIG FIRST]", hud.CharacterSheet.PilotSummarySnapshot);
+                StringAssert.Contains("#FF7766", hud.CharacterSheet.PilotSummarySnapshot);
+                Assert.IsFalse(hud.CharacterSheet.PilotSummarySnapshot.Contains("[PRE-FLIGHT OK]"));
+                StringAssert.Contains("QUEST LOGISTICS [Step 6/7]", hud.CharacterSheet.ShipOrdersSnapshot);
+                StringAssert.Contains("[RECOVER RIG FIRST]", hud.CharacterSheet.ShipOrdersSnapshot);
+                StringAssert.Contains("#FF7766", hud.CharacterSheet.ShipOrdersSnapshot);
+                Assert.IsFalse(hud.CharacterSheet.ShipOrdersSnapshot.Contains("[PRE-FLIGHT OK]"));
+
+                // 1b. After rig recovery (1t carbon_ore stowed) -> emerald #55EE99 [ORE HOLD READY] + [PRE-FLIGHT OK] on Ship & Cargo tab
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""ceres"", ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 1000, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 12000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:carbon_ore"", ""label"": ""Carbon Ore"", ""qty"": 1 }]
+                        }
+                    }
+                }"));
+                hud.CharacterSheet.RefreshContents();
+                StringAssert.Contains("[ORE HOLD READY]", hud.CharacterSheet.ShipOrdersSnapshot);
+                StringAssert.Contains("[PRE-FLIGHT OK]", hud.CharacterSheet.ShipOrdersSnapshot);
+
+                // 2. Between steps at an off-port venue (Step 3 done, at Ceres while Step 4 giver Jonas is at Stickney) -> Sail cue on BOTH Pilot and Ship & Cargo tabs
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1, ""active"": [], ""available"": [],
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""2"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""3"" }
+                    ]
+                }")));
+                hud.CharacterSheet.RefreshContents();
+                StringAssert.Contains("+ship/plan stickney", hud.CharacterSheet.PilotSummarySnapshot);
+                StringAssert.Contains("Stickney Yards", hud.CharacterSheet.PilotSummarySnapshot);
+                StringAssert.Contains("NEXT GUIDED (4/7)", hud.CharacterSheet.ShipOrdersSnapshot);
+                StringAssert.Contains("+ship/plan stickney", hud.CharacterSheet.ShipOrdersSnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
