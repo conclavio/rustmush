@@ -4,7 +4,11 @@
   // turn-by-turn 1-click station route step, objective checklist, 1-click Verify/Complete/Abandon,
   // or a quick-accept prompt when a quest NPC in the room has an available quest.
   import type { GameApp } from "$lib/game.svelte";
-  import { computeNextQuestExitBreadcrumb } from "$lib/tacsim/spatial";
+  import { resolveQuestShipTargetCompartment } from "$lib/stores/quests.svelte";
+  import {
+    computeNextQuestExitBreadcrumb,
+    computeShipQuestBreadcrumb,
+  } from "$lib/tacsim/spatial";
 
   let { app, onCmd }: { app: GameApp; onCmd: (cmd: string) => void } = $props();
 
@@ -18,7 +22,14 @@
   );
   const routeCrumb = $derived.by(() => {
     const tacsim = app.tacsim;
-    if (!tracked || !tacsim || tacsim.isAboardShip) return null;
+    if (!tracked || !tacsim) return null;
+    if (tacsim.isAboardShip) {
+      if (tacsim.seatedAtBridgeHelm) return null;
+      const targetComp = resolveQuestShipTargetCompartment(q.active, q.trackedKey);
+      const currentComp =
+        (tacsim.view3dOpen ? tacsim.physicalLocationKey : null) ?? tacsim.serverShipCompartment;
+      return computeShipQuestBreadcrumb(tacsim.shipTemplate, currentComp, targetComp);
+    }
     const targetEntry =
       tracked.nextRoomEntry ||
       tracked.checkpoints.find((c) => !c.checked && !c.liveReady && c.roomEntry)?.roomEntry ||

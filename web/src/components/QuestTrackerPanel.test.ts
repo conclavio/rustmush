@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import QuestTrackerPanel from "./QuestTrackerPanel.svelte";
 import type { GameApp } from "$lib/game.svelte";
 import { GUIDED_TOUR_KEYS, QuestsStore } from "$lib/stores/quests.svelte";
-import { buildFallbackFreeport } from "$lib/tacsim/spatial";
+import { buildFallbackDray, buildFallbackFreeport } from "$lib/tacsim/spatial";
 
 describe("QuestTrackerPanel route step, guided tour pill, and quick-accept", () => {
   it("shows Tour progress pill and 1-click Walk route button along shortest station path", async () => {
@@ -119,5 +119,121 @@ describe("QuestTrackerPanel route step, guided tour pill, and quick-accept", () 
     await fireEvent.click(screen.getByRole("button", { name: "Completed (7)" }));
     expect(quests.logOpen).toBe(true);
     expect(quests.logTab).toBe("completed");
+  });
+
+  it("guides aboard-ship players from airlock to bridge for flight quests and hold to vehicle bay for mining", async () => {
+    const quests = new QuestsStore();
+    const drayP = buildFallbackDray("tacsim.unit.dray_p");
+    if (!drayP.compartments.has("bay")) {
+      drayP.compartments.set("bay", {
+        id: "bay",
+        name: "Vehicle Bay",
+        shortDesc: "Two-rig bay",
+        desc: "",
+        localCenter: { x: 0, y: -3.6, z: -20 },
+        localSize: { x: 9, y: 3.6, z: 11 },
+        details: {},
+      });
+      drayP.exits.push({
+        from: "hold",
+        to: "bay",
+        forwardLabel: "Vehicle Bay",
+        forwardCommand: "+tv/bay in",
+        reverseLabel: "Cargo Hold",
+        reverseCommand: "+tv/bay out",
+        isStaticAction: true,
+      });
+    }
+
+    // 1. Flight destination quest aboard ship in airlock -> guides toward Bridge (2 hops via Passage)
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#50",
+      room_name: "M/V Starling - Airlock",
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[2],
+          title: "Metals Down the Corridor",
+          next_step: "Sail to Stickney Yards (+ship/plan stickney)",
+          checkpoints: [
+            {
+              id: "sail_stickney",
+              title: "Sail to Stickney Yards",
+              instructions: "Run +ship/plan stickney and depart.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+    const onCmd = vi.fn();
+    const appFlight = {
+      quests,
+      tacsim: {
+        isAboardShip: true,
+        seatedAtBridgeHelm: false,
+        view3dOpen: false,
+        physicalLocationKey: null,
+        serverShipCompartment: "airlock",
+        shipTemplate: drayP,
+      },
+      focusComposer: vi.fn(),
+    } as unknown as GameApp;
+
+    const first = render(QuestTrackerPanel, { props: { app: appFlight, onCmd } });
+    const bridgeWalk = screen.getByRole("button", { name: /^Walk → / });
+    await fireEvent.click(bridgeWalk);
+    expect(onCmd).toHaveBeenCalledTimes(1);
+    expect(String(onCmd.mock.calls[0]![0]).toLowerCase().startsWith("goto ")).toBe(true);
+    first.unmount();
+
+    // 2. Surface mining quest aboard Dray-P in cargo hold -> guides directly into Vehicle Bay (+tv/bay in)
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#54",
+      room_name: "M/V Starling - Cargo Hold",
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[5],
+          title: "Scan and Mine Carbon Ore",
+          next_step: "Launch rig and run +tv/1 scan go",
+          checkpoints: [
+            {
+              id: "scan_site",
+              title: "Run surface scan",
+              instructions: "Run +tv/1 scan go.",
+              checked: false,
+              live_ready: false,
+            },
+            {
+              id: "mine_carbon_ore",
+              title: "Mine 1t carbon ore",
+              instructions: "Run +tv/1 mine go.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+    const onCmdMine = vi.fn();
+    const appMine = {
+      quests,
+      tacsim: {
+        isAboardShip: true,
+        seatedAtBridgeHelm: false,
+        view3dOpen: false,
+        physicalLocationKey: null,
+        serverShipCompartment: "hold",
+        shipTemplate: drayP,
+      },
+      focusComposer: vi.fn(),
+    } as unknown as GameApp;
+
+    render(QuestTrackerPanel, { props: { app: appMine, onCmd: onCmdMine } });
+    const bayBtn = screen.getByRole("button", { name: /Walk → Vehicle Bay \(1h\)/i });
+    await fireEvent.click(bayBtn);
+    expect(onCmdMine).toHaveBeenCalledWith("+tv/bay in");
   });
 });

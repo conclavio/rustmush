@@ -1401,6 +1401,51 @@ export function findShipExitPath(
   return path;
 }
 
+/**
+ * Resolve the immediate next ship compartment/hatch along the shortest interior
+ * BFS path toward the tracked quest's target compartment (`bridge` for corridor
+ * voyages, `bay` for surface mining excursions).
+ */
+export function computeShipQuestBreadcrumb(
+  tpl: ShipUnitTemplate | null | undefined,
+  currentComp: string | null | undefined,
+  targetComp: string | null | undefined,
+): StationQuestBreadcrumb | null {
+  if (!tpl || !currentComp || !targetComp) return null;
+  const cFrom = resolveCompartmentDef(tpl, currentComp)?.id ?? currentComp;
+  const cTo = resolveCompartmentDef(tpl, targetComp)?.id ?? targetComp;
+  if (!cFrom || !cTo || cFrom === cTo) return null;
+  if (!tpl.compartments.has(cTo)) return null;
+
+  const path = findShipExitPath(tpl, cFrom, cTo);
+  if (path.length === 0) return null;
+  const first = path[0]!;
+  const nextDef = tpl.compartments.get(first.targetCompartment);
+  const targetDef = tpl.compartments.get(cTo);
+
+  let exitLabel = nextDef?.name ?? first.targetCompartment;
+  for (const ex of tpl.exits) {
+    if (ex.from === cFrom && ex.to === first.targetCompartment && ex.forwardLabel) {
+      exitLabel = ex.forwardLabel;
+      break;
+    }
+    if (ex.to === cFrom && ex.from === first.targetCompartment && ex.reverseLabel) {
+      exitLabel = ex.reverseLabel;
+      break;
+    }
+  }
+
+  return {
+    nextRoomEntry: first.targetCompartment,
+    nextRoomName: nextDef?.name ?? first.targetCompartment,
+    nextExitCommand: first.command,
+    nextExitLabel: exitLabel,
+    targetRoomEntry: cTo,
+    targetRoomName: targetDef?.name ?? cTo,
+    hops: path.length,
+  };
+}
+
 function parseIdSet(arrVal: unknown): Set<string> {
   const out = new Set<string>();
   const arr = asArr(arrVal);
