@@ -5100,6 +5100,11 @@ impl TuiApp {
                 finish_cmd: q.finish_cmd.clone(),
             });
         self.port_walk.observe_quest_ready_turn_in(ready_turn_in);
+        self.port_walk.observe_quest_tour_mastered(
+            self.quests_snap
+                .guided_tour_progress()
+                .is_some_and(|p| p.all_done),
+        );
     }
 
     // ---- palette and completion ------------------------------------------

@@ -528,6 +528,7 @@ pub struct PortWalkState {
     quest_mining_status: Option<QuestSurfaceMiningStatus>,
     quest_step_badge: String,
     quest_ready_turn_in: Option<QuestReadyTurnIn>,
+    quest_tour_mastered: bool,
     speech_bubbles: HashMap<String, (String, Instant)>,
     interactables: Vec<InteractableTarget>,
     focus_idx: usize,
@@ -641,6 +642,7 @@ impl PortWalkState {
             quest_mining_status: None,
             quest_step_badge: String::new(),
             quest_ready_turn_in: None,
+            quest_tour_mastered: false,
             speech_bubbles: HashMap::new(),
             interactables: Vec::new(),
             focus_idx: 0,
@@ -1016,6 +1018,11 @@ impl PortWalkState {
     /// Sync ready-to-turn-in quest handoff for post-trade Exchange guidance (Steps 2, 3, 4, 7).
     pub fn observe_quest_ready_turn_in(&mut self, ready: Option<QuestReadyTurnIn>) {
         self.quest_ready_turn_in = ready;
+    }
+
+    /// Sync Guided Captain's Tour 7/7 completion mastery state for post-graduation Jobs Board greeting.
+    pub fn observe_quest_tour_mastered(&mut self, mastered: bool) {
+        self.quest_tour_mastered = mastered;
     }
 
     fn format_quest_ready_banner(&self, step_suffix: &str) -> Option<(String, Color)> {
@@ -4251,13 +4258,25 @@ impl PortWalkState {
                     out.commands.push("+locker/open".to_string());
                     self.push_drawer_log("> +locker/open".to_string());
                 }
-                Key::Char('f') => {
-                    if self.quest_mining_status.is_some() {
+                Key::Char('f' | 'F') => {
+                    let can_finish_here = self
+                        .quest_ready_turn_in
+                        .as_ref()
+                        .is_some_and(|r| r.can_finish_now && !r.finish_cmd.is_empty());
+                    if can_finish_here {
+                        self.try_trigger_quest_ready_turn_in(&mut out);
+                    } else if self.quest_mining_status.is_some() {
                         out.commands.push("+market/jobs survey".to_string());
                         self.push_drawer_log("> +market/jobs survey".to_string());
-                    } else if self.quest_dest_port.is_some() {
+                    } else if self.quest_dest_port.is_some() || self.quest_tour_mastered {
                         out.commands.push("+market/jobs haul".to_string());
                         self.push_drawer_log("> +market/jobs haul".to_string());
+                    }
+                }
+                Key::Char('s' | 'S') => {
+                    if self.quest_tour_mastered {
+                        out.commands.push("+market/jobs survey".to_string());
+                        self.push_drawer_log("> +market/jobs survey".to_string());
                     }
                 }
                 Key::Enter => {
@@ -6033,7 +6052,20 @@ impl PortWalkState {
                 }
             }
             PortDrawerKind::Jobs => {
-                let quest_job_cmd: Option<&str> = if self.quest_mining_status.is_some() {
+                let can_finish_here = self
+                    .quest_ready_turn_in
+                    .as_ref()
+                    .is_some_and(|r| r.can_finish_now && !r.finish_cmd.is_empty());
+                let quest_job_cmd: Option<&str> = if can_finish_here
+                    && let Some((ready_txt, ready_col)) =
+                        self.format_quest_ready_banner(step_suffix)
+                {
+                    lines.push(Line::from(Span::styled(
+                        truncate_str(&ready_txt, inner_w),
+                        Style::default().fg(ready_col).add_modifier(Modifier::BOLD),
+                    )));
+                    None
+                } else if self.quest_mining_status.is_some() {
                     lines.push(Line::from(Span::styled(
                         truncate_str(
                             &format!(
@@ -6057,6 +6089,25 @@ impl PortWalkState {
                         ),
                         Style::default()
                             .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                    Some("+market/jobs haul")
+                } else if let Some((ready_txt, ready_col)) =
+                    self.format_quest_ready_banner(step_suffix)
+                {
+                    lines.push(Line::from(Span::styled(
+                        truncate_str(&ready_txt, inner_w),
+                        Style::default().fg(ready_col).add_modifier(Modifier::BOLD),
+                    )));
+                    None
+                } else if self.quest_tour_mastered {
+                    lines.push(Line::from(Span::styled(
+                        truncate_str(
+                            "[★ CORRIDOR CAPTAIN 7/7] Tour Complete — f:+market/jobs haul | s:+market/jobs survey",
+                            inner_w,
+                        ),
+                        Style::default()
+                            .fg(Color::Green)
                             .add_modifier(Modifier::BOLD),
                     )));
                     Some("+market/jobs haul")
@@ -12094,5 +12145,59 @@ mod tests {
             st.selected_npc_quest_marker().map(|m| m.quest_key.as_str()),
             Some("tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll")
         );
+    }
+
+    #[test]
+    fn jobs_drawer_shows_quest_ready_turn_in_and_corridor_captain_mastery_banners() {
+        let render_drawer = |st: &mut PortWalkState| -> String {
+            let backend = ratatui::backend::TestBackend::new(120, 20);
+            let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+            terminal
+                .draw(|f| st.draw_drawer_box(f, f.area(), true))
+                .expect("render jobs drawer");
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect()
+        };
+
+        // 1. Active quest ready to turn in here -> [QUEST READY] + f submits +quest/finish
+        let mut st = PortWalkState::new();
+        st.drawer = Some(PortDrawerKind::Jobs);
+        st.observe_quest_step_badge(" [Step 2/7]".into());
+        st.observe_quest_ready_turn_in(Some(QuestReadyTurnIn {
+            quest_title: "Stock the Locker and Tanks".into(),
+            turn_in_name: "Ilse Oduya-Brandt".into(),
+            next_room_name: "Registry & Co-op Desk".into(),
+            can_finish_now: true,
+            finish_cmd: "+quest/finish #18=tok-step2".into(),
+        }));
+        let ready_txt = render_drawer(&mut st);
+        assert!(
+            ready_txt.contains(
+                "[QUEST READY] Stock the Locker and Tanks -> f:Turn In to Ilse Oduya-Brandt (+quest/finish) [Step 2/7]"
+            ),
+            "{ready_txt}"
+        );
+        let out_turn = st.handle_drawer_key(Key::Char('f'), &[], Instant::now());
+        assert_eq!(out_turn.commands, vec!["+quest/finish #18=tok-step2"]);
+        assert_eq!(st.drawer, None);
+
+        // 2. Post-graduation 7/7 Corridor Captain -> green open contracts banner with f:haul & s:survey
+        st.observe_quest_ready_turn_in(None);
+        st.observe_quest_tour_mastered(true);
+        st.drawer = Some(PortDrawerKind::Jobs);
+        let master_txt = render_drawer(&mut st);
+        assert!(
+            master_txt.contains("[★ CORRIDOR CAPTAIN 7/7] Tour Complete"),
+            "{master_txt}"
+        );
+        let out_haul = st.handle_drawer_key(Key::Char('f'), &[], Instant::now());
+        assert_eq!(out_haul.commands, vec!["+market/jobs haul"]);
+        let out_survey = st.handle_drawer_key(Key::Char('s'), &[], Instant::now());
+        assert_eq!(out_survey.commands, vec!["+market/jobs survey"]);
     }
 }
