@@ -6263,6 +6263,7 @@ impl TuiApp {
                 format!(" (l: {} wash)  |  ", qm.recommended_family),
                 Style::default().fg(Color::Cyan),
             ));
+            let show_prep_hint = !(qm.mine_done && ore_qty_opt.is_some());
             let next_key_hint = if !qm.scan_done {
                 "Next: s(scan)  |  "
             } else if !qm.sound_done {
@@ -6270,7 +6271,7 @@ impl TuiApp {
             } else if !qm.mine_done {
                 "Next: m(mine)  |  "
             } else if ore_qty_opt == Some(0) {
-                "Next: Recover Rig (+tv/1 recover go)  |  "
+                "Next: Recover Rig (+tv/1 recover go)"
             } else {
                 ""
             };
@@ -6295,7 +6296,7 @@ impl TuiApp {
                         .add_modifier(Modifier::BOLD),
                 ));
             }
-            if qm.mine_done {
+            if qm.mine_done && ore_qty_opt != Some(0) {
                 let (ret_id, ret_label) = if let Some(dest) =
                     self.quests_snap.active_destination_port(tracked_q)
                 {
@@ -6315,8 +6316,9 @@ impl TuiApp {
                     };
                     (slug.to_string(), lbl.to_string())
                 };
+                let sep = if show_prep_hint { "  |  " } else { "" };
                 spans.push(Span::styled(
-                    format!("Return: {ret_label} (+ship/plan {ret_id})  |  "),
+                    format!("Return: {ret_label} (+ship/plan {ret_id}){sep}"),
                     Style::default()
                         .fg(Color::Green)
                         .add_modifier(Modifier::BOLD),
@@ -6338,10 +6340,12 @@ impl TuiApp {
                         .add_modifier(Modifier::BOLD),
                 ));
             }
-            spans.push(Span::styled(
-                qm.prep_hint_line(),
-                Style::default().fg(Color::Yellow),
-            ));
+            if show_prep_hint {
+                spans.push(Span::styled(
+                    qm.prep_hint_line(),
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
             let line = Line::from(spans);
             frame.render_widget(Paragraph::new(line), quest_bar);
             rest
@@ -15451,17 +15455,15 @@ mod tests {
             "{text}"
         );
 
-        // Post-mine (even before ready_to_finish flips) -> shows [Step 6/7], live Hold ore, Return: Ceres Freeport (+ship/plan ceres) + Recover
+        // Post-mine with 0t in hold -> [RECOVER RIG FIRST] + Next: Recover Rig (+tv/1 recover go), suppresses premature Return: Ceres Freeport
         app.apply_event(&OutputEvent::Panel {
             feed: SmolStr::new_static(PORT_TRADE_FEED),
             kind: PanelFrameKind::Keyframe,
             data: serde_json::json!({
                 "ship": {
                     "stowage": {
-                        "cargo_kg": 2000,
-                        "items": [
-                            { "good": "tacsim:carbon_ore", "label": "Carbon Ore", "qty": 2 }
-                        ]
+                        "cargo_kg": 0,
+                        "items": []
                     }
                 }
             }),
@@ -15484,15 +15486,53 @@ mod tests {
                 }]
             }),
         });
+        let qbuf_rec = painted(&mut app, 240, 32);
+        let text_rec = dump(&qbuf_rec);
+        assert!(text_rec.contains("[Step 6/7]"), "{text_rec}");
+        assert!(text_rec.contains("[RECOVER RIG FIRST]"), "{text_rec}");
+        assert!(
+            text_rec.contains("Next: Recover Rig (+tv/1 recover go)"),
+            "{text_rec}"
+        );
+        assert!(
+            !text_rec.contains("Return: Ceres Freeport"),
+            "must not show premature return before rig recovery: {text_rec}"
+        );
+        assert!(
+            !text_rec.contains("Recover: +tv/1 recover go"),
+            "must not duplicate Recover prep line: {text_rec}"
+        );
+
+        // Post-mine after rig recovery (2t carbon_ore stowed) -> [ORE HOLD READY] + Return: Ceres Freeport (+ship/plan ceres), hides redundant Recover
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(PORT_TRADE_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "ship": {
+                    "stowage": {
+                        "cargo_kg": 2000,
+                        "items": [
+                            { "good": "tacsim:carbon_ore", "label": "Carbon Ore", "qty": 2 }
+                        ]
+                    }
+                }
+            }),
+        });
         let qbuf2 = painted(&mut app, 240, 32);
         let text2 = dump(&qbuf2);
         assert!(text2.contains("[Step 6/7]"), "{text2}");
-        assert!(text2.contains("Hold: 2t carbon ore"), "{text2}");
+        assert!(
+            text2.contains("Hold: 2t carbon ore [ORE HOLD READY]"),
+            "{text2}"
+        );
         assert!(
             text2.contains("Return: Ceres Freeport (+ship/plan ceres)"),
             "{text2}"
         );
-        assert!(text2.contains("Recover: +tv/1 recover go"), "{text2}");
+        assert!(
+            !text2.contains("Recover: +tv/1 recover go"),
+            "must hide redundant Recover hint once ore is stowed: {text2}"
+        );
     }
 
     #[test]
