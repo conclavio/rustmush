@@ -15507,5 +15507,89 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void HudAndOpsDirectory_FormatsShipActionBreadcrumbsAndSortsQuestRowsFirst()
+        {
+            var rootGo = new UnityEngine.GameObject("OpsDirectoryQuestSortFirstTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                // 1. Special ship-action breadcrumbs format crisply
+                hud.SetQuestExitBreadcrumb("Vehicle Bay", "+tv/bay in", 1);
+                Assert.AreEqual("[Q] Enter Vehicle Bay", hud.QuestExitBreadcrumbLabel);
+                hud.SetQuestExitBreadcrumb("Berth Gallery", "+ship/board", 1);
+                Assert.AreEqual("[Q] Board Ship", hud.QuestExitBreadcrumbLabel);
+                hud.SetQuestExitBreadcrumb("Airlock", "+ship/leave", 1);
+                Assert.AreEqual("[Q] Cycle Ashore", hud.QuestExitBreadcrumbLabel);
+
+                // 2. OpsDirectory sorts quest target station room & turn-in NPC to row 0
+                var catalog = TacSimAssetCatalog.LoadOrDefault();
+                var stGo = new UnityEngine.GameObject("StationDirSort");
+                stGo.transform.SetParent(rootGo.transform, false);
+                var station = stGo.AddComponent<StationWorldController>();
+                station.BuildStation(catalog, "ceres_freeport");
+
+                string targetRoomEntry = string.Empty;
+                foreach (var kv in station.Pack.Rooms)
+                {
+                    if (!string.Equals(kv.Key, station.ActiveRoomEntryId, System.StringComparison.OrdinalIgnoreCase) &&
+                        station.FindExitPath(station.ActiveRoomEntryId, kv.Key).Count > 0)
+                    {
+                        targetRoomEntry = kv.Key;
+                    }
+                }
+                Assert.IsFalse(string.IsNullOrEmpty(targetRoomEntry));
+
+                var tradeState = new TacSimTradeAndShipState();
+                hud.BindTradeState(tradeState);
+                hud.OpsDirectory.BindSources(station, null, null, tradeState, null, null, null);
+                hud.OpsDirectory.BindQuestJournal(hud.QuestJournal);
+
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_markers"": [
+                        { ""npc_id"": ""#11"", ""npc_name"": ""Maren Halvorsen"", ""marker"": ""available"", ""symbol"": ""!"", ""quest_key"": ""q.avail"", ""quest_title"": ""Offer"" },
+                        { ""npc_id"": ""#18"", ""npc_name"": ""Ilse Oduya-Brandt"", ""marker"": ""turn_in"", ""symbol"": ""?"", ""quest_key"": ""q.turnin"", ""quest_title"": ""Turn In"" }
+                    ],
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                        ""title"": ""First Papers at the Registry"",
+                        ""next_room_entry"": """ + targetRoomEntry + @""",
+                        ""checkpoints"": [{ ""id"": ""enroll"", ""title"": ""Enroll"", ""room_entry"": """ + targetRoomEntry + @""", ""checked"": false, ""live_ready"": false }]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+
+                var roomView = new MushRoomView
+                {
+                    Id = "#10",
+                    Name = "Port Watch Arrivals",
+                    Atlas = new AtlasRoomAmbient { Pack = "neighborhood.ceres_freeport", Entry = station.ActiveRoomEntryId }
+                };
+                roomView.Contents.Add(new MushObjRef { Id = "#99", Name = "Unmarked Bystander" });
+                roomView.Contents.Add(new MushObjRef { Id = "#11", Name = "Maren Halvorsen" });
+                roomView.Contents.Add(new MushObjRef { Id = "#18", Name = "Ilse Oduya-Brandt" });
+                roomView.NpcIds.Add("#99");
+                roomView.NpcIds.Add("#11");
+                roomView.NpcIds.Add("#18");
+                hud.OpsDirectory.UpdateLiveRoom(roomView, TacSimActiveStage.StationWalk);
+                hud.OpsDirectory.SetOpen(true);
+                hud.OpsDirectory.SelectTab(TacSim.UI.OpsDirectoryTab.DeckDirectory);
+                Assert.AreEqual(0, hud.OpsDirectory.HighlightedQuestDirectoryRowIndex, "Quest objective room must float to row 0 in Deck Directory");
+                Assert.AreEqual(targetRoomEntry, hud.OpsDirectory.HighlightedQuestDirectoryRoomId);
+
+                hud.OpsDirectory.SelectTab(TacSim.UI.OpsDirectoryTab.RoomPresence);
+                StringAssert.Contains("Ilse Oduya-Brandt", hud.OpsDirectory.FirstPresenceRowLabel, "Turn-in NPC must float to row 0 in Room Presence");
+                StringAssert.Contains("[? QUEST]", hud.OpsDirectory.FirstPresenceRowLabel);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

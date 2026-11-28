@@ -572,9 +572,6 @@ namespace TacSim.UI
             else if (aboardShip && _ship?.Template != null)
             {
                 if (_modalMetaText != null) _modalMetaText.text = $"SHIP DECKS ({_ship.LoadedUnitId.ToUpperInvariant()})";
-                var comps = new List<ShipCompartmentDef>(_ship.Template.Compartments.Values);
-                comps.Sort((a, b) => string.Compare(a.Id, b.Id, StringComparison.OrdinalIgnoreCase));
-
                 string questComp = string.Empty;
                 if (_questJournal != null)
                 {
@@ -593,6 +590,15 @@ namespace TacSim.UI
                             : rawComp;
                     }
                 }
+
+                var comps = new List<ShipCompartmentDef>(_ship.Template.Compartments.Values);
+                comps.Sort((a, b) =>
+                {
+                    int qa = !string.IsNullOrEmpty(questComp) && string.Equals(a.Id, questComp, StringComparison.OrdinalIgnoreCase) ? 0 : 1;
+                    int qb = !string.IsNullOrEmpty(questComp) && string.Equals(b.Id, questComp, StringComparison.OrdinalIgnoreCase) ? 0 : 1;
+                    if (qa != qb) return qa.CompareTo(qb);
+                    return string.Compare(a.Id, b.Id, StringComparison.OrdinalIgnoreCase);
+                });
 
                 HighlightedQuestDirectoryRowIndex = -1;
                 HighlightedQuestDirectoryRoomId = string.Empty;
@@ -629,13 +635,6 @@ namespace TacSim.UI
             else if (_station?.Pack != null)
             {
                 if (_modalMetaText != null) _modalMetaText.text = (_station.Pack.Name ?? "STATION").ToUpperInvariant();
-                var rooms = new List<AtlasRoomDef>(_station.Pack.Rooms.Values);
-                rooms.Sort((a, b) =>
-                {
-                    int f = a.FloorIndex.CompareTo(b.FloorIndex);
-                    return f != 0 ? f : string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
-                });
-
                 string questRoomEntry = string.Empty;
                 bool questTurnIn = false;
                 bool questIsBoarding = false;
@@ -653,6 +652,16 @@ namespace TacSim.UI
                         questTurnIn = rawTurnIn && !redirected && !isBoarding;
                     }
                 }
+
+                var rooms = new List<AtlasRoomDef>(_station.Pack.Rooms.Values);
+                rooms.Sort((a, b) =>
+                {
+                    int qa = !string.IsNullOrEmpty(questRoomEntry) && string.Equals(a.EntryId, questRoomEntry, StringComparison.OrdinalIgnoreCase) ? 0 : 1;
+                    int qb = !string.IsNullOrEmpty(questRoomEntry) && string.Equals(b.EntryId, questRoomEntry, StringComparison.OrdinalIgnoreCase) ? 0 : 1;
+                    if (qa != qb) return qa.CompareTo(qb);
+                    int f = a.FloorIndex.CompareTo(b.FloorIndex);
+                    return f != 0 ? f : string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
+                });
 
                 HighlightedQuestDirectoryRowIndex = -1;
                 HighlightedQuestDirectoryRoomId = string.Empty;
@@ -731,7 +740,8 @@ namespace TacSim.UI
             HighlightedQuestPresenceRowCount = 0;
             if (_lastRoomView != null && _lastRoomView.Contents != null)
             {
-                for (int i = 0; i < _lastRoomView.Contents.Count && used < MaxPresenceRows; i++)
+                var candidates = new List<(MushObjRef obj, bool isPlayer, bool isDormant, MushNpcQuestMarker marker, int origIdx)>();
+                for (int i = 0; i < _lastRoomView.Contents.Count; i++)
                 {
                     var obj = _lastRoomView.Contents[i];
                     if (obj == null || string.IsNullOrWhiteSpace(obj.Name)) continue;
@@ -741,12 +751,31 @@ namespace TacSim.UI
                     bool isDormant = !string.IsNullOrEmpty(obj.Id) && _lastRoomView.DormantNpcIds.Contains(obj.Id);
                     if (!isPlayer && !isNpc && !isDormant) continue;
 
+                    var marker = !isPlayer ? FindQuestMarkerForNpc(obj.Id ?? string.Empty, obj.Name.Trim()) : null;
+                    candidates.Add((obj, isPlayer, isDormant, marker, i));
+                }
+
+                candidates.Sort((a, b) =>
+                {
+                    int pa = QuestMarkerPriority(a.marker);
+                    int pb = QuestMarkerPriority(b.marker);
+                    if (pa != pb) return pa.CompareTo(pb);
+                    return a.origIdx.CompareTo(b.origIdx);
+                });
+
+                for (int i = 0; i < candidates.Count && used < MaxPresenceRows; i++)
+                {
+                    var entry = candidates[i];
+                    var obj = entry.obj;
+                    bool isPlayer = entry.isPlayer;
+                    bool isDormant = entry.isDormant;
+                    var marker = entry.marker;
+
                     var row = _presPool[used++];
                     row.BoundId = obj.Id ?? string.Empty;
                     row.BoundName = obj.Name.Trim();
                     row.BoundIsPlayer = isPlayer;
 
-                    var marker = !isPlayer ? FindQuestMarkerForNpc(row.BoundId, row.BoundName) : null;
                     if (marker != null)
                     {
                         bool isGold = string.Equals(marker.Marker, "available", StringComparison.OrdinalIgnoreCase) ||

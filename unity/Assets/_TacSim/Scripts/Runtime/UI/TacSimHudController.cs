@@ -2310,10 +2310,21 @@ namespace TacSim.UI
 
         public void SetQuestExitBreadcrumb(string nextRoomName, string command, int hops)
         {
-            string nextLabel = !string.IsNullOrWhiteSpace(nextRoomName) && !string.IsNullOrWhiteSpace(command) && hops > 0
-                ? $"[Q] -> {nextRoomName.Trim()} ({hops}h)"
-                : string.Empty;
-            string nextCmd = !string.IsNullOrEmpty(nextLabel) ? command.Trim() : string.Empty;
+            string trimmedCmd = !string.IsNullOrWhiteSpace(command) ? command.Trim() : string.Empty;
+            string nextLabel = string.Empty;
+            if (!string.IsNullOrWhiteSpace(nextRoomName) && !string.IsNullOrEmpty(trimmedCmd) && hops > 0)
+            {
+                if (string.Equals(trimmedCmd, "+ship/board", StringComparison.OrdinalIgnoreCase))
+                    nextLabel = "[Q] Board Ship";
+                else if (string.Equals(trimmedCmd, "+ship/leave", StringComparison.OrdinalIgnoreCase))
+                    nextLabel = "[Q] Cycle Ashore";
+                else if (string.Equals(trimmedCmd, "+tv/bay in", StringComparison.OrdinalIgnoreCase) ||
+                         string.Equals(trimmedCmd, "+tv/bay", StringComparison.OrdinalIgnoreCase))
+                    nextLabel = "[Q] Enter Vehicle Bay";
+                else
+                    nextLabel = $"[Q] -> {nextRoomName.Trim()} ({hops}h)";
+            }
+            string nextCmd = !string.IsNullOrEmpty(nextLabel) ? trimmedCmd : string.Empty;
             if (string.Equals(_questBreadcrumbLabel, nextLabel, StringComparison.Ordinal) &&
                 string.Equals(_questBreadcrumbCommand, nextCmd, StringComparison.Ordinal))
                 return;
