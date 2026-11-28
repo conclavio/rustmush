@@ -858,5 +858,30 @@ describe("QuestsStore", () => {
     expect(roadmap[5]).toMatchObject({ step: 6, shortLabel: "Surface Mining", status: "upcoming" });
     expect(roadmap[6]).toMatchObject({ step: 7, shortLabel: "Sell Mined Ore", status: "upcoming" });
     expect(store.guidedTourRoadmap).toEqual(roadmap);
+    // Active/available present -> nextGuidedOffer is null
+    expect(store.nextGuidedOffer).toBeNull();
+
+    // Between steps (Steps 1–3 complete, no active or room offers) -> points straight to Step 4 Jonas at Stickney Receiving
+    store.applyFrame({
+      schema: 1,
+      completed: [
+        { key: "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll", title: "Step 1" },
+        { key: "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel", title: "Step 2" },
+        { key: "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery", title: "Step 3" },
+      ],
+      active: [],
+      available: [],
+    });
+    expect(store.nextGuidedOffer).toMatchObject({
+      step: 4,
+      shortLabel: "Return Load",
+      giverLabel: "Jonas Achterberg-Nkemelu",
+      giverRoomEntry: "room.p07_receiving",
+      giverRoomName: "Receiving Counter",
+    });
+
+    // Fresh character (0 completed) -> null so non-guided worlds stay quiet
+    store.applyFrame({ schema: 1, completed: [], active: [], available: [] });
+    expect(store.nextGuidedOffer).toBeNull();
   });
 });

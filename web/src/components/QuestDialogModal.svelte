@@ -19,6 +19,7 @@
   const q = $derived(app.quests);
   const tour = $derived(q.guidedTourProgress);
   const roadmap = $derived(tour ? q.guidedTourRoadmap : []);
+  const nextOffer = $derived(q.nextGuidedOffer);
 
   function prefillAndClose(cmd: string): void {
     confirmAbandonKey = null;
@@ -459,7 +460,13 @@
       <div class="qbody">
         {#if q.logTab === "active"}
           {#if q.active.length === 0}
-            <p class="empty">No active quests. Look for NPCs with a golden <strong>!</strong> badge (like Maren Halvorsen in Port Watch Arrivals).</p>
+            {#if nextOffer}
+              <p class="empty">
+                No active quests. <strong>Next Guided Step ({nextOffer.step}/7): {nextOffer.shortLabel}</strong> — speak with <strong>{nextOffer.giverLabel}</strong> in <em>{nextOffer.giverRoomName}</em> ({nextOffer.locationLabel}).
+              </p>
+            {:else}
+              <p class="empty">No active quests. Look for NPCs with a golden <strong>!</strong> badge (like Maren Halvorsen in Port Watch Arrivals).</p>
+            {/if}
           {:else}
             {#each q.active as item (item.key)}
               {@const itemSuggested = extractQuestSuggestedAction(item)}

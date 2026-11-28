@@ -421,4 +421,42 @@ describe("QuestTrackerPanel route step, guided tour pill, and quick-accept", () 
     expect(quests.dialogOpen).toBe(true);
     expect(quests.dialogNpcId).toBe("#42");
   });
+
+  it("shows Next Guided Step locator and 1-click Walk breadcrumb between completed steps", async () => {
+    const quests = new QuestsStore();
+    const pack = buildFallbackFreeport();
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#12",
+      room_name: "Port Watch Arrivals",
+      room_markers: [],
+      completed: [
+        { key: GUIDED_TOUR_KEYS[0], title: "First Papers at the Registry" },
+      ],
+      active: [],
+      available: [],
+    });
+
+    const onCmd = vi.fn();
+    const app = {
+      quests,
+      tacsim: {
+        isAboardShip: false,
+        view3dOpen: false,
+        physicalLocationKey: null,
+        serverStationRoomEntry: "room.c03_arrivals",
+        stationPack: pack,
+      },
+      focusComposer: vi.fn(),
+    } as unknown as GameApp;
+
+    render(QuestTrackerPanel, { props: { app, onCmd } });
+
+    expect(screen.getByText(/Next Guided \(2\/7\):/)).toBeTruthy();
+    expect(screen.getByText(/Ilse Oduya-Brandt/)).toBeTruthy();
+    const walkBtn = screen.getByRole("button", { name: /Walk →/i });
+    await fireEvent.click(walkBtn);
+    expect(onCmd).toHaveBeenCalledTimes(1);
+    expect(onCmd.mock.calls[0]![0]).toMatch(/^goto /i);
+  });
 });

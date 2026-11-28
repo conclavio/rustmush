@@ -13,6 +13,7 @@
     normalizePortVenueTarget,
   } from "$lib/tacsim/spatial";
   import {
+    inferStationPortFromRoomEntry,
     needsOriginPortProcurement,
     needsSurfaceExpeditionBoarding,
     resolveQuestShipTargetCompartment,
@@ -33,6 +34,9 @@
     const quests = app.quests;
     const tacsim = app.tacsim;
     if (!quests || !tacsim) return null;
+    const tracked =
+      quests.active.find((q) => q.key === quests.trackedKey) ?? quests.active[0] ?? null;
+    const nextOffer = !tracked ? quests.nextGuidedOffer : null;
     if (tacsim.isAboardShip) {
       if (tacsim.seatedAtBridgeHelm) return null;
       const settledPad = Boolean(tacsim.ambient?.settledPad);
@@ -40,21 +44,24 @@
         tacsim.ambient?.docked && !settledPad
           ? normalizePortVenueTarget(tacsim.ambient?.port ?? tacsim.trade?.hullPort)
           : null;
-      const targetComp = resolveQuestShipTargetCompartment(
+      let targetComp = resolveQuestShipTargetCompartment(
         quests.active,
         quests.trackedKey,
         dockedPortId,
         settledPad,
       );
+      if (!targetComp && nextOffer) {
+        const targetPort = inferStationPortFromRoomEntry(nextOffer.giverRoomEntry);
+        targetComp = dockedPortId && targetPort && dockedPortId === targetPort ? "airlock" : "bridge";
+      }
       const currentComp =
         (tacsim.view3dOpen ? tacsim.physicalLocationKey : null) ?? tacsim.serverShipCompartment;
       return computeShipQuestBreadcrumb(tacsim.shipTemplate, currentComp, targetComp);
     }
-    const tracked =
-      quests.active.find((q) => q.key === quests.trackedKey) ?? quests.active[0] ?? null;
     const targetEntry =
       tracked?.nextRoomEntry ||
       tracked?.checkpoints.find((c) => !c.checked && !c.liveReady && c.roomEntry)?.roomEntry ||
+      nextOffer?.giverRoomEntry ||
       null;
     const currentEntry =
       (tacsim.view3dOpen ? tacsim.physicalLocationKey : null) ?? tacsim.serverStationRoomEntry;

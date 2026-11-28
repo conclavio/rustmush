@@ -353,6 +353,8 @@ export interface GuidedTourRoadmapStep {
   key: string;
   shortLabel: string;
   giverLabel: string;
+  giverRoomEntry: string;
+  giverRoomName: string;
   locationLabel: string;
   status: GuidedTourStepStatus;
   readyToTurnIn: boolean;
@@ -367,48 +369,64 @@ export const GUIDED_TOUR_ROADMAP_META: ReadonlyArray<{
   readonly key: string;
   readonly shortLabel: string;
   readonly giverLabel: string;
+  readonly giverRoomEntry: string;
+  readonly giverRoomName: string;
   readonly locationLabel: string;
 }> = [
   {
     key: "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
     shortLabel: "Co-op Charter",
     giverLabel: "Maren Halvorsen",
+    giverRoomEntry: "room.c03_arrivals",
+    giverRoomName: "Port Watch Arrivals",
     locationLabel: "Ceres Arrivals -> Registry",
   },
   {
     key: "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel",
     shortLabel: "Locker & Tanks",
     giverLabel: "Ilse Oduya-Brandt",
+    giverRoomEntry: "room.c05_registry",
+    giverRoomName: "Registry & Co-op Desk",
     locationLabel: "Ceres Chandlery & Exchange",
   },
   {
     key: "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
     shortLabel: "Metals Haul",
     giverLabel: "Ilse Oduya-Brandt",
+    giverRoomEntry: "room.c05_registry",
+    giverRoomName: "Registry & Co-op Desk",
     locationLabel: "Ceres -> Stickney Receiving",
   },
   {
     key: "tacsim.quests.guided_onboarding/quest.guide_04_return_haul",
     shortLabel: "Return Load",
     giverLabel: "Jonas Achterberg-Nkemelu",
+    giverRoomEntry: "room.p07_receiving",
+    giverRoomName: "Receiving Counter",
     locationLabel: "Stickney -> Ceres Chandlery",
   },
   {
     key: "tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector",
     shortLabel: "Dray-P Refit",
     giverLabel: "Ilse Oduya-Brandt",
+    giverRoomEntry: "room.c05_registry",
+    giverRoomName: "Registry & Co-op Desk",
     locationLabel: "Ceres Registry -> Exchange",
   },
   {
     key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
     shortLabel: "Surface Mining",
     giverLabel: "Rosalind Qureshi-Mbeki",
+    giverRoomEntry: "room.c07_exchange",
+    giverRoomName: "Exchange Hall",
     locationLabel: "Ceres Surface Landing Site",
   },
   {
     key: "tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore",
     shortLabel: "Sell Mined Ore",
     giverLabel: "Rosalind Qureshi-Mbeki",
+    giverRoomEntry: "room.c07_exchange",
+    giverRoomName: "Exchange Hall",
     locationLabel: "Ceres -> Stickney Service",
   },
 ];
@@ -441,11 +459,31 @@ export function buildGuidedTourRoadmap(
       key: meta.key,
       shortLabel: meta.shortLabel,
       giverLabel: meta.giverLabel,
+      giverRoomEntry: meta.giverRoomEntry,
+      giverRoomName: meta.giverRoomName,
       locationLabel: meta.locationLabel,
       status,
       readyToTurnIn: Boolean(activeMatch && (activeMatch.canFinishNow || activeMatch.readyToFinish)),
     };
   });
+}
+
+/**
+ * Between-steps guided tour locator: when the player has completed at least one guided step
+ * (and has not yet completed all 7) but currently has no active quest and no offer in the
+ * current room, returns the next upcoming guided step so tracker, Quest Log, and station/ship
+ * wayfinding guide them straight to the next NPC giver.
+ */
+export function findNextGuidedOffer(
+  active: readonly ActiveQuestView[],
+  available: readonly AvailableQuestView[],
+  completed: readonly CompletedQuestView[],
+): GuidedTourRoadmapStep | null {
+  if (active.length > 0 || available.length > 0) return null;
+  const roadmap = buildGuidedTourRoadmap(active, available, completed);
+  const completedCount = roadmap.filter((s) => s.status === "completed").length;
+  if (completedCount === 0 || completedCount >= roadmap.length) return null;
+  return roadmap.find((s) => s.status === "upcoming") ?? null;
 }
 
 function guidedStepNumber(key: string): number | null {
@@ -1027,6 +1065,10 @@ export class QuestsStore {
 
   get guidedTourRoadmap(): GuidedTourRoadmapStep[] {
     return buildGuidedTourRoadmap(this.active, this.available, this.completed);
+  }
+
+  get nextGuidedOffer(): GuidedTourRoadmapStep | null {
+    return findNextGuidedOffer(this.active, this.available, this.completed);
   }
 
   get suggestedAction(): QuestSuggestedAction | null {
