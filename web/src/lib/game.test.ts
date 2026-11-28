@@ -3580,4 +3580,68 @@ describe("quest command palette route, step and cycle shortcuts", () => {
     );
     expect(readyRet?.label).toContain("Return → Ceres Freeport [ORE HOLD READY]");
   });
+
+  it("co-surfaces stowage-aware Next step alongside active ship route with [Step n/7] and readiness badges", () => {
+    const { app } = boot();
+    app.tacsim.isAboardShip = true;
+    app.tacsim.seatedAtBridgeHelm = false;
+    app.tacsim.serverShipCompartment = "airlock";
+    app.tacsim.shipTemplate = {
+      compartments: new Map([
+        ["airlock", { id: "airlock", name: "Main Airlock" }],
+        ["bridge", { id: "bridge", name: "Bridge" }],
+        ["bay", { id: "bay", name: "Vehicle Bay" }],
+      ]),
+      exits: [
+        { from: "airlock", to: "bridge", forwardCommand: "fore", reverseCommand: "aft" },
+        { from: "airlock", to: "bay", forwardCommand: "aft", reverseCommand: "fore" },
+      ],
+    } as unknown as typeof app.tacsim.shipTemplate;
+    app.tacsim.ambient = {
+      docked: true,
+      port: "Ceres Freeport",
+      settledPad: false,
+      ownStowage: {
+        cargoKg: 5000,
+        propellantKg: 10_000,
+        provisionsCrewDays: 10,
+        cargoLines: [{ good: "tacsim:metals", label: "Metals", qty: 5 }],
+      },
+      stowage: null,
+    } as unknown as typeof app.tacsim.ambient;
+
+    app.quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+          title: "Metals Down the Corridor",
+          next_room_entry: "room.p07_receiving",
+          next_step: "Sail to Stickney Yards",
+          checkpoints: [
+            {
+              id: "deliver_metals",
+              title: "Buy 5t metals at Ceres and deliver to Stickney Yards",
+              instructions: "Buy 5t metals (+market/buy metals 5) then sail to Stickney Yards (+ship/plan stickney).",
+              room_entry: "room.p07_receiving",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+      available: [],
+      completed: [],
+    });
+
+    app.paletteQuery("/quest");
+    const routeEntry = app.paletteEntries.find((e) => e.questAction?.kind === "route");
+    expect(routeEntry?.label).toContain("[Step 3/7]");
+    expect(routeEntry?.detail).toContain("[PRE-FLIGHT OK]");
+    const nextPlanEntry = app.paletteEntries.find(
+      (e) => e.questAction?.kind === "step" && e.questAction.command === "+ship/plan stickney",
+    );
+    expect(nextPlanEntry?.label).toContain("Next: Plan Stickney Yards [Step 3/7]");
+    expect(nextPlanEntry?.detail).toContain("[PRE-FLIGHT OK]");
+  });
 });

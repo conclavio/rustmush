@@ -2265,9 +2265,13 @@ export class GameApp {
       }
 
       let pushedSuggestedCmd = "";
+      let routeCmdLower = "";
       const trackedReadyTag = questReadinessTag(tracked);
+      const trackedStepSfx = stepSuffix(tracked.key);
+      const tagPrefix = trackedReadyTag ? `${trackedReadyTag} ` : "";
       if (routeCrumb) {
-        const routeTitle =
+        routeCmdLower = routeCrumb.nextExitCommand.trim().toLowerCase();
+        const routeBase =
           routeCrumb.nextExitCommand === "+ship/board"
             ? "Board Ship"
             : routeCrumb.nextExitCommand === "+ship/leave"
@@ -2279,19 +2283,22 @@ export class GameApp {
           kind: "route",
           key: tracked.key,
           command: routeCrumb.nextExitCommand,
-          title: routeTitle,
-          detail: `${routeCrumb.hops} ${routeCrumb.hops === 1 ? "hop" : "hops"} to ${routeCrumb.targetRoomName} · ${routeCrumb.nextExitCommand}`,
+          title: `${routeBase}${trackedStepSfx}`,
+          detail: `${tagPrefix}${routeCrumb.hops} ${routeCrumb.hops === 1 ? "hop" : "hops"} to ${routeCrumb.targetRoomName} · ${routeCrumb.nextExitCommand}`,
         });
-      } else {
-        const suggested = extractQuestSuggestedAction(tracked, liveStowage);
-        if (suggested) {
-          pushedSuggestedCmd = suggested.command.trim().toLowerCase();
-          const tagPrefix = trackedReadyTag ? `${trackedReadyTag} ` : "";
+      }
+      const suggested = extractQuestSuggestedAction(tracked, liveStowage);
+      if (suggested) {
+        const sugLower = suggested.command.trim().toLowerCase();
+        const dupFinish = tracked.canFinishNow && tracked.finishCmd.trim().toLowerCase() === sugLower;
+        const dupCheck = tracked.canCheckNow && tracked.checkCmd.trim().toLowerCase() === sugLower;
+        if (sugLower !== routeCmdLower && !dupFinish && !dupCheck) {
+          pushedSuggestedCmd = sugLower;
           questItems.push({
             kind: "step",
             key: tracked.key,
             command: suggested.command,
-            title: `Next: ${suggested.label}`,
+            title: `Next: ${suggested.label}${trackedStepSfx}`,
             detail: tracked.nextStep
               ? `${tagPrefix}${suggested.command} — ${tracked.nextStep}`
               : `${tagPrefix}${suggested.command}`,
@@ -2421,7 +2428,7 @@ export class GameApp {
           kind: "route",
           key: nextGuided.key,
           command: routeCrumb.nextExitCommand,
-          title: routeTitle,
+          title: `${routeTitle} [Step ${nextGuided.step}/7]`,
           detail: `${routeCrumb.hops} ${routeCrumb.hops === 1 ? "hop" : "hops"} to ${nextGuided.giverRoomName} · ${routeCrumb.nextExitCommand}`,
         });
       }
@@ -2437,7 +2444,7 @@ export class GameApp {
           kind: "step",
           key: nextGuided.key,
           command: `+ship/plan ${nextDest.portId}`,
-          title: `Sail → ${nextDest.portLabel}`,
+          title: `Sail → ${nextDest.portLabel} [Step ${nextGuided.step}/7]`,
           detail: `+ship/plan ${nextDest.portId} — ${nextDest.questTitle}`,
         });
       }
