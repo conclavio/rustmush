@@ -553,8 +553,10 @@ export function extractActiveDestinationPort(
   trackedKey: string | null,
 ): QuestDestinationHint | null {
   for (const q of orderedActiveQuests(active, trackedKey)) {
+    let hasPendingCheckpoint = false;
     for (const cp of q.checkpoints) {
       if (cp.checked || cp.liveReady) continue;
+      hasPendingCheckpoint = true;
       const text = `${cp.instructions} ${cp.title} ${q.nextInstructions} ${q.introduction}`.toLowerCase();
       // Prioritize explicit `+ship/plan <port>` or `+ship/order depart <port>` commands first
       const cmdMatch = /\+ship\/(?:plan|order\s+depart|undock)\s+([a-z0-9_]+)/i.exec(text);
@@ -568,6 +570,21 @@ export function extractActiveDestinationPort(
       for (const [id, label, pats] of KNOWN_DESTINATIONS) {
         if (pats.some((p) => text.includes(p))) {
           return { questTitle: q.title, portId: id, portLabel: label };
+        }
+      }
+    }
+    if (
+      !q.canFinishNow &&
+      !q.turnInHere &&
+      (q.readyToFinish || (!hasPendingCheckpoint && q.checkpoints.length > 0))
+    ) {
+      const turnInRoom =
+        q.nextRoomEntry || q.checkpoints[q.checkpoints.length - 1]?.roomEntry || null;
+      const turnInPort = inferStationPortFromRoomEntry(turnInRoom);
+      if (turnInPort) {
+        const found = KNOWN_DESTINATIONS.find(([id]) => id === turnInPort);
+        if (found) {
+          return { questTitle: q.title, portId: found[0], portLabel: found[1] };
         }
       }
     }

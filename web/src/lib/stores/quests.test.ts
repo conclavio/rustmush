@@ -795,5 +795,31 @@ describe("QuestsStore", () => {
     expect(resolveQuestShipTargetCompartment(store.active, store.trackedKey, null, true)).toBe("bridge");
     // Docked back at Ceres Freeport -> airlock (+ship/leave to turn in to Rosalind!)
     expect(resolveQuestShipTargetCompartment(store.active, store.trackedKey, "ceres", false)).toBe("airlock");
+    // Turn-in port destination fallback guides Sailing Plan / Solar Orrery back to Ceres Freeport until standing with Rosalind
+    expect(store.activeDestinationPort).toEqual({
+      questTitle: "Scan, Sound, and Mine a Landing Site",
+      portId: "ceres",
+      portLabel: "Ceres Freeport",
+    });
+
+    // Once standing in Rosalind's room (turn_in_here: true) -> no corridor sailing destination banner
+    store.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+          title: "Scan, Sound, and Mine a Landing Site",
+          next_room_entry: "room.c07_exchange",
+          turn_in_here: true,
+          ready_to_finish: true,
+          can_finish_now: true,
+          checkpoints: [
+            { id: "scan_landing_site", title: "Surface scan", instructions: "+tv/1 scan go", room_entry: "room.c07_exchange", checked: true, live_ready: true },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", instructions: "+tv/1 mine go", room_entry: "room.c07_exchange", checked: true, live_ready: true },
+          ],
+        },
+      ],
+    });
+    expect(store.activeDestinationPort).toBeNull();
   });
 });
