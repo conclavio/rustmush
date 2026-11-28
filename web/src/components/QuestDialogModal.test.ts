@@ -79,4 +79,84 @@ describe("QuestDialogModal guided corridor tour roadmap", () => {
     expect(quests.dialogQuestKey).toBe(GUIDED_TOUR_KEYS[2]);
     expect(screen.getByRole("dialog", { name: "Quest dialog" })).toBeTruthy();
   });
+
+  it("displays live hold progress and Step 5 refit hold check inside Quest Log and NPC Quest Dialog", () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#17",
+      room_name: "Exchange Hall",
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[2],
+          title: "Metals Down the Corridor",
+          giver_name: "Ilse Oduya-Brandt",
+          turn_in_name: "Jonas Achterberg-Nkemelu",
+          next_step: "Buy 5t metals and sail to Stickney",
+          checkpoints: [
+            {
+              id: "deliver_metals",
+              title: "Buy 5 tonnes of metals at Ceres and deliver to Stickney",
+              instructions: "Buy 5t metals at Exchange and +market/sell at Stickney.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+        {
+          key: GUIDED_TOUR_KEYS[4],
+          title: "Refit the Dray for Surface Mining",
+          giver_name: "Ilse Oduya-Brandt",
+          turn_in_name: "Rosalind Qureshi-Mbeki",
+          next_step: "Run +coop/refit prospector",
+          checkpoints: [
+            {
+              id: "refit_dray_p",
+              title: "Refit your Dray into a Dray-P prospector",
+              instructions: "Empty hold and run +coop/refit prospector.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+      available: [],
+      completed: [],
+    });
+    quests.openLog("active");
+
+    const app = {
+      quests,
+      tacsim: {
+        trade: {
+          hullId: "#99",
+          stowage: {
+            cargoKg: 2000,
+            propellantKg: 10000,
+            provisionsCrewDays: 8,
+            cargoLines: [{ good: "tacsim:metals", label: "Metals", qty: 2 }],
+          },
+        },
+      },
+      focusComposer: vi.fn(),
+    } as unknown as GameApp;
+
+    const first = render(QuestDialogModal, { app, onCmd: vi.fn() });
+    expect(screen.getByText(/METALS: 2\/5 u/i)).toBeTruthy();
+    expect(screen.getByText(/\[REFIT CHECK\]/i)).toBeTruthy();
+    expect(screen.getByText(/Stores 8d/i)).toBeTruthy();
+    first.unmount();
+
+    // Open NPC Quest Dialog for Step 3 with 5/5 metals loaded -> shows [HOLD READY]
+    (app.tacsim as unknown as { trade: { hullId: string; stowage: Record<string, unknown> } }).trade.stowage = {
+      cargoKg: 5000,
+      propellantKg: 10000,
+      provisionsCrewDays: 8,
+      cargoLines: [{ good: "tacsim:metals", label: "Metals", qty: 5 }],
+    };
+    quests.openQuestDialog(GUIDED_TOUR_KEYS[2]!);
+    render(QuestDialogModal, { app, onCmd: vi.fn() });
+    expect(screen.getByText(/\[HOLD READY\]/i)).toBeTruthy();
+    expect(screen.getByText(/METALS: 5\/5 u/i)).toBeTruthy();
+  });
 });

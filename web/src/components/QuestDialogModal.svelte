@@ -3,8 +3,10 @@
   // Every button dispatches a server-signed `+quest/...` command via `onCmd`.
   import type { GameApp } from "$lib/game.svelte";
   import {
+    evaluateQuestStowageReadiness,
     evaluateRefitHoldReadiness,
     extractActiveSurfaceMiningStatus,
+    extractActiveTradeNeed,
     extractQuestSuggestedAction,
     extractSurfaceMiningPrepActions,
     type ActiveQuestView,
@@ -20,6 +22,11 @@
   const tour = $derived(q.guidedTourProgress);
   const roadmap = $derived(tour ? q.guidedTourRoadmap : []);
   const nextOffer = $derived(q.nextGuidedOffer);
+  const liveStowage = $derived(
+    app.tacsim?.ambient?.ownStowage ??
+      app.tacsim?.ambient?.stowage ??
+      (app.tacsim?.trade?.hullId ? app.tacsim.trade.stowage : null),
+  );
 
   function prefillAndClose(cmd: string): void {
     confirmAbandonKey = null;
@@ -218,7 +225,14 @@
         {@const activeSuggested = extractQuestSuggestedAction(selectedActive)}
         {@const activeRefitCheck =
           activeSuggested?.command.startsWith("+coop/refit")
-            ? evaluateRefitHoldReadiness(app.tacsim?.trade?.stowage)
+            ? evaluateRefitHoldReadiness(liveStowage)
+            : null}
+        {@const activeHoldProgress =
+          !activeRefitCheck
+            ? evaluateQuestStowageReadiness(
+                extractActiveTradeNeed([selectedActive], selectedActive.key),
+                liveStowage,
+              )
             : null}
         <div class="qbody">
           <div class="row-tags">
@@ -263,6 +277,13 @@
                 {activeRefitCheck.provisionsEmpty ? "✓ Stores empty" : `✗ Stores ${activeRefitCheck.provisionsCrewDays}d`}
               </span>
               <span class="muted">Tank {activeRefitCheck.propellantTonnes}t OK</span>
+            </div>
+          {:else if activeHoldProgress}
+            <div class="prep-strip" class:ready={activeHoldProgress.ready} aria-label="quest hold progress">
+              <span class="prep-tag">{activeHoldProgress.ready ? "[HOLD READY]" : "[HOLD]"}</span>
+              <span class:ok={activeHoldProgress.ready}>
+                {activeHoldProgress.ready ? "✓" : "○"} {activeHoldProgress.label}: {activeHoldProgress.currentQty}/{activeHoldProgress.targetQty} {activeHoldProgress.unit}
+              </span>
             </div>
           {/if}
           {#if miningPrep.length > 0}
@@ -470,6 +491,17 @@
           {:else}
             {#each q.active as item (item.key)}
               {@const itemSuggested = extractQuestSuggestedAction(item)}
+              {@const itemRefitCheck =
+                itemSuggested?.command.startsWith("+coop/refit")
+                  ? evaluateRefitHoldReadiness(liveStowage)
+                  : null}
+              {@const itemHoldProgress =
+                !itemRefitCheck
+                  ? evaluateQuestStowageReadiness(
+                      extractActiveTradeNeed([item], item.key),
+                      liveStowage,
+                    )
+                  : null}
               <article class="qcard" class:tracked={q.trackedQuest?.key === item.key}>
                 <div class="qcard-top">
                   <strong>{item.title}</strong>
@@ -485,6 +517,25 @@
                     </span>
                   {/each}
                 </div>
+                {#if itemRefitCheck}
+                  <div class="prep-strip" class:ready={itemRefitCheck.ready} aria-label="refit hold readiness">
+                    <span class="prep-tag">{itemRefitCheck.ready ? "[READY]" : "[REFIT CHECK]"}</span>
+                    <span class:ok={itemRefitCheck.cargoEmpty}>
+                      {itemRefitCheck.cargoEmpty ? "✓ Cargo empty" : `✗ Cargo ${(itemRefitCheck.cargoKg / 1000).toFixed(1)}t`}
+                    </span>
+                    <span class:ok={itemRefitCheck.provisionsEmpty}>
+                      {itemRefitCheck.provisionsEmpty ? "✓ Stores empty" : `✗ Stores ${itemRefitCheck.provisionsCrewDays}d`}
+                    </span>
+                    <span class="muted">Tank {itemRefitCheck.propellantTonnes}t OK</span>
+                  </div>
+                {:else if itemHoldProgress}
+                  <div class="prep-strip" class:ready={itemHoldProgress.ready} aria-label="quest hold progress">
+                    <span class="prep-tag">{itemHoldProgress.ready ? "[HOLD READY]" : "[HOLD]"}</span>
+                    <span class:ok={itemHoldProgress.ready}>
+                      {itemHoldProgress.ready ? "✓" : "○"} {itemHoldProgress.label}: {itemHoldProgress.currentQty}/{itemHoldProgress.targetQty} {itemHoldProgress.unit}
+                    </span>
+                  </div>
+                {/if}
                 <div class="qcard-actions">
                   {#if item.canFinishNow}
                     <button type="button" class="btn sm complete" onclick={() => runAndReset(item.finishCmd, false)}>Complete</button>
