@@ -2536,7 +2536,19 @@ namespace TacSim.UI
                 coopCmd = sugCmd;
                 QuestJournal.TryGetQuestHoldReadinessSummary(active, out refitSummary, out refitReady);
             }
-            EconomyPanels.ApplyQuestGuidance(tradeSlug, tradeTitle, coopLabel, coopCmd, refitSummary, refitReady);
+            bool hasMining = QuestJournal.TryGetActiveSurfaceMiningStatus(out _);
+            string destPortLabel = QuestJournal.TryGetActiveDestinationPort(out var destHint)
+                ? destHint.PortLabel
+                : string.Empty;
+            EconomyPanels.ApplyQuestGuidance(
+                tradeSlug,
+                tradeTitle,
+                coopLabel,
+                coopCmd,
+                refitSummary,
+                refitReady,
+                questDestPortLabel: destPortLabel,
+                hasSurfaceMiningQuest: hasMining);
         }
 
         public void SwitchTradeTerminalTab(TradeTerminalTab tab, bool autoQuery = true)

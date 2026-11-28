@@ -14129,5 +14129,68 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void HudController_JobsTabCrossLinksCorridorHaulAndSurfaceSurveyQuests()
+        {
+            var rootGo = new UnityEngine.GameObject("HudJobsQuestCrossLinkTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                var emitted = new List<string>();
+                hud.OnCommandSubmitted += cmd => emitted.Add(cmd);
+
+                // Clean state: Jobs quest banner stays hidden and default haul good stays volatiles
+                hud.OpenTradeAndSailingModal("EXCHANGE", openSailingTab: false);
+                hud.SwitchTradeTerminalTab(TacSim.UI.TradeTerminalTab.Jobs, autoQuery: false);
+                Assert.IsFalse(hud.EconomyPanels.IsJobsQuestBannerVisible);
+                Assert.AreEqual("volatiles", hud.EconomyPanels.SelectedHaulGood);
+
+                // Step 3 corridor destination -> Jobs tab shows Stickney Yards haulage cross-link
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"",
+                        ""title"": ""Metals Down the Corridor"",
+                        ""checkpoints"": [{
+                            ""id"": ""deliver_metals"",
+                            ""title"": ""Deliver 5t metals to Stickney Yards"",
+                            ""instructions"": ""Run +ship/plan stickney and sell at Stickney."",
+                            ""checked"": false, ""live_ready"": false
+                        }]
+                    }]
+                }")));
+                hud.SwitchTradeTerminalTab(TacSim.UI.TradeTerminalTab.Jobs, autoQuery: false);
+                Assert.IsTrue(hud.EconomyPanels.IsJobsQuestBannerVisible);
+                StringAssert.Contains("Stickney Yards", hud.EconomyPanels.JobsQuestBannerTextForTests);
+                emitted.Clear();
+                Assert.IsTrue(hud.EconomyPanels.TriggerJobsQuestFilterForTests());
+                CollectionAssert.Contains(emitted, "+market/jobs haul");
+
+                // Step 6 surface prospecting -> Jobs tab switches to Survey Commissions cross-link
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Surface scan"", ""instructions"": ""Run +tv/1 scan go."", ""checked"": false, ""live_ready"": false },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""instructions"": ""Run +tv/1 mine go."", ""checked"": false, ""live_ready"": false }
+                        ]
+                    }]
+                }")));
+                hud.SwitchTradeTerminalTab(TacSim.UI.TradeTerminalTab.Jobs, autoQuery: false);
+                Assert.IsTrue(hud.EconomyPanels.IsJobsQuestBannerVisible);
+                StringAssert.Contains("Surface Survey", hud.EconomyPanels.JobsQuestBannerTextForTests);
+                emitted.Clear();
+                Assert.IsTrue(hud.EconomyPanels.TriggerJobsQuestFilterForTests());
+                CollectionAssert.Contains(emitted, "+market/jobs survey");
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
