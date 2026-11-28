@@ -150,7 +150,8 @@
         {band.scene.title}{#if band.scene.round !== null}<span class="muted"> r{band.scene.round}{#if band.scene.turn !== null}·t{band.scene.turn}{/if}</span>{/if}
       </span>
     {/if}
-    {#each sortRoomQuestMarkers(app.quests?.roomMarkers ?? []) as qm (qm.npcId)}
+    {@const sortedRoomMarkers = sortRoomQuestMarkers(app.quests?.roomMarkers ?? [])}
+    {#each sortedRoomMarkers as qm (qm.npcId)}
       {@const stepNo = guidedStepNumber(qm.questKey)}
       <button
         type="button"
@@ -173,6 +174,35 @@
         {/if}
       </button>
     {/each}
+    {#if sortedRoomMarkers.length === 0 && (app.quests?.active?.length ?? 0) === 0}
+      {#if app.quests?.nextGuidedOffer}
+        {@const nextOffer = app.quests.nextGuidedOffer}
+        <button
+          type="button"
+          class="qmarker"
+          data-marker="available"
+          aria-label="next guided quest step"
+          title="Next Guided Step ({nextOffer.step}/{GUIDED_TOUR_KEYS.length}): Speak with {nextOffer.giverLabel} in {nextOffer.giverRoomName}"
+          onclick={() => app.quests?.openLog("completed")}
+        >
+          <span class="qsym" aria-hidden="true">!</span>Next: {nextOffer.giverLabel}
+          <span class="qrole">{nextOffer.giverRoomName}</span>
+          <span class="qstep">Step {nextOffer.step}/{GUIDED_TOUR_KEYS.length}</span>
+        </button>
+      {:else if app.quests?.guidedTourProgress?.allDone}
+        <button
+          type="button"
+          class="qmarker qmaster"
+          data-marker="mastered"
+          aria-label="guided tour mastered"
+          title="Guided Corridor Tour Complete ({GUIDED_TOUR_KEYS.length}/{GUIDED_TOUR_KEYS.length}) — Open Quest Log"
+          onclick={() => app.quests?.openLog("completed")}
+        >
+          <span class="qsym" aria-hidden="true">★</span>Corridor Captain
+          <span class="qstep">{GUIDED_TOUR_KEYS.length}/{GUIDED_TOUR_KEYS.length}</span>
+        </button>
+      {/if}
+    {/if}
     <span class="grow"></span>
     {#each app.presence.thinking as t (t.name)}
       <span class="pill thinking" title="the NPC is thinking">{t.name}…</span>
@@ -345,6 +375,17 @@
     border-color: #64748b;
     background: rgba(100, 116, 139, 0.18);
     color: #cbd5e1;
+  }
+
+  .qmarker.qmaster {
+    border-color: #34d399;
+    background: rgba(16, 185, 129, 0.2);
+    color: #d1fae5;
+  }
+
+  .qmarker.qmaster .qsym {
+    background: #34d399;
+    color: #052e16;
   }
 
   .qmarker:hover {
