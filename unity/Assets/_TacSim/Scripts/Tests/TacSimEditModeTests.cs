@@ -15670,5 +15670,69 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void SurfaceAndOrbitalOverlays_ShowLiveOreHoldAndStep6PostMineReturnPort()
+        {
+            var rootGo = new UnityEngine.GameObject("SurfaceOreHoldAndReturnTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                var surfGo = new UnityEngine.GameObject("SurfaceCtrlForOreTest");
+                surfGo.transform.SetParent(rootGo.transform, false);
+                var surface = surfGo.AddComponent<TacSim.Surface.SurfaceMiningController>();
+                surface.EnterSurfaceMode();
+                hud.Overlays.BindControllers(surface, null, null);
+
+                var tradeState = new TacSimTradeAndShipState();
+                tradeState.CargoLots.Add(new TacSim.World.HoldCargoLot
+                {
+                    GoodId = "tacsim:carbon_ore",
+                    Label = "Carbon Ore",
+                    Quantity = 2
+                });
+                hud.BindTradeState(tradeState);
+
+                // Step 6 mining done -> turn-in at Ceres Exchange (room.c07_exchange) with no explicit +ship/plan port in text
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""next_step"": ""Recover rig and report back to Rosalind at Ceres Exchange"",
+                        ""next_room_entry"": ""room.c07_exchange"",
+                        ""checkpoints"": [
+                            { ""id"": ""scan"", ""title"": ""Scan site"", ""instructions"": ""+tv/1 scan go"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""sound"", ""title"": ""Sound pocket"", ""instructions"": ""+tv/1 sound go"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""mine"", ""title"": ""Mine 1t carbon_ore"", ""instructions"": ""+tv/1 mine go"", ""checked"": true, ""live_ready"": true }
+                        ]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+
+                string readings = hud.Overlays.SurfaceReadingsTextForTests;
+                StringAssert.Contains("[Step 6/7]", readings);
+                StringAssert.Contains("Hold: 2t carbon ore", readings);
+                Assert.IsTrue(hud.Overlays.IsSurfaceReturnPortButtonVisible, "Post-mine Step 6 must show RETURN: CERES button");
+                Assert.AreEqual("RETURN: CERES", hud.Overlays.SurfaceReturnPortButtonLabel);
+
+                string emitted = null;
+                hud.Overlays.OnCommandRequested += cmd => emitted = cmd;
+                Assert.IsTrue(hud.Overlays.TriggerSurfaceReturnPortForTests());
+                Assert.AreEqual("+ship/plan ceres", emitted);
+
+                // Orbital quest strip also transitions to Return: CERES FREEPORT once mine_done is true
+                Assert.IsTrue(hud.Overlays.IsOrbitalQuestStripVisible);
+                StringAssert.Contains("CERES FREEPORT", hud.Overlays.OrbitalQuestBannerSnapshot);
+                Assert.AreEqual("PLAN: CERES", hud.Overlays.OrbitalQuestButtonLabel);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

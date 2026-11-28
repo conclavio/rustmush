@@ -78,11 +78,18 @@ namespace TacSim.UI
         public void BindTradeState(TacSimTradeAndShipState trade)
         {
             if (_tradeState != null)
+            {
                 _tradeState.OnStateChanged -= RefreshOrbitalQuestStrip;
+                _tradeState.OnStateChanged -= RefreshSurfaceHud;
+            }
             _tradeState = trade;
             if (_tradeState != null)
+            {
                 _tradeState.OnStateChanged += RefreshOrbitalQuestStrip;
+                _tradeState.OnStateChanged += RefreshSurfaceHud;
+            }
             RefreshOrbitalQuestStrip();
+            RefreshSurfaceHud();
         }
 
         // Slice 2: Orbital Ops Bar (Mining + Space Tactical) & Doc 49 (`CC.9`) Fire-Control Card
@@ -484,7 +491,10 @@ namespace TacSim.UI
                 _questJournal.OnQuestsPanelUpdated -= RefreshOrbitalQuestStrip;
             }
             if (_tradeState != null)
+            {
                 _tradeState.OnStateChanged -= RefreshOrbitalQuestStrip;
+                _tradeState.OnStateChanged -= RefreshSurfaceHud;
+            }
             _surface = null;
             _arena = null;
             _space = null;
@@ -737,6 +747,32 @@ namespace TacSim.UI
             _orbitalOpsBar.SetActive(false);
         }
 
+        private bool TryResolvePostMineReturnPort(QuestSurfaceMiningStatus qm, out string portId, out string portLabel)
+        {
+            portId = string.Empty;
+            portLabel = string.Empty;
+            if (!qm.MineDone || _questJournal == null) return false;
+            if (_questJournal.TryGetActiveDestinationPort(out var retDest))
+            {
+                portId = retDest.PortId;
+                portLabel = retDest.PortLabel;
+                return !string.IsNullOrEmpty(portId);
+            }
+            var tracked = _questJournal.GetTrackedActiveQuest();
+            string inferred = TacSimQuestJournal.InferStationPortFromRoomEntry(tracked?.NextRoomEntry);
+            if (string.IsNullOrEmpty(inferred)) inferred = "ceres";
+            portId = inferred;
+            portLabel = inferred switch
+            {
+                "stickney" => "Stickney Yards",
+                "luna" => "Aitken Basin",
+                "deimos" => "Voltaire Base",
+                "titan" => "Ligeia Dock",
+                _ => "Ceres Freeport"
+            };
+            return true;
+        }
+
         private void RefreshOrbitalQuestStrip()
         {
             if (_orbitalQuestStrip == null) return;
@@ -748,10 +784,9 @@ namespace TacSim.UI
                 (_questJournal.TryGetActiveDestinationPort(out hint) ||
                  _questJournal.TryGetNextGuidedOfferDestination(curPort, out hint));
             QuestSurfaceMiningStatus qm = default;
-            bool hasMining = !hasDest &&
+            bool hasMiningStatus = !hasDest &&
                 _questJournal != null &&
-                _questJournal.TryGetActiveSurfaceMiningStatus(out qm) &&
-                !qm.MineDone;
+                _questJournal.TryGetActiveSurfaceMiningStatus(out qm);
 
             if (hasDest)
             {
@@ -763,7 +798,7 @@ namespace TacSim.UI
                     _orbitalQuestBtnLbl.text = $"PLAN: {hint.PortId.ToUpperInvariant()}";
                 _orbitalQuestStrip.SetActive(true);
             }
-            else if (hasMining)
+            else if (hasMiningStatus && !qm.MineDone)
             {
                 _orbitalQuestPlanPort = string.Empty;
                 _orbitalQuestOpenGround = true;
@@ -771,6 +806,16 @@ namespace TacSim.UI
                     _orbitalQuestText.text = $"[QUEST] Surface Mining: {qm.TargetOreSlug} — {qm.QuestTitle}";
                 if (_orbitalQuestBtnLbl != null)
                     _orbitalQuestBtnLbl.text = $"GROUND [G]: {qm.RecommendedFamily.ToUpperInvariant()}";
+                _orbitalQuestStrip.SetActive(true);
+            }
+            else if (hasMiningStatus && TryResolvePostMineReturnPort(qm, out string retPortId, out string retPortLabel))
+            {
+                _orbitalQuestPlanPort = retPortId;
+                _orbitalQuestOpenGround = false;
+                if (_orbitalQuestText != null)
+                    _orbitalQuestText.text = $"[QUEST] Return: {retPortLabel.ToUpperInvariant()} — {qm.QuestTitle}";
+                if (_orbitalQuestBtnLbl != null)
+                    _orbitalQuestBtnLbl.text = $"PLAN: {retPortId.ToUpperInvariant()}";
                 _orbitalQuestStrip.SetActive(true);
             }
             else
@@ -1107,17 +1152,23 @@ namespace TacSim.UI
                 string scanMark = qMine.ScanDone ? "<color=#55EE99>[✓]</color>" : "<color=#99BBCC>[ ]</color>";
                 string soundMark = qMine.SoundDone ? "<color=#55EE99>[✓]</color>" : "<color=#99BBCC>[ ]</color>";
                 string mineMark = qMine.MineDone ? "<color=#55EE99>[✓]</color>" : "<color=#99BBCC>[ ]</color>";
-                sb.AppendLine($"<color=#FFDD44><b>[QUEST] {MushProtocol.EscapeUnityRichText(qMine.QuestTitle)}</b></color>");
+                var trackedMine = _questJournal.GetTrackedActiveQuest();
+                int stepNo = TacSimQuestJournal.GuidedStepNumber(trackedMine?.Key);
+                string stepTag = stepNo > 0 ? $" [Step {stepNo}/7]" : string.Empty;
+                int holdOre = _tradeState != null ? _tradeState.GetHoldCommodityQuantity(qMine.TargetOreSlug) : 0;
+                string oreName = (qMine.TargetOreSlug ?? string.Empty).Replace('_', ' ');
+                sb.AppendLine($"<color=#FFDD44><b>[QUEST]{stepTag} {MushProtocol.EscapeUnityRichText(qMine.QuestTitle)}</b></color>");
                 sb.AppendLine($"{scanMark} Scan Site   {soundMark} Sound Pocket   {mineMark} Mine {MushProtocol.EscapeUnityRichText(qMine.TargetOreSlug)}");
+                sb.AppendLine($"<color=#FFEE88>Hold: {holdOre}t {MushProtocol.EscapeUnityRichText(oreName)}   |   Hopper: {_surface.HopperLoadedTonnes}t</color>");
                 sb.AppendLine($"<color=#77DDFF>{MushProtocol.EscapeUnityRichText(qMine.FormatPrepHintLine())}</color>");
-                if (qMine.MineDone && _questJournal.TryGetActiveDestinationPort(out var retDest))
+                if (TryResolvePostMineReturnPort(qMine, out string retPortId, out string retPortLabel))
                 {
-                    _surfReturnPortId = retDest.PortId;
+                    _surfReturnPortId = retPortId;
                     if (_surfReturnPortBtnLbl != null)
-                        _surfReturnPortBtnLbl.text = $"RETURN: {retDest.PortId.ToUpperInvariant()}";
+                        _surfReturnPortBtnLbl.text = $"RETURN: {retPortId.ToUpperInvariant()}";
                     if (_surfReturnPortBtn != null)
                         _surfReturnPortBtn.gameObject.SetActive(true);
-                    sb.AppendLine($"<color=#66FFAA><b>Return:</b> {MushProtocol.EscapeUnityRichText(retDest.PortLabel)} (+ship/plan {MushProtocol.EscapeUnityRichText(retDest.PortId)})</color>");
+                    sb.AppendLine($"<color=#66FFAA><b>Return:</b> {MushProtocol.EscapeUnityRichText(retPortLabel)} (+ship/plan {MushProtocol.EscapeUnityRichText(retPortId)})</color>");
                 }
             }
             for (int i = 0; i < _familyBtnLabels.Count && i < SurfaceFamilyNames.Length; i++)
