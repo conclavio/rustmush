@@ -5901,27 +5901,49 @@ impl TuiApp {
             if dest.is_some() || qm.is_some() {
                 let [quest_bar, rest] =
                     Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(body_area);
+                let docking_live = self.pixel.docking_active();
                 let mut spans = vec![Span::styled(
-                    " [QUEST] ",
+                    if docking_live && dest.is_some() {
+                        " [QUEST DOCK] "
+                    } else {
+                        " [QUEST] "
+                    },
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
                 )];
                 if let Some(dest) = dest {
-                    spans.push(Span::styled(
-                        format!("Destination: {} ", dest.port_label),
-                        Style::default()
-                            .fg(Color::White)
-                            .add_modifier(Modifier::BOLD),
-                    ));
-                    spans.push(Span::styled(
-                        format!("— {}  ", dest.quest_title),
-                        Style::default().fg(Color::Gray),
-                    ));
-                    spans.push(Span::styled(
-                        format!("(+ship/plan {})", dest.port_id),
-                        Style::default().fg(Color::Cyan),
-                    ));
+                    if docking_live {
+                        spans.push(Span::styled(
+                            format!("Approach: {} ", dest.port_label),
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD),
+                        ));
+                        spans.push(Span::styled(
+                            format!("— {}  ", dest.quest_title),
+                            Style::default().fg(Color::Gray),
+                        ));
+                        spans.push(Span::styled(
+                            "(+ship/leave once docked)",
+                            Style::default().fg(Color::Green),
+                        ));
+                    } else {
+                        spans.push(Span::styled(
+                            format!("Destination: {} ", dest.port_label),
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD),
+                        ));
+                        spans.push(Span::styled(
+                            format!("— {}  ", dest.quest_title),
+                            Style::default().fg(Color::Gray),
+                        ));
+                        spans.push(Span::styled(
+                            format!("(+ship/plan {})", dest.port_id),
+                            Style::default().fg(Color::Cyan),
+                        ));
+                    }
                 } else if let Some(ref m) = qm {
                     spans.push(Span::styled(
                         format!("Surface Mining: {} ", m.target_ore_slug),
@@ -6029,11 +6051,26 @@ impl TuiApp {
             PictureKind::SpaceCockpit | PictureKind::Holotank | PictureKind::Docking
         ) {
             if let Some(dest) = self.port_walk.quest_dest_hint() {
-                status_spans.push(Span::styled(
+                let text = if self.pixel.kind() == PictureKind::Docking {
+                    if self.pixel.docking_active() {
+                        format!(
+                            "  |  [QUEST DOCK] {} — {} (+ship/leave once docked)",
+                            dest.port_label, dest.quest_title
+                        )
+                    } else {
+                        format!(
+                            "  |  [QUEST DOCK] {} (+helm/dock {})",
+                            dest.port_label, dest.port_id
+                        )
+                    }
+                } else {
                     format!(
                         "  |  [QUEST] Dest: {} (+ship/plan {})",
                         dest.port_label, dest.port_id
-                    ),
+                    )
+                };
+                status_spans.push(Span::styled(
+                    text,
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
@@ -14000,6 +14037,88 @@ mod tests {
         assert!(
             mine_txt.contains("[QUEST] Mine carbon_ore (Alt+q quarry, z: ground, l: carbon)"),
             "expected Step 6 mining hint on SpaceCockpit status bar:\n{mine_txt}"
+        );
+    }
+
+    #[test]
+    fn docking_view_status_bar_shows_quest_dock_approach_and_dock_verb() {
+        let mut app = app();
+        app.pixel.probe_sent(std::time::Instant::now());
+        app.pixel.graphics_reply(true);
+        app.active = CHART_SCREEN;
+        let _ = app.feed_input(b"\x07");
+        let _ = app.feed_input(b"v");
+        let _ = app.feed_input(b"v");
+        let _ = app.feed_input(b"v");
+        assert_eq!(app.pixel.kind(), PictureKind::Docking);
+
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "active": [{
+                    "key": "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+                    "title": "Metals Down the Corridor",
+                    "next_room_entry": "room.p07_receiving",
+                    "checkpoints": [{
+                        "id": "deliver_metals",
+                        "title": "Deliver 5t metals to Stickney Yards",
+                        "instructions": "Run +ship/plan stickney and +market/sell.",
+                        "room_entry": "room.p07_receiving",
+                        "checked": false,
+                        "live_ready": false
+                    }]
+                }],
+                "available": [],
+                "completed": []
+            }),
+        });
+        let dump_buf = |a: &mut TuiApp| -> String {
+            let b = painted(a, 180, 34);
+            (0..b.area.height)
+                .map(|y| {
+                    (0..b.area.width)
+                        .map(|x| b[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        // Idle Docking camera shows +helm/dock <port_id>
+        let idle_txt = dump_buf(&mut app);
+        assert!(
+            idle_txt.contains("[QUEST DOCK] Stickney Yards (+helm/dock stickney)"),
+            "expected idle Docking quest verb:\n{idle_txt}"
+        );
+
+        // Active 60 Hz docking session switches both top quest bar and Docking status bar to live Approach
+        app.apply_event(&OutputEvent::Panel {
+            feed: mush_pixel::docking::SPACE_DOCKING_FEED.into(),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "session_id": "dock-stickney-1",
+                "port_name": "Stickney Yards",
+                "dz_mm": 12000,
+                "vx_mmps": 0, "vy_mmps": 0, "vz_mmps": -200
+            }),
+        });
+        assert!(app.pixel.docking_active());
+        let live_txt = dump_buf(&mut app);
+        assert!(
+            live_txt.contains(
+                "[QUEST DOCK] Stickney Yards — Metals Down the Corridor (+ship/leave once docked)"
+            ),
+            "expected live Docking status bar approach hint:\n{live_txt}"
+        );
+
+        // Text-mode CHART_SCREEN (no Kitty picture) also switches its quest bar to live Quest Dock Approach
+        let _ = app.feed_input(b"\x07");
+        let text_mode_txt = dump_buf(&mut app);
+        assert!(
+            text_mode_txt.contains("[QUEST DOCK] Approach: Stickney Yards"),
+            "expected live text-mode CHART_SCREEN Quest Dock Approach bar:\n{text_mode_txt}"
         );
     }
 
