@@ -159,4 +159,72 @@ describe("QuestDialogModal guided corridor tour roadmap", () => {
     expect(screen.getByText(/\[HOLD READY\]/i)).toBeTruthy();
     expect(screen.getByText(/METALS: 5\/5 u/i)).toBeTruthy();
   });
+
+  it("shows Optional · Restartable indicator, switches to Completed tab from done roadmap step, and celebrates 7/7 completion", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#15",
+      room_name: "Registry & Co-op Desk",
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[0],
+          title: "First Papers at the Registry",
+          category: "guided",
+          giver_name: "Maren Halvorsen",
+          turn_in_name: "Ilse Oduya-Brandt",
+          allow_restart: true,
+          reward_summary: "Guided Tour Step 1/7",
+          next_step: "Enroll with Ilse",
+          checkpoints: [],
+        },
+      ],
+      available: [],
+      completed: [
+        {
+          key: GUIDED_TOUR_KEYS[1],
+          title: "Stock the Locker and Tanks",
+          turn_in_name: "Ilse Oduya-Brandt",
+          completion: "Tanks topped and galley stocked.",
+          reward_summary: "Guided Tour Step 2/7",
+        },
+      ],
+    });
+    quests.openLog("active");
+    const app = { quests, tacsim: { trade: null }, focusComposer: vi.fn() } as unknown as GameApp;
+
+    const first = render(QuestDialogModal, { app, onCmd: vi.fn() });
+    expect(screen.getByText(/Guided · Restartable/i)).toBeTruthy();
+    // Clicking a completed roadmap pill switches Quest Log to Completed tab
+    const donePill = screen.getByRole("button", { name: /2\. Locker & Tanks/ });
+    await fireEvent.click(donePill);
+    expect(quests.logTab).toBe("completed");
+    expect(screen.getByText("Step 2/7")).toBeTruthy();
+    expect(screen.getByText(/Reward: Guided Tour Step 2\/7/)).toBeTruthy();
+    first.unmount();
+
+    // Active quest dialog also shows Optional · Restartable footnote
+    quests.openQuestDialog(GUIDED_TOUR_KEYS[0]!);
+    const second = render(QuestDialogModal, { app, onCmd: vi.fn() });
+    expect(screen.getByText(/Optional · Restartable/i)).toBeTruthy();
+    second.unmount();
+
+    // All 7/7 completed -> Completed tab shows Corridor Captain celebration banner
+    quests.applyFrame({
+      schema: 1,
+      active: [],
+      available: [],
+      completed: GUIDED_TOUR_KEYS.map((key, idx) => ({
+        key,
+        title: `Guided Step ${idx + 1}`,
+        turn_in_name: "Corridor Host",
+        completion: `Completed step ${idx + 1}.`,
+        reward_summary: `Tour Step ${idx + 1}/7`,
+      })),
+    });
+    quests.openLog("completed");
+    render(QuestDialogModal, { app, onCmd: vi.fn() });
+    const banner = screen.getByRole("status", { name: "Guided corridor tour complete" });
+    expect(banner.textContent).toContain("Guided Corridor Tour Complete (7/7) — Corridor Captain");
+  });
 });
