@@ -160,6 +160,85 @@ namespace TacSim.World
             return (p == 'c' || p == 'p' || p == 'l' || p == 'd' || p == 't') && char.IsDigit(low[6]);
         }
 
+        /// <summary>
+        /// Resolves a quest's target room onto the currently loaded station pack:
+        /// Step 6 surface expeditions resolve to the local `berth_gallery` (`isBoardingTarget = true`),
+        /// same-station targets resolve directly, and cross-port targets resolve to the local Exchange /
+        /// Chandlery / Service room while `needsOriginExchangeFirst` is true or to `berth_gallery` once ready to sail.
+        /// </summary>
+        public bool TryResolveLocalQuestRoom(
+            string targetRoomEntry,
+            bool needsOriginExchangeFirst,
+            bool needsShipExpedition,
+            out string localRoomEntry,
+            out bool isBoardingTarget)
+        {
+            localRoomEntry = string.Empty;
+            isBoardingTarget = false;
+            if (Pack == null || (string.IsNullOrEmpty(targetRoomEntry) && !needsShipExpedition))
+                return false;
+
+            if (needsShipExpedition)
+            {
+                foreach (var kv in Pack.Rooms)
+                {
+                    if (kv.Key.IndexOf("berth_gallery", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        localRoomEntry = kv.Key;
+                        isBoardingTarget = true;
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            if (Pack.Rooms.ContainsKey(targetRoomEntry))
+            {
+                localRoomEntry = targetRoomEntry;
+                return true;
+            }
+
+            if (!IsCorridorStationRoomEntry(targetRoomEntry))
+                return false;
+
+            if (needsOriginExchangeFirst)
+            {
+                string exchangeEntry = null;
+                string fallbackEntry = null;
+                foreach (var kv in Pack.Rooms)
+                {
+                    if (kv.Key.IndexOf("exchange", StringComparison.OrdinalIgnoreCase) >= 0)
+                    {
+                        exchangeEntry = kv.Key;
+                        break;
+                    }
+                    if (fallbackEntry == null &&
+                        (kv.Key.IndexOf("chandlery", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                         kv.Key.IndexOf("service", StringComparison.OrdinalIgnoreCase) >= 0))
+                    {
+                        fallbackEntry = kv.Key;
+                    }
+                }
+                string tradeRoom = !string.IsNullOrEmpty(exchangeEntry) ? exchangeEntry : fallbackEntry;
+                if (!string.IsNullOrEmpty(tradeRoom))
+                {
+                    localRoomEntry = tradeRoom;
+                    return true;
+                }
+            }
+
+            foreach (var kv in Pack.Rooms)
+            {
+                if (kv.Key.IndexOf("berth_gallery", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    localRoomEntry = kv.Key;
+                    isBoardingTarget = true;
+                    return true;
+                }
+            }
+            return false;
+        }
+
         public bool TryGetNextQuestExitBreadcrumb(
             string fromRoomEntry,
             string targetRoomEntry,

@@ -79,11 +79,14 @@ namespace TacSim.UI
             string roomName,
             bool isTurnIn,
             int nextGuidedStep = 0,
-            string nextGuidedGiver = null)
+            string nextGuidedGiver = null,
+            bool isBoarding = false)
         {
             string roomUpper = string.IsNullOrWhiteSpace(roomName) ? "OBJECTIVE ROOM" : roomName.Trim().ToUpperInvariant();
             if (nextGuidedStep > 0 && !string.IsNullOrWhiteSpace(nextGuidedGiver))
                 return $"NEXT GUIDED ({nextGuidedStep}/7) [!]: {nextGuidedGiver.Trim().ToUpperInvariant()} — {roomUpper}";
+            if (isBoarding)
+                return $"BOARD SHIP FOR QUEST: {roomUpper} (+ship/board)";
             return isTurnIn ? $"QUEST TURN-IN: {roomUpper}" : $"QUEST OBJECTIVE: {roomUpper}";
         }
 
