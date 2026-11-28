@@ -332,6 +332,7 @@ namespace TacSim.UI
         private string _lastListingsSignature;
 
         public int HighlightedQuestListingCount { get; private set; }
+        public ulong FirstExchangeListingIdSnapshot { get; private set; }
         public bool IsExchangeQuestBannerVisible => _exchangeQuestBanner != null && _exchangeQuestBanner.activeSelf;
         public string ExchangeQuestBannerText => _exchangeQuestBannerText != null ? _exchangeQuestBannerText.text : string.Empty;
         public bool IsSailingQuestBannerVisible => _sailingQuestBanner != null && _sailingQuestBanner.activeSelf;
@@ -3028,6 +3029,7 @@ namespace TacSim.UI
                 _listingsViewportRect.offsetMax = new Vector2(0f, hasQuestNeed ? -80f : -46f);
 
             HighlightedQuestListingCount = 0;
+            FirstExchangeListingIdSnapshot = 0;
 
             if (_boundTradeState.Listings.Count == 0)
             {
@@ -3046,9 +3048,27 @@ namespace TacSim.UI
 
             _emptyListingsRow.SetActive(false);
             int count = _boundTradeState.Listings.Count;
+            List<MarketListingRow> orderedListings;
+            if (hasQuestNeed)
+            {
+                orderedListings = new List<MarketListingRow>(count);
+                var restListings = new List<MarketListingRow>(count);
+                for (int i = 0; i < count; i++)
+                {
+                    var candidate = _boundTradeState.Listings[i];
+                    if (questNeed.MatchesListing(candidate)) orderedListings.Add(candidate);
+                    else restListings.Add(candidate);
+                }
+                orderedListings.AddRange(restListings);
+            }
+            else
+            {
+                orderedListings = _boundTradeState.Listings;
+            }
             for (int i = 0; i < count; i++)
             {
-                var row = _boundTradeState.Listings[i];
+                var row = orderedListings[i];
+                if (i == 0) FirstExchangeListingIdSnapshot = row.ListingId;
                 var good = _boundTradeState.FindGoodByNameOrCode(row.GoodCode);
                 var slot = GetOrCreatePooledListingCard(i);
                 bool isQuestMatch = hasQuestNeed && questNeed.MatchesListing(row);
