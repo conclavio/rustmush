@@ -33,6 +33,7 @@ namespace TacSim.UI
         public string QuestDestinationPortLabel { get; private set; } = string.Empty;
         public bool GroundChartQuestHighlighted { get; private set; }
         public string GroundChartButtonLabel => _groundBtnLbl != null ? _groundBtnLbl.text : string.Empty;
+        public string FirstSidebarRouteLabelSnapshot { get; private set; } = string.Empty;
 
         private const int TexSize = 512;
 
@@ -559,7 +560,8 @@ namespace TacSim.UI
         {
             return route != null &&
                    !string.IsNullOrEmpty(QuestDestinationPortId) &&
-                   string.Equals(route.To, QuestDestinationPortId, StringComparison.OrdinalIgnoreCase);
+                   (string.Equals(route.To, QuestDestinationPortId, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(route.Venue, QuestDestinationPortId, StringComparison.OrdinalIgnoreCase));
         }
 
         private bool IsQuestDestinationBody(SolarChartBody body)
@@ -572,7 +574,8 @@ namespace TacSim.UI
                 for (int i = 0; i < CurrentFrame.Routes.Count; i++)
                 {
                     var r = CurrentFrame.Routes[i];
-                    if (string.Equals(r.To, QuestDestinationPortId, StringComparison.OrdinalIgnoreCase) &&
+                    if ((string.Equals(r.To, QuestDestinationPortId, StringComparison.OrdinalIgnoreCase) ||
+                         string.Equals(r.Venue, QuestDestinationPortId, StringComparison.OrdinalIgnoreCase)) &&
                         string.Equals(r.Body, body.Id, StringComparison.OrdinalIgnoreCase))
                     {
                         return true;
@@ -584,6 +587,7 @@ namespace TacSim.UI
 
         private void RebuildSidebarList()
         {
+            FirstSidebarRouteLabelSnapshot = string.Empty;
             if (_routeListRoot == null) return;
             for (int i = _routeListRoot.childCount - 1; i >= 0; i--)
             {
@@ -594,35 +598,54 @@ namespace TacSim.UI
 
             if (CurrentFrame == null) return;
 
-            // 1. Cleared Passage Routes first (most actionable for captains)
+            // 1. Cleared Passage Routes first (most actionable for captains), with active quest destination sorted first
+            var orderedRoutes = new List<SolarChartRoute>(CurrentFrame.Routes.Count);
+            var restRoutes = new List<SolarChartRoute>(CurrentFrame.Routes.Count);
             for (int i = 0; i < CurrentFrame.Routes.Count; i++)
             {
                 var r = CurrentFrame.Routes[i];
+                if (IsQuestDestinationRoute(r)) orderedRoutes.Add(r);
+                else restRoutes.Add(r);
+            }
+            orderedRoutes.AddRange(restRoutes);
+
+            for (int i = 0; i < orderedRoutes.Count; i++)
+            {
+                var r = orderedRoutes[i];
                 string bodyId = !string.IsNullOrEmpty(r.Body) ? r.Body : r.To;
-                string portId = r.To;
+                string portId = !string.IsNullOrEmpty(r.Venue) ? r.Venue : r.To;
                 bool isQuest = IsQuestDestinationRoute(r);
                 string summary = r.Loaded != null
                     ? $"{r.To.ToUpperInvariant()}  ({TacSimSolarChartFrame.FormatHours(r.Loaded.TotalSeconds)}, {r.Loaded.BurnTonnes:0.#}t)"
                     : $"{r.To.ToUpperInvariant()}  (overweight)";
-                bool isSel = string.Equals(SelectedPortId, portId, StringComparison.OrdinalIgnoreCase);
+                bool isSel = string.Equals(SelectedPortId, portId, StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(SelectedPortId, r.To, StringComparison.OrdinalIgnoreCase);
                 Color col = isQuest
                     ? (isSel ? new Color(0.68f, 0.48f, 0.14f) : new Color(0.54f, 0.38f, 0.12f))
                     : (isSel ? new Color(0.22f, 0.56f, 0.72f) : new Color(0.14f, 0.28f, 0.40f));
                 string prefix = isQuest ? "[QUEST] ROUTE: " : "ROUTE: ";
-                var btn = CreateButton(_routeListRoot, prefix + summary, col, () => SelectBody(bodyId, portId));
+                string labelText = prefix + summary;
+                if (i == 0) FirstSidebarRouteLabelSnapshot = labelText;
+                var btn = CreateButton(_routeListRoot, labelText, col, () => SelectBody(bodyId, portId));
                 var le = btn.gameObject.AddComponent<LayoutElement>();
                 le.minHeight = 30f;
                 le.preferredHeight = 30f;
             }
 
-            // 2. All primary solar bodies sorted nearest-Sun first
+            // 2. All primary solar bodies sorted nearest-Sun first, bubbling quest destination body right after HERE
             var sorted = new List<SolarChartBody>();
             for (int i = 0; i < CurrentFrame.Bodies.Count; i++)
             {
                 if (string.IsNullOrEmpty(CurrentFrame.Bodies[i].ParentId))
                     sorted.Add(CurrentFrame.Bodies[i]);
             }
-            sorted.Sort((a, b) => a.RadiusAu.CompareTo(b.RadiusAu));
+            sorted.Sort((a, b) =>
+            {
+                int ra = a.Here ? 0 : (IsQuestDestinationBody(a) ? 1 : 2);
+                int rb = b.Here ? 0 : (IsQuestDestinationBody(b) ? 1 : 2);
+                if (ra != rb) return ra.CompareTo(rb);
+                return a.RadiusAu.CompareTo(b.RadiusAu);
+            });
 
             for (int i = 0; i < sorted.Count; i++)
             {
