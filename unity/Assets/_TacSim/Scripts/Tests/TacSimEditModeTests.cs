@@ -19360,5 +19360,104 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void OpsDirectoryActiveOps_ShowsStepBadgeLiveReadinessOffPortSailAndCorridorCaptainMastery()
+        {
+            var rootGo = new UnityEngine.GameObject("OpsDirectoryQuestBriefTestRoot");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.ShowLoginOverlay(false);
+                var tradeState = new TacSimTradeAndShipState();
+                hud.BindTradeState(tradeState);
+                hud.OpsDirectory.SetOpen(true);
+
+                // 1. Step 6 post-mine with 0t ore stowed -> [Step 6/7] + [RECOVER RIG FIRST], suppresses premature [PRE-FLIGHT OK]
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""ceres"", ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 0, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 12000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": []
+                        }
+                    }
+                }"));
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""next_room_entry"": ""room.c07_exchange"",
+                        ""next_step"": ""Recover rig and return to Ceres Freeport"",
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Scan"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""return_exchange"", ""title"": ""Return to Ceres Freeport"", ""instructions"": ""+ship/plan ceres"", ""room_entry"": ""room.c07_exchange"", ""checked"": false, ""live_ready"": false }
+                        ]
+                    }],
+                    ""available"": [], ""completed"": []
+                }")));
+                hud.OpsDirectory.SelectTab(TacSim.UI.OpsDirectoryTab.ActiveOps);
+                StringAssert.Contains("[Step 6/7]", hud.OpsDirectory.OpsSummarySnapshot);
+                StringAssert.Contains("[RECOVER RIG FIRST]", hud.OpsDirectory.OpsSummarySnapshot);
+                Assert.IsFalse(hud.OpsDirectory.OpsSummarySnapshot.Contains("[PRE-FLIGHT OK]"));
+
+                // Rig recovered -> [ORE HOLD READY] + [PRE-FLIGHT OK]
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""ceres"", ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 1000, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 12000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:carbon_ore"", ""label"": ""Carbon Ore"", ""qty"": 1 }]
+                        }
+                    }
+                }"));
+                hud.OpsDirectory.SelectTab(TacSim.UI.OpsDirectoryTab.ActiveOps);
+                StringAssert.Contains("[ORE HOLD READY]", hud.OpsDirectory.OpsSummarySnapshot);
+                StringAssert.Contains("[PRE-FLIGHT OK]", hud.OpsDirectory.OpsSummarySnapshot);
+
+                // 2. Between guided steps at an off-port venue (Step 3 done, at Ceres while Step 4 giver Jonas is at Stickney) -> Sail cue
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1, ""active"": [], ""available"": [],
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""2"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""3"" }
+                    ]
+                }")));
+                hud.OpsDirectory.SelectTab(TacSim.UI.OpsDirectoryTab.ActiveOps);
+                StringAssert.Contains("+ship/plan stickney", hud.OpsDirectory.OpsSummarySnapshot);
+                StringAssert.Contains("Stickney Yards", hud.OpsDirectory.OpsSummarySnapshot);
+
+                // 3. All 7 guided steps completed -> Corridor Captain mastery + Jobs Board hint
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1, ""active"": [], ""available"": [],
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""2"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""3"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_04_return_haul"", ""title"": ""4"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"", ""title"": ""5"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"", ""title"": ""6"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore"", ""title"": ""7"" }
+                    ]
+                }")));
+                hud.OpsDirectory.SelectTab(TacSim.UI.OpsDirectoryTab.ActiveOps);
+                StringAssert.Contains("CORRIDOR CAPTAIN (7/7)", hud.OpsDirectory.OpsSummarySnapshot);
+                StringAssert.Contains("+market/jobs", hud.OpsDirectory.OpsSummarySnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
