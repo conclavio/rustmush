@@ -7,6 +7,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fireEvent, render, screen } from "@testing-library/svelte";
 import { tick } from "svelte";
+import * as THREE from "three";
 import { describe, expect, it, vi } from "vitest";
 
 import Game from "../../components/Game.svelte";
@@ -67,6 +68,7 @@ import {
 } from "./space-fire";
 import {
   computeQuestWayfinderPoints,
+  computeShipQuestWayfinderPoints,
   formatActorInteractPrompt,
   TacsimStage3D,
 } from "./stage3d";
@@ -2923,5 +2925,62 @@ describe("PR #693 Web review regressions (items 1-7, 9-11)", () => {
     expect(app.quarry.family).toBe("carbon");
     expect(sent).toContain("+chart/ground");
     deck.unmount();
+  });
+
+  it("projects 3D golden quest wayfinder trails aboard ship compartments and clears on arrival", () => {
+    const app = new GameApp({
+      url: "ws://test/ws",
+      webSocketFactory: (u) => new FakeSocket(u),
+      random: () => 1,
+    });
+    const tpl = app.tacsim.shipTemplate;
+    const shipOrigin = new THREE.Vector3(0, 0, 0);
+
+    const shipRoute = computeShipQuestWayfinderPoints(tpl, "airlock", "bridge", shipOrigin);
+    expect(shipRoute).not.toBeNull();
+    expect(shipRoute!.targetRoomEntry).toBe("bridge");
+    expect(shipRoute!.points.length).toBeGreaterThanOrEqual(2);
+    expect(computeShipQuestWayfinderPoints(tpl, "bridge", "bridge", shipOrigin)).toBeNull();
+
+    const canvas = document.createElement("canvas");
+    const stage = new TacsimStage3D(canvas, {
+      onSendCommand: vi.fn(),
+      onInteractableTriggered: vi.fn(),
+      onFocusedPromptChanged: vi.fn(),
+      onPhysicalLocationChanged: vi.fn(),
+      isUiBlockingInput: () => false,
+    });
+    try {
+      const baseSync = {
+        stationPack: app.tacsim.stationPack,
+        shipTemplate: tpl,
+        isAboardShip: true,
+        serverStationRoomEntry: null,
+        serverShipCompartment: "airlock",
+        ambient: app.tacsim.ambient,
+        visibleActors: [],
+        actorSpeech: {},
+        actorComposing: {},
+        roomMarkers: [],
+        stowageCargoKg: 0,
+        holotankData: null,
+      };
+      stage.syncWorldState({ ...baseSync, roomRevision: 1, questShipCompartment: "bridge" });
+      const activeShipTrail = stage.getQuestWayfinderForTest();
+      expect(activeShipTrail.targetRoom).toBe("bridge");
+      expect(activeShipTrail.hopCount).toBeGreaterThanOrEqual(1);
+      expect(activeShipTrail.childCount).toBe(3);
+
+      // Arriving on Bridge clears the 3D ship quest trail cleanly
+      stage.syncWorldState({
+        ...baseSync,
+        roomRevision: 2,
+        serverShipCompartment: "bridge",
+        questShipCompartment: "bridge",
+      });
+      expect(stage.getQuestWayfinderForTest().childCount).toBe(0);
+    } finally {
+      stage.dispose();
+    }
   });
 });
