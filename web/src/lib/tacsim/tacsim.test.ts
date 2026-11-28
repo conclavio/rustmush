@@ -3422,4 +3422,148 @@ describe("PR #693 Web review regressions (items 1-7, 9-11)", () => {
     expect(app.quests.logTab).toBe("completed");
     deck.unmount();
   });
+
+  it("shows live pre-flight, Step 6 rig recovery gate, and arrived +ship/leave handoff on Bridge Helm quest chips", async () => {
+    let sock!: FakeSocket;
+    const app = new GameApp({
+      url: "ws://test/ws",
+      webSocketFactory: (u) => {
+        sock = new FakeSocket(u);
+        return sock;
+      },
+      random: () => 1,
+    });
+    app.client.connect("tok", "7");
+    sock.readyState = 1;
+    sock.onopen?.();
+    sock.deliver(
+      {
+        t: "hello",
+        d: {
+          proto: 1,
+          server: "test",
+          features: [],
+          panels: [PORT_TRADE_FEED, TACSIM_CONTENT_FEED],
+        },
+      } as OutputEvent,
+      0,
+    );
+    const onCmd = vi.fn();
+    app.tacsim.view3dOpen = true;
+    app.tacsim.isAboardShip = true;
+    app.tacsim.seatedAtBridgeHelm = true;
+    app.tacsim.serverShipCompartment = "bridge";
+    app.tacsim.ambient.docked = true;
+    app.tacsim.ambient.settledPad = false;
+    app.tacsim.ambient.port = "ceres";
+    app.tacsim.trade.hullId = "#99";
+    app.tacsim.trade.hullPort = "ceres";
+    app.tacsim.trade.stowage = {
+      cargoKg: 0,
+      cargoMaxKg: 100_000,
+      cargoL: 0,
+      cargoMaxL: 120_000,
+      propellantKg: 12_000,
+      propellantMaxKg: 80_000,
+      provisionsCrewDays: 12,
+      provisionsMaxCrewDays: 120,
+      cargoLines: [],
+    };
+
+    // 1. Step 3 with 0/5t metals at Ceres -> [CHECK HOLD], then with 5/5t metals -> [PRE-FLIGHT OK]
+    app.quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+          title: "Metals Down the Corridor",
+          next_room_entry: "room.p07_receiving",
+          checkpoints: [
+            {
+              id: "deliver_metals",
+              title: "Buy 5 tonnes of metals at Ceres and deliver to Stickney",
+              instructions: "Run +ship/plan stickney and sell 5t metals.",
+              room_entry: "room.p07_receiving",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+      available: [],
+      completed: [],
+    });
+    const deck = render(TacsimSceneDeck, { props: { app, onCmd } });
+    await tick();
+    expect(
+      screen.getAllByRole("button", { name: /Dest: Stickney Yards \[Step 3\/7\] · \[CHECK HOLD\]/i }).length,
+    ).toBeGreaterThanOrEqual(2);
+
+    app.tacsim.trade.stowage = {
+      ...app.tacsim.trade.stowage,
+      cargoKg: 5000,
+      cargoLines: [{ good: "tacsim:metals", label: "Metals", qty: 5, unit: "u", massKg: 5000 }],
+    };
+    await tick();
+    expect(
+      screen.getAllByRole("button", { name: /Dest: Stickney Yards \[Step 3\/7\] · \[PRE-FLIGHT OK\]/i }).length,
+    ).toBeGreaterThanOrEqual(2);
+
+    // 2. Arrived & docked at Stickney Yards -> switches to [QUEST ARRIVED] + clicks +ship/leave
+    app.tacsim.ambient.port = "stickney";
+    app.tacsim.trade.hullPort = "stickney";
+    await tick();
+    const arrivedChips = screen.getAllByRole("button", {
+      name: /\[QUEST ARRIVED\]\s+At Stickney Yards · \+ship\/leave \[Step 3\/7\]/i,
+    });
+    expect(arrivedChips.length).toBeGreaterThanOrEqual(2);
+    await fireEvent.click(arrivedChips[0]!);
+    expect(onCmd).toHaveBeenCalledWith("+ship/leave");
+
+    // 3. Step 6 post-mine settled on landing pad: 0t carbon_ore -> [RECOVER RIG FIRST] (+tv/1 recover go), 1t stowed -> [ORE HOLD READY]
+    onCmd.mockClear();
+    app.tacsim.ambient.docked = false;
+    app.tacsim.ambient.settledPad = true;
+    app.tacsim.ambient.port = "ceres";
+    app.tacsim.trade.stowage = {
+      ...app.tacsim.trade.stowage,
+      cargoKg: 0,
+      cargoLines: [],
+    };
+    app.quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+          title: "Scan, Sound, and Mine a Landing Site",
+          next_room_entry: "room.c07_exchange",
+          checkpoints: [
+            { id: "scan_landing_site", title: "Scan site", instructions: "+tv/1 scan go", checked: true, live_ready: true },
+            { id: "sound_mineral_pocket", title: "Sound pocket", instructions: "+tv/1 sound go", checked: true, live_ready: true },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", instructions: "+tv/1 mine go", checked: true, live_ready: true },
+          ],
+        },
+      ],
+      available: [],
+      completed: [],
+    });
+    await tick();
+    const recoverChips = screen.getAllByRole("button", {
+      name: /\[RECOVER RIG FIRST\]\s+Recover Rig \(\+tv\/1 recover go\) \[Step 6\/7\]/i,
+    });
+    expect(recoverChips.length).toBeGreaterThanOrEqual(2);
+    await fireEvent.click(recoverChips[0]!);
+    expect(onCmd).toHaveBeenCalledWith("+tv/1 recover go");
+
+    app.tacsim.trade.stowage = {
+      ...app.tacsim.trade.stowage,
+      cargoKg: 1000,
+      cargoLines: [{ good: "tacsim:carbon_ore", label: "Carbon Ore", qty: 1, unit: "u", massKg: 1000 }],
+    };
+    await tick();
+    expect(
+      screen.getAllByRole("button", { name: /\[ORE HOLD READY\]\s+Dest: Ceres Freeport \[Step 6\/7\]/i }).length,
+    ).toBeGreaterThanOrEqual(2);
+    deck.unmount();
+  });
 });
