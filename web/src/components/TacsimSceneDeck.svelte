@@ -196,6 +196,11 @@
   const questDest = $derived(
     app.quests ? extractActiveDestinationPort(app.quests.active, app.quests.trackedKey) : null,
   );
+  const questMining = $derived(app.quests?.surfaceMiningStatus ?? null);
+  const inVehicleBay = $derived(
+    app.tacsim.isAboardShip &&
+      (app.tacsim.serverShipCompartment === "bay" || app.tacsim.physicalLocationKey === "bay"),
+  );
   const roomOfferMarker = $derived(
     !trackedQuest
       ? (app.quests?.roomMarkers.find((m) => m.marker === "available" || m.marker === "turn_in") ?? null)
@@ -231,7 +236,16 @@
       </span>
     {/if}
 
-    {#if app.tacsim.isAboardShip && questDest}
+    {#if inVehicleBay && questMining}
+      <button
+        type="button"
+        class="quest-dest-chip"
+        onclick={() => handleAction("ui:open_rig")}
+        title="Open Dray-P Prospector Rig Cradle for {questMining.questTitle}"
+      >
+        <span class="qdest-tag">[QUEST]</span>{" "}Rig: {questMining.scanDone ? "✓" : "○"} Scan · {questMining.soundDone ? "✓" : "○"} Sound · {questMining.mineDone ? "✓" : "○"} {questMining.targetOreSlug}
+      </button>
+    {:else if app.tacsim.isAboardShip && questDest}
       <button
         type="button"
         class="quest-dest-chip"

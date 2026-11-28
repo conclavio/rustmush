@@ -8,6 +8,7 @@
   import {
     evaluateQuestStowageReadiness,
     evaluateRefitHoldReadiness,
+    extractSurfaceMiningPrepActions,
     matchesQuestTradeRow,
     normalizeGoodSlug,
   } from "$lib/stores/quests.svelte";
@@ -87,6 +88,15 @@
   const st = $derived(trade.stowage);
   const questTradeNeed = $derived(app.quests.activeTradeNeed);
   const questDestPort = $derived(app.quests.activeDestinationPort);
+  const questMining = $derived(app.quests?.surfaceMiningStatus ?? null);
+  const questMiningPrep = $derived(extractSurfaceMiningPrepActions(questMining));
+  const questRigNextCmd = $derived.by((): { label: string; command: string } | null => {
+    if (!questMining) return null;
+    if (!questMining.scanDone) return { label: "Scan Site (+tv/1 scan go)", command: "+tv/1 scan go" };
+    if (!questMining.soundDone) return { label: "Sound Pocket (+tv/1 sound go)", command: "+tv/1 sound go" };
+    if (!questMining.mineDone) return { label: "Mine Ore (+tv/1 mine go)", command: "+tv/1 mine go" };
+    return { label: "Recover Rig (+tv/1 recover go)", command: "+tv/1 recover go" };
+  });
   const stowageReadiness = $derived(evaluateQuestStowageReadiness(questTradeNeed, st));
   const questCoopAction = $derived.by(() => {
     const sug = app.quests?.suggestedAction;
@@ -1043,6 +1053,35 @@
           <h2>DRAY-P VEHICLE BAY — PROSPECTOR RIG CRADLE</h2>
           <button type="button" class="ghost" onclick={() => app.tacsim.closeModal()}>✕</button>
         </header>
+        {#if questMining}
+          <div class="quest-banner" role="status" aria-label="active quest rig bay guidance">
+            <div class="qb-text">
+              <span class="qtag">[QUEST]</span>
+              <strong>{questMining.questTitle}</strong>
+              <span class="muted">
+                {questMining.scanDone ? "[✓]" : "[ ]"} Scan · {questMining.soundDone ? "[✓]" : "[ ]"} Sound · {questMining.mineDone ? "[✓]" : "[ ]"} Mine {questMining.targetOreSlug}
+              </span>
+            </div>
+            {#if questRigNextCmd}
+              <button
+                type="button"
+                class="qbtn-gold"
+                onclick={() => onCmd(questRigNextCmd.command)}
+              >
+                {questRigNextCmd.label}
+              </button>
+            {/if}
+          </div>
+          {#if questMiningPrep.length > 0}
+            <div class="act-row" aria-label="rig bay prospecting prep actions">
+              {#each questMiningPrep as act (act.command)}
+                <button type="button" class="ghost sm" onclick={() => onCmd(act.command)}>
+                  {act.label} ({act.command})
+                </button>
+              {/each}
+            </div>
+          {/if}
+        {/if}
         <p class="prose">
           Deploy a tracked Prospector Rig down the stern ramp onto a planetary surface site
           (Occator Rim, Rheasilvia, Ahuna Flank), or switch to the Quarry screen (hotkey <code>q</code>):
