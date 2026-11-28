@@ -18344,5 +18344,142 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void CommandPalette_SurfacesStowagePreflightTagsAndStep6RigRecoveryGuard()
+        {
+            var rootGo = new UnityEngine.GameObject("PalettePreflightRecoverGuardTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.ShowLoginOverlay(false);
+                var tradeState = new TacSimTradeAndShipState();
+                hud.BindTradeState(tradeState);
+                string prefilled = string.Empty;
+                hud.CommandPalette.OnPrefillCommandRequested += cmd => prefilled = cmd;
+
+                // 1. Step 3 with 0/5 metals -> Next: Buy Cargo (+market/list) + [CHECK BEFORE UNDOCK]
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""ceres"", ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 0, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 10000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": []
+                        }
+                    }
+                }"));
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"",
+                        ""title"": ""Metals Down the Corridor"",
+                        ""next_step"": ""Buy 5t metals and sail to Stickney Yards"",
+                        ""checkpoints"": [{
+                            ""id"": ""deliver_metals"",
+                            ""title"": ""Buy and deliver 5t metals to Stickney Yards"",
+                            ""instructions"": ""Buy 5t metals (+market/buy metals 5) then sail to Stickney Yards (+ship/plan stickney) and sell."",
+                            ""checked"": false, ""live_ready"": false
+                        }]
+                    }],
+                    ""available"": [], ""completed"": []
+                }")));
+                hud.CommandPalette.SetOpen(true);
+                hud.CommandPalette.SetQuery("next buy cargo");
+                var titles1 = hud.CommandPalette.GetFilteredTitlesSnapshot();
+                var subs1 = hud.CommandPalette.GetFilteredSubtitlesSnapshot();
+                Assert.IsTrue(titles1.Exists(t => t.Contains("Buy Cargo (+market/list)")), "Expected Buy Cargo next entry");
+                Assert.IsTrue(subs1.Exists(s => s.Contains("[CHECK BEFORE UNDOCK]")), "Expected [CHECK BEFORE UNDOCK] subtitle tag");
+
+                // 2. Load 5t metals -> Next: Plan Stickney Yards + [PRE-FLIGHT OK]
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""ceres"", ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 5000, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 10000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:metals"", ""label"": ""Metals"", ""qty"": 5 }]
+                        }
+                    }
+                }"));
+                hud.CommandPalette.RebuildCatalog();
+                hud.CommandPalette.SetQuery("next plan stickney");
+                var titles2 = hud.CommandPalette.GetFilteredTitlesSnapshot();
+                var subs2 = hud.CommandPalette.GetFilteredSubtitlesSnapshot();
+                Assert.IsTrue(titles2.Exists(t => t.Contains("Plan Stickney Yards")), "Expected Plan Stickney Yards next entry");
+                Assert.IsTrue(subs2.Exists(s => s.Contains("[PRE-FLIGHT OK]")), "Expected [PRE-FLIGHT OK] subtitle tag");
+
+                // 3. Step 6 post-mine with 0t ore stowed -> Recover Rig First [RECOVER RIG FIRST] (+tv/1 recover go), no premature Return -> Ceres
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""commons"", ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 0, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 10000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": []
+                        }
+                    }
+                }"));
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""turn_in_name"": ""Rosalind Qureshi-Mbeki"",
+                        ""next_room_entry"": ""room.c07_exchange"",
+                        ""ready_to_finish"": true,
+                        ""can_finish_now"": false,
+                        ""turn_in_here"": false,
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Scan"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""room_entry"": ""room.c07_exchange"", ""checked"": true, ""live_ready"": true }
+                        ]
+                    }],
+                    ""available"": [], ""completed"": []
+                }")));
+                hud.CommandPalette.RebuildCatalog();
+                hud.CommandPalette.SetQuery("recover rig");
+                var titles3 = hud.CommandPalette.GetFilteredTitlesSnapshot();
+                Assert.IsTrue(titles3.Exists(t => t.Contains("[RECOVER RIG FIRST]")), "Expected [RECOVER RIG FIRST] entry");
+                Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
+                Assert.AreEqual("+tv/1 recover go", prefilled);
+                hud.CommandPalette.SetQuery("return ceres");
+                Assert.IsFalse(hud.CommandPalette.GetFilteredTitlesSnapshot().Exists(t => t.Contains("Return -> Ceres Freeport")),
+                    "Must not suggest premature Return -> Ceres Freeport before rig recovery");
+
+                // 4. Step 6 after rig recovery (1t carbon_ore stowed) -> Return -> Ceres Freeport [ORE HOLD READY]
+                prefilled = string.Empty;
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""commons"", ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 1000, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 10000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:carbon_ore"", ""label"": ""Carbon Ore"", ""qty"": 1 }]
+                        }
+                    }
+                }"));
+                hud.CommandPalette.RebuildCatalog();
+                hud.CommandPalette.SetQuery("return ceres");
+                var titles4 = hud.CommandPalette.GetFilteredTitlesSnapshot();
+                Assert.IsTrue(titles4.Exists(t => t.Contains("Return -> Ceres Freeport [ORE HOLD READY]")),
+                    "Expected Return -> Ceres Freeport [ORE HOLD READY] after rig recovery");
+                Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
+                Assert.AreEqual("+ship/plan ceres", prefilled);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
