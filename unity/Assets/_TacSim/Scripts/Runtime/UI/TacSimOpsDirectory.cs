@@ -122,6 +122,11 @@ namespace TacSim.UI
         public string FirstPresenceRowButtonLabel => _presPool.Count > 0 && _presPool[0].Root.activeSelf && _presPool[0].TalkButtonLabel != null ? _presPool[0].TalkButtonLabel.text : string.Empty;
         public string OpsSummarySnapshot => _opsSummaryText != null ? _opsSummaryText.text : string.Empty;
 
+        public void BindTradeState(TacSimTradeAndShipState trade)
+        {
+            _trade = trade;
+        }
+
         public void BuildUi(Transform hudRoot, Font sharedFont)
         {
             _font = sharedFont != null ? sharedFont : Resources.GetBuiltinResource<Font>("LegacyRuntime.ttf");
@@ -902,38 +907,78 @@ namespace TacSim.UI
                     {
                         if (tracked.Checkpoints[i].Checked) done++;
                     }
+                    int stepNo = TacSimQuestJournal.GuidedStepNumber(tracked.Key);
+                    string stepTag = stepNo > 0 ? $" <color=#66EEAA>[Step {stepNo}/7]</color>" : string.Empty;
                     string readyTag = (tracked.ReadyToFinish || tracked.CanFinishNow)
                         ? " <color=#66FFAA>[READY TO TURN IN]</color>"
                         : string.Empty;
                     sb.AppendLine("<color=#FFDD44><b>ACTIVE GUIDED QUEST</b></color>");
-                    sb.AppendFormat("• <b>{0}</b> ({1}/{2}){3}\n",
+                    sb.AppendFormat("• <b>{0}</b>{1} ({2}/{3}){4}\n",
                         MushProtocol.EscapeUnityRichText(tracked.Title),
+                        stepTag,
                         done,
                         tracked.Checkpoints.Count,
                         readyTag);
                     if (!string.IsNullOrEmpty(tracked.NextStep))
                         sb.AppendFormat("• Next: {0}\n", MushProtocol.EscapeUnityRichText(tracked.NextStep));
+                    if (_questJournal.TryGetQuestHoldReadinessSummary(tracked, out string holdSummary, out bool holdReady))
+                    {
+                        string holdHex = holdReady ? "#66FFAA" : "#FFDD55";
+                        sb.AppendFormat("• <color={0}><b>{1}</b></color>\n",
+                            holdHex,
+                            MushProtocol.EscapeUnityRichText(holdSummary));
+                    }
+                    if (_questJournal.TryGetQuestPreflightReadinessSummary(tracked, out string pfSummary, out bool pfReady))
+                    {
+                        string pfHex = pfReady ? "#66FFAA" : "#FFBB55";
+                        sb.AppendFormat("• <color={0}><b>{1}</b></color>\n",
+                            pfHex,
+                            MushProtocol.EscapeUnityRichText(pfSummary));
+                    }
                     sb.AppendFormat("• Completed: {0}  |  Open <b>[J]</b> for full quest journal.\n\n",
                         _questJournal.CompletedQuestCount);
                 }
                 else if (_questJournal.AvailableQuestCount > 0)
                 {
                     var offer = _questJournal.LatestPanel.Available[0];
+                    int offerStep = TacSimQuestJournal.GuidedStepNumber(offer.Key);
+                    string offerStepTag = offerStep > 0 ? $" <color=#66EEAA>[Step {offerStep}/7]</color>" : string.Empty;
                     sb.AppendLine("<color=#FFDD44><b>ACTIVE GUIDED QUEST</b></color>");
-                    sb.AppendFormat("• <color=#FFDD44>[!]</color> <b>{0}</b> — speak with {1} (Completed: {2})\n\n",
+                    sb.AppendFormat("• <color=#FFDD44>[!]</color> <b>{0}</b>{1} — speak with {2} (Completed: {3})\n\n",
                         MushProtocol.EscapeUnityRichText(offer.Title),
+                        offerStepTag,
                         MushProtocol.EscapeUnityRichText(offer.GiverName),
                         _questJournal.CompletedQuestCount);
                 }
                 else if (_questJournal.TryGetNextGuidedOffer(out var nextOffer))
                 {
                     sb.AppendLine("<color=#FFDD44><b>NEXT GUIDED STEP</b></color>");
-                    sb.AppendFormat("• <color=#FFDD44>[!]</color> <b>Step {0}/7: {1}</b> — visit {2} at <b>{3}</b> ({4})\n\n",
+                    sb.AppendFormat("• <color=#FFDD44>[!]</color> <b>Step {0}/7: {1}</b> — visit {2} at <b>{3}</b> ({4})\n",
                         nextOffer.Step,
                         MushProtocol.EscapeUnityRichText(nextOffer.ShortLabel),
                         MushProtocol.EscapeUnityRichText(nextOffer.GiverLabel),
                         MushProtocol.EscapeUnityRichText(nextOffer.GiverRoomName),
                         MushProtocol.EscapeUnityRichText(nextOffer.LocationLabel));
+                    string curPort = !string.IsNullOrEmpty(_trade?.ActiveVenue)
+                        ? _trade.ActiveVenue
+                        : (!string.IsNullOrEmpty(_trade?.AboardDockedPortHint)
+                            ? _trade.AboardDockedPortHint
+                            : (!string.IsNullOrEmpty(_lastRoomView?.TacSim?.Port)
+                                ? _lastRoomView.TacSim.Port
+                                : TacSimQuestJournal.InferStationPortFromRoomEntry(_lastRoomView?.Atlas?.Entry)));
+                    if (!string.IsNullOrEmpty(curPort) &&
+                        _questJournal.TryGetNextGuidedOfferDestination(curPort, out var sailDest))
+                    {
+                        sb.AppendFormat("• <color=#77DDFF>Sail:</color> <b>+ship/plan {0}</b> ({1})\n",
+                            MushProtocol.EscapeUnityRichText(sailDest.PortId),
+                            MushProtocol.EscapeUnityRichText(sailDest.PortLabel));
+                    }
+                    sb.AppendLine();
+                }
+                else if (_questJournal.TryGetGuidedTourProgress(out _, out _, out _, out bool allTourDone) && allTourDone)
+                {
+                    sb.AppendLine("<color=#66FFAA><b>★ CORRIDOR CAPTAIN (7/7)</b></color>");
+                    sb.AppendLine("• Guided Corridor Tour Complete — open Jobs Board (<b>+market/jobs</b>) or press <b>[J]</b>.\n");
                 }
             }
 
