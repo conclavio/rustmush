@@ -17237,5 +17237,86 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void Step2LiveStowageWayfinding_RoutesChandleryExchangeThenRegistry()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave98PR3_Step2WayfindingTest");
+            try
+            {
+                var stGo = new UnityEngine.GameObject("StationStep2");
+                stGo.transform.SetParent(rootGo.transform, false);
+                var station = stGo.AddComponent<TacSim.World.StationWorldController>();
+                station.BuildStation(null, "neighborhood.ceres_freeport");
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                var tradeState = new TacSimTradeAndShipState();
+                hud.QuestJournal.BindTradeState(tradeState);
+                hud.CommandPalette.BindWorldSources(station, null, null);
+                hud.CommandPalette.BindQuestJournal(hud.QuestJournal);
+                hud.CommandPalette.BindTradeState(tradeState);
+
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"",
+                        ""title"": ""Stock the Locker and Tanks"",
+                        ""next_room_entry"": ""room.c08_chandlery"",
+                        ""next_room_name"": ""Co-op Chandlery"",
+                        ""checkpoints"": [
+                            {
+                                ""id"": ""buy_provisions"",
+                                ""title"": ""Buy at least 10 provisions at Ceres Co-op Chandlery"",
+                                ""instructions"": ""Buy 10 provisions."",
+                                ""room_entry"": ""room.c08_chandlery"",
+                                ""room_name"": ""Co-op Chandlery"",
+                                ""checked"": false
+                            },
+                            {
+                                ""id"": ""buy_propellant"",
+                                ""title"": ""Buy at least 5 tonnes of propellant at Ceres Exchange Hall"",
+                                ""instructions"": ""Buy 5 tonnes of propellant."",
+                                ""room_entry"": ""room.c07_exchange"",
+                                ""room_name"": ""Exchange Hall"",
+                                ""checked"": false
+                            }
+                        ]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+
+                string wayfinderRoom = null;
+                hud.QuestJournal.OnWayfinderRoomRequested += r => wayfinderRoom = r;
+
+                // 1. 0 provisions & 0 fuel -> routes to Co-op Chandlery
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{""enabled"":true,""venue"":""ceres"",""listings"":[],""ship"":{""hull_id"":""#99"",""stowage"":{""cargo_kg"":0,""cargo_limit_kg"":100000,""tank_kg"":0,""tank_limit_kg"":80000,""stores_days"":0,""stores_limit_days"":120,""items"":[]}}}"));
+                Assert.IsTrue(hud.QuestJournal.TryGetMinimapObjective(out string obj1, out _, out _));
+                Assert.AreEqual("room.c08_chandlery", obj1);
+
+                // 2. Bought 10d provisions (0t fuel) -> immediately flips to Exchange Hall
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{""enabled"":true,""venue"":""ceres"",""listings"":[],""ship"":{""hull_id"":""#99"",""stowage"":{""cargo_kg"":0,""cargo_limit_kg"":100000,""tank_kg"":0,""tank_limit_kg"":80000,""stores_days"":10,""stores_limit_days"":120,""items"":[]}}}"));
+                Assert.IsTrue(hud.QuestJournal.TryGetMinimapObjective(out string obj2, out _, out _));
+                Assert.AreEqual("room.c07_exchange", obj2);
+                Assert.IsTrue(hud.QuestJournal.TriggerTrackerWayfinder());
+                Assert.AreEqual("room.c07_exchange", wayfinderRoom);
+
+                // 3. Bought 5t propellant too -> immediately flips to Co-op Registry for Ilse
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{""enabled"":true,""venue"":""ceres"",""listings"":[],""ship"":{""hull_id"":""#99"",""stowage"":{""cargo_kg"":0,""cargo_limit_kg"":100000,""tank_kg"":5000,""tank_limit_kg"":80000,""stores_days"":10,""stores_limit_days"":120,""items"":[]}}}"));
+                Assert.IsTrue(hud.QuestJournal.TryGetMinimapObjective(out string obj3, out _, out _));
+                Assert.AreEqual("room.c05_registry", obj3);
+                string plottedRoom = null;
+                hud.CommandPalette.OnPlotStationRoomRequested += r => plottedRoom = r;
+                hud.CommandPalette.SetOpen(true);
+                hud.CommandPalette.SetQuery("Wayfinder to Quest Objective");
+                Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
+                Assert.AreEqual("room.c05_registry", plottedRoom);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

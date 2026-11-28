@@ -1843,6 +1843,50 @@ namespace TacSim.UI
             return false;
         }
 
+        public bool TryGetStowageObjectiveRoom(MushActiveQuest active, out string roomEntry)
+        {
+            if (TryGetRefitHoldClearingRoom(active, out roomEntry))
+                return true;
+            roomEntry = string.Empty;
+            if (active == null || active.ReadyToFinish || active.CanFinishNow) return false;
+            if (_boundTradeState == null || string.IsNullOrEmpty(_boundTradeState.ShipHullId)) return false;
+
+            var needs = new List<QuestTradeNeed>(4);
+            for (int i = 0; i < active.Checkpoints.Count; i++)
+            {
+                var cp = active.Checkpoints[i];
+                if (cp.Checked || cp.LiveReady) continue;
+                if (TryExtractTradeNeedFromCheckpoint(active.Title, cp, out var extracted))
+                    needs.Add(extracted);
+            }
+            if (needs.Count == 0) return false;
+            for (int i = 0; i < needs.Count; i++)
+            {
+                if (!needs[i].WantsBuy || needs[i].WantsSell)
+                    return false;
+            }
+            for (int i = 0; i < needs.Count; i++)
+            {
+                int have = _boundTradeState.GetHoldCommodityQuantity(needs[i].CommoditySlug);
+                if (have < Mathf.Max(1, needs[i].TargetQuantity))
+                {
+                    string target = needs[i].ResolveVenueRoomEntry();
+                    if (!string.IsNullOrEmpty(target))
+                    {
+                        roomEntry = target;
+                        return true;
+                    }
+                    return false;
+                }
+            }
+            if (GuidedStepNumber(active.Key) == 2)
+            {
+                roomEntry = "room.c05_registry";
+                return true;
+            }
+            return false;
+        }
+
         public bool TryGetMinimapObjective(out string roomEntry, out bool isTurnIn, out bool currentRoomHasOffer)
         {
             roomEntry = string.Empty;
@@ -1855,7 +1899,7 @@ namespace TacSim.UI
             if (active != null)
             {
                 isTurnIn = active.ReadyToFinish || active.CanFinishNow;
-                if (!isTurnIn && TryGetRefitHoldClearingRoom(active, out string clearRoom))
+                if (!isTurnIn && TryGetStowageObjectiveRoom(active, out string clearRoom))
                 {
                     roomEntry = clearRoom;
                     return true;
@@ -2573,7 +2617,7 @@ namespace TacSim.UI
         {
             if (active == null) return string.Empty;
             if (!active.ReadyToFinish && !active.CanFinishNow &&
-                TryGetRefitHoldClearingRoom(active, out string clearRoom))
+                TryGetStowageObjectiveRoom(active, out string clearRoom))
             {
                 return clearRoom;
             }
