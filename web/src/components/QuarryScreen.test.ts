@@ -333,4 +333,53 @@ describe("QuarryScreen's side pane", () => {
     screen.getByRole("button", { name: /Drive: C/i }).click();
     expect(focusComposer).toHaveBeenCalledWith("+tv drive C");
   });
+
+  it("displays Step 6/7 badge, live hold ore quantity, and post-mine Return fallback to Ceres Freeport", () => {
+    const quarry = new QuarryStore();
+    quarry.applySite(fixture("site_map_other.json"), Date.now());
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+          title: "Scan, Sound, and Mine a Landing Site",
+          next_room_entry: "room.c07_exchange",
+          checkpoints: [
+            { id: "scan_landing_site", title: "Surface scan", instructions: "+tv/1 scan go", checked: true, live_ready: true },
+            { id: "sound_pocket", title: "Sound pocket", instructions: "+tv/1 sound go", checked: true, live_ready: true },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", instructions: "+tv/1 mine go", checked: true, live_ready: true },
+          ],
+        },
+      ],
+    });
+    const focusComposer = vi.fn();
+    render(QuarryScreen, {
+      props: {
+        app: {
+          quarry,
+          quests,
+          tacsim: {
+            trade: {
+              stowage: {
+                cargoKg: 2000,
+                propellantKg: 5000,
+                provisionsCrewDays: 10,
+                cargoLines: [{ good: "tacsim:carbon_ore", label: "Carbon Ore", qty: 2, unit: "t", massKg: 2000 }],
+              },
+            },
+          },
+          focusComposer,
+          refreshQuarry: vi.fn(),
+        } as unknown as GameApp,
+      },
+    });
+
+    const checklist = screen.getByRole("status", { name: "quest mining checklist" });
+    expect(checklist.textContent).toContain("Step 6/7");
+    expect(checklist.textContent).toContain("Hold: 2t carbon ore");
+    const retBtn = screen.getByRole("button", { name: /Return: Ceres Freeport/i });
+    retBtn.click();
+    expect(focusComposer).toHaveBeenCalledWith("+ship/plan ceres");
+  });
 });
