@@ -2526,6 +2526,7 @@ pub fn render_quest_sheet_lines(
     }
     if let Some(q) = snap.ordered_active(tracked_key).into_iter().next() {
         let done = q.checkpoints.iter().filter(|c| c.checked).count();
+        let step_badge = guided_step_badge(&q.key);
         let ready = if q.ready_to_finish || q.can_finish_now {
             " [READY]"
         } else {
@@ -2534,7 +2535,11 @@ pub fn render_quest_sheet_lines(
         lines.push(Line::from(vec![
             Span::styled("  Active: ", Style::default().fg(Color::Cyan)),
             Span::styled(
-                format!("{} ({done}/{}){ready}", q.title, q.checkpoints.len()),
+                format!(
+                    "{}{step_badge} ({done}/{}){ready}",
+                    q.title,
+                    q.checkpoints.len()
+                ),
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
@@ -2546,12 +2551,47 @@ pub fn render_quest_sheet_lines(
                 Span::raw(q.next_step.clone()),
             ]));
         }
+        let other_ready_here: Vec<&ActiveQuest> = snap
+            .active
+            .iter()
+            .filter(|item| item.key != q.key && item.can_finish_now)
+            .collect();
+        if !other_ready_here.is_empty() {
+            let ready_txt = if other_ready_here.len() == 1 {
+                format!("  [?] Ready here: {} (F11)", other_ready_here[0].title)
+            } else {
+                format!(
+                    "  [?] {} ready to turn in here (F11)",
+                    other_ready_here.len()
+                )
+            };
+            lines.push(Line::from(Span::styled(
+                ready_txt,
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            )));
+        }
+        if !snap.available.is_empty() {
+            let offer_txt = if snap.available.len() == 1 {
+                "  [!] 1 offer here (F11 -> a)".to_string()
+            } else {
+                format!("  [!] {} offers here (F11 -> a)", snap.available.len())
+            };
+            lines.push(Line::from(Span::styled(
+                offer_txt,
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            )));
+        }
     } else if let Some(offer) = snap.prioritized_available_offer() {
         let extra = if snap.available.len() > 1 {
             format!(" (+{} more)", snap.available.len() - 1)
         } else {
             String::new()
         };
+        let step_badge = guided_step_badge(&offer.key);
         lines.push(Line::from(vec![
             Span::styled(
                 "  Available: [!] ",
@@ -2559,7 +2599,10 @@ pub fn render_quest_sheet_lines(
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw(format!("{} ({}){extra}", offer.title, offer.giver_name)),
+            Span::raw(format!(
+                "{} ({}){extra}{step_badge}",
+                offer.title, offer.giver_name
+            )),
         ]));
     } else if let Some(next) = snap.next_guided_offer() {
         lines.push(Line::from(vec![
@@ -4869,6 +4912,92 @@ mod tests {
         assert!(
             avail_txt.contains("[!] Metals Haul [Step 3/7]"),
             "expected [Step 3/7] in Available overlay:\n{avail_txt}"
+        );
+    }
+
+    #[test]
+    fn sheet_renders_step_badges_secondary_turnin_and_room_offer_alerts() {
+        let join = |lines: Vec<Line<'static>>| -> String {
+            lines
+                .into_iter()
+                .map(|l| {
+                    l.spans
+                        .into_iter()
+                        .map(|s| s.content.into_owned())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let snap = parse_frame(&json!({
+            "schema": 1,
+            "completed": [{ "key": GUIDED_TOUR_KEYS[0], "title": "First Papers" }],
+            "active": [
+                {
+                    "key": GUIDED_TOUR_KEYS[1],
+                    "title": "Stock the Locker",
+                    "next_step": "Buy 10 provisions at Chandlery",
+                    "can_finish_now": false,
+                    "checkpoints": [{ "id": "buy_prov", "title": "Buy 10 provisions", "checked": false }]
+                },
+                {
+                    "key": "quest.side_ready",
+                    "title": "Dockside Ledger Check",
+                    "can_finish_now": true,
+                    "ready_to_finish": true
+                }
+            ],
+            "available": [
+                {
+                    "key": "quest.side_offer",
+                    "title": "Barge Sweeping",
+                    "category": "optional",
+                    "giver_name": "Dock Clerk"
+                },
+                {
+                    "key": GUIDED_TOUR_KEYS[2],
+                    "title": "Metals Haul",
+                    "category": "guided",
+                    "giver_name": "Ilse"
+                }
+            ]
+        }));
+        let active_txt = join(render_quest_sheet_lines(&snap, Some(GUIDED_TOUR_KEYS[1])));
+        assert!(
+            active_txt.contains("Stock the Locker [Step 2/7] (0/1)"),
+            "expected [Step 2/7] on active sheet row:\n{active_txt}"
+        );
+        assert!(
+            active_txt.contains("[?] Ready here: Dockside Ledger Check (F11)"),
+            "expected secondary ready turn-in on sheet:\n{active_txt}"
+        );
+        assert!(
+            active_txt.contains("[!] 2 offers here (F11 -> a)"),
+            "expected room offers alert on sheet:\n{active_txt}"
+        );
+
+        let idle_snap = parse_frame(&json!({
+            "schema": 1,
+            "available": [
+                {
+                    "key": "quest.side_offer",
+                    "title": "Barge Sweeping",
+                    "category": "optional",
+                    "giver_name": "Dock Clerk"
+                },
+                {
+                    "key": GUIDED_TOUR_KEYS[2],
+                    "title": "Metals Haul",
+                    "category": "guided",
+                    "giver_name": "Ilse"
+                }
+            ]
+        }));
+        let idle_txt = join(render_quest_sheet_lines(&idle_snap, None));
+        assert!(
+            idle_txt.contains("Metals Haul (Ilse) (+1 more) [Step 3/7]"),
+            "expected prioritized guided offer with [Step 3/7] on idle sheet:\n{idle_txt}"
         );
     }
 }
