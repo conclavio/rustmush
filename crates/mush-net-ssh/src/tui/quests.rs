@@ -3160,6 +3160,18 @@ pub fn render_quest_sheet_lines_with_stowage(
     tracked_key: Option<&str>,
     stowage: Option<&QuestStowageTelemetry>,
 ) -> Vec<Line<'static>> {
+    render_quest_sheet_lines_full(snap, tracked_key, stowage, None)
+}
+
+/// Full Character Sheet Guided Quests renderer with live stowage telemetry and current port
+/// awareness (surfacing an off-port `Sail: +ship/plan <port>` cue between guided steps).
+#[must_use]
+pub fn render_quest_sheet_lines_full(
+    snap: &QuestsSnapshot,
+    tracked_key: Option<&str>,
+    stowage: Option<&QuestStowageTelemetry>,
+    current_port: Option<&str>,
+) -> Vec<Line<'static>> {
     if snap.active.is_empty() && snap.available.is_empty() && snap.completed.is_empty() {
         return Vec::new();
     }
@@ -3338,6 +3350,18 @@ pub fn render_quest_sheet_lines_with_stowage(
                 next.short_label, next.giver_label, next.giver_room_name
             )),
         ]));
+        if let Some(dest) = snap.next_guided_offer_destination(current_port) {
+            lines.push(Line::from(vec![
+                Span::styled("  Sail: ", Style::default().fg(Color::Cyan)),
+                Span::styled(
+                    format!(
+                        "+ship/plan {} ({}) [F11 -> p]",
+                        dest.port_id, dest.port_label
+                    ),
+                    Style::default().fg(Color::LightCyan),
+                ),
+            ]));
+        }
     } else if let Some(tour) = snap.guided_tour_progress()
         && tour.all_done
     {
@@ -7363,11 +7387,15 @@ mod tests {
             "{txt_s6_recover}"
         );
         assert!(
+            !txt_s6_recover.contains("[PRE-FLIGHT OK]"),
+            "{txt_s6_recover}"
+        );
+        assert!(
             txt_s6_recover.contains("Next Cmd: Recover Rig (+tv/1 recover go) [F11 -> p]"),
             "{txt_s6_recover}"
         );
 
-        // 4. Step 6 after rig recovery (1t carbon_ore stowed) -> [ORE HOLD READY] + Plan Ceres Freeport
+        // 4. Step 6 after rig recovery (1t carbon_ore stowed) -> [ORE HOLD READY] + [PRE-FLIGHT OK] + Plan Ceres Freeport
         let stow_ore = QuestStowageTelemetry {
             cargo_kg: 1_000,
             propellant_kg: 10_000,
@@ -7383,10 +7411,36 @@ mod tests {
             txt_s6_ready.contains("[ORE HOLD READY] CARBON ORE: 1/1 t"),
             "{txt_s6_ready}"
         );
+        assert!(txt_s6_ready.contains("[PRE-FLIGHT OK]"), "{txt_s6_ready}");
         assert!(
             txt_s6_ready.contains("Next Cmd: Plan Ceres Freeport (+ship/plan ceres) [F11 -> p]"),
             "{txt_s6_ready}"
         );
+
+        // 4b. Between guided steps at an off-port station (Step 3 done, standing at Ceres while Step 4 giver Jonas is at Stickney)
+        let between_s4 = parse_frame(&json!({
+            "schema": 1,
+            "completed": GUIDED_TOUR_KEYS[..3].iter().map(|k| json!({ "key": k, "title": k })).collect::<Vec<_>>(),
+            "active": [],
+            "available": []
+        }));
+        let txt_offport = join(render_quest_sheet_lines_full(
+            &between_s4,
+            None,
+            None,
+            Some("ceres"),
+        ));
+        assert!(
+            txt_offport.contains("Sail: +ship/plan stickney (Stickney Yards) [F11 -> p]"),
+            "{txt_offport}"
+        );
+        let txt_onport = join(render_quest_sheet_lines_full(
+            &between_s4,
+            None,
+            None,
+            Some("stickney"),
+        ));
+        assert!(!txt_onport.contains("Sail: +ship/plan"), "{txt_onport}");
 
         // 5. Ready-to-turn-in quest here -> shows [?] Ready to turn in here (F11 -> Enter)
         let ready_here = parse_frame(&json!({
