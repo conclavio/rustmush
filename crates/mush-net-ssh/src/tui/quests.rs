@@ -825,10 +825,15 @@ impl QuestsSnapshot {
                 {
                     continue;
                 }
-                let combined = format!("{id_low} {title_low} {instr_low}");
+                let primary = format!("{id_low} {title_low}");
                 let Some(slug) = KNOWN_TRADE_COMMODITIES
                     .iter()
-                    .find(|(_, pats)| pats.iter().any(|p| combined.contains(p)))
+                    .find(|(_, pats)| pats.iter().any(|p| primary.contains(p)))
+                    .or_else(|| {
+                        KNOWN_TRADE_COMMODITIES
+                            .iter()
+                            .find(|(_, pats)| pats.iter().any(|p| instr_low.contains(p)))
+                    })
                     .map(|(slug, _)| *slug)
                 else {
                     continue;
@@ -5714,5 +5719,348 @@ mod tests {
             !ready_txt.contains("Prep: +license"),
             "prep hint must hide once ready to turn in:\n{ready_txt}"
         );
+    }
+
+    #[test]
+    fn canonical_guided_onboarding_pack_7step_e2e_walkthrough() {
+        let raw_pack: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../tacsim/content/quests/guided_onboarding.json"
+        ))
+        .expect("parse canonical guided_onboarding.json");
+        let pack_id = raw_pack["manifest"]["id"].as_str().expect("pack id");
+        assert_eq!(pack_id, "tacsim.quests.guided_onboarding");
+
+        let maren = &raw_pack["entries"]["npc.maren_halvorsen"]["def"];
+        assert_eq!(maren["name"].as_str(), Some("Maren Halvorsen"));
+        assert_eq!(maren["room"].as_str(), Some("room.c03_arrivals"));
+
+        let entry_names = [
+            "quest.guide_01_coop_enroll",
+            "quest.guide_02_provisions_fuel",
+            "quest.guide_03_metals_delivery",
+            "quest.guide_04_return_haul",
+            "quest.guide_05_refit_prospector",
+            "quest.guide_06_surface_mining",
+            "quest.guide_07_sell_mined_ore",
+        ];
+
+        for (idx, name) in entry_names.iter().enumerate() {
+            let full_key = format!("{pack_id}/{name}");
+            assert_eq!(GUIDED_TOUR_KEYS[idx], full_key);
+            let def = &raw_pack["entries"][name]["def"];
+            assert_eq!(def["category"].as_str(), Some("guided"));
+            assert_eq!(def["allow_restart"].as_bool(), Some(true));
+        }
+
+        let make_active = |name: &str,
+                           giver: &str,
+                           turn_in: &str,
+                           checked_ids: &[&str],
+                           ready: bool,
+                           can_finish: bool|
+         -> serde_json::Value {
+            let def = &raw_pack["entries"][name]["def"];
+            let cps_raw = def["checkpoints"].as_array().expect("checkpoints");
+            let cps: Vec<serde_json::Value> = cps_raw
+                .iter()
+                .map(|cp| {
+                    let id = cp["id"].as_str().unwrap_or("");
+                    let done = checked_ids.contains(&id);
+                    json!({
+                        "id": id,
+                        "title": cp["title"].as_str().unwrap_or(""),
+                        "instructions": cp["instructions"].as_str().unwrap_or(""),
+                        "room_entry": cp["room_entry"].as_str().unwrap_or(""),
+                        "checked": done,
+                        "live_ready": done
+                    })
+                })
+                .collect();
+            let next_room = cps
+                .iter()
+                .find(|c| !c["checked"].as_bool().unwrap_or(false))
+                .or_else(|| cps.last())
+                .and_then(|c| c["room_entry"].as_str())
+                .unwrap_or("");
+            json!({
+                "key": format!("{pack_id}/{name}"),
+                "title": def["title"].as_str().unwrap_or(""),
+                "category": "guided",
+                "introduction": def["introduction"].as_str().unwrap_or(""),
+                "reward_summary": def["reward_summary"].as_str().unwrap_or(""),
+                "giver_name": giver,
+                "turn_in_name": turn_in,
+                "allow_restart": true,
+                "ready_to_finish": ready,
+                "can_finish_now": can_finish,
+                "turn_in_here": can_finish,
+                "next_room_entry": next_room,
+                "checkpoints": cps
+            })
+        };
+
+        let mut milestones = QuestMilestoneTracker::default();
+        let mut completed: Vec<serde_json::Value> = Vec::new();
+
+        // 0. Spawn hydration at Ceres Arrivals -> Maren Halvorsen [!] offer, 0 milestones
+        let spawn = parse_frame(&json!({
+            "schema": 1,
+            "room_name": "Port Watch Arrivals",
+            "room_markers": [{
+                "npc_id": "#42",
+                "npc_name": "Maren Halvorsen",
+                "marker": "available",
+                "symbol": "!",
+                "quest_key": GUIDED_TOUR_KEYS[0],
+                "quest_title": raw_pack["entries"][entry_names[0]]["def"]["title"]
+            }],
+            "available": [{
+                "key": GUIDED_TOUR_KEYS[0],
+                "title": raw_pack["entries"][entry_names[0]]["def"]["title"],
+                "category": "guided",
+                "giver_name": "Maren Halvorsen",
+                "allow_restart": true,
+                "accept_cmd": "+quest/accept #42=tok1"
+            }],
+            "active": [],
+            "completed": []
+        }));
+        assert!(milestones.observe(&spawn).is_empty());
+        assert_eq!(
+            spawn.guided_tour_progress().map(|p| (p.completed, p.total)),
+            Some((0, 7))
+        );
+
+        // 1. Step 1: accept -> abandon (opt-out clean, restartable) -> re-accept -> complete
+        let s1 = parse_frame(&json!({
+            "schema": 1,
+            "active": [make_active(entry_names[0], "Maren Halvorsen", "Ilse Oduya-Brandt", &[], false, false)],
+            "available": [],
+            "completed": completed
+        }));
+        let m1 = milestones.observe(&s1);
+        assert_eq!(m1.len(), 1);
+        assert_eq!(m1[0].kind, QuestMilestoneKind::Accepted);
+        assert_eq!(
+            QuestsSnapshot::suggested_action_for(&s1.active[0]).map(|a| a.command),
+            Some("+coop/enroll ".to_string())
+        );
+
+        let s1_abandoned = parse_frame(
+            &json!({ "schema": 1, "active": [], "available": [], "completed": completed }),
+        );
+        let m_ab = milestones.observe(&s1_abandoned);
+        assert_eq!(m_ab.len(), 1);
+        assert_eq!(m_ab[0].kind, QuestMilestoneKind::Abandoned);
+        assert!(m_ab[0].restartable);
+        assert!(s1_abandoned.next_guided_offer().is_none());
+
+        milestones.observe(&s1);
+        completed.push(json!({ "key": GUIDED_TOUR_KEYS[0], "title": s1.active[0].title }));
+        let after_s1 = parse_frame(
+            &json!({ "schema": 1, "active": [], "available": [], "completed": completed }),
+        );
+        let m_s1_done = milestones.observe(&after_s1);
+        assert_eq!(m_s1_done[0].kind, QuestMilestoneKind::Completed);
+        assert!(!m_s1_done[0].tour_all_done);
+        assert_eq!(after_s1.next_guided_offer().map(|o| o.step), Some(2));
+
+        // 2. Step 2: provisions (10) & propellant (5t) hold readiness
+        let s2 = parse_frame(&json!({
+            "schema": 1,
+            "active": [make_active(entry_names[1], "Ilse Oduya-Brandt", "Ilse Oduya-Brandt", &[], false, false)],
+            "available": [],
+            "completed": completed
+        }));
+        milestones.observe(&s2);
+        let s2_slugs: Vec<String> = s2
+            .active_trade_needs(None)
+            .into_iter()
+            .map(|n| n.commodity_slug)
+            .collect();
+        assert_eq!(s2_slugs, vec!["provisions", "propellant"]);
+        completed.push(json!({ "key": GUIDED_TOUR_KEYS[1], "title": s2.active[0].title }));
+
+        // 3. Step 3: deliver_metals MUST extract "metals" (NOT shadowed by "provisions" in instructions!)
+        let s3 = parse_frame(&json!({
+            "schema": 1,
+            "active": [make_active(entry_names[2], "Ilse Oduya-Brandt", "Jonas Achterberg-Nkemelu", &[], false, false)],
+            "available": [],
+            "completed": completed
+        }));
+        milestones.observe(&s3);
+        let s3_need = s3.active_trade_need(None).expect("step 3 trade need");
+        assert_eq!(s3_need.commodity_slug, "metals");
+        assert_eq!(s3_need.target_quantity, 5);
+        assert!(s3_need.wants_buy && s3_need.wants_sell);
+        assert_eq!(
+            s3.active_destination_port(None).map(|d| d.port_id),
+            Some("stickney".to_string())
+        );
+        completed.push(json!({ "key": GUIDED_TOUR_KEYS[2], "title": s3.active[0].title }));
+
+        // 4. Step 4: industrial_parts Stickney -> Ceres
+        let s4 = parse_frame(&json!({
+            "schema": 1,
+            "active": [make_active(entry_names[3], "Jonas Achterberg-Nkemelu", "Ilse Oduya-Brandt", &[], false, false)],
+            "available": [],
+            "completed": completed
+        }));
+        milestones.observe(&s4);
+        assert_eq!(
+            s4.active_trade_need(None).map(|n| n.commodity_slug),
+            Some("industrial_parts".to_string())
+        );
+        assert_eq!(
+            s4.active_destination_port(None).map(|d| d.port_id),
+            Some("ceres".to_string())
+        );
+        completed.push(json!({ "key": GUIDED_TOUR_KEYS[3], "title": s4.active[0].title }));
+
+        // 5. Step 5: Dray-P refit empty-hold check (propellant OK)
+        let s5 = parse_frame(&json!({
+            "schema": 1,
+            "active": [make_active(entry_names[4], "Ilse Oduya-Brandt", "Rosalind Qureshi-Mbeki", &[], false, false)],
+            "available": [],
+            "completed": completed
+        }));
+        milestones.observe(&s5);
+        assert_eq!(
+            QuestsSnapshot::suggested_action_for(&s5.active[0]).map(|a| a.command),
+            Some("+coop/refit prospector".to_string())
+        );
+        let s5_blocked = QuestStowageTelemetry {
+            cargo_kg: 2000,
+            propellant_kg: 15_000,
+            provisions_days: 8,
+            cargo_lots: vec![("tacsim:metals".into(), "Metals".into(), 2)],
+        };
+        assert_eq!(
+            QuestsSnapshot::hold_readiness_line_for(&s5.active[0], &s5_blocked).map(|(_, ok)| ok),
+            Some(false)
+        );
+        let s5_clear = QuestStowageTelemetry {
+            cargo_kg: 0,
+            propellant_kg: 15_000,
+            provisions_days: 0,
+            cargo_lots: vec![],
+        };
+        assert_eq!(
+            QuestsSnapshot::hold_readiness_line_for(&s5.active[0], &s5_clear).map(|(_, ok)| ok),
+            Some(true)
+        );
+        completed.push(json!({ "key": GUIDED_TOUR_KEYS[4], "title": s5.active[0].title }));
+
+        // 6. Step 6: Surface mining prep -> bay/bridge routing -> [ORE HOLD READY] -> Ceres return
+        let s6_pre = parse_frame(&json!({
+            "schema": 1,
+            "active": [make_active(entry_names[5], "Rosalind Qureshi-Mbeki", "Rosalind Qureshi-Mbeki", &[], false, false)],
+            "available": [],
+            "completed": completed
+        }));
+        milestones.observe(&s6_pre);
+        let m6 = s6_pre.surface_mining_status(None).expect("step 6 mining");
+        assert_eq!(m6.target_ore_slug, "carbon_ore");
+        assert_eq!(m6.recommended_family, "carbon");
+        assert_eq!(
+            m6.prep_hint_line(),
+            "Prep: +license | +tv/lease | +chart/ground"
+        );
+        assert_eq!(
+            s6_pre.active_ship_target_compartment_for_location(None, Some("ceres"), false),
+            Some("bridge")
+        );
+        assert_eq!(
+            s6_pre.active_ship_target_compartment_for_location(None, None, true),
+            Some("bay")
+        );
+
+        let s6_post = parse_frame(&json!({
+            "schema": 1,
+            "active": [make_active(
+                entry_names[5],
+                "Rosalind Qureshi-Mbeki",
+                "Rosalind Qureshi-Mbeki",
+                &["scan_landing_site", "sound_mineral_pocket", "mine_carbon_ore"],
+                true,
+                false
+            )],
+            "available": [],
+            "completed": completed
+        }));
+        assert_eq!(
+            s6_post.active_ship_target_compartment_for_location(None, None, true),
+            Some("bridge")
+        );
+        assert_eq!(
+            s6_post.active_destination_port(None).map(|d| d.port_id),
+            Some("ceres".to_string())
+        );
+        let ore_stow = QuestStowageTelemetry {
+            cargo_kg: 1000,
+            propellant_kg: 10_000,
+            provisions_days: 6,
+            cargo_lots: vec![("tacsim:carbon_ore".into(), "Carbon Ore".into(), 1)],
+        };
+        let (ore_line, ore_ok) =
+            QuestsSnapshot::hold_readiness_line_for(&s6_post.active[0], &ore_stow)
+                .expect("step 6 ore hold");
+        assert!(ore_ok && ore_line.contains("[ORE HOLD READY]"));
+        completed.push(json!({ "key": GUIDED_TOUR_KEYS[5], "title": s6_pre.active[0].title }));
+
+        // 7. Step 7: Sell carbon_ore at Stickney Yards -> pre-flight check -> Corridor Captain (7/7)
+        let s7 = parse_frame(&json!({
+            "schema": 1,
+            "active": [make_active(entry_names[6], "Rosalind Qureshi-Mbeki", "Wren Castillo-Haugen", &[], false, false)],
+            "available": [],
+            "completed": completed
+        }));
+        milestones.observe(&s7);
+        let s7_need = s7.active_trade_need(None).expect("step 7 trade need");
+        assert_eq!(s7_need.commodity_slug, "carbon_ore");
+        assert!(!s7_need.wants_buy && s7_need.wants_sell);
+        assert_eq!(
+            s7.active_destination_port(None).map(|d| d.port_id),
+            Some("stickney".to_string())
+        );
+        let s7_dry = QuestStowageTelemetry {
+            cargo_kg: 2000,
+            propellant_kg: 12_000,
+            provisions_days: 0,
+            cargo_lots: vec![("tacsim:carbon_ore".into(), "Carbon Ore".into(), 2)],
+        };
+        assert_eq!(
+            QuestsSnapshot::preflight_readiness_line_for(&s7.active[0], &s7_dry).map(|(_, ok)| ok),
+            Some(false)
+        );
+        let s7_ok = QuestStowageTelemetry {
+            provisions_days: 15,
+            ..s7_dry
+        };
+        assert_eq!(
+            QuestsSnapshot::preflight_readiness_line_for(&s7.active[0], &s7_ok).map(|(_, ok)| ok),
+            Some(true)
+        );
+
+        // Complete Step 7 -> 7/7 Corridor Captain graduation milestone + Jobs Board pointer
+        completed.push(json!({ "key": GUIDED_TOUR_KEYS[6], "title": s7.active[0].title }));
+        let done_all = parse_frame(&json!({
+            "schema": 1,
+            "active": [],
+            "available": [],
+            "completed": completed
+        }));
+        let m_final = milestones.observe(&done_all);
+        assert_eq!(m_final.len(), 1);
+        assert_eq!(m_final[0].kind, QuestMilestoneKind::Completed);
+        assert!(m_final[0].tour_all_done);
+        assert!(done_all.guided_tour_progress().is_some_and(|p| p.all_done));
+        assert!(done_all.next_guided_offer().is_none());
+        let sheet_txt = render_quest_sheet_lines_with_stowage(&done_all, None, None)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(sheet_txt.contains("Corridor Captain") && sheet_txt.contains("+market/jobs"));
     }
 }
