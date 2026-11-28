@@ -11712,5 +11712,130 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestRefitEmptyHoldReadiness_AndSurfaceProspectingPrepRecoveryHints()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestRefitAndMiningPrepTestRoot");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                var tradeState = new TacSimTradeAndShipState();
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 2000,
+                            ""cargo_limit_kg"": 100000,
+                            ""cargo_l"": 1000,
+                            ""cargo_limit_l"": 120000,
+                            ""tank_kg"": 12000,
+                            ""tank_limit_kg"": 80000,
+                            ""stores_days"": 4,
+                            ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:metals"", ""label"": ""Metals"", ""qty"": 2 }]
+                        }
+                    }
+                }"));
+
+                // 1. Step 5 Refit Dray-P active with cargo + provisions in hold -> CLEAR HOLD FIRST
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"",
+                        ""title"": ""Refit the Dray for Surface Mining"",
+                        ""checkpoints"": [{
+                            ""id"": ""refit_dray_p"",
+                            ""title"": ""Refit your Dray into a Dray-P prospector"",
+                            ""instructions"": ""Run +coop/refit prospector at Registry."",
+                            ""checked"": false,
+                            ""live_ready"": false
+                        }]
+                    }]
+                }")));
+                Assert.IsTrue(hud.QuestJournal.TryGetRefitHoldReadiness(tradeState, out var blocked));
+                Assert.IsFalse(blocked.Ready);
+                Assert.IsFalse(blocked.CargoEmpty);
+                Assert.IsFalse(blocked.ProvisionsEmpty);
+                Assert.AreEqual(12, blocked.PropellantTonnes);
+                string blockedMarkup = TacSimGameCoordinator.FormatRefitHoldCheckMarkup(blocked);
+                StringAssert.Contains("[CLEAR HOLD FIRST]", blockedMarkup);
+                StringAssert.Contains("Cargo: 2t [CLEAR]", blockedMarkup);
+                StringAssert.Contains("Stores: 4d [CLEAR]", blockedMarkup);
+
+                // 2. Empty cargo & stores with propellant still in tank -> READY TO REFIT
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 0,
+                            ""cargo_limit_kg"": 100000,
+                            ""cargo_l"": 0,
+                            ""cargo_limit_l"": 120000,
+                            ""tank_kg"": 12000,
+                            ""tank_limit_kg"": 80000,
+                            ""stores_days"": 0,
+                            ""stores_limit_days"": 120,
+                            ""items"": []
+                        }
+                    }
+                }"));
+                Assert.IsTrue(hud.QuestJournal.TryGetRefitHoldReadiness(tradeState, out var ready));
+                Assert.IsTrue(ready.Ready);
+                string readyMarkup = TacSimGameCoordinator.FormatRefitHoldCheckMarkup(ready);
+                StringAssert.Contains("[READY TO REFIT]", readyMarkup);
+                StringAssert.Contains("Tank: 12t OK", readyMarkup);
+
+                // 3. Step 6 surface prospecting prep hints (pre-scan) & post-mine rig recovery command
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Surface scan"", ""instructions"": ""Run +tv/1 scan go."", ""checked"": false, ""live_ready"": false },
+                            { ""id"": ""sound_mineral_pocket"", ""title"": ""Sound pocket"", ""instructions"": ""Run +tv/1 sound go."", ""checked"": false, ""live_ready"": false },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""instructions"": ""Run +tv/1 mine go."", ""checked"": false, ""live_ready"": false }
+                        ]
+                    }]
+                }")));
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveSurfaceMiningStatus(out var preScan));
+                StringAssert.Contains("+license", preScan.FormatPrepHintLine());
+                StringAssert.Contains("+tv/lease", preScan.FormatPrepHintLine());
+                StringAssert.Contains("+chart/ground", preScan.FormatPrepHintLine());
+
+                // Once mine is complete, FormatPrepHintLine and TryGetSuggestedCommand point to +tv/1 recover go
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""ready_to_finish"": false,
+                        ""can_check_now"": false,
+                        ""can_finish_now"": false,
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Surface scan"", ""instructions"": ""Run +tv/1 scan go."", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""sound_mineral_pocket"", ""title"": ""Sound pocket"", ""instructions"": ""Run +tv/1 sound go."", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""instructions"": ""Run +tv/1 mine go."", ""checked"": true, ""live_ready"": true }
+                        ]
+                    }]
+                }")));
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveSurfaceMiningStatus(out var postMine));
+                StringAssert.Contains("+tv/1 recover go", postMine.FormatPrepHintLine());
+                Assert.IsTrue(hud.QuestJournal.TryGetSuggestedCommand(hud.QuestJournal.GetTrackedActiveQuest(), out string sugLbl, out string sugCmd));
+                Assert.AreEqual("Recover Rig", sugLbl);
+                Assert.AreEqual("+tv/1 recover go", sugCmd);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

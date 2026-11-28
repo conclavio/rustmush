@@ -691,6 +691,8 @@ namespace TacSim.UI
                 sb.AppendLine($"PASSAGE: <color=#99DDFF>{MushProtocol.EscapeUnityRichText(active.Passage)}</color>");
             if (!string.IsNullOrEmpty(active.BestLine))
                 sb.AppendLine($"READINGS: {MushProtocol.EscapeUnityRichText(active.BestLine)}");
+            if (_questJournal != null && _questJournal.TryGetActiveSurfaceMiningStatus(out var qMineDossier))
+                sb.AppendLine($"<color=#FFDD44>[PROSPECTING]</color> <color=#77DDFF>{MushProtocol.EscapeUnityRichText(qMineDossier.FormatPrepHintLine())}</color>");
             _dossierText.text = sb.ToString();
         }
 

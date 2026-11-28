@@ -2304,6 +2304,17 @@ namespace TacSim.Core
             return $"{prefixes[seed % prefixes.Length]} {nouns[(seed / 13) % nouns.Length]} {(seed % 89) + 10}";
         }
 
+        public static string FormatRefitHoldCheckMarkup(QuestRefitHoldReadiness refit)
+        {
+            if (refit.Ready)
+            {
+                return $"<color=#55EE99><b>[READY TO REFIT]</b> Cargo: 0t [OK]  |  Stores: 0d [OK]  |  Tank: {refit.PropellantTonnes}t OK</color>";
+            }
+            string cargoStatus = refit.CargoEmpty ? "0t [OK]" : $"{refit.CargoTonnes}t [CLEAR]";
+            string storesStatus = refit.ProvisionsEmpty ? "0d [OK]" : $"{refit.ProvisionsDays}d [CLEAR]";
+            return $"<color=#FFCC44><b>[CLEAR HOLD FIRST]</b> Cargo: {cargoStatus}  |  Stores: {storesStatus}  |  Tank: {refit.PropellantTonnes}t OK</color>";
+        }
+
         private void ShowCoopEnrolPrompt()
         {
             string suggested = SuggestUniqueHullName();
@@ -2311,7 +2322,12 @@ namespace TacSim.Core
             if (Hud?.QuestJournal != null &&
                 Hud.QuestJournal.TryGetActiveCoopAction(out string qTitle, out string qLbl, out _))
             {
-                questBanner = $"<color=#FFDD44><b>[QUEST] {MushProtocol.EscapeUnityRichText(qLbl.ToUpperInvariant())} — {MushProtocol.EscapeUnityRichText(qTitle)}</b></color>\n\n";
+                questBanner = $"<color=#FFDD44><b>[QUEST] {MushProtocol.EscapeUnityRichText(qLbl.ToUpperInvariant())} — {MushProtocol.EscapeUnityRichText(qTitle)}</b></color>\n";
+                if (Hud.QuestJournal.TryGetRefitHoldReadiness(TradeState, out var refitReadiness))
+                {
+                    questBanner += FormatRefitHoldCheckMarkup(refitReadiness) + "\n";
+                }
+                questBanner += "\n";
             }
             Hud.ShowDetailModal(
                 "CO-OP FIRST CAPTAIN DESK",

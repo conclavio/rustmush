@@ -904,6 +904,7 @@ namespace TacSim.UI
                 string mineMark = qMine.MineDone ? "<color=#55EE99>[✓]</color>" : "<color=#99BBCC>[ ]</color>";
                 sb.AppendLine($"<color=#FFDD44><b>[QUEST] {MushProtocol.EscapeUnityRichText(qMine.QuestTitle)}</b></color>");
                 sb.AppendLine($"{scanMark} Scan Site   {soundMark} Sound Pocket   {mineMark} Mine {MushProtocol.EscapeUnityRichText(qMine.TargetOreSlug)}");
+                sb.AppendLine($"<color=#77DDFF>{MushProtocol.EscapeUnityRichText(qMine.FormatPrepHintLine())}</color>");
             }
             sb.AppendLine($"<color=#FFEE77>{MushProtocol.EscapeUnityRichText(_surface.StatusSummaryLine)}</color>");
             if (!string.IsNullOrEmpty(_surface.ActiveRunSummary))
