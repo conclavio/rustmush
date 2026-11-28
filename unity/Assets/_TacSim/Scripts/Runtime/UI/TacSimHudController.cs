@@ -2579,6 +2579,7 @@ namespace TacSim.UI
             QuestJournal?.BindTradeState(state);
             Overlays?.BindTradeState(state);
             GroundChart?.BindTradeState(state);
+            SolarMap?.BindTradeState(state);
             _lastListingsSignature = null;
             if (_boundTradeState != null)
                 _boundTradeState.OnStateChanged += RefreshTradeTerminal;

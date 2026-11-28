@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using TacSim.Net;
 using TacSim.Space;
+using TacSim.World;
 using UnityEngine;
 using UnityEngine.EventSystems;
 using UnityEngine.UI;
@@ -36,11 +37,14 @@ namespace TacSim.UI
         public bool GroundChartQuestHighlighted { get; private set; }
         public string GroundChartButtonLabel => _groundBtnLbl != null ? _groundBtnLbl.text : string.Empty;
         public string FirstSidebarRouteLabelSnapshot { get; private set; } = string.Empty;
+        public bool IsArrivedAtQuestDestination { get; private set; }
+        public string DossierSnapshot => _dossierText != null ? _dossierText.text : string.Empty;
 
         private const int TexSize = 512;
 
         private Font _font;
         private TacSimQuestJournal _questJournal;
+        private TacSimTradeAndShipState _boundTradeState;
         private GameObject _overlay;
         private Text _headingText;
         private Text _captionText;
@@ -252,6 +256,35 @@ namespace TacSim.UI
             RefreshQuestGuidance();
         }
 
+        public void BindTradeState(TacSimTradeAndShipState trade)
+        {
+            if (_boundTradeState == trade) return;
+            if (_boundTradeState != null)
+                _boundTradeState.OnStateChanged -= RefreshSelectedDossier;
+            _boundTradeState = trade;
+            if (_boundTradeState != null)
+                _boundTradeState.OnStateChanged += RefreshSelectedDossier;
+            RefreshSelectedDossier();
+        }
+
+        private bool ComputeArrivedAtQuestDestination(QuestDestinationHint hint)
+        {
+            if (CurrentFrame?.Vantage == null || string.IsNullOrWhiteSpace(CurrentFrame.Vantage.Port))
+                return false;
+            var tracked = _questJournal?.GetTrackedActiveQuest();
+            if (_questJournal != null &&
+                _questJournal.TryGetActiveSurfaceMiningStatus(out _) &&
+                (tracked == null || (!tracked.CanFinishNow && !tracked.ReadyToFinish)))
+            {
+                return false;
+            }
+            string rawPort = CurrentFrame.Vantage.Port.Trim().ToLowerInvariant();
+            string pid = (hint.PortId ?? string.Empty).ToLowerInvariant();
+            string plbl = (hint.PortLabel ?? string.Empty).ToLowerInvariant();
+            return (!string.IsNullOrEmpty(pid) && (rawPort == pid || rawPort.Contains(pid, StringComparison.Ordinal))) ||
+                   (!string.IsNullOrEmpty(plbl) && (rawPort == plbl || rawPort.Contains(plbl, StringComparison.Ordinal)));
+        }
+
         private bool TryResolveQuestDestinationHint(out QuestDestinationHint hint)
         {
             hint = default;
@@ -288,18 +321,27 @@ namespace TacSim.UI
             {
                 QuestDestinationPortId = hint.PortId;
                 QuestDestinationPortLabel = hint.PortLabel;
-                if (_questFocusBtn != null) _questFocusBtn.gameObject.SetActive(true);
+                IsArrivedAtQuestDestination = ComputeArrivedAtQuestDestination(hint);
+                if (_questFocusBtn != null)
+                {
+                    _questFocusBtn.gameObject.SetActive(true);
+                    var qImg = _questFocusBtn.GetComponent<Image>();
+                    if (qImg != null)
+                        qImg.color = IsArrivedAtQuestDestination ? new Color(0.14f, 0.52f, 0.34f) : new Color(0.56f, 0.40f, 0.10f);
+                }
                 if (_questFocusBtnLbl != null)
                 {
+                    string prefix = IsArrivedAtQuestDestination ? "ARRIVED" : "QUEST";
                     _questFocusBtnLbl.text = stepNo > 0
-                        ? $"QUEST [{stepNo}/7]: {hint.PortId.ToUpperInvariant()}"
-                        : $"QUEST: {hint.PortId.ToUpperInvariant()}";
+                        ? $"{prefix} [{stepNo}/7]: {hint.PortId.ToUpperInvariant()}"
+                        : $"{prefix}: {hint.PortId.ToUpperInvariant()}";
                 }
             }
             else
             {
                 QuestDestinationPortId = string.Empty;
                 QuestDestinationPortLabel = string.Empty;
+                IsArrivedAtQuestDestination = false;
                 if (_questFocusBtn != null) _questFocusBtn.gameObject.SetActive(false);
             }
 
@@ -315,6 +357,7 @@ namespace TacSim.UI
                 _groundBtnLbl.text = hasMining ? $"GROUND [G]: {qm.RecommendedFamily.ToUpperInvariant()}" : "GROUND [G]";
 
             RebuildSidebarList();
+            RefreshSelectedDossier();
             _dirty = true;
             RedrawOrreryTexture();
         }
@@ -335,6 +378,7 @@ namespace TacSim.UI
             LastOrreryHasQuestDestinationRing = false;
             QuestDestinationPortId = string.Empty;
             QuestDestinationPortLabel = string.Empty;
+            IsArrivedAtQuestDestination = false;
             QuestMiningBodyId = string.Empty;
             GroundChartQuestHighlighted = false;
             if (_groundBtnImg != null) _groundBtnImg.color = new Color(0.14f, 0.44f, 0.38f);
@@ -508,6 +552,11 @@ namespace TacSim.UI
         {
             if (_questJournal != null)
                 _questJournal.OnQuestsPanelUpdated -= RefreshQuestGuidance;
+            if (_boundTradeState != null)
+            {
+                _boundTradeState.OnStateChanged -= RefreshSelectedDossier;
+                _boundTradeState = null;
+            }
             if (_orreryTex != null)
             {
                 if (Application.isPlaying) Destroy(_orreryTex);
@@ -716,7 +765,21 @@ namespace TacSim.UI
             var route = !string.IsNullOrEmpty(SelectedPortId)
                 ? CurrentFrame.FindRouteForBodyOrPort(SelectedPortId)
                 : CurrentFrame.FindRouteForBodyOrPort(body?.Id);
-            _dossierText.text = CurrentFrame.BuildBodyAndRouteDossier(body, route);
+            string questHeader = string.Empty;
+            if (IsArrivedAtQuestDestination && !string.IsNullOrEmpty(QuestDestinationPortLabel))
+            {
+                questHeader = $"<color=#55EE99><b>[QUEST ARRIVED] At {MushProtocol.EscapeUnityRichText(QuestDestinationPortLabel)}</b></color> — Step ashore (+ship/leave) or turn in.\n";
+            }
+            else if (!string.IsNullOrEmpty(QuestDestinationPortId) && _questJournal != null)
+            {
+                var trackedQ = _questJournal.GetTrackedActiveQuest();
+                if (trackedQ != null && _questJournal.TryGetQuestPreflightReadinessSummary(trackedQ, out string pfSummary, out bool pfReady))
+                {
+                    string pfCol = pfReady ? "#55EE99" : "#FFD166";
+                    questHeader = $"<color={pfCol}><b>{MushProtocol.EscapeUnityRichText(pfSummary)}</b></color>\n";
+                }
+            }
+            _dossierText.text = questHeader + CurrentFrame.BuildBodyAndRouteDossier(body, route);
 
             bool hasPort = route != null && MushProtocol.TryValidateSafeCommandToken(route.To, out _, maxLen: 48);
             if (_departBtn != null) _departBtn.interactable = hasPort;
