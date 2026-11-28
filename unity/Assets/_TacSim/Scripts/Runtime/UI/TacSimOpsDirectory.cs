@@ -793,6 +793,41 @@ namespace TacSim.UI
                 sb.AppendLine("• Use the Sim Console (`sim status`, `sim history`) or step into a pod (`board`) to deploy.\n");
             }
 
+            if (_questJournal != null && _questJournal.LatestPanel != null)
+            {
+                var tracked = _questJournal.GetTrackedActiveQuest();
+                if (tracked != null)
+                {
+                    int done = 0;
+                    for (int i = 0; i < tracked.Checkpoints.Count; i++)
+                    {
+                        if (tracked.Checkpoints[i].Checked) done++;
+                    }
+                    string readyTag = (tracked.ReadyToFinish || tracked.CanFinishNow)
+                        ? " <color=#66FFAA>[READY TO TURN IN]</color>"
+                        : string.Empty;
+                    sb.AppendLine("<color=#FFDD44><b>ACTIVE GUIDED QUEST</b></color>");
+                    sb.AppendFormat("• <b>{0}</b> ({1}/{2}){3}\n",
+                        MushProtocol.EscapeUnityRichText(tracked.Title),
+                        done,
+                        tracked.Checkpoints.Count,
+                        readyTag);
+                    if (!string.IsNullOrEmpty(tracked.NextStep))
+                        sb.AppendFormat("• Next: {0}\n", MushProtocol.EscapeUnityRichText(tracked.NextStep));
+                    sb.AppendFormat("• Completed: {0}  |  Open <b>[J]</b> for full quest journal.\n\n",
+                        _questJournal.CompletedQuestCount);
+                }
+                else if (_questJournal.AvailableQuestCount > 0)
+                {
+                    var offer = _questJournal.LatestPanel.Available[0];
+                    sb.AppendLine("<color=#FFDD44><b>ACTIVE GUIDED QUEST</b></color>");
+                    sb.AppendFormat("• <color=#FFDD44>[!]</color> <b>{0}</b> — speak with {1} (Completed: {2})\n\n",
+                        MushProtocol.EscapeUnityRichText(offer.Title),
+                        MushProtocol.EscapeUnityRichText(offer.GiverName),
+                        _questJournal.CompletedQuestCount);
+                }
+            }
+
             sb.AppendLine("<color=#66EEFF><b>ACTIVE WAYFINDER TRAIL</b></color>");
             if (_wayfinder != null && _wayfinder.HasActiveRoute)
             {

@@ -11060,5 +11060,101 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestBridgeHoloRing_TrackerNavButtonAndActiveOpsTab_SyncEndToEnd()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestBridgeHoloTrackerOpsTestRoot");
+            try
+            {
+                var catalog = TacSimAssetCatalog.LoadOrDefault();
+                var shipGo = new UnityEngine.GameObject("TestBridgeHoloQuestShip");
+                shipGo.transform.SetParent(rootGo.transform, false);
+                var ship = shipGo.AddComponent<ShipInteriorController>();
+                ship.BuildInterior(catalog, "tacsim.unit.dray");
+
+                // 1. Solar System bridge holo-table highlights quest destination body with golden HoloQuestRing
+                //    while preserving exact HoloTankContacts & HoloSolarOrbitRingCount invariants!
+                var chart = TacSimSolarChartFrame.FromJson(JsonNode.Parse(@"{
+                    ""ic_time"": ""2350-05-01"",
+                    ""vantage"": { ""body"": ""ceres"", ""port"": ""ceres"" },
+                    ""scale"": { ""r0_au"": 1.5, ""au_max"": 12.0 },
+                    ""bodies"": [
+                        { ""id"": ""earth"", ""label"": ""Earth"", ""r_au"": 1.0, ""lon_deg"": 15.0, ""lat_deg"": 0.0, ""here"": false },
+                        { ""id"": ""mars"", ""label"": ""Mars"", ""r_au"": 1.52, ""lon_deg"": 110.0, ""lat_deg"": 1.8, ""here"": false },
+                        { ""id"": ""phobos"", ""label"": ""Phobos"", ""parent"": ""mars"", ""r_au"": 1.52, ""lon_deg"": 110.0, ""lat_deg"": 1.8, ""here"": false },
+                        { ""id"": ""ceres"", ""label"": ""Ceres"", ""r_au"": 2.77, ""lon_deg"": 230.0, ""lat_deg"": 10.6, ""here"": true }
+                    ],
+                    ""routes"": [
+                        { ""to"": ""stickney"", ""venue"": ""Stickney Yards"", ""body"": ""phobos"", ""legs"": [] }
+                    ]
+                }"));
+                ship.ApplySolarChartFrame(chart);
+                ship.SetHoloDisplayMode(BridgeHoloMode.SolarSystem);
+                Assert.IsFalse(ship.HasHoloQuestDestinationRing, "No quest ring before quest destination is set");
+                Assert.AreEqual(3, ship.HoloSolarOrbitRingCount);
+
+                ship.SetQuestDestinationPort("stickney");
+                Assert.AreEqual("stickney", ship.QuestDestinationPortId);
+                Assert.IsTrue(ship.HasHoloQuestDestinationRing, "Stickney (Phobos -> Mars) must mount golden HoloQuestRing on Mars sphere");
+                Assert.AreEqual(3, ship.HoloSolarOrbitRingCount, "HoloSolarOrbitRingCount invariant must stay 3");
+                var holoContacts = shipGo.transform.Find("HoloTankPedestal")?.Find("HoloTankContacts");
+                Assert.IsNotNull(holoContacts);
+                Assert.AreEqual(4, holoContacts.childCount, "HoloTankContacts childCount invariant must stay 4 (Sun + 3 primary bodies)");
+
+                ship.SetQuestDestinationPort(string.Empty);
+                Assert.IsFalse(ship.HasHoloQuestDestinationRing, "Clearing quest destination must remove golden HoloQuestRing");
+
+                // 2. Quest Tracker Card NAV button + [M] Ops Directory Active Ops quest summary
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                string requestedRoom = string.Empty;
+                hud.QuestJournal.OnWayfinderRoomRequested += r => requestedRoom = r;
+
+                var questJson = JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#10"",
+                    ""room_name"": ""Port Watch Arrivals"",
+                    ""room_markers"": [],
+                    ""available"": [],
+                    ""active"": [
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"",
+                            ""title"": ""Stock the Locker and Tanks"",
+                            ""category"": ""guided"",
+                            ""next_room_entry"": ""room.c04_coop_registry"",
+                            ""next_step"": ""Buy 5 propellant at Ceres Exchange Hall"",
+                            ""checkpoints"": [
+                                { ""id"": ""buy_provisions"", ""title"": ""Buy 10 provisions"", ""checked"": true, ""live_ready"": true },
+                                { ""id"": ""buy_propellant"", ""title"": ""Buy 5 propellant"", ""room_entry"": ""room.c04_coop_registry"", ""checked"": false, ""live_ready"": false }
+                            ]
+                        }
+                    ],
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""First Papers at the Registry"" }
+                    ]
+                }");
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(questJson));
+
+                Assert.IsTrue(hud.QuestJournal.IsTrackerWayfinderVisible, "Tracker card must expose 1-click NAV button when active quest has next_room_entry");
+                Assert.IsTrue(hud.QuestJournal.TriggerTrackerWayfinder());
+                Assert.AreEqual("room.c04_coop_registry", requestedRoom);
+
+                hud.OpsDirectory.SelectTab(TacSim.UI.OpsDirectoryTab.ActiveOps);
+                StringAssert.Contains("ACTIVE GUIDED QUEST", hud.OpsDirectory.OpsSummarySnapshot);
+                StringAssert.Contains("Stock the Locker and Tanks", hud.OpsDirectory.OpsSummarySnapshot);
+                StringAssert.Contains("(1/2)", hud.OpsDirectory.OpsSummarySnapshot);
+                StringAssert.Contains("Completed: 1", hud.OpsDirectory.OpsSummarySnapshot);
+
+                // Manual pin hides structured quest NAV button
+                hud.QuestJournal.PinObjective("CUSTOM", "Manual Pin", "Check dock manifest");
+                Assert.IsFalse(hud.QuestJournal.IsTrackerWayfinderVisible);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
