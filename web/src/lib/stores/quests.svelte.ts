@@ -91,6 +91,8 @@ export interface QuestTradeNeed {
   targetQuantity: number;
   wantsBuy: boolean;
   wantsSell: boolean;
+  roomEntry?: string;
+  roomName?: string;
 }
 
 export interface QuestStowageReadiness {
@@ -843,6 +845,8 @@ export function extractActiveTradeNeeds(
         targetQuantity: qty,
         wantsBuy,
         wantsSell,
+        roomEntry: cp.roomEntry || undefined,
+        roomName: cp.roomName || undefined,
       });
     }
     if (out.length > 0) return out;
@@ -855,6 +859,36 @@ export function extractActiveTradeNeed(
   trackedKey: string | null,
 ): QuestTradeNeed | null {
   return extractActiveTradeNeeds(active, trackedKey)[0] ?? null;
+}
+
+const CANONICAL_TRADE_ROOM_LABELS: Record<string, string> = {
+  "room.c08_chandlery": "Co-op Chandlery",
+  "room.c06_chandlery": "Co-op Chandlery",
+  "room.c07_exchange": "Exchange Hall",
+  "room.c05_registry": "Registry & Co-op Desk",
+  "room.p07_receiving": "Receiving Counter",
+  "room.p11_service": "Service Counter",
+};
+
+/**
+ * Resolve a human-readable station desk label for a trade need when no matching listing
+ * appears on the currently opened Port Exchange board (e.g. Step 2 at Chandlery needing
+ * Propellant from Exchange Hall, or vice versa).
+ */
+export function formatTradeNeedVenueHint(
+  need: QuestTradeNeed | null | undefined,
+): string | null {
+  if (!need) return null;
+  if (need.roomName && need.roomName.trim().length > 0) {
+    return need.roomName.trim();
+  }
+  const entryKey = (need.roomEntry ?? "").trim().toLowerCase();
+  if (entryKey && CANONICAL_TRADE_ROOM_LABELS[entryKey]) {
+    return CANONICAL_TRADE_ROOM_LABELS[entryKey];
+  }
+  if (need.commoditySlug === "provisions") return "Co-op Chandlery";
+  if (need.commoditySlug === "propellant") return "Exchange Hall";
+  return null;
 }
 
 /**

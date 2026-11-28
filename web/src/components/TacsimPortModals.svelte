@@ -12,6 +12,7 @@
     evaluateSailingPreflightReadiness,
     extractSurfaceMiningPrepActions,
     inferStationPortFromRoomEntry,
+    formatTradeNeedVenueHint,
     matchesQuestTradeRow,
     normalizeGoodSlug,
     resolveContextualTradeNeed,
@@ -222,6 +223,18 @@
         currentVenueId !== questDestPort.portId,
     ),
   );
+  const questTradeMissingDeskHint = $derived.by((): string | null => {
+    if (!questTradeNeed || questTradeReadyToSail) return null;
+    if (trade.asks.length + trade.bids.length === 0) return null;
+    const hasAskMatch =
+      questTradeNeed.wantsBuy &&
+      trade.asks.some((r) => matchesQuestTradeRow(questTradeNeed, r, false));
+    const hasBidMatch =
+      questTradeNeed.wantsSell &&
+      trade.bids.some((r) => matchesQuestTradeRow(questTradeNeed, r, true));
+    if (hasAskMatch || hasBidMatch) return null;
+    return formatTradeNeedVenueHint(questTradeNeed);
+  });
   const questCoopAction = $derived.by(() => {
     const sug = app.quests?.suggestedAction;
     if (!sug || !sug.command.startsWith("+coop/")) return null;
@@ -524,6 +537,8 @@
                           : "Stores"} before undocking
                     </span>
                   {/if}
+                {:else if questTradeMissingDeskHint}
+                  <span class="qtag">· Not listed at this desk — try {questTradeMissingDeskHint}</span>
                 {/if}
               </div>
               <div class="qb-text">
@@ -537,6 +552,14 @@
                     }}
                   >
                     Sail → {questDestPort.portLabel}
+                  </button>
+                {:else if questTradeMissingDeskHint}
+                  <button
+                    type="button"
+                    class="ghost sm"
+                    onclick={() => app.tacsim.closeModal()}
+                  >
+                    Walk → {questTradeMissingDeskHint}
                   </button>
                 {/if}
                 <button
