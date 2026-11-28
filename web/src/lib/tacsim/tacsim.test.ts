@@ -3343,6 +3343,30 @@ describe("PR #693 Web review regressions (items 1-7, 9-11)", () => {
     await fireEvent.click(nextPill);
     expect(app.quests.logOpen).toBe(true);
     expect(app.quests.logTab).toBe("completed");
+
+    // 4. All 7 Guided Tour steps complete -> renders Corridor Captain (7/7) mastery pill on 3D HUD
+    app.quests.closeModals();
+    app.quests.applyFrame({
+      schema: 1,
+      room_markers: [],
+      active: [],
+      available: [],
+      completed: [
+        { key: "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll", title: "S1" },
+        { key: "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel", title: "S2" },
+        { key: "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery", title: "S3" },
+        { key: "tacsim.quests.guided_onboarding/quest.guide_04_return_haul", title: "S4" },
+        { key: "tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector", title: "S5" },
+        { key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining", title: "S6" },
+        { key: "tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore", title: "S7" },
+      ],
+    });
+    await tick();
+    const masteredPill = screen.getByRole("button", { name: /Corridor Captain \(7\/7\)/i });
+    expect(masteredPill.textContent).toContain("Guided Tour Complete");
+    await fireEvent.click(masteredPill);
+    expect(app.quests.logOpen).toBe(true);
+    expect(app.quests.logTab).toBe("completed");
     deck.unmount();
   });
 });

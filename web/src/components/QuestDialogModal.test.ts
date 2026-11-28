@@ -559,4 +559,32 @@ describe("QuestDialogModal guided corridor tour roadmap", () => {
     await fireEvent.click(viewOffersBtn);
     expect(quests.logTab).toBe("available");
   });
+
+  it("shows Corridor Captain (7/7) mastery card with post-tour shortcuts in empty Active tab once all 7 guided steps finish", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#22",
+      room_name: "Service Counter",
+      completed: GUIDED_TOUR_KEYS.map((key, i) => ({
+        key,
+        title: `Guided Step ${i + 1}`,
+      })),
+      active: [],
+      available: [],
+    });
+
+    const onCmd = vi.fn();
+    const app = { quests, tacsim: { trade: null }, focusComposer: vi.fn() } as unknown as GameApp;
+    quests.openLog("active");
+    render(QuestDialogModal, { app, onCmd });
+
+    const card = screen.getByLabelText("guided tour mastery");
+    expect(card.textContent).toContain("Corridor Captain — Guided Tour Complete (7/7)");
+    expect(card.textContent).not.toContain("Maren Halvorsen");
+
+    await fireEvent.click(screen.getByRole("button", { name: /Jobs Board \(\+market\/jobs\)/i }));
+    expect(onCmd).toHaveBeenCalledWith("+market/jobs");
+    expect(quests.logOpen).toBe(false);
+  });
 });

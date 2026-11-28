@@ -278,6 +278,7 @@
   const nextGuidedOffer = $derived(
     !trackedQuest && !roomOfferMarker ? (app.quests?.nextGuidedOffer ?? null) : null,
   );
+  const guidedTour = $derived(app.quests?.guidedTourProgress ?? null);
   const dockingActive = $derived(Boolean(app.picture?.spaceDockingData));
   const dockTargetMatchesQuest = $derived(
     Boolean(
@@ -525,6 +526,20 @@
               <span>
                 Speak with {nextGuidedOffer.giverLabel} ({nextGuidedOffer.giverRoomName}){#if questDest} · Sail: +ship/plan {questDest.portId}{/if}
               </span>
+            </span>
+          </button>
+        {:else if guidedTour?.allDone}
+          <button
+            type="button"
+            class="quest-hud-pill"
+            data-ready="true"
+            onclick={() => app.quests?.openLog("completed")}
+            title="Guided Corridor Tour Complete ({guidedTour.completed}/{guidedTour.total})"
+          >
+            <span class="qhud-crest">★</span>
+            <span class="qhud-body">
+              <strong>Corridor Captain ({guidedTour.completed}/{guidedTour.total})</strong>
+              <span>Guided Tour Complete · Open Completed Log</span>
             </span>
           </button>
         {/if}
