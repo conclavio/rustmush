@@ -18481,5 +18481,86 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void SailingTab_GuardsStep6WithRecoverRigFirstAndOreHoldReady()
+        {
+            var rootGo = new UnityEngine.GameObject("SailingStep6RecoverGuardTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.ShowLoginOverlay(false);
+                var tradeState = new TacSimTradeAndShipState();
+                hud.BindTradeState(tradeState);
+                string sentCmd = string.Empty;
+                hud.OnCommandSubmitted += c => sentCmd = c;
+
+                hud.OpenTradeAndSailingModal("COMMONS", openSailingTab: true);
+
+                // 1. Step 6 post-mine at Freeport Commons with 0t ore stowed -> [RECOVER RIG FIRST] + RECOVER RIG (+tv/1 recover go)
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""commons"", ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 0, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 10000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": []
+                        }
+                    }
+                }"));
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""turn_in_name"": ""Rosalind Qureshi-Mbeki"",
+                        ""next_room_entry"": ""room.c07_exchange"",
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Scan"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""sound_mineral_pocket"", ""title"": ""Sound"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""return_exchange"", ""title"": ""Return to Ceres Freeport"", ""instructions"": ""+ship/plan ceres"", ""room_entry"": ""room.c07_exchange"", ""checked"": false, ""live_ready"": false }
+                        ]
+                    }],
+                    ""available"": [], ""completed"": []
+                }")));
+                Assert.IsTrue(hud.IsSailingQuestBannerVisible);
+                StringAssert.Contains("[RECOVER RIG FIRST]", hud.SailingQuestBannerText);
+                StringAssert.Contains("[Step 6/7]", hud.SailingQuestBannerText);
+                Assert.AreEqual("RECOVER RIG", hud.SailingQuestActionLabelSnapshot);
+                Assert.IsTrue(hud.TriggerSailingQuestAction());
+                Assert.AreEqual("+tv/1 recover go", sentCmd);
+                Assert.IsFalse(hud.IsModalOpen, "Triggering RECOVER RIG should close the Sailing modal");
+
+                // 2. Rig recovered (1t carbon_ore stowed) -> [ORE HOLD READY] Return: CERES FREEPORT + SELECT QUEST PORT
+                sentCmd = string.Empty;
+                hud.OpenTradeAndSailingModal("COMMONS", openSailingTab: true);
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""commons"", ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 1000, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 10000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:carbon_ore"", ""label"": ""Carbon Ore"", ""qty"": 1 }]
+                        }
+                    }
+                }"));
+                hud.RefreshTradeTerminal();
+                StringAssert.Contains("[ORE HOLD READY] Return: CERES FREEPORT", hud.SailingQuestBannerText);
+                StringAssert.Contains("[Step 6/7]", hud.SailingQuestBannerText);
+                Assert.AreEqual("SELECT QUEST PORT", hud.SailingQuestActionLabelSnapshot);
+                Assert.IsTrue(hud.TriggerSailingQuestAction());
+                Assert.AreEqual("ceres", tradeState.SelectedDestinationPort);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

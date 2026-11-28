@@ -334,7 +334,7 @@ namespace TacSim.UI
         private Button _sailingExchangeJumpBtn;
         private Button _sailingQuestActionBtn;
         private Text _sailingQuestActionBtnLbl;
-        private enum SailingQuestActionMode { SelectPort, StepAshore, OpenExchange, TurnInNow, Wayfinder }
+        private enum SailingQuestActionMode { SelectPort, StepAshore, OpenExchange, TurnInNow, Wayfinder, RecoverRig }
         private SailingQuestActionMode _sailingActionMode;
         private string _sailingTurnInCmd = string.Empty;
         private RectTransform _sailingOrderRow1Rect;
@@ -2825,12 +2825,23 @@ namespace TacSim.UI
                     : SolarMap?.CurrentFrame?.Vantage?.Port);
             if (QuestJournal.TryGetNextGuidedOfferDestination(curPort, out hint))
                 return true;
-            if (QuestJournal.TryGetActiveSurfaceMiningStatus(out var mining) && !mining.MineDone)
+            if (QuestJournal.TryGetActiveSurfaceMiningStatus(out var mining))
             {
-                string ore = string.IsNullOrEmpty(mining.TargetOreSlug)
-                    ? "ore"
-                    : mining.TargetOreSlug.Replace('_', ' ');
-                hint = new QuestDestinationHint($"Surface Extraction ({ore})", "commons", "Freeport Commons");
+                if (!mining.MineDone)
+                {
+                    string ore = string.IsNullOrEmpty(mining.TargetOreSlug)
+                        ? "ore"
+                        : mining.TargetOreSlug.Replace('_', ' ');
+                    hint = new QuestDestinationHint($"Surface Extraction ({ore})", "commons", "Freeport Commons");
+                    return true;
+                }
+                var tracked = QuestJournal.GetTrackedActiveQuest();
+                string retSlug = TacSimQuestJournal.InferStationPortFromRoomEntry(tracked?.NextRoomEntry);
+                if (string.IsNullOrEmpty(retSlug)) retSlug = "ceres";
+                string retLabel = string.Equals(retSlug, "stickney", StringComparison.OrdinalIgnoreCase)
+                    ? "Stickney Yards"
+                    : "Ceres Freeport";
+                hint = new QuestDestinationHint(mining.QuestTitle, retSlug, retLabel);
                 return true;
             }
             return false;
@@ -2872,6 +2883,10 @@ namespace TacSim.UI
                 case SailingQuestActionMode.Wayfinder:
                     if (_tradePanel != null) _tradePanel.SetActive(false);
                     return QuestJournal != null && QuestJournal.TriggerTrackerWayfinder();
+                case SailingQuestActionMode.RecoverRig:
+                    if (_tradePanel != null) _tradePanel.SetActive(false);
+                    OnCommandSubmitted?.Invoke("+tv/1 recover go");
+                    return true;
                 default:
                     return ApplyQuestDestinationPort();
             }
@@ -2961,18 +2976,24 @@ namespace TacSim.UI
                     : _activePortHint);
             int curPortIdx = CorridorDestinationIndex(curPort);
             bool isAboardDocked = _boundTradeState != null && !string.IsNullOrEmpty(_boundTradeState.AboardDockedPortHint);
+            var tracked = QuestJournal?.GetTrackedActiveQuest();
             bool miningPending = QuestJournal != null &&
                 QuestJournal.TryGetActiveSurfaceMiningStatus(out var qMine) && !qMine.MineDone;
-            bool arrivedAtDest = hasDest && curPortIdx >= 0 && curPortIdx == HighlightedQuestPortIndex && !miningPending;
+            string holdSummary = string.Empty;
+            bool hasHoldSummary = QuestJournal != null && tracked != null &&
+                QuestJournal.TryGetQuestHoldReadinessSummary(tracked, out holdSummary, out _);
+            bool needsRigRecovery = hasHoldSummary && holdSummary.StartsWith("[RECOVER RIG FIRST]", StringComparison.Ordinal);
+            bool oreHoldReady = hasHoldSummary && holdSummary.StartsWith("[ORE HOLD READY]", StringComparison.Ordinal);
+            bool arrivedAtDest = hasDest && curPortIdx >= 0 && curPortIdx == HighlightedQuestPortIndex && !miningPending && !needsRigRecovery;
 
             _sailingActionMode = SailingQuestActionMode.SelectPort;
             _sailingTurnInCmd = string.Empty;
             QuestSailingPreflightReadiness preflight = default;
-            bool hasPreflight = !arrivedAtDest && hasDest && _boundTradeState != null &&
+            bool hasPreflight = !arrivedAtDest && !needsRigRecovery && hasDest && _boundTradeState != null &&
                 QuestJournal.TryGetSailingPreflightReadiness(_boundTradeState, out preflight);
             SailingPreflightSummarySnapshot = hasPreflight ? preflight.FormatInlineSummary() : string.Empty;
 
-            bool showExchangeJump = !arrivedAtDest && hasPreflight && !preflight.Ready;
+            bool showExchangeJump = !arrivedAtDest && !needsRigRecovery && hasPreflight && !preflight.Ready;
             if (_sailingExchangeJumpBtn != null)
                 _sailingExchangeJumpBtn.gameObject.SetActive(showExchangeJump);
 
@@ -2984,9 +3005,14 @@ namespace TacSim.UI
                     new Vector2(10f, 0f), new Vector2(showExchangeJump ? -270f : -180f, 0f));
                 string stepTag = ResolveActiveQuestStepTag();
                 string stepSuffix = string.IsNullOrEmpty(stepTag) ? string.Empty : $" {stepTag}";
-                if (arrivedAtDest)
+                if (needsRigRecovery)
                 {
-                    var tracked = QuestJournal?.GetTrackedActiveQuest();
+                    _sailingActionMode = SailingQuestActionMode.RecoverRig;
+                    if (_sailingQuestActionBtnLbl != null) _sailingQuestActionBtnLbl.text = "RECOVER RIG";
+                    _sailingQuestBannerText.text = $"[RECOVER RIG FIRST] Stow mined ore (+tv/1 recover go) before returning to {hint.PortLabel.ToUpperInvariant()}{stepSuffix}";
+                }
+                else if (arrivedAtDest)
+                {
                     if (isAboardDocked)
                     {
                         _sailingActionMode = SailingQuestActionMode.StepAshore;
@@ -3027,9 +3053,12 @@ namespace TacSim.UI
                 else
                 {
                     if (_sailingQuestActionBtnLbl != null) _sailingQuestActionBtnLbl.text = "SELECT QUEST PORT";
+                    string leadTag = oreHoldReady ? "[ORE HOLD READY] Return" : "[QUEST] Dest";
                     _sailingQuestBannerText.text = hasPreflight
-                        ? $"[QUEST] Dest: {hint.PortLabel.ToUpperInvariant()}  |  {SailingPreflightSummarySnapshot}{stepSuffix}"
-                        : $"[QUEST] Destination: {hint.PortLabel.ToUpperInvariant()} — {hint.QuestTitle}{stepSuffix}";
+                        ? $"{leadTag}: {hint.PortLabel.ToUpperInvariant()}  |  {SailingPreflightSummarySnapshot}{stepSuffix}"
+                        : (oreHoldReady
+                            ? $"[ORE HOLD READY] Return: {hint.PortLabel.ToUpperInvariant()} — {hint.QuestTitle}{stepSuffix}"
+                            : $"[QUEST] Destination: {hint.PortLabel.ToUpperInvariant()} — {hint.QuestTitle}{stepSuffix}");
                 }
             }
 
