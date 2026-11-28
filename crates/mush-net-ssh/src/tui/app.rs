@@ -5994,14 +5994,39 @@ impl TuiApp {
                             .filter(|s| !s.is_empty())
                     })
             });
+            let tracked_quest = self.quests_snap.ordered_active(tracked).into_iter().next();
+            let step_badge = tracked_quest
+                .map(|q| super::quests::guided_step_badge(&q.key))
+                .unwrap_or_default();
+            let qm_raw = self.quests_snap.surface_mining_status(tracked);
             let dest = self
                 .quests_snap
                 .active_destination_port(tracked)
+                .or_else(|| {
+                    qm_raw.as_ref().filter(|m| m.mine_done).map(|m| {
+                        let slug = tracked_quest
+                            .and_then(|q| {
+                                super::quests::infer_station_port_from_room_entry(
+                                    &q.next_room_entry,
+                                )
+                            })
+                            .unwrap_or("ceres");
+                        let lbl = match slug {
+                            "stickney" => "Stickney Yards",
+                            "luna" => "Aitken Basin",
+                            "deimos" => "Voltaire Base",
+                            "titan" => "Ligeia Dock",
+                            _ => "Ceres Freeport",
+                        };
+                        super::quests::QuestDestinationHint {
+                            quest_title: m.quest_title.clone(),
+                            port_id: slug.to_string(),
+                            port_label: lbl.to_string(),
+                        }
+                    })
+                })
                 .or_else(|| self.quests_snap.next_guided_offer_destination(cur_port));
-            let qm = self
-                .quests_snap
-                .surface_mining_status(tracked)
-                .filter(|m| !m.mine_done);
+            let qm = qm_raw.filter(|m| !m.mine_done);
             if dest.is_some() || qm.is_some() {
                 let [quest_bar, rest] =
                     Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(body_area);
@@ -6025,7 +6050,7 @@ impl TuiApp {
                                 .add_modifier(Modifier::BOLD),
                         ));
                         spans.push(Span::styled(
-                            format!("— {}  ", dest.quest_title),
+                            format!("— {}{step_badge}  ", dest.quest_title),
                             Style::default().fg(Color::Gray),
                         ));
                         spans.push(Span::styled(
@@ -6040,7 +6065,7 @@ impl TuiApp {
                                 .add_modifier(Modifier::BOLD),
                         ));
                         spans.push(Span::styled(
-                            format!("— {}  ", dest.quest_title),
+                            format!("— {}{step_badge}  ", dest.quest_title),
                             Style::default().fg(Color::Gray),
                         ));
                         spans.push(Span::styled(
@@ -6056,7 +6081,7 @@ impl TuiApp {
                             .add_modifier(Modifier::BOLD),
                     ));
                     spans.push(Span::styled(
-                        format!("— {}", m.quest_title),
+                        format!("— {}{step_badge}", m.quest_title),
                         Style::default().fg(Color::Gray),
                     ));
                 }
@@ -6184,13 +6209,34 @@ impl TuiApp {
             } else if let Some(qm) = self
                 .quests_snap
                 .surface_mining_status(self.quests_overlay.tracked_key.as_deref())
-                .filter(|m| !m.mine_done)
             {
-                status_spans.push(Span::styled(
+                let text = if !qm.mine_done {
                     format!(
                         "  |  [QUEST] Mine {} (Alt+q quarry, z: ground, l: {})",
                         qm.target_ore_slug, qm.recommended_family
-                    ),
+                    )
+                } else {
+                    let tracked_q = self
+                        .quests_snap
+                        .ordered_active(self.quests_overlay.tracked_key.as_deref())
+                        .into_iter()
+                        .next();
+                    let slug = tracked_q
+                        .and_then(|q| {
+                            super::quests::infer_station_port_from_room_entry(&q.next_room_entry)
+                        })
+                        .unwrap_or("ceres");
+                    let lbl = match slug {
+                        "stickney" => "Stickney Yards",
+                        "luna" => "Aitken Basin",
+                        "deimos" => "Voltaire Base",
+                        "titan" => "Ligeia Dock",
+                        _ => "Ceres Freeport",
+                    };
+                    format!("  |  [QUEST] Return: {lbl} (+ship/plan {slug})")
+                };
+                status_spans.push(Span::styled(
+                    text,
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
@@ -14176,6 +14222,46 @@ mod tests {
         assert!(
             mine_txt.contains("[QUEST] Mine carbon_ore (Alt+q quarry, z: ground, l: carbon)"),
             "expected Step 6 mining hint on SpaceCockpit status bar:\n{mine_txt}"
+        );
+
+        // Once Step 6 mining completes -> SpaceCockpit transitions to Return: Ceres Freeport (+ship/plan ceres)
+        // and text-mode CHART_SCREEN shows [Step 6/7] + Destination: Ceres Freeport (+ship/plan ceres)
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "active": [{
+                    "key": "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+                    "title": "Scan, Sound, and Mine a Landing Site",
+                    "next_room_entry": "room.c07_exchange",
+                    "ready_to_finish": false,
+                    "checkpoints": [
+                        { "id": "scan_landing_site", "title": "Surface scan", "instructions": "+tv/1 scan go", "checked": true, "live_ready": true },
+                        { "id": "sound_mineral_pocket", "title": "Sound pocket", "instructions": "+tv/1 sound go", "checked": true, "live_ready": true },
+                        { "id": "mine_carbon_ore", "title": "Mine 1t carbon_ore", "instructions": "+tv/1 mine go", "checked": true, "live_ready": true }
+                    ]
+                }],
+                "available": [],
+                "completed": []
+            }),
+        });
+        let ret_space_txt = dump_buf(&mut app);
+        assert!(
+            ret_space_txt.contains("Ceres Freeport (+ship/plan ceres)"),
+            "expected post-mine return cue on SpaceCockpit status bar:\n{ret_space_txt}"
+        );
+        // Close Kitty pixel view -> text-mode CHART_SCREEN bar shows [Step 6/7] + Destination: Ceres Freeport
+        let _ = app.feed_input(b"\x07");
+        let text_chart_txt = dump_buf(&mut app);
+        assert!(
+            text_chart_txt.contains("[Step 6/7]"),
+            "expected [Step 6/7] badge on CHART_SCREEN quest bar:\n{text_chart_txt}"
+        );
+        assert!(
+            text_chart_txt.contains("Destination: Ceres Freeport")
+                && text_chart_txt.contains("(+ship/plan ceres)"),
+            "expected post-mine Ceres return on text-mode CHART_SCREEN:\n{text_chart_txt}"
         );
     }
 
