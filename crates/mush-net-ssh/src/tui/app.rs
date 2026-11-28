@@ -422,6 +422,14 @@ struct CommandEntry {
     summary: String,
 }
 
+/// Direct quest action when selecting a live quest entry in the palette.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PaletteQuestAction {
+    OpenDialog(QuestTab, usize),
+    CycleTracked,
+    PrefillCommand,
+}
+
 /// One palette match.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PaletteEntry {
@@ -431,8 +439,8 @@ struct PaletteEntry {
     label: String,
     /// The right column.
     detail: String,
-    /// Direct quest overlay action (`(QuestTab, index)`) when selecting a live quest entry.
-    quest_action: Option<(QuestTab, usize)>,
+    /// Direct quest overlay/tracker action when selecting a live quest entry.
+    quest_action: Option<PaletteQuestAction>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -2503,28 +2511,7 @@ impl TuiApp {
                     if *kind == PanelFrameKind::Keyframe {
                         self.quests_snap = parse_quests_frame(data);
                         self.quests_overlay.clamp_selection(&self.quests_snap);
-                        self.port_walk
-                            .observe_quest_markers(&self.quests_snap.room_markers);
-                        let tracked = self.quests_overlay.tracked_key.as_deref();
-                        self.port_walk.observe_quest_guidance(
-                            self.quests_snap.active_trade_need(tracked),
-                            self.quests_snap.active_destination_port(tracked),
-                        );
-                        self.port_walk.observe_quest_objective_room(
-                            self.quests_snap.active_objective_room(tracked),
-                        );
-                        self.port_walk.observe_quest_ship_target(
-                            self.quests_snap.active_ship_target_compartment_for_port(
-                                tracked,
-                                self.port_walk.docked_port_slug(),
-                            ),
-                        );
-                        self.port_walk.observe_quest_coop_action(
-                            self.quests_snap.active_coop_action(tracked),
-                        );
-                        self.port_walk.observe_quest_mining_status(
-                            self.quests_snap.surface_mining_status(tracked),
-                        );
+                        self.sync_port_walk_quest_state();
                         let milestones = self.quest_milestones.observe(&self.quests_snap);
                         for m in &milestones {
                             self.push_local_line(&m.notice_text());
@@ -3626,6 +3613,7 @@ impl TuiApp {
                     }
                 }
             }
+            self.sync_port_walk_quest_state();
             return;
         }
         if key == Key::F(10) && self.answering.is_none() && self.input_mode == InputMode::Normal {
@@ -3713,6 +3701,7 @@ impl TuiApp {
                     }
                 }
             }
+            self.sync_port_walk_quest_state();
             if self.pixel.kind() == PictureKind::StationWalk {
                 self.pixel.invalidate_last_sent();
             }
@@ -4962,6 +4951,28 @@ impl TuiApp {
         self.focus = if idx[0] == self.focus { idx[1] } else { idx[0] };
     }
 
+    fn sync_port_walk_quest_state(&mut self) {
+        self.port_walk
+            .observe_quest_markers(&self.quests_snap.room_markers);
+        let tracked = self.quests_overlay.tracked_key.as_deref();
+        self.port_walk.observe_quest_guidance(
+            self.quests_snap.active_trade_need(tracked),
+            self.quests_snap.active_destination_port(tracked),
+        );
+        self.port_walk
+            .observe_quest_objective_room(self.quests_snap.active_objective_room(tracked));
+        self.port_walk.observe_quest_ship_target(
+            self.quests_snap.active_ship_target_compartment_for_port(
+                tracked,
+                self.port_walk.docked_port_slug(),
+            ),
+        );
+        self.port_walk
+            .observe_quest_coop_action(self.quests_snap.active_coop_action(tracked));
+        self.port_walk
+            .observe_quest_mining_status(self.quests_snap.surface_mining_status(tracked));
+    }
+
     // ---- palette and completion ------------------------------------------
 
     fn toggle_palette(&mut self, budget: &mut BurstBudget) {
@@ -5061,7 +5072,7 @@ impl TuiApp {
                 insert: "/quests".to_string(),
                 label: format!("[!] {}", q.title),
                 detail: format!("Quest offer — {}", q.giver_name),
-                quest_action: Some((QuestTab::Available, idx)),
+                quest_action: Some(PaletteQuestAction::OpenDialog(QuestTab::Available, idx)),
             });
         }
         for (idx, q) in self.quests_snap.active.iter().enumerate() {
@@ -5080,8 +5091,98 @@ impl TuiApp {
                 insert: "/quests".to_string(),
                 label: format!("{badge} {}", q.title),
                 detail: detail.clone(),
-                quest_action: Some((QuestTab::Active, idx)),
+                quest_action: Some(PaletteQuestAction::OpenDialog(QuestTab::Active, idx)),
             });
+        }
+        if let Some(tq) = self
+            .quests_snap
+            .ordered_active(self.quests_overlay.tracked_key.as_deref())
+            .into_iter()
+            .next()
+        {
+            if tq.can_finish_now && !tq.finish_cmd.is_empty() {
+                let search = format!("complete finish {} {} quest", tq.title, tq.finish_cmd);
+                consider(&search, &|| PaletteEntry {
+                    insert: tq.finish_cmd.clone(),
+                    label: format!("[?] Complete: {}", tq.title),
+                    detail: tq.finish_cmd.clone(),
+                    quest_action: Some(PaletteQuestAction::PrefillCommand),
+                });
+            } else if tq.can_check_now && !tq.check_cmd.is_empty() {
+                let search = format!("verify check {} {} quest", tq.title, tq.check_cmd);
+                consider(&search, &|| PaletteEntry {
+                    insert: tq.check_cmd.clone(),
+                    label: format!("[?] Verify: {}", tq.title),
+                    detail: tq.check_cmd.clone(),
+                    quest_action: Some(PaletteQuestAction::PrefillCommand),
+                });
+            }
+
+            if let Some(hop) = self.port_walk.next_quest_hop() {
+                let (route_label, search_head) = if hop.next_exit_command == "+ship/board" {
+                    ("[>] Board Ship".to_string(), "board ship route walk")
+                } else if hop.next_exit_command == "+ship/leave" {
+                    ("[>] Cycle Ashore".to_string(), "ashore cycle leave route")
+                } else {
+                    (
+                        format!("[>] Walk -> {} ({}h)", hop.next_room_name, hop.hops),
+                        "route walk",
+                    )
+                };
+                let hop_word = if hop.hops == 1 { "hop" } else { "hops" };
+                let detail = format!(
+                    "{} {} to {} · {}",
+                    hop.hops, hop_word, hop.target_room_name, hop.next_exit_command
+                );
+                let search = format!(
+                    "{search_head} {} {} {} quest",
+                    hop.next_room_name, hop.target_room_name, hop.next_exit_command
+                );
+                consider(&search, &|| PaletteEntry {
+                    insert: hop.next_exit_command.clone(),
+                    label: route_label.clone(),
+                    detail: detail.clone(),
+                    quest_action: Some(PaletteQuestAction::PrefillCommand),
+                });
+            } else if let Some(suggested) = QuestsSnapshot::suggested_action_for(tq) {
+                let detail = if tq.next_step.is_empty() {
+                    suggested.command.clone()
+                } else {
+                    format!("{} — {}", suggested.command, tq.next_step)
+                };
+                let search = format!(
+                    "next step {} {} {} quest",
+                    suggested.label, suggested.command, tq.title
+                );
+                consider(&search, &|| PaletteEntry {
+                    insert: suggested.command.clone(),
+                    label: format!("[>] Next: {}", suggested.label),
+                    detail: detail.clone(),
+                    quest_action: Some(PaletteQuestAction::PrefillCommand),
+                });
+            }
+
+            if self.quests_snap.active.len() > 1 {
+                let cur_idx = self
+                    .quests_snap
+                    .active
+                    .iter()
+                    .position(|item| item.key == tq.key)
+                    .unwrap_or(0);
+                let next_q =
+                    &self.quests_snap.active[(cur_idx + 1) % self.quests_snap.active.len()];
+                let search = format!("cycle switch tracked quest {}", next_q.title);
+                consider(&search, &|| PaletteEntry {
+                    insert: "/quests".to_string(),
+                    label: format!(
+                        "[~] Cycle Tracked Quest ({}/{})",
+                        cur_idx + 1,
+                        self.quests_snap.active.len()
+                    ),
+                    detail: format!("Switch tracker to {}", next_q.title),
+                    quest_action: Some(PaletteQuestAction::CycleTracked),
+                });
+            }
         }
         let mut entries = prefix;
         entries.extend(rest);
@@ -5102,11 +5203,32 @@ impl TuiApp {
         let Some(e) = p.entries.get(p.selected) else {
             return false;
         };
-        if let Some((tab, idx)) = e.quest_action {
-            self.line.clear();
-            self.leave_input(false);
-            self.quests_overlay.open_tab_index(tab, idx);
-            return true;
+        if let Some(action) = e.quest_action {
+            match action {
+                PaletteQuestAction::OpenDialog(tab, idx) => {
+                    self.line.clear();
+                    self.leave_input(false);
+                    self.quests_overlay.open_tab_index(tab, idx);
+                    return true;
+                }
+                PaletteQuestAction::CycleTracked => {
+                    self.line.clear();
+                    self.leave_input(false);
+                    self.quests_overlay.cycle_tracked(&self.quests_snap);
+                    self.sync_port_walk_quest_state();
+                    if let Some(tq) = self
+                        .quests_snap
+                        .ordered_active(self.quests_overlay.tracked_key.as_deref())
+                        .into_iter()
+                        .next()
+                    {
+                        let title = sanitize(&tq.title);
+                        self.push_local_line(&format!("[QUEST] Now tracking: {title}"));
+                    }
+                    return true;
+                }
+                PaletteQuestAction::PrefillCommand => {}
+            }
         }
         if e.insert != self.line.text() {
             self.line.set(&e.insert);
@@ -13183,6 +13305,63 @@ mod tests {
         assert!(app.quests_overlay.open);
         assert_eq!(app.quests_overlay.tab, QuestTab::Active);
         assert_eq!(app.quests_overlay.selected, 0);
+    }
+
+    #[test]
+    fn palette_surfaces_quest_route_next_step_and_cycle_tracked() {
+        let mut app = app();
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "room_name": "Stickney Yard Gate",
+                "available": [],
+                "active": [
+                    {
+                        "key": "tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector",
+                        "title": "Refit the Dray",
+                        "giver_name": "Maren Halvorsen",
+                        "turn_in_name": "Maren Halvorsen",
+                        "next_step": "Refit your Dray at Stickney Yards (+coop/refit prospector)",
+                        "next_instructions": "Use +coop/refit prospector with an empty hold.",
+                        "ready_to_finish": false
+                    },
+                    {
+                        "key": "tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore",
+                        "title": "Sell Carbon Ore",
+                        "giver_name": "Kowalski",
+                        "turn_in_name": "Kowalski",
+                        "next_step": "Turn in to Kowalski",
+                        "ready_to_finish": true,
+                        "can_finish_now": true,
+                        "finish_cmd": "+quest/finish q.sell"
+                    }
+                ]
+            }),
+        });
+
+        // Ctrl-K + "next" surfaces suggested step (+coop/refit prospector) and prefills on Enter
+        app.feed_input(b"\x0bnext");
+        assert!(app.palette_open());
+        app.feed_input(b"\r");
+        assert_eq!(app.line.text(), "+coop/refit prospector");
+
+        // Escape clears input, then Ctrl-K + "cycle" switches tracked quest to the second active quest
+        app.feed_input(b"\x1b");
+        app.feed_input(b"\x0bcycle");
+        assert!(app.palette_open());
+        app.feed_input(b"\r");
+        assert_eq!(
+            app.quests_overlay.tracked_key.as_deref(),
+            Some("tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore")
+        );
+
+        // Now tracked quest is ready to finish -> Ctrl-K + "complete" prefills +quest/finish q.sell
+        app.feed_input(b"\x0bcomplete");
+        assert!(app.palette_open());
+        app.feed_input(b"\r");
+        assert_eq!(app.line.text(), "+quest/finish q.sell");
     }
 
     #[test]

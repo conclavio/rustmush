@@ -472,7 +472,7 @@ pub fn infer_station_port_from_room_entry(room_entry: &str) -> Option<&'static s
 }
 
 impl QuestsSnapshot {
-    fn ordered_active<'a>(&'a self, tracked_key: Option<&str>) -> Vec<&'a ActiveQuest> {
+    pub(crate) fn ordered_active<'a>(&'a self, tracked_key: Option<&str>) -> Vec<&'a ActiveQuest> {
         let mut out = Vec::with_capacity(self.active.len());
         if let Some(tk) = tracked_key
             && let Some(found) = self.active.iter().find(|q| q.key == tk)
