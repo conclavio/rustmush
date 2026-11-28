@@ -11,6 +11,7 @@
     evaluateRefitHoldReadiness,
     evaluateSailingPreflightReadiness,
     extractSurfaceMiningPrepActions,
+    formatQuestHoldReadinessSummary,
     inferStationPortFromRoomEntry,
     formatTradeNeedVenueHint,
     matchesQuestTradeRow,
@@ -1777,6 +1778,12 @@
           npcQuestMarker?.marker === "turn_in" ||
           Boolean(npcActive?.canFinishNow || npcActive?.readyToFinish)}
         {@const npcHasQuest = npcQuestMarker !== null || npcOffer !== null || npcActive !== null}
+        {@const npcStowage =
+          app.tacsim.ambient?.ownStowage ?? app.tacsim.ambient?.stowage ?? st}
+        {@const npcActiveHold = npcActive
+          ? formatQuestHoldReadinessSummary(npcActive, npcStowage)
+          : null}
+        {@const npcOfferFirstStep = npcOffer?.checkpoints?.[0]?.title ?? ""}
         <header class="mhead">
           <div>
             <h2>{npc.name.toUpperCase()}</h2>
@@ -1868,6 +1875,31 @@
               </button>
             {/if}
           </div>
+          {#if npcActive && (npcActive.nextStep || npcActiveHold)}
+            <div
+              class="refit-check-strip"
+              class:ready={npcTurnInUrgent || Boolean(npcActiveHold?.ready)}
+              role="status"
+              aria-label="npc quest status"
+            >
+              {#if npcActive.nextStep}
+                <span>Next: {npcActive.nextStep}</span>
+              {/if}
+              {#if npcActiveHold}
+                <span class="qtag">{npcActiveHold.tag}</span>
+                <span>{npcActiveHold.text}</span>
+              {/if}
+            </div>
+          {:else if npcOffer && (npcOfferFirstStep || npcOffer.rewardSummary)}
+            <div class="refit-check-strip" role="status" aria-label="npc quest offer preview">
+              {#if npcOfferFirstStep}
+                <span>Objective: {npcOfferFirstStep}</span>
+              {/if}
+              {#if npcOffer.rewardSummary}
+                <span class="muted">Reward: {npcOffer.rewardSummary}</span>
+              {/if}
+            </div>
+          {/if}
         {/if}
         <div class="topic-list">
           {#each buildNpcTopics(npc.name) as t (t.label)}
