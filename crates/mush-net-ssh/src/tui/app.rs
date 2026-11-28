@@ -52,7 +52,7 @@ use super::port_walk::{PORT_TRADE_FEED, PortWalkState, TACSIM_CONTENT_FEED};
 use super::quests::{
     QUESTS_FEED, QuestMilestoneKind, QuestMilestoneTracker, QuestOverlayAction, QuestOverlayState,
     QuestTab, QuestsSnapshot, guided_step_badge, is_guided_quest,
-    parse_frame as parse_quests_frame, parse_room_markers, render_quest_overlay_with_stowage,
+    parse_frame as parse_quests_frame, parse_room_markers, render_quest_overlay_full,
     render_quest_sheet_lines, render_quest_tracker_lines_full,
 };
 use super::render::{
@@ -3640,7 +3640,12 @@ impl TuiApp {
             && self.answering.is_none()
             && self.input_mode == InputMode::Normal
         {
-            match self.quests_overlay.handle_key(key, &self.quests_snap) {
+            let cur_port = self.current_quest_port_owned();
+            match self.quests_overlay.handle_key_with_port(
+                key,
+                &self.quests_snap,
+                cur_port.as_deref(),
+            ) {
                 QuestOverlayAction::None | QuestOverlayAction::Close => {}
                 QuestOverlayAction::Prefill(cmd) => {
                     self.mode = Mode::Input;
@@ -3728,7 +3733,12 @@ impl TuiApp {
             && self.answering.is_none()
             && self.input_mode == InputMode::Normal
         {
-            match self.quests_overlay.handle_key(key, &self.quests_snap) {
+            let cur_port = self.current_quest_port_owned();
+            match self.quests_overlay.handle_key_with_port(
+                key,
+                &self.quests_snap,
+                cur_port.as_deref(),
+            ) {
                 QuestOverlayAction::None | QuestOverlayAction::Close => {}
                 QuestOverlayAction::Prefill(cmd) => {
                     self.mode = Mode::Input;
@@ -6051,12 +6061,14 @@ impl TuiApp {
             && self.input_mode == InputMode::Normal
         {
             let stowage = self.port_walk.quest_stowage_telemetry();
-            render_quest_overlay_with_stowage(
+            let cur_port = self.current_quest_port_owned();
+            render_quest_overlay_full(
                 frame,
                 area,
                 &self.quests_overlay,
                 &self.quests_snap,
                 stowage.as_ref(),
+                cur_port.as_deref(),
             );
         }
         // An ask the engine has already expired is never painted: it would
@@ -6518,18 +6530,38 @@ impl TuiApp {
             && self.input_mode == InputMode::Normal
         {
             let stowage = self.port_walk.quest_stowage_telemetry();
-            render_quest_overlay_with_stowage(
+            let cur_port = self.current_quest_port_owned();
+            render_quest_overlay_full(
                 frame,
                 area,
                 &self.quests_overlay,
                 &self.quests_snap,
                 stowage.as_ref(),
+                cur_port.as_deref(),
             );
         }
         self.evict_expired_requests(now);
         if self.answering.is_none() && !self.requests.is_empty() {
             self.draw_request(frame, area);
         }
+    }
+
+    fn current_quest_port_owned(&self) -> Option<String> {
+        self.port_walk
+            .current_port_slug()
+            .or_else(|| {
+                self.panels.get(CHART_FEED).and_then(|v| {
+                    v.pointer("/chart/vantage/port")
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| {
+                            v.pointer("/chart/vantage/body")
+                                .and_then(Value::as_str)
+                                .filter(|s| !s.is_empty())
+                        })
+                })
+            })
+            .map(ToOwned::to_owned)
     }
 
     fn draw_tabs(&self, frame: &mut Frame<'_>, area: Rect, now: i64) {

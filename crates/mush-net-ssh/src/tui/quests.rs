@@ -2047,6 +2047,15 @@ impl QuestOverlayState {
     }
 
     pub fn handle_key(&mut self, key: Key, snap: &QuestsSnapshot) -> QuestOverlayAction {
+        self.handle_key_with_port(key, snap, None)
+    }
+
+    pub fn handle_key_with_port(
+        &mut self,
+        key: Key,
+        snap: &QuestsSnapshot,
+        current_port: Option<&str>,
+    ) -> QuestOverlayAction {
         self.clamp_selection(snap);
         match key {
             Key::Esc | Key::Char('q') => {
@@ -2141,6 +2150,13 @@ impl QuestOverlayState {
                 {
                     self.close();
                     return QuestOverlayAction::Prefill(act.command);
+                }
+                if snap.active.is_empty()
+                    && current_port.is_some()
+                    && let Some(dest) = snap.next_guided_offer_destination(current_port)
+                {
+                    self.close();
+                    return QuestOverlayAction::Prefill(format!("+ship/plan {}", dest.port_id));
                 }
                 QuestOverlayAction::None
             }
@@ -2667,6 +2683,19 @@ pub fn render_quest_overlay_with_stowage(
     snap: &QuestsSnapshot,
     stowage: Option<&QuestStowageTelemetry>,
 ) {
+    render_quest_overlay_full(f, area, state, snap, stowage, None);
+}
+
+/// Paint the centered Quest Dialog & Journal overlay with live ship stowage, refit hold telemetry,
+/// and current corridor port context for between-steps off-port Sail shortcuts.
+pub fn render_quest_overlay_full(
+    f: &mut Frame<'_>,
+    area: Rect,
+    state: &QuestOverlayState,
+    snap: &QuestsSnapshot,
+    stowage: Option<&QuestStowageTelemetry>,
+    current_port: Option<&str>,
+) {
     let w = area.width.saturating_sub(6).min(96);
     let h = area.height.saturating_sub(4).min(28);
     if w < 30 || h < 10 {
@@ -3020,6 +3049,53 @@ pub fn render_quest_overlay_with_stowage(
                 detail_lines.push(Line::from(Span::styled(
                     format!("Route: {}", next.location_label),
                     Style::default().add_modifier(Modifier::DIM),
+                )));
+                if current_port.is_some()
+                    && let Some(dest) = snap.next_guided_offer_destination(current_port)
+                {
+                    detail_lines.push(Line::from(vec![
+                        Span::styled(
+                            "Sail [p]: ",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!("+ship/plan {} ({})", dest.port_id, dest.port_label),
+                            Style::default().fg(Color::Green),
+                        ),
+                    ]));
+                }
+                if !snap.available.is_empty() {
+                    let plural = if snap.available.len() == 1 {
+                        "offer"
+                    } else {
+                        "offers"
+                    };
+                    detail_lines.push(Line::from(Span::styled(
+                        format!(
+                            "[!] {} quest {plural} here (Tab -> Available)",
+                            snap.available.len()
+                        ),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                }
+            } else if !snap.available.is_empty() {
+                let plural = if snap.available.len() == 1 {
+                    "offer"
+                } else {
+                    "offers"
+                };
+                detail_lines.push(Line::from(Span::styled(
+                    format!(
+                        "[!] {} quest {plural} here (Tab -> Available)",
+                        snap.available.len()
+                    ),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
                 )));
             }
         }
@@ -5045,6 +5121,69 @@ mod tests {
         assert!(
             tracker_idle.contains("Metals Haul (+1 more) [Step 3/7]"),
             "expected [Step 3/7] on idle tracker offer:\n{tracker_idle}"
+        );
+    }
+
+    #[test]
+    fn overlay_empty_active_shows_off_port_sail_shortcut_and_available_tab_hint() {
+        let render_full = |st: &QuestOverlayState, snap: &QuestsSnapshot, port: Option<&str>| {
+            let backend = ratatui::backend::TestBackend::new(100, 26);
+            let mut terminal = ratatui::Terminal::new(backend).expect("terminal");
+            terminal
+                .draw(|f| render_quest_overlay_full(f, f.area(), st, snap, None, port))
+                .expect("draw");
+            let buf = terminal.backend().buffer();
+            let mut out = String::new();
+            for y in 0..buf.area.height {
+                for x in 0..buf.area.width {
+                    out.push_str(buf[(x, y)].symbol());
+                }
+                out.push('\n');
+            }
+            out
+        };
+
+        let between = parse_frame(&json!({
+            "schema": 1,
+            "completed": [
+                { "key": GUIDED_TOUR_KEYS[0], "title": "S1" },
+                { "key": GUIDED_TOUR_KEYS[1], "title": "S2" },
+                { "key": GUIDED_TOUR_KEYS[2], "title": "S3" }
+            ],
+            "active": [],
+            "available": []
+        }));
+        let mut st = QuestOverlayState {
+            open: true,
+            tab: QuestTab::Active,
+            ..Default::default()
+        };
+        let ceres_txt = render_full(&st, &between, Some("ceres"));
+        assert!(
+            ceres_txt.contains("Sail [p]: +ship/plan stickney (Stickney Yards)"),
+            "expected off-port Sail [p] hint:\n{ceres_txt}"
+        );
+        assert_eq!(
+            st.handle_key_with_port(Key::Char('p'), &between, Some("ceres")),
+            QuestOverlayAction::Prefill("+ship/plan stickney".into())
+        );
+
+        let with_offer = parse_frame(&json!({
+            "schema": 1,
+            "active": [],
+            "available": [{
+                "key": GUIDED_TOUR_KEYS[0],
+                "title": "First Papers",
+                "giver_name": "Maren Halvorsen"
+            }],
+            "completed": []
+        }));
+        st.open = true;
+        st.tab = QuestTab::Active;
+        let offer_txt = render_full(&st, &with_offer, Some("ceres"));
+        assert!(
+            offer_txt.contains("1 quest offer here (Tab -> Available)"),
+            "expected Available Here Tab hint:\n{offer_txt}"
         );
     }
 }
