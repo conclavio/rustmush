@@ -1295,8 +1295,24 @@ impl PortWalkState {
         need.venue_hint_label()
     }
 
+    /// Returns `Some(true)` once Step 6 post-mine target ore is stowed in ship cargo,
+    /// `Some(false)` when mining finished but 0t target ore is stowed yet (`[RECOVER RIG FIRST]`),
+    /// or `None` if stowage is not loaded or Step 6 post-mine is not active.
+    #[must_use]
+    pub fn quest_mining_ore_stowed(&self) -> Option<bool> {
+        if !self.stowage_loaded {
+            return None;
+        }
+        let qm = self.quest_mining_status.as_ref()?;
+        if !qm.mine_done {
+            return None;
+        }
+        let telemetry = self.quest_stowage_telemetry()?;
+        Some(telemetry.commodity_qty(&qm.target_ore_slug) >= 1)
+    }
+
     /// Returns true when the pilot is already docked or ashore at the active quest's corridor
-    /// destination port (excluding Step 6 pre-mine when still staging at Ceres).
+    /// destination port (excluding Step 6 pre-mine or unrecovered post-mine ore).
     #[must_use]
     pub fn quest_arrived_at_destination(&self) -> bool {
         let Some(ref dest) = self.quest_dest_port else {
@@ -1307,6 +1323,9 @@ impl PortWalkState {
             .as_ref()
             .is_some_and(|m| !m.mine_done)
         {
+            return false;
+        }
+        if self.quest_mining_ore_stowed() == Some(false) {
             return false;
         }
         if self.aboard_ship && (!self.docked || self.settled_pad) {
@@ -4378,6 +4397,12 @@ impl PortWalkState {
                         self.try_trigger_quest_ready_turn_in(&mut out);
                     }
                 }
+                Key::Char('v' | 'V') => {
+                    if self.quest_mining_ore_stowed() == Some(false) {
+                        out.commands.push("+tv/1 recover go".to_string());
+                        self.push_drawer_log("[Sailing] Recover Rig: +tv/1 recover go".to_string());
+                    }
+                }
                 Key::Char('u') => {
                     if let Some((dest_id, _, _)) = CORRIDORS.get(self.corridor_idx) {
                         out.commands.push(format!("+ship/undock {dest_id}"));
@@ -6264,7 +6289,21 @@ impl PortWalkState {
                     truncate_str("u: +ship/undock   d: +helm/dock (aboard)", inner_w),
                     Style::default().fg(Color::DarkGray),
                 )));
-                if let Some(ref hint) = self.quest_dest_port {
+                let ore_stowed = self.quest_mining_ore_stowed();
+                if ore_stowed == Some(false)
+                    && let Some(ref qm) = self.quest_mining_status
+                {
+                    let ore = qm.target_ore_slug.replace('_', " ");
+                    let qline = format!(
+                        "[RECOVER RIG FIRST] Stow mined {ore} before return! (v:+tv/1 recover go){step_suffix}"
+                    );
+                    lines.push(Line::from(Span::styled(
+                        truncate_str(&qline, inner_w),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                } else if let Some(ref hint) = self.quest_dest_port {
                     if self.quest_arrived_at_destination() {
                         if self.aboard_ship {
                             let msg = format!(
@@ -6311,13 +6350,26 @@ impl PortWalkState {
                             )));
                         }
                     } else {
-                        let qline =
-                            format!("[QUEST] Dest: {} (g:select){step_suffix}", hint.port_label);
+                        let (qline, qcol) = if ore_stowed == Some(true) {
+                            (
+                                format!(
+                                    "[ORE HOLD READY] Return: {} (g:select){step_suffix}",
+                                    hint.port_label
+                                ),
+                                Color::Green,
+                            )
+                        } else {
+                            (
+                                format!(
+                                    "[QUEST] Dest: {} (g:select){step_suffix}",
+                                    hint.port_label
+                                ),
+                                Color::Yellow,
+                            )
+                        };
                         lines.push(Line::from(Span::styled(
                             truncate_str(&qline, inner_w),
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD),
+                            Style::default().fg(qcol).add_modifier(Modifier::BOLD),
                         )));
                         if let Some(pf) = self.quest_sailing_preflight_readiness() {
                             let cargo_part = if pf.cargo_required {
@@ -6361,6 +6413,15 @@ impl PortWalkState {
                             )));
                         }
                     }
+                } else if ore_stowed == Some(true) {
+                    let qline =
+                        format!("[ORE HOLD READY] Return: Ceres Freeport (g:select){step_suffix}");
+                    lines.push(Line::from(Span::styled(
+                        truncate_str(&qline, inner_w),
+                        Style::default()
+                            .fg(Color::Green)
+                            .add_modifier(Modifier::BOLD),
+                    )));
                 } else if let Some(ref qm) = self.quest_mining_status
                     && !qm.mine_done
                 {
@@ -12199,5 +12260,90 @@ mod tests {
         assert_eq!(out_haul.commands, vec!["+market/jobs haul"]);
         let out_survey = st.handle_drawer_key(Key::Char('s'), &[], Instant::now());
         assert_eq!(out_survey.commands, vec!["+market/jobs survey"]);
+    }
+
+    #[test]
+    fn sailing_drawer_guards_step6_with_recover_rig_first_and_ore_hold_ready() {
+        let render_drawer = |st: &mut PortWalkState| -> String {
+            let backend = ratatui::backend::TestBackend::new(120, 22);
+            let mut terminal = ratatui::Terminal::new(backend).expect("test terminal");
+            terminal
+                .draw(|f| st.draw_drawer_box(f, f.area(), true))
+                .expect("render sailing drawer");
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect()
+        };
+
+        let mut st = PortWalkState::new();
+        st.drawer = Some(PortDrawerKind::Sailing);
+        st.observe_quest_step_badge(" [Step 6/7]".into());
+        st.observe_quest_guidance(
+            None,
+            Some(QuestDestinationHint {
+                quest_title: "Scan, Sound, and Mine a Landing Site".into(),
+                port_id: "ceres".into(),
+                port_label: "Ceres Freeport".into(),
+            }),
+        );
+        st.observe_quest_mining_status(Some(QuestSurfaceMiningStatus {
+            quest_title: "Scan, Sound, and Mine a Landing Site".into(),
+            target_ore_slug: "carbon_ore".into(),
+            recommended_family: "carbon".into(),
+            scan_done: true,
+            sound_done: true,
+            mine_done: true,
+        }));
+
+        // 1. Landed at Freeport Commons with 0t carbon_ore stowed -> [RECOVER RIG FIRST] + v emits +tv/1 recover go
+        st.observe_port_trade(
+            &serde_json::json!({
+                "enabled": true,
+                "venue": "commons",
+                "ship": {
+                    "hull_id": "#99",
+                    "stowage": { "cargo_kg": 0, "tank_kg": 10000, "stores_days": 10, "items": [] }
+                }
+            }),
+            Instant::now(),
+        );
+        let rec_txt = render_drawer(&mut st);
+        assert!(
+            rec_txt.contains(
+                "[RECOVER RIG FIRST] Stow mined carbon ore before return! (v:+tv/1 recover go) [Step 6/7]"
+            ),
+            "{rec_txt}"
+        );
+        let out_rec = st.handle_drawer_key(Key::Char('v'), &[], Instant::now());
+        assert_eq!(out_rec.commands, vec!["+tv/1 recover go"]);
+
+        // 2. Rig recovered (1t carbon_ore in hold) -> [ORE HOLD READY] Return: Ceres Freeport
+        st.observe_port_trade(
+            &serde_json::json!({
+                "enabled": true,
+                "venue": "commons",
+                "ship": {
+                    "hull_id": "#99",
+                    "stowage": {
+                        "cargo_kg": 1000,
+                        "tank_kg": 10000,
+                        "stores_days": 10,
+                        "items": [{ "good": "tacsim:carbon_ore", "label": "Carbon Ore", "qty": 1 }]
+                    }
+                }
+            }),
+            Instant::now(),
+        );
+        let ready_txt = render_drawer(&mut st);
+        assert!(
+            ready_txt.contains("[ORE HOLD READY] Return: Ceres Freeport (g:select) [Step 6/7]"),
+            "{ready_txt}"
+        );
+        let out_noop = st.handle_drawer_key(Key::Char('v'), &[], Instant::now());
+        assert!(out_noop.commands.is_empty());
     }
 }
