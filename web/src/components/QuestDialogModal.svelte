@@ -847,8 +847,53 @@
         {:else}
           {#if tour?.allDone}
             <div class="tour-complete-banner" role="status" aria-label="Guided corridor tour complete">
-              ★ Guided Corridor Tour Complete (7/7) — Corridor Captain ★
+              <span>★ Guided Corridor Tour Complete (7/7) — Corridor Captain ★</span>
+              <button
+                type="button"
+                class="btn sm primary"
+                onclick={() => prefillAndClose("+market/jobs")}
+              >
+                Jobs Board (+market/jobs)
+              </button>
             </div>
+          {:else if nextOffer && q.active.length === 0}
+            <article class="qcard" aria-label="Next guided step from completed log">
+              <div class="qcard-top">
+                <strong>
+                  <span class="mini-sym" data-marker="available">!</span>{" "}
+                  Next Guided Step ({nextOffer.step}/7): {nextOffer.shortLabel}
+                </strong>
+                <span class="qcard-meta">
+                  <span class="step-pill">Step {nextOffer.step}/7</span>
+                  <span class="room-tag">{nextOffer.giverRoomName}</span>
+                </span>
+              </div>
+              <p class="next-line">
+                Speak with <strong>{nextOffer.giverLabel}</strong> in <em>{nextOffer.giverRoomName}</em> ({nextOffer.locationLabel}).
+              </p>
+              {#if nextOfferDest || q.available.length > 0}
+                <div class="qcard-actions">
+                  {#if nextOfferDest}
+                    <button
+                      type="button"
+                      class="btn sm primary"
+                      onclick={() => prefillAndClose(`+ship/plan ${nextOfferDest.portId}`)}
+                    >
+                      Sail → {nextOfferDest.portLabel} (+ship/plan {nextOfferDest.portId})
+                    </button>
+                  {/if}
+                  {#if q.available.length > 0}
+                    <button
+                      type="button"
+                      class="btn sm primary"
+                      onclick={() => switchLogTab("available")}
+                    >
+                      View {q.available.length} Offer{q.available.length === 1 ? "" : "s"} Here
+                    </button>
+                  {/if}
+                </div>
+              {/if}
+            </article>
           {/if}
           {#if q.completed.length === 0}
             <p class="empty">No completed quests recorded yet.</p>

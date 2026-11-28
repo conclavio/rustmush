@@ -669,4 +669,62 @@ describe("QuestDialogModal guided corridor tour roadmap", () => {
     expect(preflightDlg.textContent).toContain("[CHECK BEFORE UNDOCK]");
     expect(preflightDlg.textContent).toContain("✗ Provisions 0d");
   });
+
+  it("shows Next Guided Step continuation (1-6/7) and Corridor Captain Jobs Board handoff (7/7) in Completed tab", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#15",
+      room_name: "Ceres Registry",
+      completed: [
+        { key: GUIDED_TOUR_KEYS[0], title: "First Papers at the Registry", turn_in_name: "Ilse" },
+        { key: GUIDED_TOUR_KEYS[1], title: "Stock the Locker and Tanks", turn_in_name: "Ilse" },
+        { key: GUIDED_TOUR_KEYS[2], title: "Metals Down the Corridor", turn_in_name: "Jonas" },
+      ],
+      active: [],
+      available: [],
+    });
+
+    const focusComposer = vi.fn();
+    const app = {
+      quests,
+      tacsim: {
+        ambient: { port: "ceres" },
+        trade: { venueId: "ceres", hullPort: "ceres" },
+      },
+      focusComposer,
+    } as unknown as GameApp;
+
+    // 1. Mid-tour Completed tab (3/7 done, 0 active, standing at Ceres -> Next Step 4/7 at Stickney)
+    quests.openLog("completed");
+    const midView = render(QuestDialogModal, { app, onCmd: vi.fn() });
+    const nextCard = screen.getByLabelText("Next guided step from completed log");
+    expect(nextCard.textContent).toContain("Next Guided Step (4/7)");
+    expect(nextCard.textContent).toContain("Jonas Achterberg-Nkemelu");
+    await fireEvent.click(screen.getByRole("button", { name: /Sail → Stickney Yards \(\+ship\/plan stickney\)/i }));
+    expect(focusComposer).toHaveBeenCalledWith("+ship/plan stickney");
+    expect(quests.logOpen).toBe(false);
+    midView.unmount();
+
+    // 2. Full 7/7 completion -> Corridor Captain banner offers 1-click Jobs Board (+market/jobs)
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#25",
+      room_name: "Service Counter",
+      completed: GUIDED_TOUR_KEYS.map((key, idx) => ({
+        key,
+        title: `Guided Step ${idx + 1}`,
+        turn_in_name: "Contact",
+      })),
+      active: [],
+      available: [],
+    });
+    quests.openLog("completed");
+    render(QuestDialogModal, { app, onCmd: vi.fn() });
+    const doneBanner = screen.getByRole("status", { name: "Guided corridor tour complete" });
+    expect(doneBanner.textContent).toContain("Corridor Captain");
+    await fireEvent.click(screen.getByRole("button", { name: /Jobs Board \(\+market\/jobs\)/i }));
+    expect(focusComposer).toHaveBeenLastCalledWith("+market/jobs");
+    expect(quests.logOpen).toBe(false);
+  });
 });
