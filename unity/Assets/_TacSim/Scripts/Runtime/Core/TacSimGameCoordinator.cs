@@ -1283,7 +1283,8 @@ namespace TacSim.Core
                     bool tourAllDone = false;
                     if (Hud?.QuestJournal != null)
                         Hud.QuestJournal.TryGetGuidedTourProgress(out tourDone, out tourTotal, out _, out tourAllDone);
-                    string banner = TacSimFloatingCallouts.FormatQuestCompletionBanner(label, tourDone, tourTotal, tourAllDone);
+                    string nextStepHint = tourAllDone ? null : Hud?.QuestJournal?.LastCompletedNextStepHint;
+                    string banner = TacSimFloatingCallouts.FormatQuestCompletionBanner(label, tourDone, tourTotal, tourAllDone, nextStepHint, includeJobsHint: true);
                     Color bannerCol = tourAllDone
                         ? new Color(0.35f, 1f, 0.68f, 1f)
                         : new Color(1f, 0.84f, 0.28f, 1f);

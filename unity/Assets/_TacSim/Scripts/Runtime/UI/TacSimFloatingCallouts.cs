@@ -67,11 +67,22 @@ namespace TacSim.UI
             return $"UNSTOPPABLE ({matchKills} KILLS) — {tgt}!";
         }
 
-        public static string FormatQuestCompletionBanner(string questTitle, int tourDone, int tourTotal, bool tourAllDone)
+        public static string FormatQuestCompletionBanner(
+            string questTitle,
+            int tourDone,
+            int tourTotal,
+            bool tourAllDone,
+            string nextStepHint = null,
+            bool includeJobsHint = false)
         {
             if (tourAllDone && tourTotal > 0)
-                return $"CORRIDOR CAPTAIN — GUIDED TOUR COMPLETE ({tourDone}/{tourTotal})";
+            {
+                string core = $"CORRIDOR CAPTAIN — GUIDED TOUR COMPLETE ({tourDone}/{tourTotal})";
+                return includeJobsHint ? $"{core} · TRY +market/jobs" : core;
+            }
             string title = string.IsNullOrWhiteSpace(questTitle) ? "QUEST" : questTitle.Trim().ToUpperInvariant();
+            if (!string.IsNullOrWhiteSpace(nextStepHint))
+                return $"QUEST COMPLETED: {title} · {nextStepHint.Trim().ToUpperInvariant()}";
             return $"QUEST COMPLETED: {title}";
         }
 

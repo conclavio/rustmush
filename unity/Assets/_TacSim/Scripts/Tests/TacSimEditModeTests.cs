@@ -17928,5 +17928,110 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestJournalAndCallouts_EmitGuidedNextStepTurnInRestartAndJobsHints()
+        {
+            var rootGo = new UnityEngine.GameObject("GuidedMilestoneHintsTest");
+            try
+            {
+                var journal = rootGo.AddComponent<TacSim.UI.TacSimQuestJournal>();
+                journal.BuildUi(rootGo.transform, null);
+                var events = new System.Collections.Generic.List<(string kind, string label)>();
+                journal.OnQuestMilestoneReached += (k, l) => events.Add((k, l));
+
+                // 1. Hydrate Step 5 (not ready yet) -> 0 milestones
+                journal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"",
+                        ""title"": ""Refit the Dray for Surface Mining"",
+                        ""turn_in_name"": ""Rosalind Qureshi-Mbeki"",
+                        ""next_room_name"": ""Exchange Hall"",
+                        ""allow_restart"": true,
+                        ""ready_to_finish"": false
+                    }],
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""Step 1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""Step 2"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""Step 3"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_04_return_haul"", ""title"": ""Step 4"" }
+                    ]
+                }")));
+                Assert.AreEqual(0, events.Count);
+
+                // 2. Step 5 becomes ready -> names turn-in NPC & room
+                journal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"",
+                        ""title"": ""Refit the Dray for Surface Mining"",
+                        ""turn_in_name"": ""Rosalind Qureshi-Mbeki"",
+                        ""next_room_name"": ""Exchange Hall"",
+                        ""allow_restart"": true,
+                        ""ready_to_finish"": true
+                    }],
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""Step 1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""Step 2"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""Step 3"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_04_return_haul"", ""title"": ""Step 4"" }
+                    ]
+                }")));
+                Assert.AreEqual(1, events.Count);
+                Assert.AreEqual("ready", events[0].kind);
+                Assert.AreEqual("Refit the Dray for Surface Mining -> Rosalind Qureshi-Mbeki (Exchange Hall)", events[0].label);
+
+                // 3. Completing Step 5 with Step 6 offered here populates LastCompletedNextStepHint and enriches completion banner
+                events.Clear();
+                journal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [],
+                    ""available"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""giver_name"": ""Rosalind Qureshi-Mbeki""
+                    }],
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""Step 1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""Step 2"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""Step 3"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_04_return_haul"", ""title"": ""Step 4"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"", ""title"": ""Refit the Dray for Surface Mining"" }
+                    ]
+                }")));
+                Assert.AreEqual("Next (6/7): Speak with Rosalind Qureshi-Mbeki here", journal.LastCompletedNextStepHint);
+                string s5Banner = TacSim.UI.TacSimFloatingCallouts.FormatQuestCompletionBanner(
+                    "Refit the Dray for Surface Mining", 5, 7, false, journal.LastCompletedNextStepHint, includeJobsHint: true);
+                StringAssert.Contains("NEXT (6/7): SPEAK WITH ROSALIND QURESHI-MBEKI HERE", s5Banner);
+
+                // 4. Abandoning Step 2 emits restartable giver & room cue
+                journal.ResetSessionState();
+                events.Clear();
+                journal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"",
+                        ""title"": ""Stock the Locker and Fuel the Tank"",
+                        ""allow_restart"": true
+                    }]
+                }")));
+                journal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{ ""schema"": 1, ""active"": [], ""completed"": [] }")));
+                Assert.AreEqual(1, events.Count);
+                Assert.AreEqual("abandoned", events[0].kind);
+                Assert.AreEqual(
+                    "Stock the Locker and Fuel the Tank (restartable — Ilse Oduya-Brandt in Registry & Co-op Desk)",
+                    events[0].label);
+
+                // 5. 7/7 mastery completion banner with includeJobsHint appends +market/jobs
+                string masteryBanner = TacSim.UI.TacSimFloatingCallouts.FormatQuestCompletionBanner(
+                    "Deliver Your Mined Ore to Market", 7, 7, true, null, includeJobsHint: true);
+                Assert.AreEqual("CORRIDOR CAPTAIN — GUIDED TOUR COMPLETE (7/7) · TRY +market/jobs", masteryBanner);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
