@@ -2268,6 +2268,13 @@ namespace TacSim.UI
                       .Append(MushProtocol.EscapeUnityRichText(holdSummary))
                       .Append("</color>\n");
                 }
+                if (TryGetQuestPreflightReadinessSummary(active, out string pfSummary, out bool pfReady))
+                {
+                    string pfHex = pfReady ? "#55EE99" : "#FFD166";
+                    sb.Append("<color=").Append(pfHex).Append('>')
+                      .Append(MushProtocol.EscapeUnityRichText(pfSummary))
+                      .Append("</color>\n");
+                }
                 if (!active.CanFinishNow && !active.CanCheckNow && !string.IsNullOrEmpty(_trackerRouteRoomName) && _trackerRouteHops > 0)
                 {
                     sb.Append("<color=#FFDD44>Route:</color> ")
@@ -2435,7 +2442,7 @@ namespace TacSim.UI
                 if (_trackerHeaderText != null) _trackerHeaderText.text = PinnedCategory;
                 if (_trackerDetailText != null)
                 {
-                    _trackerDetailText.text = $"<b><color=#55EE99>★ CORRIDOR CAPTAIN</color></b>\nGuided Tour Complete ({tourDone}/{tourTotal}).";
+                    _trackerDetailText.text = $"<b><color=#55EE99>★ CORRIDOR CAPTAIN</color></b>\nGuided Tour Complete ({tourDone}/{tourTotal}).\n<color=#77DDFF>Jobs Board:</color> +market/jobs";
                 }
                 if (_trackerActionBtn != null)
                 {

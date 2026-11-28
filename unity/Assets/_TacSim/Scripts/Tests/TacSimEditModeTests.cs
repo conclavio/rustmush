@@ -16216,5 +16216,96 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestTracker_SurfacesCrossPortPreflightAndMasteryJobsHint()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestTrackerPreflightAndMasteryTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                var tradeState = new TacSimTradeAndShipState();
+                hud.BindTradeState(tradeState);
+
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 2000,
+                            ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 12000,
+                            ""tank_limit_kg"": 80000,
+                            ""stores_days"": 0,
+                            ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:carbon_ore"", ""label"": ""Carbon Ore"", ""qty"": 2 }]
+                        }
+                    }
+                }"));
+
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore"",
+                        ""title"": ""Deliver Your Mined Ore to Market"",
+                        ""checkpoints"": [{
+                            ""id"": ""sell_carbon_ore"",
+                            ""title"": ""Sell 1t carbon_ore at Stickney Yards"",
+                            ""instructions"": ""Fly to Stickney Yards (+ship/plan stickney) and +market/sell carbon_ore."",
+                            ""checked"": false,
+                            ""live_ready"": false
+                        }]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                StringAssert.Contains("[CHECK BEFORE UNDOCK] Fuel 12t OK | Provisions 0d! → Stickney Yards", hud.QuestJournal.TrackerDetailSnapshot);
+
+                // Restock provisions -> flips to [PRE-FLIGHT OK] on tracker
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 2000,
+                            ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 12000,
+                            ""tank_limit_kg"": 80000,
+                            ""stores_days"": 15,
+                            ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:carbon_ore"", ""label"": ""Carbon Ore"", ""qty"": 2 }]
+                        }
+                    }
+                }"));
+                StringAssert.Contains("[PRE-FLIGHT OK] Fuel 12t | Provisions 15d → Stickney Yards", hud.QuestJournal.TrackerDetailSnapshot);
+
+                // All 7 steps complete -> Corridor Captain tracker includes +market/jobs hint
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [],
+                    ""available"": [],
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""S1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""S2"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""S3"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_04_return_haul"", ""title"": ""S4"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"", ""title"": ""S5"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"", ""title"": ""S6"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore"", ""title"": ""S7"" }
+                    ]
+                }")));
+                StringAssert.Contains("CORRIDOR CAPTAIN", hud.QuestJournal.TrackerDetailSnapshot);
+                StringAssert.Contains("+market/jobs", hud.QuestJournal.TrackerDetailSnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
