@@ -233,6 +233,107 @@ export interface QuestHoldReadinessSummary {
   secondary?: QuestStowageReadiness[];
 }
 
+export interface QuestCheckpointLiveBadge {
+  kind: "ready" | "progress" | "blocked";
+  label: string;
+}
+
+/**
+ * Evaluate a live per-checkpoint stowage/refit badge for an unchecked checkpoint row in
+ * Quest Dialog, Quest Log, and HUD Quest Tracker (Steps 2, 3, 4, 5, 6, 7) before the
+ * server checkpoint flips `checked`/`liveReady`.
+ */
+export function evaluateCheckpointLiveBadge(
+  cp: QuestCheckpointView,
+  stowage:
+    | {
+        cargoKg: number;
+        propellantKg: number;
+        provisionsCrewDays: number;
+        cargoLines?: ReadonlyArray<{ good: string; label: string; qty: number }>;
+      }
+    | null
+    | undefined,
+): QuestCheckpointLiveBadge | null {
+  if (!stowage || cp.checked || cp.liveReady) return null;
+  const idLow = cp.id.toLowerCase();
+  const titleLow = cp.title.toLowerCase();
+  const instrLow = cp.instructions.toLowerCase();
+  const textLow = `${idLow} ${titleLow} ${instrLow}`;
+
+  if (idLow.includes("refit_dray") || textLow.includes("+coop/refit")) {
+    const refit = evaluateRefitHoldReadiness(stowage);
+    if (!refit) return null;
+    return refit.ready
+      ? { kind: "ready", label: "[HOLD CLEAR]" }
+      : { kind: "blocked", label: "[CLEAR HOLD]" };
+  }
+
+  if (idLow.startsWith("mine_") || titleLow.startsWith("mine ")) {
+    let oreSlug = "carbon_ore";
+    if (textLow.includes("rare_earths") || textLow.includes("rare earths")) oreSlug = "rare_earths";
+    else if (textLow.includes("metals")) oreSlug = "metals";
+    else if (textLow.includes("volatiles") || textLow.includes("water_ice")) oreSlug = "volatiles";
+    let have = 0;
+    for (const line of stowage.cargoLines ?? []) {
+      if (normalizeGoodSlug(line.good) === oreSlug || normalizeGoodSlug(line.label) === oreSlug) {
+        have += Math.max(0, Math.floor(line.qty));
+      }
+    }
+    const target = Math.max(
+      1,
+      extractLeadingPositiveInt(cp.title) || extractLeadingPositiveInt(cp.instructions) || 1,
+    );
+    return have >= target ? { kind: "ready", label: "[STOWED]" } : null;
+  }
+
+  const singleQuest: ActiveQuestView = {
+    key: "",
+    title: "",
+    category: "",
+    introduction: "",
+    rewardSummary: "",
+    giverId: "",
+    giverName: "",
+    turnInId: "",
+    turnInName: "",
+    turnInHere: false,
+    allowRestart: true,
+    readyToFinish: false,
+    canFinishNow: false,
+    canCheckNow: false,
+    nextStep: "",
+    nextInstructions: "",
+    nextObjectiveReady: false,
+    nextRoomEntry: "",
+    nextRoomName: "",
+    checkCmd: "",
+    finishCmd: "",
+    abandonCmd: "",
+    checkpoints: [cp],
+  };
+  const need = extractActiveTradeNeeds([singleQuest], null)[0] ?? null;
+  if (!need) return null;
+  const readiness = evaluateQuestStowageReadiness(need, {
+    propellantKg: stowage.propellantKg,
+    provisionsCrewDays: stowage.provisionsCrewDays,
+    cargoLines: stowage.cargoLines ?? [],
+  });
+  if (!readiness) return null;
+  if (readiness.ready) {
+    return need.wantsBuy && need.wantsSell
+      ? { kind: "ready", label: "[LOADED -> SAIL]" }
+      : { kind: "ready", label: "[STOWED]" };
+  }
+  if (readiness.currentQty > 0) {
+    return {
+      kind: "progress",
+      label: `[${readiness.currentQty}/${readiness.targetQty}${readiness.unit}]`,
+    };
+  }
+  return null;
+}
+
 export function formatQuestHoldReadinessSummary(
   quest: ActiveQuestView | null,
   stowage:

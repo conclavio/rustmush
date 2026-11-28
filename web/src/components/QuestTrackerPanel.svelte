@@ -6,6 +6,7 @@
   import type { GameApp } from "$lib/game.svelte";
   import {
     GUIDED_TOUR_KEYS,
+    evaluateCheckpointLiveBadge,
     evaluateSailingPreflightReadiness,
     extractActiveDestinationPort,
     extractActiveSurfaceMiningStatus,
@@ -310,9 +311,16 @@
       <div class="tracker-body">
         <ul class="obj-list">
           {#each tracked.checkpoints as cp (cp.id)}
-            <li class:done={cp.checked} class:ready={!cp.checked && cp.liveReady}>
-              <span class="icon">{cp.checked ? "✓" : cp.liveReady ? "◆" : "○"}</span>
+            {@const liveBadge = evaluateCheckpointLiveBadge(cp, liveStowage)}
+            <li
+              class:done={cp.checked}
+              class:ready={!cp.checked && (cp.liveReady || liveBadge?.kind === "ready")}
+            >
+              <span class="icon">{cp.checked ? "✓" : cp.liveReady || liveBadge?.kind === "ready" ? "◆" : "○"}</span>
               <span class="label">{cp.title}</span>
+              {#if liveBadge}
+                <span class="cp-live-badge" data-kind={liveBadge.kind}>{liveBadge.label}</span>
+              {/if}
               {#if cp.roomName && !cp.checked}
                 <span class="loc">· {cp.roomName}</span>
               {/if}
@@ -788,5 +796,25 @@
   .prep-chip:hover {
     background: rgba(24, 82, 118, 0.85);
     color: #f0f9ff;
+  }
+  .cp-live-badge {
+    font-family: var(--mono, monospace);
+    font-size: 0.66rem;
+    font-weight: 700;
+    padding: 0.04rem 0.32rem;
+    border-radius: 4px;
+    border: 1px solid rgba(251, 191, 36, 0.5);
+    background: rgba(78, 56, 12, 0.45);
+    color: #fde68a;
+  }
+  .cp-live-badge[data-kind="ready"] {
+    border-color: rgba(52, 211, 153, 0.65);
+    background: rgba(16, 74, 52, 0.5);
+    color: #6ee7b7;
+  }
+  .cp-live-badge[data-kind="blocked"] {
+    border-color: rgba(248, 113, 113, 0.55);
+    background: rgba(92, 24, 24, 0.45);
+    color: #fca5a5;
   }
 </style>

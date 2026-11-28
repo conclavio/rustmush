@@ -727,4 +727,115 @@ describe("QuestDialogModal guided corridor tour roadmap", () => {
     expect(focusComposer).toHaveBeenLastCalledWith("+market/jobs");
     expect(quests.logOpen).toBe(false);
   });
+
+  it("annotates individual Step 2 and Step 5 checkpoints with live [STOWED], partial progress, [CLEAR HOLD], and [HOLD CLEAR] badges", () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#19",
+      room_name: "Co-op Chandlery",
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[1],
+          title: "Stock the Locker and Tanks",
+          category: "guided",
+          giver_id: "#18",
+          giver_name: "Ilse Oduya-Brandt",
+          turn_in_id: "#18",
+          turn_in_name: "Ilse Oduya-Brandt",
+          checkpoints: [
+            {
+              id: "buy_provisions",
+              title: "Buy 10 crew-days of provisions",
+              instructions: "Buy 10 provisions at Co-op Chandlery.",
+              room_name: "Co-op Chandlery",
+              checked: false,
+              live_ready: false,
+            },
+            {
+              id: "buy_propellant",
+              title: "Buy 5t propellant",
+              instructions: "Buy 5t propellant at Exchange Hall.",
+              room_name: "Exchange Hall",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+        {
+          key: GUIDED_TOUR_KEYS[4],
+          title: "Refit the Dray for Surface Mining",
+          category: "guided",
+          giver_id: "#18",
+          giver_name: "Ilse Oduya-Brandt",
+          turn_in_id: "#31",
+          turn_in_name: "Rosalind Qureshi-Mbeki",
+          checkpoints: [
+            {
+              id: "refit_dray_p",
+              title: "Refit your Dray into a Dray-P prospector",
+              instructions: "Empty cargo and stores, then run +coop/refit prospector.",
+              room_name: "Registry & Co-op Desk",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+      available: [],
+      completed: [],
+    });
+
+    // 1. 10d provisions stowed + 2t propellant (partial) -> Step 2 shows [STOWED] and [2/5t]; Step 5 shows [CLEAR HOLD]
+    const app1 = {
+      quests,
+      tacsim: {
+        trade: {
+          hullId: "#99",
+          stowage: {
+            cargoKg: 0,
+            propellantKg: 2000,
+            provisionsCrewDays: 10,
+            cargoLines: [],
+          },
+        },
+      },
+      focusComposer: vi.fn(),
+    } as unknown as GameApp;
+
+    quests.openQuestDialog(GUIDED_TOUR_KEYS[1]!);
+    const dlg1 = render(QuestDialogModal, { app: app1, onCmd: vi.fn() });
+    expect(dlg1.container.textContent).toContain("[STOWED]");
+    expect(dlg1.container.textContent).toContain("[2/5t]");
+    dlg1.unmount();
+
+    quests.openLog("active");
+    const log1 = render(QuestDialogModal, { app: app1, onCmd: vi.fn() });
+    expect(log1.container.textContent).toContain("[STOWED]");
+    expect(log1.container.textContent).toContain("[2/5t]");
+    expect(log1.container.textContent).toContain("[CLEAR HOLD]");
+    log1.unmount();
+
+    // 2. Clear provisions -> Step 5 checkpoint flips to [HOLD CLEAR]
+    const app2 = {
+      quests,
+      tacsim: {
+        trade: {
+          hullId: "#99",
+          stowage: {
+            cargoKg: 0,
+            propellantKg: 8000,
+            provisionsCrewDays: 0,
+            cargoLines: [],
+          },
+        },
+      },
+      focusComposer: vi.fn(),
+    } as unknown as GameApp;
+    quests.openQuestDialog(GUIDED_TOUR_KEYS[4]!);
+    const dlg2 = render(QuestDialogModal, { app: app2, onCmd: vi.fn() });
+    expect(dlg2.container.textContent).toContain("[HOLD CLEAR]");
+    expect(dlg2.container.textContent).not.toContain("[CLEAR HOLD]");
+    dlg2.unmount();
+  });
 });
