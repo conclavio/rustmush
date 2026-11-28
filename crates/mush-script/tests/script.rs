@@ -1092,7 +1092,14 @@ fn crit5_plain_player_cannot_author_compile_or_execute_scripts() {
 
 #[test]
 fn crit5_hardened_engine_disables_dangerous_symbols_packages_sleep_and_print() {
-    let mut f = Fixture::new();
+    // Use a generous wall-clock budget so parallel CI runner preemption cannot
+    // trip the 50 ms default timeout inside callback dispatch before `sleep(10)`
+    // runs (still well below `sleep(10)`'s 10-second duration).
+    let mut f = Fixture::with_config(ScriptConfig {
+        wall_clock_ms: 5_000,
+        cascade_wall_clock_ms: 5_000,
+        ..ScriptConfig::default()
+    });
     let nick = f.builder("Nick");
     let obj = f.thing("obj", nick, LIMBO);
 
@@ -1155,7 +1162,7 @@ fn crit5_hardened_engine_disables_dangerous_symbols_packages_sleep_and_print() {
         let started = std::time::Instant::now();
         let out = f.run(nick, &word);
         assert!(
-            started.elapsed() < std::time::Duration::from_millis(200),
+            started.elapsed() < std::time::Duration::from_secs(2),
             "sleep must not actually sleep: {src}"
         );
         assert!(
