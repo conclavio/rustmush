@@ -4928,6 +4928,19 @@ pub fn render_chart_table_rows(data: &Value, ctx: &RenderCtx<'_>) -> PaneRows {
     render_chart_table_rows_with_quest(data, ctx, None, None)
 }
 
+/// Quest guidance context for the TUI Sky Chart tables pane (`render_chart_table_rows_with_quest_context`).
+#[derive(Default)]
+pub struct ChartQuestContext<'a> {
+    pub quest_dest: Option<&'a super::quests::QuestDestinationHint>,
+    pub quest_mining: Option<&'a super::quests::QuestSurfaceMiningStatus>,
+    pub step_badge: &'a str,
+    pub arrived: bool,
+    pub aboard_ship: bool,
+    pub can_finish_now: bool,
+    pub preflight_line: Option<(String, bool)>,
+    pub ore_stowed: Option<bool>,
+}
+
 /// Quest-aware variant of [`render_chart_table_rows`] that prepends the active
 /// destination (`+ship/plan <port>`) or Step 6 surface-mining banner and highlights
 /// matching passage rows in bold gold.
@@ -4936,6 +4949,24 @@ pub fn render_chart_table_rows_with_quest(
     ctx: &RenderCtx<'_>,
     quest_dest: Option<&super::quests::QuestDestinationHint>,
     quest_mining: Option<&super::quests::QuestSurfaceMiningStatus>,
+) -> PaneRows {
+    render_chart_table_rows_with_quest_context(
+        data,
+        ctx,
+        &ChartQuestContext {
+            quest_dest,
+            quest_mining,
+            ..Default::default()
+        },
+    )
+}
+
+/// Full quest-aware variant of [`render_chart_table_rows`] supporting `[QUEST ARRIVED]`,
+/// cargo-aware pre-flight readiness, and Step 6 `[RECOVER RIG FIRST]` / `[ORE HOLD READY]`.
+pub fn render_chart_table_rows_with_quest_context(
+    data: &Value,
+    ctx: &RenderCtx<'_>,
+    qc: &ChartQuestContext<'_>,
 ) -> PaneRows {
     if data.is_null() {
         return PaneRows::one("(no chart yet)");
@@ -4947,24 +4978,87 @@ pub fn render_chart_table_rows_with_quest(
     let quest_style = Style::default()
         .fg(Color::Yellow)
         .add_modifier(Modifier::BOLD);
+    let ready_style = Style::default()
+        .fg(Color::Green)
+        .add_modifier(Modifier::BOLD);
+    let warn_style = Style::default()
+        .fg(Color::LightYellow)
+        .add_modifier(Modifier::BOLD);
+    let step_badge = qc.step_badge;
     let mut rows = Vec::new();
-    if let Some(dest) = quest_dest {
+    if qc.ore_stowed == Some(false) {
+        let ore = qc
+            .quest_mining
+            .map(|m| m.target_ore_slug.replace('_', " "))
+            .unwrap_or_else(|| "ore".to_string());
+        let port = qc
+            .quest_dest
+            .map(|d| d.port_label.as_str())
+            .unwrap_or("Ceres Freeport");
         rows.push(PaneRow::plain(Line::from(vec![
-            Span::styled("[QUEST] ", quest_style),
+            Span::styled("[RECOVER RIG FIRST] ", quest_style),
             Span::styled(
                 clean(&format!(
-                    "Dest: {} (+ship/plan {}) — {}",
-                    dest.port_label, dest.port_id, dest.quest_title
+                    "Stow mined {ore} (+tv/1 recover go) before returning to {port}{step_badge}"
                 )),
                 quest_style,
             ),
         ])));
-    } else if let Some(mine) = quest_mining.filter(|m| !m.mine_done) {
+    } else if let Some(dest) = qc.quest_dest {
+        if qc.arrived {
+            let action = if qc.can_finish_now {
+                "Turn in here (F11 -> Enter)".to_string()
+            } else if qc.aboard_ship {
+                "Step ashore (+ship/leave)".to_string()
+            } else {
+                dest.quest_title.clone()
+            };
+            rows.push(PaneRow::plain(Line::from(vec![
+                Span::styled("[QUEST ARRIVED] ", ready_style),
+                Span::styled(
+                    clean(&format!("At {} — {action}{step_badge}", dest.port_label)),
+                    ready_style,
+                ),
+            ])));
+        } else {
+            let (tag, lead, style) = if qc.ore_stowed == Some(true) {
+                ("[ORE HOLD READY] ", "Return", ready_style)
+            } else {
+                ("[QUEST] ", "Dest", quest_style)
+            };
+            rows.push(PaneRow::plain(Line::from(vec![
+                Span::styled(tag, style),
+                Span::styled(
+                    clean(&format!(
+                        "{lead}: {} (+ship/plan {}) — {}{step_badge}",
+                        dest.port_label, dest.port_id, dest.quest_title
+                    )),
+                    style,
+                ),
+            ])));
+            if let Some((ref pf_line, pf_ready)) = qc.preflight_line {
+                rows.push(PaneRow::plain(Line::from(Span::styled(
+                    clean(pf_line),
+                    if pf_ready { ready_style } else { warn_style },
+                ))));
+            }
+        }
+    } else if qc.ore_stowed == Some(true) {
+        rows.push(PaneRow::plain(Line::from(vec![
+            Span::styled("[ORE HOLD READY] ", ready_style),
+            Span::styled(
+                clean(&format!(
+                    "Return: Ceres Freeport (+ship/plan ceres){step_badge}"
+                )),
+                ready_style,
+            ),
+        ])));
+    } else if let Some(mine) = qc.quest_mining.filter(|m| !m.mine_done) {
         rows.push(PaneRow::plain(Line::from(vec![
             Span::styled("[QUEST] ", quest_style),
             Span::styled(
                 clean(&format!(
-                    "Surface Mining: {} (Alt+q -> z: ground, l: {})",
+                    "Surface Mining: {} (Alt+q -> z: ground, l: {}){step_badge}",
                     mine.target_ore_slug, mine.recommended_family
                 )),
                 quest_style,
@@ -4972,7 +5066,7 @@ pub fn render_chart_table_rows_with_quest(
         ])));
     }
     let matches_dest = |line: &str| -> bool {
-        let Some(dest) = quest_dest else {
+        let Some(dest) = qc.quest_dest else {
             return false;
         };
         let low = line.to_ascii_lowercase();
@@ -9256,6 +9350,134 @@ mod tests {
         assert_eq!(
             mine_rows[0],
             "[QUEST] Surface Mining: carbon_ore (Alt+q -> z: ground, l: carbon)"
+        );
+    }
+
+    #[test]
+    fn render_chart_table_rows_with_quest_context_shows_preflight_arrived_and_step6_rig_recovery() {
+        let row_texts = |rows: PaneRows| -> Vec<String> {
+            rows.rows
+                .into_iter()
+                .map(|r| {
+                    r.line
+                        .spans
+                        .into_iter()
+                        .map(|s| s.content.into_owned())
+                        .collect::<String>()
+                })
+                .collect()
+        };
+        let theme = AnsiTheme::classic();
+        let store = PanelStore::default();
+        let ctx = RenderCtx {
+            theme: &theme,
+            depth: ColorDepth::Ansi16,
+            utf8: true,
+            store: &store,
+            selected_channel: None,
+            pane: None,
+            picture: None,
+        };
+        let chart_data = serde_json::json!({
+            "chart": {
+                "lines": {
+                    "sky": [
+                        "Ceres Freeport — 12h, 0.9t",
+                        "Stickney Yards — 42h, 3.8t"
+                    ]
+                }
+            }
+        });
+        let stickney = super::super::quests::QuestDestinationHint {
+            quest_title: "Metals Down the Corridor".into(),
+            port_id: "stickney".into(),
+            port_label: "Stickney Yards".into(),
+        };
+
+        // 1. Step 3 departure with missing cargo pre-flight line
+        let pf_rows = row_texts(render_chart_table_rows_with_quest_context(
+            &chart_data,
+            &ctx,
+            &ChartQuestContext {
+                quest_dest: Some(&stickney),
+                step_badge: " [Step 3/7]",
+                preflight_line: Some((
+                    "[CHECK BEFORE UNDOCK] Fuel 10t OK | Provisions 10d OK | metals 0/5! -> Stickney Yards"
+                        .into(),
+                    false,
+                )),
+                ..Default::default()
+            },
+        ));
+        assert_eq!(
+            pf_rows[0],
+            "[QUEST] Dest: Stickney Yards (+ship/plan stickney) — Metals Down the Corridor [Step 3/7]"
+        );
+        assert!(pf_rows[1].contains("[CHECK BEFORE UNDOCK]"), "{pf_rows:?}");
+        assert!(pf_rows[1].contains("metals 0/5!"), "{pf_rows:?}");
+
+        // 2. Arrived aboard ship -> [QUEST ARRIVED] Step ashore (+ship/leave)
+        let arr_rows = row_texts(render_chart_table_rows_with_quest_context(
+            &chart_data,
+            &ctx,
+            &ChartQuestContext {
+                quest_dest: Some(&stickney),
+                step_badge: " [Step 3/7]",
+                arrived: true,
+                aboard_ship: true,
+                ..Default::default()
+            },
+        ));
+        assert_eq!(
+            arr_rows[0],
+            "[QUEST ARRIVED] At Stickney Yards — Step ashore (+ship/leave) [Step 3/7]"
+        );
+
+        // 3. Step 6 post-mine with 0t ore stowed -> [RECOVER RIG FIRST] (+tv/1 recover go)
+        let ceres = super::super::quests::QuestDestinationHint {
+            quest_title: "Scan, Sound, and Mine".into(),
+            port_id: "ceres".into(),
+            port_label: "Ceres Freeport".into(),
+        };
+        let mine_done = super::super::quests::QuestSurfaceMiningStatus {
+            quest_title: "Scan, Sound, and Mine".into(),
+            target_ore_slug: "carbon_ore".into(),
+            recommended_family: "carbon".into(),
+            scan_done: true,
+            sound_done: true,
+            mine_done: true,
+        };
+        let rec_rows = row_texts(render_chart_table_rows_with_quest_context(
+            &chart_data,
+            &ctx,
+            &ChartQuestContext {
+                quest_dest: Some(&ceres),
+                quest_mining: Some(&mine_done),
+                step_badge: " [Step 6/7]",
+                ore_stowed: Some(false),
+                ..Default::default()
+            },
+        ));
+        assert_eq!(
+            rec_rows[0],
+            "[RECOVER RIG FIRST] Stow mined carbon ore (+tv/1 recover go) before returning to Ceres Freeport [Step 6/7]"
+        );
+
+        // 4. Step 6 after rig recovery -> [ORE HOLD READY] Return: Ceres Freeport
+        let ready_rows = row_texts(render_chart_table_rows_with_quest_context(
+            &chart_data,
+            &ctx,
+            &ChartQuestContext {
+                quest_dest: Some(&ceres),
+                quest_mining: Some(&mine_done),
+                step_badge: " [Step 6/7]",
+                ore_stowed: Some(true),
+                ..Default::default()
+            },
+        ));
+        assert_eq!(
+            ready_rows[0],
+            "[ORE HOLD READY] Return: Ceres Freeport (+ship/plan ceres) — Scan, Sound, and Mine [Step 6/7]"
         );
     }
 }

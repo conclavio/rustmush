@@ -56,9 +56,9 @@ use super::quests::{
     render_quest_sheet_lines_with_stowage, render_quest_tracker_lines_full,
 };
 use super::render::{
-    BODY_GROUND_FEED, CHART_FEED, Entry, GUTTER_W, PaneRow, PaneRows, RenderCtx, SITE_MAP_FEED,
-    TV_STATUS_FEED, dim_span_owned, floor_line, legend_line, render_backlog_rows,
-    render_channels_rows, render_chart_table_rows, render_chart_table_rows_with_quest,
+    BODY_GROUND_FEED, CHART_FEED, ChartQuestContext, Entry, GUTTER_W, PaneRow, PaneRows, RenderCtx,
+    SITE_MAP_FEED, TV_STATUS_FEED, dim_span_owned, floor_line, legend_line, render_backlog_rows,
+    render_channels_rows, render_chart_table_rows, render_chart_table_rows_with_quest_context,
     render_cockpit_notices_rows, render_event, render_event_with_quest_exit,
     render_quarry_side_rows_with_quest, render_rolls_rows, render_sheet_rows, render_vitals_rows,
     render_who_rail, status_line, tab_strip, vitals_line, wrap_spans, wrap_spans_count,
@@ -5802,6 +5802,7 @@ impl TuiApp {
                     && let Some(data) = self.panels.get(feed)
                 {
                     let tracked = self.quests_overlay.tracked_key.as_deref();
+                    let tracked_q = self.quests_snap.ordered_active(tracked).into_iter().next();
                     let cur_port = data
                         .pointer("/chart/vantage/port")
                         .and_then(Value::as_str)
@@ -5812,16 +5813,88 @@ impl TuiApp {
                                 .filter(|s| !s.is_empty())
                         })
                         .or_else(|| self.port_walk.current_port_slug());
+                    let mining = self.quests_snap.surface_mining_status(tracked);
                     let dest = self
                         .quests_snap
                         .active_destination_port(tracked)
+                        .or_else(|| {
+                            let m = mining.as_ref()?;
+                            if !m.mine_done {
+                                return None;
+                            }
+                            let slug = tracked_q
+                                .and_then(|q| {
+                                    super::quests::infer_station_port_from_room_entry(
+                                        &q.next_room_entry,
+                                    )
+                                })
+                                .unwrap_or("ceres");
+                            let lbl = match slug {
+                                "stickney" => "Stickney Yards",
+                                "luna" => "Aitken Basin",
+                                "deimos" => "Voltaire Base",
+                                "titan" => "Ligeia Dock",
+                                _ => "Ceres Freeport",
+                            };
+                            Some(super::quests::QuestDestinationHint {
+                                quest_title: m.quest_title.clone(),
+                                port_id: slug.to_string(),
+                                port_label: lbl.to_string(),
+                            })
+                        })
                         .or_else(|| self.quests_snap.next_guided_offer_destination(cur_port));
-                    let mining = self.quests_snap.surface_mining_status(tracked);
-                    return render_chart_table_rows_with_quest(
+                    let step_badge = tracked_q
+                        .map(|q| guided_step_badge(&q.key))
+                        .unwrap_or_default();
+                    let stowage = self.port_walk.quest_stowage_telemetry();
+                    let ore_stowed = mining.as_ref().filter(|m| m.mine_done).and_then(|m| {
+                        stowage
+                            .as_ref()
+                            .map(|st| st.commodity_qty(&m.target_ore_slug) >= 1)
+                    });
+                    let arrived = dest.as_ref().is_some_and(|d| {
+                        if self.port_walk.settled_pad()
+                            || ore_stowed == Some(false)
+                            || mining.as_ref().is_some_and(|m| !m.mine_done)
+                        {
+                            return false;
+                        }
+                        let raw_port = data
+                            .pointer("/chart/vantage/port")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .trim()
+                            .to_ascii_lowercase();
+                        if raw_port.is_empty() {
+                            return false;
+                        }
+                        let pid = d.port_id.to_ascii_lowercase();
+                        let plbl = d.port_label.to_ascii_lowercase();
+                        raw_port == pid
+                            || raw_port == plbl
+                            || raw_port.contains(&pid)
+                            || raw_port.contains(&plbl)
+                    });
+                    let preflight_line = if !arrived && ore_stowed != Some(false) {
+                        tracked_q
+                            .zip(stowage.as_ref())
+                            .and_then(|(q, st)| QuestsSnapshot::preflight_readiness_line_for(q, st))
+                    } else {
+                        None
+                    };
+                    return render_chart_table_rows_with_quest_context(
                         data,
                         &ctx,
-                        dest.as_ref(),
-                        mining.as_ref(),
+                        &ChartQuestContext {
+                            quest_dest: dest.as_ref(),
+                            quest_mining: mining.as_ref(),
+                            step_badge: &step_badge,
+                            arrived,
+                            aboard_ship: self.port_walk.is_aboard_ship(),
+                            can_finish_now: tracked_q.is_some_and(|q| q.can_finish_now),
+                            preflight_line,
+                            ore_stowed,
+                        },
                     );
                 }
                 match self.panels.get(feed) {
