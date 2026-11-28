@@ -1082,6 +1082,47 @@ impl QuestsSnapshot {
                     return Some(("room.c08_chandlery".to_string(), false));
                 }
             }
+            if !is_turn_in && let Some(st) = stowage {
+                let single = Self {
+                    active: vec![q.clone()],
+                    ..Default::default()
+                };
+                let needs = single.active_trade_needs(None);
+                if !needs.is_empty() && needs.iter().all(|n| n.wants_buy && !n.wants_sell) {
+                    let is_satisfied = |n: &QuestTradeNeed| -> bool {
+                        let req = n.target_quantity.max(1);
+                        match n.commodity_slug.as_str() {
+                            "provisions" => st.provisions_days >= req,
+                            "propellant" => (st.propellant_kg / 1000) >= req,
+                            slug => {
+                                let have: i64 = st
+                                    .cargo_lots
+                                    .iter()
+                                    .filter(|(g, l, _)| {
+                                        normalize_good_slug(g) == slug
+                                            || normalize_good_slug(l) == slug
+                                    })
+                                    .map(|(_, _, qty)| (*qty).max(0))
+                                    .sum();
+                                have >= req
+                            }
+                        }
+                    };
+                    if let Some(next_need) = needs.iter().find(|n| !is_satisfied(n)) {
+                        if !next_need.room_entry.is_empty() {
+                            return Some((next_need.room_entry.clone(), false));
+                        }
+                        if next_need.commodity_slug == "provisions" {
+                            return Some(("room.c08_chandlery".to_string(), false));
+                        }
+                        if next_need.commodity_slug == "propellant" {
+                            return Some(("room.c07_exchange".to_string(), false));
+                        }
+                    } else if q.key == GUIDED_TOUR_KEYS[1] {
+                        return Some(("room.c05_registry".to_string(), false));
+                    }
+                }
+            }
             if !q.next_room_entry.is_empty() {
                 return Some((q.next_room_entry.clone(), is_turn_in));
             }
@@ -6168,6 +6209,66 @@ mod tests {
         };
         assert_eq!(
             snap.active_objective_room_with_stowage(None, Some(&cleared_hold)),
+            Some(("room.c05_registry".to_string(), false))
+        );
+    }
+
+    #[test]
+    fn step2_active_objective_room_with_stowage_routes_chandlery_exchange_then_registry() {
+        let snap = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[1],
+                "title": "Stock the Locker and Tanks",
+                "category": "guided",
+                "next_room_entry": "room.c08_chandlery",
+                "next_room_name": "Co-op Chandlery",
+                "checkpoints": [
+                    {
+                        "id": "buy_provisions",
+                        "title": "Buy at least 10 provisions at Ceres Co-op Chandlery",
+                        "instructions": "Buy 10 provisions.",
+                        "room_entry": "room.c08_chandlery",
+                        "room_name": "Co-op Chandlery",
+                        "checked": false
+                    },
+                    {
+                        "id": "buy_propellant",
+                        "title": "Buy at least 5 tonnes of propellant at Ceres Exchange Hall",
+                        "instructions": "Buy 5 tonnes of propellant.",
+                        "room_entry": "room.c07_exchange",
+                        "room_name": "Exchange Hall",
+                        "checked": false
+                    }
+                ]
+            }],
+            "available": [],
+            "completed": []
+        }));
+
+        let empty = QuestStowageTelemetry::default();
+        assert_eq!(
+            snap.active_objective_room_with_stowage(None, Some(&empty)),
+            Some(("room.c08_chandlery".to_string(), false))
+        );
+
+        let prov_done = QuestStowageTelemetry {
+            provisions_days: 10,
+            propellant_kg: 0,
+            ..Default::default()
+        };
+        assert_eq!(
+            snap.active_objective_room_with_stowage(None, Some(&prov_done)),
+            Some(("room.c07_exchange".to_string(), false))
+        );
+
+        let both_done = QuestStowageTelemetry {
+            provisions_days: 10,
+            propellant_kg: 5_000,
+            ..Default::default()
+        };
+        assert_eq!(
+            snap.active_objective_room_with_stowage(None, Some(&both_done)),
             Some(("room.c05_registry".to_string(), false))
         );
     }
