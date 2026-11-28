@@ -124,6 +124,27 @@ pub struct QuestStowageTelemetry {
     pub cargo_lots: Vec<(String, String, i64)>,
 }
 
+impl QuestStowageTelemetry {
+    #[must_use]
+    pub fn commodity_qty(&self, slug: &str) -> i64 {
+        let needle = slug.trim().to_ascii_lowercase();
+        if needle.is_empty() {
+            return 0;
+        }
+        let norm = needle.replace('_', " ");
+        let suffix = format!(":{needle}");
+        self.cargo_lots
+            .iter()
+            .filter(|(g, l, _)| {
+                let gl = g.to_ascii_lowercase();
+                let ll = l.to_ascii_lowercase();
+                gl == needle || gl.ends_with(&suffix) || gl.contains(&needle) || ll.contains(&norm)
+            })
+            .map(|(_, _, qty)| (*qty).max(0))
+            .sum()
+    }
+}
+
 impl QuestTradeNeed {
     #[must_use]
     pub fn matches_listing(&self, good_id: &str, good_name: &str, is_bid: bool) -> bool {
@@ -1756,11 +1777,26 @@ impl QuestsSnapshot {
         let prov_d = stowage.provisions_days.max(0);
         let fuel_ok = fuel_t > 0;
         let prov_ok = prov_d > 0;
-        let ready = fuel_ok && prov_ok;
+        let cargo_req = single
+            .active_trade_need(Some(&q.key))
+            .filter(|n| n.commodity_slug != "propellant" && n.commodity_slug != "provisions");
+        let (cargo_ok, cargo_seg) = if let Some(need) = cargo_req {
+            let have = stowage.commodity_qty(&need.commodity_slug);
+            let target = need.target_quantity.max(1);
+            let label = need.commodity_slug.replace('_', " ");
+            if have >= target {
+                (true, String::new())
+            } else {
+                (false, format!(" | {label} {have}/{target}!"))
+            }
+        } else {
+            (true, String::new())
+        };
+        let ready = fuel_ok && prov_ok && cargo_ok;
         if ready {
             Some((
                 format!(
-                    "[PRE-FLIGHT OK] Fuel {fuel_t}t | Provisions {prov_d}d -> {}",
+                    "[PRE-FLIGHT OK] Fuel {fuel_t}t | Provisions {prov_d}d{cargo_seg} -> {}",
                     dest.port_label
                 ),
                 true,
@@ -1778,7 +1814,7 @@ impl QuestsSnapshot {
             };
             Some((
                 format!(
-                    "[CHECK BEFORE UNDOCK] Fuel {fuel_txt} | Provisions {prov_txt} -> {}",
+                    "[CHECK BEFORE UNDOCK] Fuel {fuel_txt} | Provisions {prov_txt}{cargo_seg} -> {}",
                     dest.port_label
                 ),
                 false,
