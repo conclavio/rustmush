@@ -2395,6 +2395,17 @@ pub fn render_quest_tracker_lines_full(
             lines.push(Line::from(Span::styled(pf_txt, style)));
         }
         if !q.can_finish_now
+            && !q.ready_to_finish
+            && let Some(mine) = snap
+                .tracked_only(tracked_key)
+                .and_then(|s| s.surface_mining_status(Some(q.key.as_str())))
+        {
+            lines.push(Line::from(Span::styled(
+                mine.prep_hint_line(),
+                Style::default().fg(Color::Cyan),
+            )));
+        }
+        if !q.can_finish_now
             && !q.can_check_now
             && let Some(hop) = route_hop
         {
@@ -5628,6 +5639,80 @@ mod tests {
         assert!(
             m_joined.contains("Jobs Board: +market/jobs"),
             "expected Jobs Board pointer on sheet:\n{m_joined}"
+        );
+    }
+
+    #[test]
+    fn quest_tracker_shows_step6_prospecting_prep_and_hides_when_ready() {
+        let pre_scan = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[5],
+                "title": "Scan, Sound, and Mine a Landing Site",
+                "checkpoints": [
+                    { "id": "scan_landing_site", "title": "Complete a surface scan", "checked": false, "live_ready": false },
+                    { "id": "mine_carbon_ore", "title": "Mine 1t carbon ore", "checked": false, "live_ready": false }
+                ]
+            }],
+            "available": [],
+            "completed": []
+        }));
+        let pre_txt = render_quest_tracker_lines_full(&pre_scan, None, None, None, None)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            pre_txt.contains("Prep: +license | +tv/lease | +chart/ground"),
+            "expected Step 6 pre-scan prep hint in tracker:\n{pre_txt}"
+        );
+
+        let mid_mine = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[5],
+                "title": "Scan, Sound, and Mine a Landing Site",
+                "checkpoints": [
+                    { "id": "scan_landing_site", "title": "Complete a surface scan", "checked": true, "live_ready": true },
+                    { "id": "mine_carbon_ore", "title": "Mine 1t carbon ore", "checked": false, "live_ready": false }
+                ]
+            }],
+            "available": [],
+            "completed": []
+        }));
+        let mid_txt = render_quest_tracker_lines_full(&mid_mine, None, None, None, None)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            mid_txt.contains("Prep: +chart/ground | Recover: +tv/1 recover go"),
+            "expected Step 6 mid-mining recover hint in tracker:\n{mid_txt}"
+        );
+
+        let ready = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[5],
+                "title": "Scan, Sound, and Mine a Landing Site",
+                "ready_to_finish": true,
+                "can_finish_now": true,
+                "checkpoints": [
+                    { "id": "scan_landing_site", "title": "Complete a surface scan", "checked": true, "live_ready": true },
+                    { "id": "mine_carbon_ore", "title": "Mine 1t carbon ore", "checked": true, "live_ready": true }
+                ]
+            }],
+            "available": [],
+            "completed": []
+        }));
+        let ready_txt = render_quest_tracker_lines_full(&ready, None, None, None, None)
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !ready_txt.contains("Prep: +license"),
+            "prep hint must hide once ready to turn in:\n{ready_txt}"
         );
     }
 }
