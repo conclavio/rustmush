@@ -1309,6 +1309,7 @@ namespace TacSim.Core
             if (_isAboardShip || StationWorld == null || string.IsNullOrEmpty(targetRoomEntry))
             {
                 Hud.SetQuestExitBreadcrumb(string.Empty, string.Empty, 0);
+                Hud.QuestJournal?.SetTrackerRouteBreadcrumb(string.Empty, string.Empty, 0);
                 return;
             }
             string currentRoom = !string.IsNullOrEmpty(StationWorld.ActiveRoomEntryId)
@@ -1323,10 +1324,12 @@ namespace TacSim.Core
                     out int hops))
             {
                 Hud.SetQuestExitBreadcrumb(nextRoomName, nextCmd, hops);
+                Hud.QuestJournal?.SetTrackerRouteBreadcrumb(nextRoomName, nextCmd, hops);
             }
             else
             {
                 Hud.SetQuestExitBreadcrumb(string.Empty, string.Empty, 0);
+                Hud.QuestJournal?.SetTrackerRouteBreadcrumb(string.Empty, string.Empty, 0);
             }
         }
 

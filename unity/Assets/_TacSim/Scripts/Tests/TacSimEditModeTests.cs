@@ -11442,5 +11442,102 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestTrackerCard_ShowsTourProgressRouteStepQuickAccept_AndCorridorCaptainMastery()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestTrackerRouteQuickAcceptTestRoot");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                var submitted = new List<string>();
+                hud.QuestJournal.OnCommandRequested += cmd => submitted.Add(cmd);
+
+                // 1. Active guided quest + station route breadcrumb shows TOUR 1/7, Route line, and WALK (3h) quick action
+                var activeJson = JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#10"",
+                    ""room_name"": ""Visiting Berth Gallery"",
+                    ""room_markers"": [],
+                    ""available"": [],
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""First Papers"" }
+                    ],
+                    ""active"": [
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"",
+                            ""title"": ""Stock the Locker and Tanks"",
+                            ""next_step"": ""Buy provisions at the Exchange"",
+                            ""next_room_entry"": ""room.c07_exchange"",
+                            ""checkpoints"": [
+                                { ""id"": ""buy_provisions"", ""title"": ""Buy 10 provisions"", ""checked"": false, ""live_ready"": false }
+                            ]
+                        }
+                    ]
+                }");
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(activeJson));
+                hud.QuestJournal.SetTrackerRouteBreadcrumb("Pressure Lobby", "goto n", 3);
+                Assert.IsTrue(hud.QuestJournal.PinnedCategory.Contains("TOUR 1/7"), hud.QuestJournal.PinnedCategory);
+                Assert.IsTrue(hud.QuestJournal.TrackerDetailSnapshot.Contains("Pressure Lobby (3h)"), hud.QuestJournal.TrackerDetailSnapshot);
+                Assert.AreEqual("WALK (3h)", hud.QuestJournal.TrackerActionLabelSnapshot);
+
+                hud.QuestJournal.TriggerTrackerQuickAction();
+                Assert.Contains("goto n", submitted);
+
+                // 2. Room offer without active quest shows ACCEPT [!] and submits server-signed accept command
+                var offerJson = JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#12"",
+                    ""room_name"": ""Port Watch Arrivals"",
+                    ""room_markers"": [],
+                    ""active"": [],
+                    ""completed"": [],
+                    ""available"": [
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                            ""title"": ""First Papers"",
+                            ""giver_id"": ""#99"",
+                            ""giver_name"": ""Maren Halvorsen"",
+                            ""accept_cmd"": ""+quest/accept #99 tok42""
+                        }
+                    ]
+                }");
+                hud.QuestJournal.SetTrackerRouteBreadcrumb(string.Empty, string.Empty, 0);
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(offerJson));
+                Assert.IsTrue(hud.QuestJournal.PinnedCategory.Contains("TOUR 0/7"), hud.QuestJournal.PinnedCategory);
+                Assert.AreEqual("ACCEPT [!]", hud.QuestJournal.TrackerActionLabelSnapshot);
+                hud.QuestJournal.TriggerTrackerQuickAction();
+                Assert.Contains("+quest/accept #99 tok42", submitted);
+
+                // 3. Completing all 7 guided quests displays emerald CORRIDOR CAPTAIN (7/7) mastery card on HUD tracker
+                var masteredJson = JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#22"",
+                    ""room_name"": ""Service Counter"",
+                    ""room_markers"": [],
+                    ""active"": [],
+                    ""available"": [],
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""S1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""S2"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""S3"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_04_return_haul"", ""title"": ""S4"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"", ""title"": ""S5"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"", ""title"": ""S6"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore"", ""title"": ""S7"" }
+                    ]
+                }");
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(masteredJson));
+                Assert.AreEqual("CORRIDOR CAPTAIN (7/7) [J]", hud.QuestJournal.PinnedCategory);
+                Assert.IsTrue(hud.QuestJournal.TrackerDetailSnapshot.Contains("CORRIDOR CAPTAIN"), hud.QuestJournal.TrackerDetailSnapshot);
+                Assert.AreEqual("LOG [J]", hud.QuestJournal.TrackerActionLabelSnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
