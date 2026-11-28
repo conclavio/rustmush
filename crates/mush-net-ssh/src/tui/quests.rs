@@ -692,8 +692,28 @@ impl QuestsSnapshot {
         tracked_key: Option<&str>,
         docked_port: Option<&str>,
     ) -> Option<&'static str> {
+        self.active_ship_target_compartment_for_location(tracked_key, docked_port, false)
+    }
+
+    /// Docked-port and settled-pad aware ship compartment resolver:
+    /// - Docked at station (`!settled_pad`) with incomplete Step 6 mining -> `"bridge"` (fly to surface site).
+    /// - Settled on a surface pad (or station-docked unset) with incomplete Step 6 mining -> `"bay"`.
+    /// - Step 6 mining complete, not yet docked at turn-in station -> `"bridge"` (lift off & return to Ceres).
+    /// - Docked at turn-in station (`!settled_pad`) with mining done or non-mining quest -> `"airlock"`.
+    #[must_use]
+    pub fn active_ship_target_compartment_for_location(
+        &self,
+        tracked_key: Option<&str>,
+        docked_port: Option<&str>,
+        settled_pad: bool,
+    ) -> Option<&'static str> {
         let mining = self.surface_mining_status(tracked_key);
-        if let Some(docked) = docked_port.filter(|s| !s.is_empty())
+        let docked_station = if settled_pad {
+            None
+        } else {
+            docked_port.filter(|s| !s.is_empty())
+        };
+        if let Some(docked) = docked_station
             && let Some(q) = self.ordered_active(tracked_key).into_iter().next()
         {
             let mining_blocking = mining.as_ref().is_some_and(|m| !m.mine_done);
@@ -705,10 +725,15 @@ impl QuestsSnapshot {
                 return Some("airlock");
             }
         }
-        if let Some(m) = mining
-            && !m.mine_done
-        {
-            return Some("bay");
+        if let Some(m) = mining {
+            if !m.mine_done {
+                return if docked_station.is_some() {
+                    Some("bridge")
+                } else {
+                    Some("bay")
+                };
+            }
+            return Some("bridge");
         }
         if self.active_destination_port(tracked_key).is_some() {
             return Some("bridge");
