@@ -831,6 +831,12 @@ export function computeGuidedTourProgress(
 
 export function extractQuestSuggestedAction(
   quest: ActiveQuestView | null,
+  stowage?: {
+    cargoKg: number;
+    propellantKg: number;
+    provisionsCrewDays: number;
+    cargoLines?: ReadonlyArray<{ good: string; label: string; qty: number }>;
+  } | null,
 ): QuestSuggestedAction | null {
   if (!quest || quest.canFinishNow || quest.canCheckNow || quest.readyToFinish) {
     return null;
@@ -840,6 +846,12 @@ export function extractQuestSuggestedAction(
   const textLow = `${idLow} ${pending?.title ?? ""} ${pending?.instructions ?? ""} ${quest.nextStep}`.toLowerCase();
 
   if (textLow.includes("+coop/refit") || idLow.includes("refit_dray")) {
+    if (stowage) {
+      const refit = evaluateRefitHoldReadiness(stowage);
+      if (refit && !refit.ready) {
+        return { label: "Clear Hold (+market/list)", command: "+market/list" };
+      }
+    }
     return { label: "Refit Dray-P", command: "+coop/refit prospector" };
   }
   if (textLow.includes("+coop/enroll") || idLow.includes("enroll_coop")) {
@@ -853,6 +865,37 @@ export function extractQuestSuggestedAction(
   }
   if (idLow.startsWith("mine_") || textLow.includes("mine go")) {
     return { label: "Mine Ore", command: "+tv/1 mine go" };
+  }
+  const mining = extractActiveSurfaceMiningStatus([quest], quest.key);
+  if (mining?.mineDone) {
+    if (stowage) {
+      const want = normalizeGoodSlug(mining.targetOreSlug);
+      let haveOre = 0;
+      for (const line of stowage.cargoLines ?? []) {
+        if (normalizeGoodSlug(line.good) === want || normalizeGoodSlug(line.label) === want) {
+          haveOre += Math.max(0, Math.floor(line.qty));
+        }
+      }
+      if (haveOre >= 1) {
+        const retDest = extractActiveDestinationPort([quest], quest.key);
+        const portId =
+          retDest?.portId ?? inferStationPortFromRoomEntry(quest.nextRoomEntry) ?? "ceres";
+        const portLabel =
+          retDest?.portLabel ?? (portId === "stickney" ? "Stickney Yards" : "Ceres Freeport");
+        return { label: `Plan ${portLabel}`, command: `+ship/plan ${portId}` };
+      }
+    }
+    return { label: "Recover Rig", command: "+tv/1 recover go" };
+  }
+  if (
+    stowage &&
+    needsOriginPortProcurement([quest], quest.key, {
+      propellantKg: stowage.propellantKg,
+      provisionsCrewDays: stowage.provisionsCrewDays,
+      cargoLines: stowage.cargoLines ?? [],
+    })
+  ) {
+    return { label: "Buy Cargo (+market/list)", command: "+market/list" };
   }
   const dest = extractActiveDestinationPort([quest], quest.key);
   if (dest) {

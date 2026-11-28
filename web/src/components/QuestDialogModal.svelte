@@ -436,7 +436,7 @@
               Verify Objective
             </button>
           {:else}
-            {@const suggested = extractQuestSuggestedAction(selectedActive)}
+            {@const suggested = extractQuestSuggestedAction(selectedActive, liveStowage)}
             {#if suggested}
               <button
                 type="button"
@@ -699,7 +699,7 @@
           {:else}
             {#each orderedActiveLog as item (item.key)}
               {@const activeLogStepNo = guidedStepNum(item.key)}
-              {@const itemSuggested = extractQuestSuggestedAction(item)}
+              {@const itemSuggested = extractQuestSuggestedAction(item, liveStowage)}
               {@const itemHoldSummary = formatQuestHoldReadinessSummary(item, liveStowage)}
               {@const itemDest = extractActiveDestinationPort([item], item.key)}
               {@const itemPreflight = evaluateSailingPreflightReadiness(
