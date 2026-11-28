@@ -13258,5 +13258,56 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ShipMinimapAndOpsDirectory_HighlightQuestTargetCompartmentAndShowBetweenStepsNextGuidedOffer()
+        {
+            var rootGo = new UnityEngine.GameObject("ShipMinimapAndOpsQuestTestRoot");
+            try
+            {
+                var shipGo = new UnityEngine.GameObject("ShipInterior");
+                shipGo.transform.SetParent(rootGo.transform, false);
+                var ship = shipGo.AddComponent<ShipInteriorController>();
+                ship.BuildInterior(new TacSimAssetCatalog(), "tacsim.unit.dray");
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.Minimap.BindWorldSources(null, ship, null, null, null);
+                hud.OpsDirectory.BindSources(null, ship, null, null, null, null, null);
+
+                // Between Steps 3 & 4 aboard ship -> Bridge highlighted on Ship Minimap and Deck Directory,
+                // and Active Ops tab displays Next Guided Offer (Step 4/7 Jonas at Receiving Counter).
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""S1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""S2"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""S3"" }
+                    ],
+                    ""active"": [],
+                    ""available"": []
+                }")));
+
+                hud.Minimap.SetQuestShipCompartment("bridge");
+                hud.Minimap.SyncMinimap(TacSimActiveStage.ShipInteriorWalk, UnityEngine.Vector3.zero, 0f, false, forceRedraw: true);
+                Assert.IsTrue(hud.Minimap.LastShipMinimapHasQuestBeacon);
+                StringAssert.Contains("BRIDGE!", hud.Minimap.HeaderText);
+
+                hud.OpsDirectory.UpdateLiveRoom(new MushRoomView { Id = "#201", Name = "Airlock" }, TacSimActiveStage.ShipInteriorWalk);
+                hud.OpsDirectory.SetOpen(true);
+                Assert.GreaterOrEqual(hud.OpsDirectory.HighlightedQuestDirectoryRowIndex, 0);
+                StringAssert.Contains("[QUEST !]", hud.OpsDirectory.GetDirectoryRowLabel(hud.OpsDirectory.HighlightedQuestDirectoryRowIndex));
+
+                hud.OpsDirectory.SelectTab(TacSim.UI.OpsDirectoryTab.ActiveOps);
+                StringAssert.Contains("NEXT GUIDED STEP", hud.OpsDirectory.OpsSummarySnapshot);
+                StringAssert.Contains("Step 4/7: Return Load", hud.OpsDirectory.OpsSummarySnapshot);
+                StringAssert.Contains("Jonas Achterberg-Nkemelu", hud.OpsDirectory.OpsSummarySnapshot);
+                StringAssert.Contains("Receiving Counter", hud.OpsDirectory.OpsSummarySnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

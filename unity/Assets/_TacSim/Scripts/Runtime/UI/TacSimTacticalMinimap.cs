@@ -52,6 +52,8 @@ namespace TacSim.UI
         public bool LastStationMinimapHasQuestBeacon { get; private set; }
         public int LastStationMinimapQuestFloorDelta { get; private set; }
         public string QuestObjectiveRoomEntry { get; private set; } = string.Empty;
+        public bool LastShipMinimapHasQuestBeacon { get; private set; }
+        public string QuestShipCompartment { get; private set; } = string.Empty;
         public Texture2D MinimapTexture => _mapTex;
         public Color32 SampleMinimapPixelForTests(int x, int y)
         {
@@ -203,9 +205,24 @@ namespace TacSim.UI
             _questCurrentRoomHasOffer = false;
             LastStationMinimapHasQuestBeacon = false;
             LastStationMinimapQuestFloorDelta = 0;
+            QuestShipCompartment = string.Empty;
+            LastShipMinimapHasQuestBeacon = false;
             if (_bodyContainer != null) _bodyContainer.SetActive(true);
             if (_collapseBtnLabel != null) _collapseBtnLabel.text = "—";
             ApplyDockPlacement();
+        }
+
+        /// <summary>
+        /// Highlights the active quest target compartment (`bridge`, `bay`, `hold`, `airlock`)
+        /// on the Ship Interior Deckplan Minimap with a golden outline, beacon, and header tag.
+        /// </summary>
+        public void SetQuestShipCompartment(string compartmentId)
+        {
+            string normalized = compartmentId ?? string.Empty;
+            if (string.Equals(QuestShipCompartment, normalized, StringComparison.OrdinalIgnoreCase))
+                return;
+            QuestShipCompartment = normalized;
+            _nextRedrawAt = 0f;
         }
 
         /// <summary>
@@ -585,10 +602,27 @@ namespace TacSim.UI
         {
             ClearPixels(new Color32(8, 14, 24, 255));
             _shipCompHitRects.Clear();
+            LastShipMinimapHasQuestBeacon = false;
 
             string activeId = _ship != null ? _ship.ActiveCompartmentId : "bridge";
+            string effectiveTarget = QuestShipCompartment ?? string.Empty;
+            if (!string.IsNullOrEmpty(effectiveTarget) &&
+                string.Equals(effectiveTarget, "bay", StringComparison.OrdinalIgnoreCase) &&
+                _ship?.Template != null &&
+                !_ship.Template.Compartments.ContainsKey("bay") &&
+                _ship.Template.Compartments.ContainsKey("hold"))
+            {
+                effectiveTarget = "hold";
+            }
+
             if (_headerText != null)
-                _headerText.text = $"HULL DECKPLAN — {(activeId ?? "ABOARD").ToUpperInvariant()}";
+            {
+                string questTag = !string.IsNullOrEmpty(effectiveTarget) &&
+                                  !string.Equals(effectiveTarget, activeId, StringComparison.OrdinalIgnoreCase)
+                    ? $" [→ {effectiveTarget.ToUpperInvariant()}!]"
+                    : string.Empty;
+                _headerText.text = $"HULL DECKPLAN — {(activeId ?? "ABOARD").ToUpperInvariant()}{questTag}";
+            }
 
             // Clean schematic layout of Dray / Corvette compartments
             var layout = new (string id, Rect r)[]
@@ -603,16 +637,29 @@ namespace TacSim.UI
             };
 
             Vector2 activeCenter = new Vector2(0.5f, 0.5f);
+            Vector2? beaconCenter = null;
             for (int i = 0; i < layout.Length; i++)
             {
                 var item = layout[i];
                 _shipCompHitRects.Add((item.r, item.id));
                 bool isCur = string.Equals(item.id, activeId, StringComparison.OrdinalIgnoreCase);
-                Color32 fill = isCur ? new Color32(28, 92, 118, 255) : new Color32(18, 34, 52, 255);
-                Color32 border = isCur ? new Color32(102, 234, 255, 255) : new Color32(66, 98, 128, 255);
+                bool isQuest = !string.IsNullOrEmpty(effectiveTarget) &&
+                               string.Equals(item.id, effectiveTarget, StringComparison.OrdinalIgnoreCase);
+                Color32 fill = isCur
+                    ? new Color32(28, 92, 118, 255)
+                    : (isQuest ? new Color32(62, 52, 22, 255) : new Color32(18, 34, 52, 255));
+                Color32 border = isQuest
+                    ? new Color32(255, 214, 48, 255)
+                    : (isCur ? new Color32(102, 234, 255, 255) : new Color32(66, 98, 128, 255));
                 FillRectUv(item.r.min, item.r.max, fill);
                 DrawRectOutlineUv(item.r.min, item.r.max, border);
                 if (isCur) activeCenter = item.r.center;
+                if (isQuest) beaconCenter = item.r.center;
+            }
+            if (beaconCenter.HasValue)
+            {
+                DrawQuestBeaconPx(UvToPx(beaconCenter.Value), isTurnIn: false);
+                LastShipMinimapHasQuestBeacon = true;
             }
             DrawHeadingArrowUv(activeCenter, playerYawDeg, new Color32(110, 255, 180, 255));
         }

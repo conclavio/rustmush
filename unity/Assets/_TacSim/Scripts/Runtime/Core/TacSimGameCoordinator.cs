@@ -1320,10 +1320,12 @@ namespace TacSim.Core
                     Hud.QuestJournal == null ||
                     !Hud.QuestJournal.TryGetActiveShipTargetCompartment(dockedPortSlug, out string shipTarget, settledPad: settledPad))
                 {
+                    Hud.Minimap?.SetQuestShipCompartment(string.Empty);
                     Hud.SetQuestExitBreadcrumb(string.Empty, string.Empty, 0);
                     Hud.QuestJournal?.SetTrackerRouteBreadcrumb(string.Empty, string.Empty, 0);
                     return;
                 }
+                Hud.Minimap?.SetQuestShipCompartment(shipTarget);
                 string currentComp = !string.IsNullOrEmpty(ShipInterior.ActiveCompartmentId)
                     ? ShipInterior.ActiveCompartmentId
                     : _serverShipCompartment;
@@ -1345,6 +1347,7 @@ namespace TacSim.Core
                 }
                 return;
             }
+            Hud.Minimap?.SetQuestShipCompartment(string.Empty);
             bool needsShipExpedition = Hud.QuestJournal != null && Hud.QuestJournal.NeedsSurfaceExpeditionBoarding();
             if (StationWorld == null || (string.IsNullOrEmpty(targetRoomEntry) && !needsShipExpedition))
             {

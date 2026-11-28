@@ -573,18 +573,45 @@ namespace TacSim.UI
                 var comps = new List<ShipCompartmentDef>(_ship.Template.Compartments.Values);
                 comps.Sort((a, b) => string.Compare(a.Id, b.Id, StringComparison.OrdinalIgnoreCase));
 
+                string questComp = string.Empty;
+                if (_questJournal != null)
+                {
+                    bool settledPad = _lastRoomView?.TacSim?.SettledPad == true;
+                    string dockedHint = !settledPad
+                        ? (!string.IsNullOrEmpty(_lastRoomView?.TacSim?.Port)
+                            ? _lastRoomView.TacSim.Port
+                            : _trade?.AboardDockedPortHint)
+                        : null;
+                    if (_questJournal.TryGetActiveShipTargetCompartment(dockedHint, out string rawComp, settledPad: settledPad))
+                    {
+                        questComp = !_ship.Template.Compartments.ContainsKey(rawComp) &&
+                                    string.Equals(rawComp, "bay", StringComparison.OrdinalIgnoreCase) &&
+                                    _ship.Template.Compartments.ContainsKey("hold")
+                            ? "hold"
+                            : rawComp;
+                    }
+                }
+
+                HighlightedQuestDirectoryRowIndex = -1;
                 for (int i = 0; i < comps.Count && used < MaxDirectoryRows; i++)
                 {
                     var c = comps[i];
                     bool isHere = string.Equals(c.Id, _ship.ActiveCompartmentId, StringComparison.OrdinalIgnoreCase);
                     int hops = isHere ? 0 : _ship.FindExitPath(_ship.ActiveCompartmentId, c.Id).Count;
+                    bool isQuestComp = !string.IsNullOrEmpty(questComp) &&
+                                       string.Equals(c.Id, questComp, StringComparison.OrdinalIgnoreCase);
+                    int rowIdx = used;
                     var row = _dirPool[used++];
                     row.BoundId = c.Id;
                     row.BoundIsShip = true;
                     row.BoundIsArenaSpot = false;
+                    if (isQuestComp) HighlightedQuestDirectoryRowIndex = rowIdx;
+                    string questBadge = isQuestComp ? " <color=#FFDD44>[QUEST !]</color>" : string.Empty;
                     string tag = isHere ? "<color=#66FFAA>[HERE]</color>" : $"<color=#88CCFF>{hops} hop{(hops == 1 ? "" : "s")}</color>";
-                    row.Label.text = $"[DECK] <b>{MushProtocol.EscapeUnityRichText(string.IsNullOrEmpty(c.Name) ? c.Id.ToUpperInvariant() : c.Name)}</b>   {tag}";
-                    row.Background.color = isHere ? new Color(0.10f, 0.24f, 0.22f, 0.95f) : new Color(0.07f, 0.12f, 0.19f, 0.92f);
+                    row.Label.text = $"[DECK] <b>{MushProtocol.EscapeUnityRichText(string.IsNullOrEmpty(c.Name) ? c.Id.ToUpperInvariant() : c.Name)}</b>{questBadge}   {tag}";
+                    row.Background.color = isQuestComp
+                        ? (isHere ? new Color(0.18f, 0.28f, 0.14f, 0.96f) : new Color(0.24f, 0.19f, 0.07f, 0.96f))
+                        : (isHere ? new Color(0.10f, 0.24f, 0.22f, 0.95f) : new Color(0.07f, 0.12f, 0.19f, 0.92f));
                     if (row.TrailButtonLabel != null) row.TrailButtonLabel.text = "3D TRAIL";
                     if (row.WalkButtonLabel != null) row.WalkButtonLabel.text = "WALK";
                     row.TrailButton.interactable = !isHere && hops > 0;
@@ -825,6 +852,16 @@ namespace TacSim.UI
                         MushProtocol.EscapeUnityRichText(offer.Title),
                         MushProtocol.EscapeUnityRichText(offer.GiverName),
                         _questJournal.CompletedQuestCount);
+                }
+                else if (_questJournal.TryGetNextGuidedOffer(out var nextOffer))
+                {
+                    sb.AppendLine("<color=#FFDD44><b>NEXT GUIDED STEP</b></color>");
+                    sb.AppendFormat("• <color=#FFDD44>[!]</color> <b>Step {0}/7: {1}</b> — visit {2} at <b>{3}</b> ({4})\n\n",
+                        nextOffer.Step,
+                        MushProtocol.EscapeUnityRichText(nextOffer.ShortLabel),
+                        MushProtocol.EscapeUnityRichText(nextOffer.GiverLabel),
+                        MushProtocol.EscapeUnityRichText(nextOffer.GiverRoomName),
+                        MushProtocol.EscapeUnityRichText(nextOffer.LocationLabel));
                 }
             }
 
