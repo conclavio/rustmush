@@ -6,6 +6,7 @@
   // $lib/sheet.ts for the rendering rules (pip-vs-bar threshold, track mark
   // glyphs, map/list dispatch) and web/README.md for the payload contract.
   import type { GameApp } from "$lib/game.svelte";
+  import { GUIDED_TOUR_KEYS } from "$lib/stores/quests.svelte";
   import {
     approvalKind,
     asNumber,
@@ -39,6 +40,25 @@
   const guidedTour = $derived(app.quests?.guidedTourProgress ?? null);
   const guidedRoadmap = $derived(guidedTour ? (app.quests?.guidedTourRoadmap ?? []) : []);
   const nextGuidedOffer = $derived(app.quests?.nextGuidedOffer ?? null);
+  const trackedStepNo = $derived.by(() => {
+    if (!trackedQuest) return 0;
+    const idx = (GUIDED_TOUR_KEYS as readonly string[]).indexOf(trackedQuest.key);
+    return idx >= 0 ? idx + 1 : 0;
+  });
+  const otherReadyHere = $derived(
+    (app.quests?.active ?? []).filter((item) => item.key !== trackedQuest?.key && item.canFinishNow),
+  );
+  const topOffer = $derived.by(() => {
+    const avail = app.quests?.available ?? [];
+    if (avail.length === 0) return null;
+    return (
+      avail.find(
+        (item) =>
+          item.category.toLowerCase() === "guided" ||
+          (GUIDED_TOUR_KEYS as readonly string[]).includes(item.key),
+      ) ?? avail[0]
+    );
+  });
 
   // No poll: since interface cut I1 every command-side sheet write
   // republishes the keyframe to the subject (see web/README.md), so the
@@ -171,11 +191,18 @@
                   >
                     {badge} {step.step}. {step.shortLabel}
                   </button>
+                {:else if step.status === "completed"}
+                  <button
+                    type="button"
+                    class="qsum-step done"
+                    title={`${tip} — click to view in Completed log`}
+                    onclick={() => app.quests?.openLog("completed")}
+                  >
+                    {badge} {step.step}. {step.shortLabel}
+                  </button>
                 {:else}
                   <span
-                    class="qsum-step"
-                    class:done={step.status === "completed"}
-                    class:upcoming={step.status === "upcoming"}
+                    class="qsum-step upcoming"
                     title={tip}
                   >
                     {badge} {step.step}. {step.shortLabel}
@@ -187,6 +214,9 @@
           {#if trackedQuest}
             <div class="qsum-line">
               <strong class="qsum-title">{trackedQuest.title}</strong>
+              {#if trackedStepNo > 0}
+                <span class="qsum-step-badge">Step {trackedStepNo}/7</span>
+              {/if}
               {#if trackedQuest.checkpoints.length > 0}
                 <span class="qsum-prog">({trackedDoneCount}/{trackedQuest.checkpoints.length})</span>
               {/if}
@@ -194,10 +224,67 @@
             {#if trackedQuest.nextStep}
               <p class="qsum-next">{trackedQuest.nextStep}</p>
             {/if}
-          {:else if availableQuestsCount > 0}
-            <p class="qsum-next">
-              {availableQuestsCount} quest offer{availableQuestsCount === 1 ? "" : "s"} available here.
-            </p>
+            {#if trackedQuest.canFinishNow || otherReadyHere.length > 0 || availableQuestsCount > 0}
+              <div class="qsum-actions">
+                {#if trackedQuest.canFinishNow}
+                  <button
+                    type="button"
+                    class="qsum-action-btn ready"
+                    onclick={() => app.quests?.openQuestDialog(trackedQuest.key)}
+                  >
+                    [?] Ready to turn in here
+                  </button>
+                {/if}
+                {#if otherReadyHere.length === 1}
+                  <button
+                    type="button"
+                    class="qsum-action-btn ready"
+                    onclick={() => app.quests?.openQuestDialog(otherReadyHere[0]!.key)}
+                  >
+                    [?] Ready to turn in: {otherReadyHere[0]!.title}
+                  </button>
+                {:else if otherReadyHere.length > 1}
+                  <button
+                    type="button"
+                    class="qsum-action-btn ready"
+                    onclick={() => app.quests?.openLog("active")}
+                  >
+                    [?] {otherReadyHere.length} ready to turn in here
+                  </button>
+                {/if}
+                {#if availableQuestsCount > 0}
+                  <button
+                    type="button"
+                    class="qsum-action-btn offer"
+                    onclick={() =>
+                      availableQuestsCount === 1 && topOffer
+                        ? app.quests?.openQuestDialog(topOffer.key)
+                        : app.quests?.openLog("available")}
+                  >
+                    [!] {availableQuestsCount} quest offer{availableQuestsCount === 1 ? "" : "s"} here
+                  </button>
+                {/if}
+              </div>
+            {/if}
+          {:else if topOffer}
+            <div class="qsum-actions">
+              <button
+                type="button"
+                class="qsum-action-btn offer"
+                onclick={() => app.quests?.openQuestDialog(topOffer.key)}
+              >
+                [!] {topOffer.giverName ? `${topOffer.giverName} offers: ` : ""}{topOffer.title}{availableQuestsCount > 1 ? ` (+${availableQuestsCount - 1} more)` : ""}
+              </button>
+              {#if availableQuestsCount > 1}
+                <button
+                  type="button"
+                  class="qlog-btn"
+                  onclick={() => app.quests?.openLog("available")}
+                >
+                  All Offers ({availableQuestsCount})
+                </button>
+              {/if}
+            </div>
           {:else if nextGuidedOffer}
             <p class="qsum-next">
               <strong>Next Guided ({nextGuidedOffer.step}/7):</strong> {nextGuidedOffer.shortLabel} — speak with <strong>{nextGuidedOffer.giverLabel}</strong> ({nextGuidedOffer.giverRoomName})
@@ -564,6 +651,7 @@
   .qsum-line {
     display: flex;
     align-items: baseline;
+    flex-wrap: wrap;
     gap: 0.4rem;
     font-size: 0.8rem;
   }
@@ -572,10 +660,55 @@
     color: #fde68a;
   }
 
+  .qsum-step-badge {
+    padding: 0.04rem 0.36rem;
+    border-radius: 999px;
+    border: 1px solid rgba(251, 191, 36, 0.55);
+    background: rgba(212, 166, 74, 0.16);
+    color: #fde68a;
+    font-family: var(--font-mono);
+    font-size: 0.66rem;
+    font-weight: 700;
+  }
+
   .qsum-prog {
     color: #93c5fd;
     font-family: var(--font-mono);
     font-size: 0.72rem;
+  }
+
+  .qsum-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    margin-top: 0.3rem;
+  }
+
+  .qsum-action-btn {
+    border: 1px solid #d4a64a;
+    border-radius: 4px;
+    background: rgba(212, 166, 74, 0.18);
+    color: #fef3c7;
+    font: inherit;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0.14rem 0.45rem;
+    cursor: pointer;
+    text-align: left;
+  }
+
+  .qsum-action-btn.ready {
+    border-color: rgba(52, 211, 153, 0.75);
+    background: rgba(16, 185, 129, 0.22);
+    color: #a7f3d0;
+  }
+
+  .qsum-action-btn.ready:hover {
+    background: rgba(16, 185, 129, 0.34);
+  }
+
+  .qsum-action-btn.offer:hover {
+    background: rgba(212, 166, 74, 0.34);
   }
 
   .qsum-next,
