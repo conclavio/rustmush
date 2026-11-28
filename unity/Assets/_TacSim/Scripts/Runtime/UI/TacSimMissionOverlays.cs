@@ -5,6 +5,7 @@ using TacSim.Arena;
 using TacSim.Net;
 using TacSim.Space;
 using TacSim.Surface;
+using TacSim.World;
 using UnityEngine;
 using UnityEngine.UI;
 
@@ -33,23 +34,56 @@ namespace TacSim.UI
         private OocArenaController _arena;
         private SpaceFlightController _space;
         private TacSimQuestJournal _questJournal;
+        private TacSimTradeAndShipState _tradeState;
         private bool _seatedAtHelm;
 
         public bool HasSurfaceQuestChecklist { get; private set; }
         public string SurfaceReadingsTextForTests => _surfaceReadingsText != null ? _surfaceReadingsText.text : string.Empty;
+        public bool IsOrbitalQuestStripVisible => _orbitalQuestStrip != null && _orbitalQuestStrip.activeSelf;
+        public string OrbitalQuestBannerSnapshot => _orbitalQuestText != null ? _orbitalQuestText.text : string.Empty;
+        public string OrbitalQuestButtonLabel => _orbitalQuestBtnLbl != null ? _orbitalQuestBtnLbl.text : string.Empty;
+
+        public bool TriggerOrbitalQuestActionForTests()
+        {
+            if (!IsOrbitalQuestStripVisible) return false;
+            return TriggerOrbitalQuestAction();
+        }
 
         public void BindQuestJournal(TacSimQuestJournal journal)
         {
             if (_questJournal != null)
+            {
                 _questJournal.OnQuestsPanelUpdated -= RefreshSurfaceHud;
+                _questJournal.OnQuestsPanelUpdated -= RefreshOrbitalQuestStrip;
+            }
             _questJournal = journal;
             if (_questJournal != null)
+            {
                 _questJournal.OnQuestsPanelUpdated += RefreshSurfaceHud;
+                _questJournal.OnQuestsPanelUpdated += RefreshOrbitalQuestStrip;
+            }
             RefreshSurfaceHud();
+            RefreshOrbitalQuestStrip();
+        }
+
+        public void BindTradeState(TacSimTradeAndShipState trade)
+        {
+            if (_tradeState != null)
+                _tradeState.OnStateChanged -= RefreshOrbitalQuestStrip;
+            _tradeState = trade;
+            if (_tradeState != null)
+                _tradeState.OnStateChanged += RefreshOrbitalQuestStrip;
+            RefreshOrbitalQuestStrip();
         }
 
         // Slice 2: Orbital Ops Bar (Mining + Space Tactical) & Doc 49 (`CC.9`) Fire-Control Card
         private GameObject _orbitalOpsBar;
+        private GameObject _orbitalQuestStrip;
+        private Text _orbitalQuestText;
+        private Button _orbitalQuestBtn;
+        private Text _orbitalQuestBtnLbl;
+        private string _orbitalQuestPlanPort = string.Empty;
+        private bool _orbitalQuestOpenGround;
         private Text _orbitalTargetLabel;
         private GameObject _spaceFireCard;
         private Text _spaceLockSummaryText;
@@ -425,11 +459,18 @@ namespace TacSim.UI
             if (_surface != null) _surface.OnSurfaceTelemetryChanged -= RefreshSurfaceHud;
             if (_arena != null) _arena.OnArenaStateUpdated -= RefreshArenaHud;
             if (_space != null) _space.OnSpaceTelemetryChanged -= RefreshSpaceFireCard;
-            if (_questJournal != null) _questJournal.OnQuestsPanelUpdated -= RefreshSurfaceHud;
+            if (_questJournal != null)
+            {
+                _questJournal.OnQuestsPanelUpdated -= RefreshSurfaceHud;
+                _questJournal.OnQuestsPanelUpdated -= RefreshOrbitalQuestStrip;
+            }
+            if (_tradeState != null)
+                _tradeState.OnStateChanged -= RefreshOrbitalQuestStrip;
             _surface = null;
             _arena = null;
             _space = null;
             _questJournal = null;
+            _tradeState = null;
             if (_arenaArmorDollTex != null)
             {
                 if (Application.isPlaying) Destroy(_arenaArmorDollTex);
@@ -453,7 +494,10 @@ namespace TacSim.UI
             _lastTargetDollSignature = string.Empty;
             ActiveArmorDollUnitType = string.Empty;
             _dismissedDebriefMatchId = 0;
+            _orbitalQuestPlanPort = string.Empty;
+            _orbitalQuestOpenGround = false;
             if (_orbitalOpsBar != null) _orbitalOpsBar.SetActive(false);
+            if (_orbitalQuestStrip != null) _orbitalQuestStrip.SetActive(false);
             if (_spaceFireCard != null) _spaceFireCard.SetActive(false);
             if (_surfaceHudRoot != null) _surfaceHudRoot.SetActive(false);
             if (_arenaLobbyModal != null) _arenaLobbyModal.SetActive(false);
@@ -562,6 +606,7 @@ namespace TacSim.UI
                             (_arena == null || !_arena.IsArenaActive);
             if (_orbitalOpsBar != null)
                 _orbitalOpsBar.SetActive(showHelm);
+            RefreshOrbitalQuestStrip();
             RefreshSpaceFireCard();
         }
 
@@ -631,7 +676,102 @@ namespace TacSim.UI
             CreateBtn(rowTac.transform, "PDC AUTO", new Color(0.22f, 0.34f, 0.42f), () => OnCommandRequested?.Invoke("+tac/pdc auto"));
             CreateBtn(rowTac.transform, "CUSTOMS SUBMIT", new Color(0.20f, 0.42f, 0.36f), () => OnCommandRequested?.Invoke("+helm/submit"));
 
+            // Compact quest navigation & Step 6 surface-mining strip docked right above Orbital Ops Bar
+            _orbitalQuestStrip = CreatePanel(
+                _orbitalOpsBar.transform,
+                "OrbitalQuestStrip",
+                new Vector2(0f, 1f),
+                new Vector2(1f, 1f),
+                new Vector2(0f, 4f),
+                new Vector2(0f, 32f),
+                new Color(0.08f, 0.11f, 0.17f, 0.94f));
+            CreatePanel(
+                _orbitalQuestStrip.transform,
+                "QuestAccent",
+                new Vector2(0f, 0f),
+                new Vector2(0f, 1f),
+                Vector2.zero,
+                new Vector2(3f, 0f),
+                new Color(1.0f, 0.80f, 0.28f, 0.96f));
+            _orbitalQuestText = CreateTxt(
+                _orbitalQuestStrip.transform,
+                string.Empty,
+                11,
+                FontStyle.Bold,
+                TextAnchor.MiddleLeft,
+                new Color(1.0f, 0.88f, 0.52f));
+            _orbitalQuestText.supportRichText = false;
+            SetRect(_orbitalQuestText.rectTransform, Vector2.zero, Vector2.one, new Vector2(10f, 2f), new Vector2(-190f, -2f));
+            _orbitalQuestBtn = CreateBtn(
+                _orbitalQuestStrip.transform,
+                string.Empty,
+                new Color(0.56f, 0.40f, 0.10f),
+                () => TriggerOrbitalQuestAction());
+            _orbitalQuestBtnLbl = _orbitalQuestBtn.GetComponentInChildren<Text>();
+            if (_orbitalQuestBtnLbl != null) _orbitalQuestBtnLbl.fontSize = 11;
+            SetRect(_orbitalQuestBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-184f, 3f), new Vector2(-6f, -3f));
+            _orbitalQuestStrip.SetActive(false);
+
             _orbitalOpsBar.SetActive(false);
+        }
+
+        private void RefreshOrbitalQuestStrip()
+        {
+            if (_orbitalQuestStrip == null) return;
+            string curPort = !string.IsNullOrEmpty(_tradeState?.ActiveVenue)
+                ? _tradeState.ActiveVenue
+                : _tradeState?.AboardDockedPortHint;
+            QuestDestinationHint hint = default;
+            bool hasDest = _questJournal != null &&
+                (_questJournal.TryGetActiveDestinationPort(out hint) ||
+                 _questJournal.TryGetNextGuidedOfferDestination(curPort, out hint));
+            QuestSurfaceMiningStatus qm = default;
+            bool hasMining = !hasDest &&
+                _questJournal != null &&
+                _questJournal.TryGetActiveSurfaceMiningStatus(out qm) &&
+                !qm.MineDone;
+
+            if (hasDest)
+            {
+                _orbitalQuestPlanPort = hint.PortId;
+                _orbitalQuestOpenGround = false;
+                if (_orbitalQuestText != null)
+                    _orbitalQuestText.text = $"[QUEST] Dest: {hint.PortLabel.ToUpperInvariant()} — {hint.QuestTitle}";
+                if (_orbitalQuestBtnLbl != null)
+                    _orbitalQuestBtnLbl.text = $"PLAN: {hint.PortId.ToUpperInvariant()}";
+                _orbitalQuestStrip.SetActive(true);
+            }
+            else if (hasMining)
+            {
+                _orbitalQuestPlanPort = string.Empty;
+                _orbitalQuestOpenGround = true;
+                if (_orbitalQuestText != null)
+                    _orbitalQuestText.text = $"[QUEST] Surface Mining: {qm.TargetOreSlug} — {qm.QuestTitle}";
+                if (_orbitalQuestBtnLbl != null)
+                    _orbitalQuestBtnLbl.text = $"GROUND [G]: {qm.RecommendedFamily.ToUpperInvariant()}";
+                _orbitalQuestStrip.SetActive(true);
+            }
+            else
+            {
+                _orbitalQuestPlanPort = string.Empty;
+                _orbitalQuestOpenGround = false;
+                _orbitalQuestStrip.SetActive(false);
+            }
+        }
+
+        private bool TriggerOrbitalQuestAction()
+        {
+            if (_orbitalQuestOpenGround)
+            {
+                OnOpenGroundChartRequested?.Invoke();
+                return true;
+            }
+            if (!string.IsNullOrEmpty(_orbitalQuestPlanPort))
+            {
+                OnCommandRequested?.Invoke($"+ship/plan {_orbitalQuestPlanPort}");
+                return true;
+            }
+            return false;
         }
 
         private void BuildSpaceFireControlCard(Transform parent)
