@@ -263,6 +263,7 @@ namespace TacSim.Core
             {
                 Hud.CommandPalette.BindWorldSources(StationWorld, ShipInterior, ArenaStage);
                 Hud.CommandPalette.BindQuestJournal(Hud.QuestJournal);
+                Hud.CommandPalette.BindTradeState(TradeState);
             }
 
             if (_ws == null)

@@ -14550,5 +14550,124 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void CommandPalette_SurfacesSecondaryReadyTurnInQuickAcceptAndResolvesLocalQuestTrails()
+        {
+            var rootGo = new UnityEngine.GameObject("CommandPaletteQuestParityTest");
+            try
+            {
+                var coord = rootGo.AddComponent<TacSimGameCoordinator>();
+                var hudGo = new UnityEngine.GameObject("Hud");
+                hudGo.transform.SetParent(rootGo.transform, false);
+                coord.Hud = hudGo.AddComponent<TacSim.UI.TacSimHudController>();
+                coord.EnsureSubsystems();
+
+                var dispatched = new List<string>();
+                string plottedRoom = null;
+                coord.Hud.CommandPalette.OnCommandRequested += c => dispatched.Add(c);
+                coord.Hud.CommandPalette.OnPlotStationRoomRequested += r => plottedRoom = r;
+
+                var flags = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+                var onRoom = typeof(TacSimGameCoordinator).GetMethod("HandleServerRoomView", flags);
+                Assert.IsNotNull(onRoom);
+                onRoom.Invoke(coord, new object[]
+                {
+                    MushProtocol.ParseRoomView(JsonNode.Parse(@"{
+                        ""room"": { ""id"": ""#15"", ""name"": ""Registry & Co-op Desk"" },
+                        ""ambient"": { ""atlas"": { ""pack"": ""neighborhood.ceres_freeport"", ""entry"": ""room.c05_registry"" } }
+                    }"))
+                });
+
+                // Stand on Ceres with 0/5t metals loaded, Step 3 tracked + a secondary ready turn-in + a room offer
+                coord.TradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""ceres"",
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 0, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 10000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": []
+                        }
+                    }
+                }"));
+                coord.Hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""available"": [
+                        { ""key"": ""q.offer"", ""title"": ""Room Side Offer"", ""giver_id"": ""#50"", ""giver_name"": ""Ilse Oduya-Brandt"", ""accept_cmd"": ""+quest/accept #50=tok3"" }
+                    ],
+                    ""active"": [
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"",
+                            ""title"": ""Metals Down the Corridor"",
+                            ""next_room_entry"": ""room.p07_receiving"",
+                            ""checkpoints"": [{
+                                ""id"": ""deliver_metals"",
+                                ""title"": ""Buy 5 tonnes of metals at Ceres and deliver to Stickney"",
+                                ""instructions"": ""Buy 5 metals and +market/sell at Stickney."",
+                                ""room_entry"": ""room.p07_receiving"",
+                                ""checked"": false, ""live_ready"": false
+                            }]
+                        },
+                        {
+                            ""key"": ""q.second_ready"",
+                            ""title"": ""Secondary Ready Turn-In"",
+                            ""turn_in_name"": ""Ilse Oduya-Brandt"",
+                            ""ready_to_finish"": true,
+                            ""can_finish_now"": true,
+                            ""finish_cmd"": ""+quest/finish #50=tok2"",
+                            ""checkpoints"": []
+                        }
+                    ],
+                    ""completed"": []
+                }")));
+
+                // 1. Secondary non-tracked ready turn-in is immediately executable via "finish now"
+                coord.Hud.CommandPalette.SetOpen(true);
+                coord.Hud.CommandPalette.SetQuery("finish now secondary");
+                StringAssert.Contains("Finish Now: Secondary Ready Turn-In", coord.Hud.CommandPalette.SelectedEntryTitle);
+                Assert.IsTrue(coord.Hud.CommandPalette.ExecuteSelected());
+                CollectionAssert.Contains(dispatched, "+quest/finish #50=tok2");
+
+                // 2. Room offer is immediately executable via "accept now"
+                coord.Hud.CommandPalette.SetOpen(true);
+                coord.Hud.CommandPalette.SetQuery("accept now room side");
+                StringAssert.Contains("Accept Now: Room Side Offer", coord.Hud.CommandPalette.SelectedEntryTitle);
+                Assert.IsTrue(coord.Hud.CommandPalette.ExecuteSelected());
+                CollectionAssert.Contains(dispatched, "+quest/accept #50=tok3");
+
+                // 3. Off-station Step 3 QUEST TRAIL resolves to local Exchange Hall while procuring
+                coord.Hud.CommandPalette.SetOpen(true);
+                coord.Hud.CommandPalette.SetQuery("quest trail metals");
+                StringAssert.Contains("Exchange Hall", coord.Hud.CommandPalette.SelectedEntryTitle);
+                Assert.IsTrue(coord.Hud.CommandPalette.ExecuteSelected());
+                Assert.AreEqual("room.c07_exchange", plottedRoom);
+
+                // 4. Once 5/5t metals are loaded -> QUEST TRAIL pivots to Visiting Berth Gallery (Board Ship)
+                coord.TradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true, ""venue"": ""ceres"",
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 5000, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 10000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:metals"", ""label"": ""Metals"", ""qty"": 5 }]
+                        }
+                    }
+                }"));
+                plottedRoom = null;
+                coord.Hud.CommandPalette.SetOpen(true);
+                coord.Hud.CommandPalette.SetQuery("quest trail metals");
+                StringAssert.Contains("Wayfinder to Board Ship", coord.Hud.CommandPalette.SelectedEntryTitle);
+                Assert.IsTrue(coord.Hud.CommandPalette.ExecuteSelected());
+                Assert.AreEqual("room.c01_berth_gallery", plottedRoom);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
