@@ -16032,5 +16032,95 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ExchangeBanner_ShowsCrossPortHaulGuardMissingStoresAndSailHandoff()
+        {
+            var rootGo = new UnityEngine.GameObject("ExchangeCrossPortHaulGuardTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                var tradeState = new TacSimTradeAndShipState();
+                hud.BindTradeState(tradeState);
+
+                // Docked at Ceres with 2t mined carbon_ore and 0d stores on Step 7 (sell at Stickney)
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 2000,
+                            ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 12000,
+                            ""tank_limit_kg"": 80000,
+                            ""stores_days"": 0,
+                            ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:carbon_ore"", ""label"": ""Carbon Ore"", ""qty"": 2 }]
+                        }
+                    }
+                }"));
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore"",
+                        ""title"": ""Deliver Your Mined Ore to Market"",
+                        ""next_room_entry"": ""room.p11_service"",
+                        ""checkpoints"": [{
+                            ""id"": ""sell_carbon_ore"",
+                            ""title"": ""Sell at least 1 tonne of carbon ore at Stickney Yards"",
+                            ""instructions"": ""Fly to Stickney Yards (+ship/plan stickney) and +market/sell carbon_ore."",
+                            ""checked"": false,
+                            ""live_ready"": false
+                        }]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+
+                hud.OpenTradeAndSailingModal("PORT EXCHANGE", openSailingTab: false);
+                hud.RefreshTradeTerminal();
+
+                Assert.IsTrue(hud.IsExchangeQuestBannerVisible);
+                Assert.IsTrue(hud.IsExchangeSailJumpVisible, "Origin port with loaded Step 7 ore must show SAIL jump button");
+                Assert.AreEqual("SAIL: STICKNEY", hud.ExchangeSailJumpLabelSnapshot);
+                StringAssert.Contains("Haul → Stickney Yards", hud.ExchangeQuestBannerText);
+                StringAssert.Contains("do not sell here", hud.ExchangeQuestBannerText);
+                StringAssert.Contains("Top up Stores first", hud.ExchangeQuestBannerText);
+
+                Assert.IsTrue(hud.JumpFromExchangeToQuestSailing());
+                Assert.AreEqual(TacSim.UI.TradeTerminalTab.Sailing, hud.ActiveTradeTab);
+                Assert.AreEqual("stickney", tradeState.SelectedDestinationPort);
+
+                // Once docked at Stickney Yards, haul guard clears
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""stickney"",
+                    ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 2000,
+                            ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 12000,
+                            ""tank_limit_kg"": 80000,
+                            ""stores_days"": 15,
+                            ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:carbon_ore"", ""label"": ""Carbon Ore"", ""qty"": 2 }]
+                        }
+                    }
+                }"));
+                hud.SwitchTradeTerminalTab(TacSim.UI.TradeTerminalTab.Exchange, autoQuery: false);
+                hud.RefreshTradeTerminal();
+                Assert.IsFalse(hud.IsExchangeSailJumpVisible, "Haul guard must clear once docked at Stickney Yards");
+                Assert.IsFalse(hud.ExchangeQuestBannerText.Contains("do not sell here"));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
