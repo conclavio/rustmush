@@ -2449,7 +2449,15 @@ namespace TacSim.UI
             if (tab == TradeTerminalTab.History || tab == TradeTerminalTab.Jobs || tab == TradeTerminalTab.Industry)
                 EconomyPanels?.IngestTabEchoLines(tab, _tabEchoLines[tab]);
             else if (tab == TradeTerminalTab.Sailing)
+            {
+                if (TryResolveSailingQuestDestination(out var sailingHint))
+                {
+                    int qIdx = CorridorDestinationIndex(sailingHint.PortId);
+                    if (qIdx >= 0)
+                        SelectDestinationPort(qIdx, CorridorDestinations[qIdx].code);
+                }
                 RefreshSailingOutputBox();
+            }
             RefreshTradeTerminal();
         }
 
@@ -2508,9 +2516,23 @@ namespace TacSim.UI
             }
         }
 
+        private bool TryResolveSailingQuestDestination(out QuestDestinationHint hint)
+        {
+            hint = default;
+            if (QuestJournal == null) return false;
+            if (QuestJournal.TryGetActiveDestinationPort(out hint))
+                return true;
+            string curPort = !string.IsNullOrEmpty(_boundTradeState?.ActiveVenue)
+                ? _boundTradeState.ActiveVenue
+                : (!string.IsNullOrEmpty(_boundTradeState?.AboardDockedPortHint)
+                    ? _boundTradeState.AboardDockedPortHint
+                    : SolarMap?.CurrentFrame?.Vantage?.Port);
+            return QuestJournal.TryGetNextGuidedOfferDestination(curPort, out hint);
+        }
+
         public bool ApplyQuestDestinationPort()
         {
-            if (QuestJournal == null || !QuestJournal.TryGetActiveDestinationPort(out var hint))
+            if (!TryResolveSailingQuestDestination(out var hint))
                 return false;
             int idx = CorridorDestinationIndex(hint.PortId);
             if (idx < 0) return false;
@@ -2527,7 +2549,7 @@ namespace TacSim.UI
         private void RefreshSailingQuestGuidance()
         {
             QuestDestinationHint hint = default;
-            bool hasDest = QuestJournal != null && QuestJournal.TryGetActiveDestinationPort(out hint);
+            bool hasDest = TryResolveSailingQuestDestination(out hint);
             HighlightedQuestPortIndex = hasDest ? CorridorDestinationIndex(hint.PortId) : -1;
 
             QuestSailingPreflightReadiness preflight = default;

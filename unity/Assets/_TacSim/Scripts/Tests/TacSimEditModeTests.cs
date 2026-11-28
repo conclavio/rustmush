@@ -12877,5 +12877,73 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void SailingPlanTab_AutoSelectsBetweenStepsNextGuidedOfferPortAndShowsPreflightUntilAtPort()
+        {
+            var rootGo = new UnityEngine.GameObject("SailingNextGuidedTestRoot");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                var trade = new TacSim.World.TacSimTradeAndShipState();
+                hud.BindTradeState(trade);
+
+                trade.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 0, ""cargo_limit_kg"": 100000,
+                            ""cargo_l"": 0, ""cargo_limit_l"": 120000,
+                            ""tank_kg"": 12000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": []
+                        }
+                    }
+                }"));
+                trade.SelectedDestinationPort = "ceres";
+
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""S1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""S2"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""S3"" }
+                    ],
+                    ""active"": [],
+                    ""available"": []
+                }")));
+
+                hud.OpenTradeAndSailingModal("SAILING PLAN", openSailingTab: true);
+                Assert.AreEqual("stickney", trade.SelectedDestinationPort);
+                Assert.IsTrue(hud.IsSailingQuestBannerVisible);
+                StringAssert.Contains("STICKNEY YARDS", hud.SailingQuestBannerText);
+                StringAssert.Contains("[PRE-FLIGHT OK]", hud.SailingPreflightSummarySnapshot);
+
+                // Once already at Stickney Yards -> off-station Next Guided sailing banner clears
+                trade.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""stickney"",
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 0, ""cargo_limit_kg"": 100000,
+                            ""cargo_l"": 0, ""cargo_limit_l"": 120000,
+                            ""tank_kg"": 12000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": []
+                        }
+                    }
+                }"));
+                hud.RefreshTradeTerminal();
+                Assert.IsFalse(hud.IsSailingQuestBannerVisible);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
