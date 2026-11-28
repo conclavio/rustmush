@@ -31,6 +31,8 @@ namespace TacSim.UI
         public bool LastOrreryHasQuestDestinationRing { get; private set; }
         public string QuestDestinationPortId { get; private set; } = string.Empty;
         public string QuestDestinationPortLabel { get; private set; } = string.Empty;
+        public bool GroundChartQuestHighlighted { get; private set; }
+        public string GroundChartButtonLabel => _groundBtnLbl != null ? _groundBtnLbl.text : string.Empty;
 
         private const int TexSize = 512;
 
@@ -50,6 +52,9 @@ namespace TacSim.UI
         private Image _tiltBtnImg;
         private Image _lagBtnImg;
         private Image _routesBtnImg;
+        private Button _groundBtn;
+        private Image _groundBtnImg;
+        private Text _groundBtnLbl;
         private Button _questFocusBtn;
         private Text _questFocusBtnLbl;
         private Button _plotBtn;
@@ -131,7 +136,9 @@ namespace TacSim.UI
             CreateButton(toolbar.transform, "ZOOM -", new Color(0.14f, 0.26f, 0.38f), () => AdjustZoom(-0.25f));
             CreateButton(toolbar.transform, "ZOOM +", new Color(0.14f, 0.26f, 0.38f), () => AdjustZoom(+0.25f));
             CreateButton(toolbar.transform, "RESET", new Color(0.22f, 0.26f, 0.34f), ResetView);
-            CreateButton(toolbar.transform, "GROUND [G]", new Color(0.14f, 0.44f, 0.38f), () => OnOpenGroundChartRequested?.Invoke());
+            _groundBtn = CreateButton(toolbar.transform, "GROUND [G]", new Color(0.14f, 0.44f, 0.38f), () => OnOpenGroundChartRequested?.Invoke());
+            _groundBtnImg = _groundBtn.GetComponent<Image>();
+            _groundBtnLbl = _groundBtn.GetComponentInChildren<Text>();
             _questFocusBtn = CreateButton(toolbar.transform, "QUEST", new Color(0.56f, 0.40f, 0.10f), () => FocusQuestDestinationPort());
             _questFocusBtnLbl = _questFocusBtn.GetComponentInChildren<Text>();
             _questFocusBtn.gameObject.SetActive(false);
@@ -242,9 +249,21 @@ namespace TacSim.UI
             RefreshQuestGuidance();
         }
 
+        private bool TryResolveQuestDestinationHint(out QuestDestinationHint hint)
+        {
+            hint = default;
+            if (_questJournal == null) return false;
+            if (_questJournal.TryGetActiveDestinationPort(out hint))
+                return true;
+            string curVantage = !string.IsNullOrEmpty(CurrentFrame?.Vantage?.Port)
+                ? CurrentFrame.Vantage.Port
+                : CurrentFrame?.Vantage?.Body;
+            return _questJournal.TryGetNextGuidedOfferDestination(curVantage, out hint);
+        }
+
         public void RefreshQuestGuidance()
         {
-            if (_questJournal != null && _questJournal.TryGetActiveDestinationPort(out var hint))
+            if (TryResolveQuestDestinationHint(out var hint))
             {
                 QuestDestinationPortId = hint.PortId;
                 QuestDestinationPortLabel = hint.PortLabel;
@@ -257,6 +276,15 @@ namespace TacSim.UI
                 QuestDestinationPortLabel = string.Empty;
                 if (_questFocusBtn != null) _questFocusBtn.gameObject.SetActive(false);
             }
+
+            QuestSurfaceMiningStatus qm = default;
+            bool hasMining = _questJournal != null && _questJournal.TryGetActiveSurfaceMiningStatus(out qm) && !qm.MineDone;
+            GroundChartQuestHighlighted = hasMining;
+            if (_groundBtnImg != null)
+                _groundBtnImg.color = hasMining ? new Color(0.62f, 0.44f, 0.12f) : new Color(0.14f, 0.44f, 0.38f);
+            if (_groundBtnLbl != null)
+                _groundBtnLbl.text = hasMining ? $"GROUND [G]: {qm.RecommendedFamily.ToUpperInvariant()}" : "GROUND [G]";
+
             RebuildSidebarList();
             _dirty = true;
             RedrawOrreryTexture();
@@ -264,7 +292,7 @@ namespace TacSim.UI
 
         public bool FocusQuestDestinationPort()
         {
-            if (_questJournal == null || !_questJournal.TryGetActiveDestinationPort(out var hint))
+            if (!TryResolveQuestDestinationHint(out var hint))
                 return false;
             FocusPort(hint.PortId);
             return true;
@@ -278,6 +306,9 @@ namespace TacSim.UI
             LastOrreryHasQuestDestinationRing = false;
             QuestDestinationPortId = string.Empty;
             QuestDestinationPortLabel = string.Empty;
+            GroundChartQuestHighlighted = false;
+            if (_groundBtnImg != null) _groundBtnImg.color = new Color(0.14f, 0.44f, 0.38f);
+            if (_groundBtnLbl != null) _groundBtnLbl.text = "GROUND [G]";
             if (_questFocusBtn != null) _questFocusBtn.gameObject.SetActive(false);
             if (_overlay != null) _overlay.SetActive(false);
             if (_headingText != null) _headingText.text = "SOLAR SYSTEM HOLO-ORRERY  //  WAITING FOR LIVE SKY CHART...";
@@ -334,10 +365,8 @@ namespace TacSim.UI
                     frame.ScaleR0Au,
                     frame.ScaleAuMax);
 
-            RebuildSidebarList();
             RefreshSelectedDossier();
-            _dirty = true;
-            RedrawOrreryTexture();
+            RefreshQuestGuidance();
         }
 
         public void SelectBody(string bodyId, string explicitPortId = null)
