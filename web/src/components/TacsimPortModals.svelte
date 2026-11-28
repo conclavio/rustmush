@@ -12,6 +12,7 @@
     extractSurfaceMiningPrepActions,
     matchesQuestTradeRow,
     normalizeGoodSlug,
+    resolveNextGuidedOfferDestination,
   } from "$lib/stores/quests.svelte";
   import {
     formatEscortPostCommand,
@@ -52,6 +53,8 @@
   let workOrderIdDraft = $state<string>("1");
   let debtIdDraft = $state<string>("1");
 
+  let lastAutoSailingPort = "";
+
   $effect(() => {
     if (app.tacsim.activeModal !== null) {
       modalEl?.focus();
@@ -62,6 +65,16 @@
       npcSayDraft = "";
     } else if (app.tacsim.activeModal === "trade") {
       tradeSubView = "book";
+    } else if (
+      app.tacsim.activeModal === "sailing" &&
+      questDestPort &&
+      lastAutoSailingPort !== questDestPort.portId
+    ) {
+      lastAutoSailingPort = questDestPort.portId;
+      app.tacsim.selectedDestination = questDestPort.portId;
+    }
+    if (app.tacsim.activeModal !== "sailing") {
+      lastAutoSailingPort = "";
     }
   });
 
@@ -88,7 +101,13 @@
   const trade = $derived(app.tacsim.trade);
   const st = $derived(trade.stowage);
   const questTradeNeed = $derived(app.quests.activeTradeNeed);
-  const questDestPort = $derived(app.quests.activeDestinationPort);
+  const questDestPort = $derived(
+    app.quests.activeDestinationPort ??
+      resolveNextGuidedOfferDestination(
+        app.quests.nextGuidedOffer,
+        trade.venueId || trade.venueLabel || trade.portName || app.tacsim.ambient?.port || trade.hullPort || null,
+      ),
+  );
   const questMining = $derived(app.quests?.surfaceMiningStatus ?? null);
   const questMiningPrep = $derived(extractSurfaceMiningPrepActions(questMining));
   const questRigNextCmd = $derived.by((): { label: string; command: string } | null => {

@@ -198,4 +198,49 @@ describe("TacsimPortModals Dray-P Vehicle Bay and Co-op Refit quest guidance", (
     expect(readyStrip.textContent).toContain("✓ Stores 10 d");
     expect(readyStrip.textContent).toContain("✓ metals 5/5");
   });
+
+  it("auto-selects between-steps Next Guided Offer port in Sailing Plan when off-station and hides once at that port", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      completed: [
+        { key: GUIDED_TOUR_KEYS[0], title: "S1" },
+        { key: GUIDED_TOUR_KEYS[1], title: "S2" },
+        { key: GUIDED_TOUR_KEYS[2], title: "S3" },
+      ],
+      active: [],
+      available: [],
+    });
+
+    // At Ceres between Steps 3 & 4 -> auto-selects Stickney Yards, renders banner + pre-flight check
+    const offStationApp = makeApp(quests, "sailing", {
+      cargoKg: 0,
+      cargoMaxKg: 100_000,
+      cargoL: 0,
+      cargoMaxL: 120_000,
+      propellantKg: 12_000,
+      propellantMaxKg: 80_000,
+      provisionsCrewDays: 8,
+      provisionsMaxCrewDays: 120,
+      cargoLines: [],
+    });
+    offStationApp.tacsim.selectedDestination = "ceres";
+    const onCmd = vi.fn();
+    const first = render(TacsimPortModals, { props: { app: offStationApp, onCmd } });
+
+    const banner = await screen.findByRole("status", { name: "active quest destination" });
+    expect(banner.textContent).toContain("DESTINATION: STICKNEY YARDS");
+    expect(banner.textContent).toContain("Next Guided (4/7): Return Load");
+    expect(offStationApp.tacsim.selectedDestination).toBe("stickney");
+    expect(screen.getByLabelText("sailing pre-flight readiness").textContent).toContain("[PRE-FLIGHT OK]");
+    await fireEvent.click(screen.getByRole("button", { name: /File Sailing Plan/i }));
+    expect(onCmd).toHaveBeenCalledWith("+ship/plan stickney");
+    first.unmount();
+
+    // Already at Stickney Yards -> clears off-station Next Guided banner
+    const atPortApp = makeApp(quests, "sailing");
+    (atPortApp.tacsim.trade as unknown as { venueLabel: string }).venueLabel = "Stickney Yards";
+    render(TacsimPortModals, { props: { app: atPortApp, onCmd: vi.fn() } });
+    expect(screen.queryByRole("status", { name: "active quest destination" })).toBeNull();
+  });
 });
