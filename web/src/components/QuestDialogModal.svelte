@@ -3,6 +3,7 @@
   // Every button dispatches a server-signed `+quest/...` command via `onCmd`.
   import type { GameApp } from "$lib/game.svelte";
   import {
+    GUIDED_TOUR_KEYS,
     evaluateQuestStowageReadiness,
     evaluateRefitHoldReadiness,
     extractActiveSurfaceMiningStatus,
@@ -12,6 +13,11 @@
     type ActiveQuestView,
     type AvailableQuestView,
   } from "$lib/stores/quests.svelte";
+
+  function guidedStepNum(key: string): number | null {
+    const idx = (GUIDED_TOUR_KEYS as readonly string[]).indexOf(key);
+    return idx >= 0 ? idx + 1 : null;
+  }
 
   let { app, onCmd }: { app: GameApp; onCmd: (cmd: string) => void } = $props();
 
@@ -305,6 +311,9 @@
             <span class="reward-label">REWARD</span>
             <span>{selectedActive.rewardSummary}</span>
           </div>
+          {#if selectedActive.allowRestart}
+            <p class="footnote">Optional · Restartable: you can abandon and pick this quest up again at any time without penalty.</p>
+          {/if}
         </div>
 
         <footer class="qactions">
@@ -424,7 +433,8 @@
           </div>
           <div class="tour-pips" role="group" aria-label="Guided corridor tour steps">
             {#each roadmap as step (step.key)}
-              {@const clickable = step.status === "active" || step.status === "available"}
+              {@const clickable =
+                step.status === "active" || step.status === "available" || step.status === "completed"}
               {@const badge =
                 step.status === "completed"
                   ? "✓"
@@ -444,8 +454,16 @@
                   class:current={step.status === "active"}
                   class:ready={step.readyToTurnIn}
                   class:avail={step.status === "available"}
-                  title={`${tip} — click to open quest dialog`}
-                  onclick={() => q.openQuestDialog(step.key)}
+                  title={step.status === "completed"
+                    ? `${tip} — click to view completed history`
+                    : `${tip} — click to open quest dialog`}
+                  onclick={() => {
+                    if (step.status === "completed") {
+                      q.logTab = "completed";
+                    } else {
+                      q.openQuestDialog(step.key);
+                    }
+                  }}
                 >
                   <span class="tour-step-badge">{badge}</span>
                   <span class="tour-step-name">{step.step}. {step.shortLabel}</span>
@@ -506,7 +524,7 @@
                 <div class="qcard-top">
                   <strong>{item.title}</strong>
                   <span class="cat-pill" class:guided={item.category === "guided"}>
-                    {item.category === "guided" ? "Guided" : "Optional"}
+                    {item.category === "guided" ? "Guided" : "Optional"}{item.allowRestart ? " · Restartable" : ""}
                   </span>
                 </div>
                 <p class="next-line">Next: {item.nextStep}{#if item.nextRoomName} · <em>{item.nextRoomName}</em>{/if}</p>
@@ -572,7 +590,12 @@
               <article class="qcard">
                 <div class="qcard-top">
                   <strong><span class="mini-sym" data-marker="available">!</span> {offer.title}</strong>
-                  <span class="room-tag">{offer.giverName}</span>
+                  <span class="qcard-meta">
+                    {#if offer.allowRestart}
+                      <span class="cat-pill guided">Optional · Restartable</span>
+                    {/if}
+                    <span class="room-tag">{offer.giverName}</span>
+                  </span>
                 </div>
                 <p class="next-line">{offer.introduction}</p>
                 <p class="reward-inline">Reward: {offer.rewardSummary}</p>
@@ -584,17 +607,30 @@
             {/each}
           {/if}
         {:else}
+          {#if tour?.allDone}
+            <div class="tour-complete-banner" role="status" aria-label="Guided corridor tour complete">
+              ★ Guided Corridor Tour Complete (7/7) — Corridor Captain ★
+            </div>
+          {/if}
           {#if q.completed.length === 0}
             <p class="empty">No completed quests recorded yet.</p>
           {:else}
             {#each q.completed as done (done.key)}
+              {@const stepNo = guidedStepNum(done.key)}
               <article class="qcard done">
                 <div class="qcard-top">
                   <strong>✓ {done.title}</strong>
-                  <span class="room-tag">{done.turnInName}</span>
+                  <span class="qcard-meta">
+                    {#if stepNo !== null}
+                      <span class="step-pill">Step {stepNo}/7</span>
+                    {/if}
+                    <span class="room-tag">{done.turnInName}</span>
+                  </span>
                 </div>
                 <p class="next-line">{done.completion}</p>
-                <p class="reward-inline">{done.rewardSummary}</p>
+                {#if done.rewardSummary}
+                  <p class="reward-inline">Reward: {done.rewardSummary}</p>
+                {/if}
               </article>
             {/each}
           {/if}
@@ -1042,5 +1078,31 @@
   .prep-strip.ready .prep-tag,
   .prep-strip .ok {
     color: #6ee7b7;
+  }
+  .qcard-meta {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+  }
+  .step-pill {
+    font-size: 0.7rem;
+    font-weight: 700;
+    font-family: var(--mono, monospace);
+    padding: 0.1rem 0.42rem;
+    border-radius: 999px;
+    border: 1px solid rgba(52, 211, 153, 0.55);
+    background: rgba(16, 185, 129, 0.18);
+    color: #6ee7b7;
+  }
+  .tour-complete-banner {
+    padding: 0.55rem 0.75rem;
+    border-radius: 7px;
+    border: 1px solid rgba(52, 211, 153, 0.7);
+    background: rgba(16, 74, 52, 0.45);
+    color: #a7f3d0;
+    font-weight: 700;
+    font-size: 0.82rem;
+    text-align: center;
   }
 </style>
