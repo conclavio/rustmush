@@ -482,6 +482,7 @@ pub struct PortWalkState {
     quest_dest_port: Option<QuestDestinationHint>,
     quest_room_entry: Option<String>,
     quest_room_turn_in: bool,
+    quest_ship_target: Option<String>,
     quest_coop_action: Option<QuestSuggestedAction>,
     speech_bubbles: HashMap<String, (String, Instant)>,
     interactables: Vec<InteractableTarget>,
@@ -588,6 +589,7 @@ impl PortWalkState {
             quest_dest_port: None,
             quest_room_entry: None,
             quest_room_turn_in: false,
+            quest_ship_target: None,
             quest_coop_action: None,
             speech_bubbles: HashMap::new(),
             interactables: Vec::new(),
@@ -969,14 +971,39 @@ impl PortWalkState {
         })
     }
 
-    /// Compute the immediate next station exit along the shortest BFS path to the
-    /// tracked quest's objective room (returns `None` aboard ship or when already arrived).
+    /// Sync the active quest's target ship interior compartment (`"bridge"` or `"bay"`).
+    pub fn observe_quest_ship_target(&mut self, target: Option<&str>) {
+        let next = target.filter(|s| !s.is_empty()).map(str::to_string);
+        if self.quest_ship_target != next {
+            self.quest_ship_target = next;
+            self.bump_scene();
+        }
+    }
+
+    /// Compute the immediate next station exit OR ship interior compartment hatch
+    /// along the shortest BFS path to the tracked quest's objective room/compartment.
     #[must_use]
     pub fn next_quest_hop(&self) -> Option<QuestExitBreadcrumb> {
-        if self.aboard_ship {
-            return None;
-        }
-        let target_id = self.quest_room_entry.as_deref()?;
+        let (target_id, portals): (String, &[PortalGeom]) = if self.aboard_ship {
+            if self.seated_at_helm {
+                return None;
+            }
+            let raw_target = self
+                .quest_ship_target
+                .as_deref()
+                .or_else(|| self.quest_dest_port.as_ref().map(|_| "bridge"))?;
+            let resolved = if self.ship_rooms.iter().any(|r| r.entry_id == raw_target) {
+                raw_target
+            } else if raw_target == "bay" && self.ship_rooms.iter().any(|r| r.entry_id == "hold") {
+                "hold"
+            } else {
+                return None;
+            };
+            (resolved.to_string(), &self.ship_portals)
+        } else {
+            let target_id = self.quest_room_entry.as_deref()?;
+            (target_id.to_string(), &self.portals)
+        };
         if target_id.is_empty() || self.active_location_key == target_id {
             return None;
         }
@@ -987,11 +1014,10 @@ impl PortWalkState {
         visited.insert(self.active_location_key.clone());
 
         while let Some((cur, first_hop, depth)) = queue.pop_front() {
-            for p in &self.portals {
-                if p.from_room != cur
-                    || visited.contains(&p.to_room)
-                    || !p.command.starts_with("goto ")
-                {
+            for p in portals {
+                let valid_cmd = p.command.starts_with("goto ")
+                    || (self.aboard_ship && p.command.starts_with("+tv/bay "));
+                if p.from_room != cur || visited.contains(&p.to_room) || !valid_cmd {
                     continue;
                 }
                 let hop = first_hop
@@ -1004,8 +1030,8 @@ impl PortWalkState {
                         .find_room(&next_room_entry)
                         .map_or_else(|| next_room_entry.clone(), |r| r.name.clone());
                     let target_room_name = self
-                        .find_room(target_id)
-                        .map_or_else(|| target_id.to_string(), |r| r.name.clone());
+                        .find_room(&target_id)
+                        .map_or_else(|| target_id.clone(), |r| r.name.clone());
                     return Some(QuestExitBreadcrumb {
                         next_room_entry,
                         next_room_name,
@@ -2872,15 +2898,14 @@ impl PortWalkState {
             "{mode_word} ({cam_name})  |  {}  |  {wallet}  |  drawing {encoder_name}",
             self.room_title,
         );
-        if !self.aboard_ship
-            && let Some(hop) = self.next_quest_hop()
-        {
+        if let Some(hop) = self.next_quest_hop() {
             let hop_word = if hop.hops == 1 { "hop" } else { "hops" };
             top.push_str(&format!(
                 "  |  [QUEST -> {} ({} {hop_word})]",
                 hop.next_room_name, hop.hops
             ));
-        } else if self.aboard_ship
+        }
+        if self.aboard_ship
             && let Some(dest) = &self.quest_dest_port
         {
             top.push_str(&format!("  |  [QUEST] Dest: {}", dest.port_label));
@@ -8425,5 +8450,56 @@ mod tests {
         let cargo_txt = lines_text(st.stowage_gauge_lines(true));
         assert!(cargo_txt.contains("*Hold Mass"), "{cargo_txt}");
         assert!(cargo_txt.contains("[READY] METALS: 5/5 u"), "{cargo_txt}");
+    }
+
+    #[test]
+    fn aboard_ship_quest_breadcrumb_guides_to_bridge_and_clears_at_helm() {
+        let mut st = PortWalkState::new();
+        let mut ambient = std::collections::BTreeMap::new();
+        ambient.insert(
+            "tacsim".into(),
+            json!({
+                "mode": "interior",
+                "unit": "tacsim.unit.dray",
+                "room": "airlock",
+                "hull_name": "M/V Starling",
+                "docked": true
+            }),
+        );
+        let rv = RoomView {
+            id: "#50".into(),
+            name: "M/V Starling - Airlock".into(),
+            desc: mush_proto::RichText::plain("Airlock."),
+            exits: Vec::new(),
+            contents: Vec::new(),
+            zone: None,
+            ambient,
+        };
+        st.observe_room(&rv, Some("Pilot"));
+        assert!(st.aboard_ship);
+        st.observe_quest_ship_target(Some("bridge"));
+        st.observe_quest_guidance(
+            None,
+            Some(QuestDestinationHint {
+                quest_title: "Run Metals to Stickney Yards".into(),
+                port_id: "stickney".into(),
+                port_label: "Stickney Yards".into(),
+            }),
+        );
+
+        let hop = st
+            .next_quest_hop()
+            .expect("expected aboard-ship BFS hop from airlock to bridge");
+        assert_eq!(hop.next_room_entry, "passage");
+        assert_eq!(hop.next_room_name, "Central Passage");
+        assert_eq!(hop.hops, 2);
+
+        let (top, _) = st.hud_lines("kitty");
+        assert!(top.contains("[QUEST -> Central Passage (2 hops)]"), "{top}");
+        assert!(top.contains("[QUEST] Dest: Stickney Yards"), "{top}");
+
+        // Seating at helm clears interior walk breadcrumb
+        st.seated_at_helm = true;
+        assert!(st.next_quest_hop().is_none());
     }
 }
