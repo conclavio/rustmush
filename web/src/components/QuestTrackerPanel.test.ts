@@ -541,4 +541,129 @@ describe("QuestTrackerPanel route step, guided tour pill, and quick-accept", () 
     expect(refitStrip.textContent).toContain("[REFIT CHECK]");
     expect(refitStrip.textContent).toContain("Stores 10d");
   });
+
+  it("alerts when a non-tracked active quest is ready to turn in here with 1-click completion", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#15",
+      room_name: "Co-op Registry",
+      room_markers: [],
+      available: [],
+      completed: [],
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[2],
+          title: "Run Metals to Stickney",
+          next_step: "Buy 5t metals at Exchange",
+          can_finish_now: false,
+          checkpoints: [],
+        },
+        {
+          key: GUIDED_TOUR_KEYS[1],
+          title: "Stock the Locker and Tanks",
+          next_step: "Turn in to Ilse",
+          can_finish_now: true,
+          ready_to_finish: true,
+          turn_in_here: true,
+          finish_cmd: "+quest/complete #41 tok_done",
+          checkpoints: [],
+        },
+      ],
+    });
+
+    const onCmd = vi.fn();
+    const app = { quests, tacsim: null } as unknown as GameApp;
+    render(QuestTrackerPanel, { props: { app, onCmd } });
+
+    const readyPill = screen.getByRole("button", {
+      name: "[?] Turn In: Stock the Locker and Tanks",
+    });
+    await fireEvent.click(readyPill);
+    expect(onCmd).toHaveBeenCalledWith("+quest/complete #41 tok_done");
+  });
+
+  it("prioritizes guided offers ahead of optional offers and shows (+N more) and All Offers", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#10",
+      room_name: "Port Watch Arrivals",
+      room_markers: [],
+      active: [],
+      completed: [],
+      available: [
+        {
+          key: "quest.side_patrol",
+          title: "Optional Dock Sweep",
+          category: "optional",
+          giver_id: "#88",
+          giver_name: "Harbor Clerk",
+          accept_cmd: "+quest/accept #88 side_tok",
+          checkpoints: [],
+        },
+        {
+          key: GUIDED_TOUR_KEYS[0],
+          title: "First Papers",
+          category: "guided",
+          giver_id: "#99",
+          giver_name: "Maren Halvorsen",
+          accept_cmd: "+quest/accept #99 guided_tok",
+          checkpoints: [],
+        },
+      ],
+    });
+
+    const onCmd = vi.fn();
+    const app = { quests, tacsim: null } as unknown as GameApp;
+    render(QuestTrackerPanel, { props: { app, onCmd } });
+
+    const offerBanner = screen.getByLabelText("Available quest");
+    expect(offerBanner.textContent).toContain("Maren Halvorsen");
+    expect(offerBanner.textContent).toContain("First Papers");
+    expect(offerBanner.textContent).toContain("(+1 more)");
+    await fireEvent.click(screen.getByRole("button", { name: "Accept Quest" }));
+    expect(onCmd).toHaveBeenCalledWith("+quest/accept #99 guided_tok");
+    await fireEvent.click(screen.getByRole("button", { name: "All Offers (2)" }));
+    expect(quests.logOpen).toBe(true);
+    expect(quests.logTab).toBe("available");
+  });
+
+  it("shows Sail shortcut for between-steps Next Guided Offer at an off-port station", async () => {
+    const quests = new QuestsStore();
+    const pack = buildFallbackFreeport();
+    // Completed Steps 1-3 -> Next Guided is Step 4 (Jonas at Stickney Yards, room.p07_receiving)
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#12",
+      room_name: "Port Watch Arrivals",
+      room_markers: [],
+      completed: GUIDED_TOUR_KEYS.slice(0, 3).map((key, i) => ({
+        key,
+        title: `Step ${i + 1}`,
+      })),
+      active: [],
+      available: [],
+    });
+
+    const onCmd = vi.fn();
+    const focusComposer = vi.fn();
+    const app = {
+      quests,
+      tacsim: {
+        isAboardShip: false,
+        view3dOpen: false,
+        physicalLocationKey: null,
+        serverStationRoomEntry: "room.c03_arrivals",
+        stationPack: pack,
+      },
+      focusComposer,
+    } as unknown as GameApp;
+
+    render(QuestTrackerPanel, { props: { app, onCmd } });
+
+    const sailBtn = screen.getByRole("button", { name: "Sail → Stickney Yards" });
+    await fireEvent.click(sailBtn);
+    expect(focusComposer).toHaveBeenCalledWith("+ship/plan stickney");
+  });
 });
