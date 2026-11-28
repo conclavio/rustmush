@@ -5080,6 +5080,22 @@ impl TuiApp {
             })
             .unwrap_or_default();
         self.port_walk.observe_quest_step_badge(step_badge);
+        let ready_turn_in = tracked_snap
+            .as_ref()
+            .and_then(|s| s.active.first())
+            .filter(|q| q.can_finish_now || q.ready_to_finish)
+            .map(|q| super::port_walk::QuestReadyTurnIn {
+                quest_title: q.title.clone(),
+                turn_in_name: if q.turn_in_name.is_empty() {
+                    "quest contact".to_string()
+                } else {
+                    q.turn_in_name.clone()
+                },
+                next_room_name: q.next_room_name.clone(),
+                can_finish_now: q.can_finish_now && !q.finish_cmd.is_empty(),
+                finish_cmd: q.finish_cmd.clone(),
+            });
+        self.port_walk.observe_quest_ready_turn_in(ready_turn_in);
     }
 
     // ---- palette and completion ------------------------------------------
