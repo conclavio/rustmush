@@ -268,6 +268,30 @@ impl QuestSurfaceMiningStatus {
             )
         }
     }
+
+    /// Return the first matching reading target (`"A"`, `"B"`, etc.) from a live `site.map`
+    /// frame whose ore family or reading text matches this quest's target ore.
+    #[must_use]
+    pub fn first_matching_site_reading(&self, site_frame: &Value) -> Option<String> {
+        let family = site_frame
+            .pointer("/site/family")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let family_matches = !self.recommended_family.is_empty()
+            && family.eq_ignore_ascii_case(&self.recommended_family);
+        let readings = site_frame.pointer("/site/readings")?.as_array()?;
+        for item in readings {
+            let target = str_field(item, "target");
+            if target.is_empty() {
+                continue;
+            }
+            let line = str_field(item, "line");
+            if family_matches || self.matches_ore_text(&line) {
+                return Some(target);
+            }
+        }
+        None
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
