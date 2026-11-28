@@ -1354,6 +1354,66 @@ impl QuestsSnapshot {
         }
         Some((text, *ready))
     }
+
+    /// Order room NPC quest markers by action urgency:
+    /// gold turn-in (`?`) -> gold available offer (`!`) -> silver in-progress (`?`).
+    #[must_use]
+    pub fn prioritized_room_markers(&self) -> Vec<&QuestMarker> {
+        let rank = |m: &QuestMarker| match m.marker.as_str() {
+            "turn_in" => 0_u8,
+            "available" => 1_u8,
+            _ => 2_u8,
+        };
+        let mut out: Vec<&QuestMarker> = self.room_markers.iter().collect();
+        out.sort_by_key(|m| rank(m));
+        out
+    }
+
+    /// Concise persistent status-bar badge when a quest can be turned in or accepted
+    /// right here in the player's current room (`[?] Turn-In (F11)` / `[!] Offer (F11)`).
+    #[must_use]
+    pub fn status_bar_quest_badge(&self) -> Option<(String, Color)> {
+        let prioritized = self.prioritized_room_markers();
+        if let Some(m) = prioritized.iter().find(|m| m.marker == "turn_in") {
+            let text = if m.npc_name.is_empty() {
+                "[?] Turn-In (F11)".to_string()
+            } else {
+                format!("[?] {}: Turn-In (F11)", m.npc_name)
+            };
+            return Some((text, Color::Green));
+        }
+        if let Some(q) = self.active.iter().find(|q| q.can_finish_now) {
+            let text = if q.turn_in_name.is_empty() {
+                "[?] Turn-In (F11)".to_string()
+            } else {
+                format!("[?] {}: Turn-In (F11)", q.turn_in_name)
+            };
+            return Some((text, Color::Green));
+        }
+        if self.available.len() > 1 {
+            return Some((
+                format!("[!] {} offers (F11)", self.available.len()),
+                Color::Yellow,
+            ));
+        }
+        if let Some(m) = prioritized.iter().find(|m| m.marker == "available") {
+            let text = if m.npc_name.is_empty() {
+                "[!] Offer (F11)".to_string()
+            } else {
+                format!("[!] {}: Offer (F11)", m.npc_name)
+            };
+            return Some((text, Color::Yellow));
+        }
+        if let Some(offer) = self.available.first() {
+            let text = if offer.giver_name.is_empty() {
+                "[!] Offer (F11)".to_string()
+            } else {
+                format!("[!] {}: Offer (F11)", offer.giver_name)
+            };
+            return Some((text, Color::Yellow));
+        }
+        None
+    }
 }
 
 fn str_field(v: &Value, key: &str) -> String {
@@ -3723,5 +3783,40 @@ mod tests {
             step5_text.contains("[REFIT CHECK] Cargo empty | Stores 10d | Tank 2t OK"),
             "{step5_text}"
         );
+    }
+
+    #[test]
+    fn prioritized_room_markers_and_status_bar_quest_badge() {
+        let snap = parse_frame(&json!({
+            "schema": 1,
+            "room_markers": [
+                { "npc_id": "#1", "npc_name": "Silver Clerk", "marker": "in_progress", "quest_key": "q1" },
+                { "npc_id": "#2", "npc_name": "Maren Halvorsen", "marker": "available", "quest_key": "q2" },
+                { "npc_id": "#3", "npc_name": "Ilse Oduya-Brandt", "marker": "turn_in", "quest_key": "q3" }
+            ],
+            "active": [],
+            "available": [{ "key": "q2", "title": "First Papers", "giver_name": "Maren Halvorsen" }],
+            "completed": []
+        }));
+        let ordered: Vec<&str> = snap
+            .prioritized_room_markers()
+            .iter()
+            .map(|m| m.marker.as_str())
+            .collect();
+        assert_eq!(ordered, vec!["turn_in", "available", "in_progress"]);
+        let (badge, color) = snap.status_bar_quest_badge().expect("turn-in badge");
+        assert_eq!(badge, "[?] Ilse Oduya-Brandt: Turn-In (F11)");
+        assert_eq!(color, Color::Green);
+
+        let offer_only = parse_frame(&json!({
+            "schema": 1,
+            "room_markers": [
+                { "npc_id": "#2", "npc_name": "Maren Halvorsen", "marker": "available", "quest_key": "q2" }
+            ],
+            "available": [{ "key": "q2", "title": "First Papers", "giver_name": "Maren Halvorsen" }]
+        }));
+        let (offer_badge, offer_color) = offer_only.status_bar_quest_badge().expect("offer badge");
+        assert_eq!(offer_badge, "[!] Maren Halvorsen: Offer (F11)");
+        assert_eq!(offer_color, Color::Yellow);
     }
 }

@@ -6437,6 +6437,15 @@ impl TuiApp {
                 Style::default().add_modifier(Modifier::BOLD),
             ));
         }
+        if let Some((badge, color)) = self.quests_snap.status_bar_quest_badge() {
+            line.spans.push(dim_span_owned(sep));
+            let style = if matches!(self.caps.color, mush_proto::ColorDepth::None) {
+                Style::default().add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(color).add_modifier(Modifier::BOLD)
+            };
+            line.spans.push(Span::styled(badge, style));
+        }
         // 17g cut C3b: the market desk's status on the market screen (the
         // server's `line`, `message` or first `Shown` line, or the desk's own
         // sentence), and the legal actions' status on a screen with the
@@ -14211,5 +14220,73 @@ mod tests {
             "{text2}"
         );
         assert!(text2.contains("Recover: +tv/1 recover go"), "{text2}");
+    }
+
+    #[test]
+    fn status_bar_renders_live_turnin_and_offer_quest_badges() {
+        let mut app = app();
+        let dump = |b: &ratatui::buffer::Buffer| -> String {
+            (0..b.area.height)
+                .map(|y| {
+                    (0..b.area.width)
+                        .map(|x| b[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "room_markers": [{
+                    "npc_id": "#11",
+                    "npc_name": "Maren Halvorsen",
+                    "marker": "available",
+                    "quest_key": "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+                    "quest_title": "First Papers"
+                }],
+                "available": [{
+                    "key": "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+                    "title": "First Papers",
+                    "giver_name": "Maren Halvorsen",
+                    "accept_cmd": "+quest/accept #11 tok"
+                }]
+            }),
+        });
+        let offer_txt = dump(&painted(&mut app, 180, 24));
+        assert!(
+            offer_txt.contains("[!] Maren Halvorsen: Offer (F11)"),
+            "{offer_txt}"
+        );
+
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "room_markers": [{
+                    "npc_id": "#18",
+                    "npc_name": "Ilse Oduya-Brandt",
+                    "marker": "turn_in",
+                    "quest_key": "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+                    "quest_title": "First Papers"
+                }],
+                "active": [{
+                    "key": "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+                    "title": "First Papers",
+                    "turn_in_name": "Ilse Oduya-Brandt",
+                    "can_finish_now": true,
+                    "finish_cmd": "+quest/finish #18 tok"
+                }]
+            }),
+        });
+        let turnin_txt = dump(&painted(&mut app, 180, 24));
+        assert!(
+            turnin_txt.contains("[?] Ilse Oduya-Brandt: Turn-In (F11)"),
+            "{turnin_txt}"
+        );
     }
 }
