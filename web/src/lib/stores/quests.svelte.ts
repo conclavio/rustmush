@@ -1079,14 +1079,43 @@ const MARKER_PRIORITY: Record<QuestMarkerKind, number> = {
 };
 
 /**
- * Orders NPC quest markers in the current room by action urgency:
+ * Orders and coalesces NPC quest markers in the current room by action urgency:
  * gold turn-in (`?`) -> gold available offer (`!`) -> silver in-progress (`?`).
+ * Duplicate entries for the same NPC are merged into one highest-priority marker
+ * with an aggregated `questCount`.
  */
 export function sortRoomQuestMarkers(
   markers: readonly NpcQuestMarker[],
 ): NpcQuestMarker[] {
-  if (markers.length <= 1) return [...markers];
-  return [...markers].sort((a, b) => MARKER_PRIORITY[a.marker] - MARKER_PRIORITY[b.marker]);
+  if (markers.length === 0) return [];
+  const byNpc = new Map<
+    string,
+    { best: NpcQuestMarker; questKeys: Set<string>; maxCount: number }
+  >();
+  for (const m of markers) {
+    const npcKey = m.npcId || m.npcName.trim().toLowerCase();
+    const qKey = m.questKey || `${m.marker}:${m.questTitle}`;
+    const existing = byNpc.get(npcKey);
+    if (!existing) {
+      byNpc.set(npcKey, {
+        best: m,
+        questKeys: new Set([qKey]),
+        maxCount: Math.max(1, m.questCount),
+      });
+    } else {
+      existing.questKeys.add(qKey);
+      existing.maxCount = Math.max(existing.maxCount, m.questCount);
+      if (MARKER_PRIORITY[m.marker] < MARKER_PRIORITY[existing.best.marker]) {
+        existing.best = m;
+      }
+    }
+  }
+  return [...byNpc.values()]
+    .map(({ best, questKeys, maxCount }) => {
+      const count = Math.max(maxCount, questKeys.size);
+      return count === best.questCount ? best : { ...best, questCount: count };
+    })
+    .sort((a, b) => MARKER_PRIORITY[a.marker] - MARKER_PRIORITY[b.marker]);
 }
 
 function parseCheckpoints(raw: unknown): QuestCheckpointView[] {
