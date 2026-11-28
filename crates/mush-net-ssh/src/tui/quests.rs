@@ -206,6 +206,8 @@ pub struct GuidedTourRoadmapStep {
     pub key: &'static str,
     pub short_label: &'static str,
     pub giver_label: &'static str,
+    pub giver_room_entry: &'static str,
+    pub giver_room_name: &'static str,
     pub location_label: &'static str,
     pub status: GuidedTourStepStatus,
     pub ready_to_turn_in: bool,
@@ -217,47 +219,61 @@ pub struct QuestSuggestedAction {
     pub command: String,
 }
 
-pub const GUIDED_TOUR_ROADMAP_META: [(&str, &str, &str, &str); 7] = [
+pub const GUIDED_TOUR_ROADMAP_META: [(&str, &str, &str, &str, &str, &str); 7] = [
     (
         "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
         "Co-op Charter",
         "Maren Halvorsen",
+        "room.c03_arrivals",
+        "Port Watch Arrivals",
         "Ceres Arrivals -> Registry",
     ),
     (
         "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel",
         "Locker & Tanks",
         "Ilse Oduya-Brandt",
+        "room.c05_registry",
+        "Registry & Co-op Desk",
         "Ceres Chandlery & Exchange",
     ),
     (
         "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
         "Metals Haul",
         "Ilse Oduya-Brandt",
+        "room.c05_registry",
+        "Registry & Co-op Desk",
         "Ceres -> Stickney Receiving",
     ),
     (
         "tacsim.quests.guided_onboarding/quest.guide_04_return_haul",
         "Return Load",
         "Jonas Achterberg-Nkemelu",
+        "room.p07_receiving",
+        "Receiving Counter",
         "Stickney -> Ceres Chandlery",
     ),
     (
         "tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector",
         "Dray-P Refit",
         "Ilse Oduya-Brandt",
+        "room.c05_registry",
+        "Registry & Co-op Desk",
         "Ceres Registry -> Exchange",
     ),
     (
         "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
         "Surface Mining",
         "Rosalind Qureshi-Mbeki",
+        "room.c07_exchange",
+        "Exchange Hall",
         "Ceres Surface Landing Site",
     ),
     (
         "tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore",
         "Sell Mined Ore",
         "Rosalind Qureshi-Mbeki",
+        "room.c07_exchange",
+        "Exchange Hall",
         "Ceres -> Stickney Service",
     ),
 ];
@@ -749,20 +765,24 @@ impl QuestsSnapshot {
         None
     }
 
-    /// Returns `(room_entry, is_turn_in)` for the tracked active quest's next station room objective.
+    /// Returns `(room_entry, is_turn_in)` for the tracked active quest's next station room objective,
+    /// falling back to the next guided NPC giver room between steps.
     #[must_use]
     pub fn active_objective_room(&self, tracked_key: Option<&str>) -> Option<(String, bool)> {
-        let q = self.ordered_active(tracked_key).into_iter().next()?;
-        let is_turn_in = q.ready_to_finish || q.can_finish_now;
-        if !q.next_room_entry.is_empty() {
-            return Some((q.next_room_entry.clone(), is_turn_in));
-        }
-        for cp in &q.checkpoints {
-            if !cp.checked && !cp.live_ready && !cp.room_entry.is_empty() {
-                return Some((cp.room_entry.clone(), is_turn_in));
+        if let Some(q) = self.ordered_active(tracked_key).into_iter().next() {
+            let is_turn_in = q.ready_to_finish || q.can_finish_now;
+            if !q.next_room_entry.is_empty() {
+                return Some((q.next_room_entry.clone(), is_turn_in));
             }
+            for cp in &q.checkpoints {
+                if !cp.checked && !cp.live_ready && !cp.room_entry.is_empty() {
+                    return Some((cp.room_entry.clone(), is_turn_in));
+                }
+            }
+            return None;
         }
-        None
+        self.next_guided_offer()
+            .map(|next| (next.giver_room_entry.to_string(), false))
     }
 
     /// Resolve the ship interior target compartment (`"airlock"` when docked at the
@@ -829,6 +849,15 @@ impl QuestsSnapshot {
         if self.active_destination_port(tracked_key).is_some() {
             return Some("bridge");
         }
+        if let Some(next) = self.next_guided_offer() {
+            if let Some(docked) = docked_station
+                && let Some(target_port) = infer_station_port_from_room_entry(next.giver_room_entry)
+                && target_port.eq_ignore_ascii_case(docked)
+            {
+                return Some("airlock");
+            }
+            return Some("bridge");
+        }
         None
     }
 
@@ -869,29 +898,63 @@ impl QuestsSnapshot {
         GUIDED_TOUR_ROADMAP_META
             .iter()
             .enumerate()
-            .map(|(idx, &(key, short_label, giver_label, location_label))| {
-                let active_match = self.active.iter().find(|q| q.key == key);
-                let status = if self.completed.iter().any(|c| c.key == key) {
-                    GuidedTourStepStatus::Completed
-                } else if active_match.is_some() {
-                    GuidedTourStepStatus::Active
-                } else if self.available.iter().any(|a| a.key == key) {
-                    GuidedTourStepStatus::Available
-                } else {
-                    GuidedTourStepStatus::Upcoming
-                };
-                GuidedTourRoadmapStep {
-                    step: idx + 1,
-                    key,
-                    short_label,
-                    giver_label,
-                    location_label,
-                    status,
-                    ready_to_turn_in: active_match
-                        .is_some_and(|q| q.can_finish_now || q.ready_to_finish),
-                }
-            })
+            .map(
+                |(
+                    idx,
+                    &(
+                        key,
+                        short_label,
+                        giver_label,
+                        giver_room_entry,
+                        giver_room_name,
+                        location_label,
+                    ),
+                )| {
+                    let active_match = self.active.iter().find(|q| q.key == key);
+                    let status = if self.completed.iter().any(|c| c.key == key) {
+                        GuidedTourStepStatus::Completed
+                    } else if active_match.is_some() {
+                        GuidedTourStepStatus::Active
+                    } else if self.available.iter().any(|a| a.key == key) {
+                        GuidedTourStepStatus::Available
+                    } else {
+                        GuidedTourStepStatus::Upcoming
+                    };
+                    GuidedTourRoadmapStep {
+                        step: idx + 1,
+                        key,
+                        short_label,
+                        giver_label,
+                        giver_room_entry,
+                        giver_room_name,
+                        location_label,
+                        status,
+                        ready_to_turn_in: active_match
+                            .is_some_and(|q| q.can_finish_now || q.ready_to_finish),
+                    }
+                },
+            )
             .collect()
+    }
+
+    /// Between-steps guided tour locator: when at least 1 guided step is complete (and < 7),
+    /// with no active quest and no offer in the current room, returns the next upcoming step.
+    #[must_use]
+    pub fn next_guided_offer(&self) -> Option<GuidedTourRoadmapStep> {
+        if !self.active.is_empty() || !self.available.is_empty() {
+            return None;
+        }
+        let roadmap = self.guided_tour_roadmap();
+        let done_count = roadmap
+            .iter()
+            .filter(|s| s.status == GuidedTourStepStatus::Completed)
+            .count();
+        if done_count == 0 || done_count >= roadmap.len() {
+            return None;
+        }
+        roadmap
+            .into_iter()
+            .find(|s| s.status == GuidedTourStepStatus::Upcoming)
     }
 
     /// Render a compact, color-coded 7-step Guided Corridor Tour roadmap line for the F11 overlay.
@@ -1672,6 +1735,49 @@ pub fn render_quest_tracker_lines_with_route(
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
         )));
+    } else if let Some(next) = snap.next_guided_offer() {
+        if let Some(ref t) = tour {
+            lines.push(Line::from(Span::styled(
+                format!("Tour {} {}/{}", t.progress_bar(), t.completed, t.total),
+                Style::default().fg(Color::Yellow),
+            )));
+        }
+        lines.push(Line::from(vec![
+            Span::styled(
+                "[!] ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("Next ({}/7): {}", next.step, next.short_label),
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("Speak: ", Style::default().fg(Color::Cyan)),
+            Span::raw(format!("{} ({})", next.giver_label, next.giver_room_name)),
+        ]));
+        if let Some(hop) = route_hop {
+            let route_text = if hop.next_exit_command == "+ship/board" {
+                "+ship/board (Board Ship)".to_string()
+            } else if hop.next_exit_command == "+ship/leave" {
+                "+ship/leave (Cycle Ashore)".to_string()
+            } else {
+                format!("-> {} ({}h)", hop.next_room_name, hop.hops)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    "Route: ",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(route_text, Style::default().fg(Color::Yellow)),
+            ]));
+        }
     } else if let Some(t) = tour
         && t.all_done
     {
@@ -2071,6 +2177,24 @@ pub fn render_quest_overlay(
                         Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
                     )));
                 }
+            } else if let Some(next) = snap.next_guided_offer() {
+                detail_lines.push(Line::from(Span::styled(
+                    format!("Next Guided Step ({}/7): {}", next.step, next.short_label),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                detail_lines.push(Line::from(Span::styled(
+                    format!(
+                        "Speak with: {} ({})",
+                        next.giver_label, next.giver_room_name
+                    ),
+                    Style::default().fg(Color::Cyan),
+                )));
+                detail_lines.push(Line::from(Span::styled(
+                    format!("Route: {}", next.location_label),
+                    Style::default().add_modifier(Modifier::DIM),
+                )));
             }
         }
         QuestTab::Available => {
@@ -2802,5 +2926,74 @@ mod tests {
         assert!(text.contains("[!] 4. Return Load"), "{text}");
         assert!(text.contains("[ ] 5. Dray-P Refit"), "{text}");
         assert!(text.contains("[ ] 7. Sell Mined Ore"), "{text}");
+    }
+
+    #[test]
+    fn next_guided_offer_locates_giver_and_routes_tracker_and_ship_between_steps() {
+        let between = parse_frame(&json!({
+            "schema": 1,
+            "completed": [
+                { "key": GUIDED_TOUR_KEYS[0], "title": "Step 1" },
+                { "key": GUIDED_TOUR_KEYS[1], "title": "Step 2" },
+                { "key": GUIDED_TOUR_KEYS[2], "title": "Step 3" }
+            ],
+            "active": [],
+            "available": []
+        }));
+        let next = between
+            .next_guided_offer()
+            .expect("expected Step 4 next guided offer");
+        assert_eq!(next.step, 4);
+        assert_eq!(next.giver_label, "Jonas Achterberg-Nkemelu");
+        assert_eq!(next.giver_room_entry, "room.p07_receiving");
+        assert_eq!(
+            between.active_objective_room(None),
+            Some(("room.p07_receiving".to_string(), false))
+        );
+        // Docked at Stickney -> airlock (+ship/leave); docked at Ceres -> bridge
+        assert_eq!(
+            between.active_ship_target_compartment_for_location(None, Some("stickney"), false),
+            Some("airlock")
+        );
+        assert_eq!(
+            between.active_ship_target_compartment_for_location(None, Some("ceres"), false),
+            Some("bridge")
+        );
+
+        let hop = QuestExitBreadcrumb {
+            next_room_entry: "room.p07_receiving".into(),
+            next_room_name: "Receiving Counter".into(),
+            next_exit_command: "goto receiving".into(),
+            target_room_name: "Receiving Counter".into(),
+            hops: 1,
+        };
+        let tracker_txt: String = render_quest_tracker_lines_with_route(&between, None, Some(&hop))
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            tracker_txt.contains("Next (4/7): Return Load"),
+            "{tracker_txt}"
+        );
+        assert!(
+            tracker_txt.contains("Jonas Achterberg-Nkemelu (Receiving Counter)"),
+            "{tracker_txt}"
+        );
+        assert!(
+            tracker_txt.contains("Route: -> Receiving Counter (1h)"),
+            "{tracker_txt}"
+        );
+
+        // Fresh player (0 completed) -> None
+        let empty =
+            parse_frame(&json!({ "schema": 1, "completed": [], "active": [], "available": [] }));
+        assert!(empty.next_guided_offer().is_none());
+        assert!(empty.active_objective_room(None).is_none());
     }
 }
