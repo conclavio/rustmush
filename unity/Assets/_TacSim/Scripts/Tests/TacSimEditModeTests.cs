@@ -18118,5 +18118,75 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void EconomyPanelsJobsTab_ShowsQuestReadyTurnInAndCorridorCaptainBanner()
+        {
+            var rootGo = new UnityEngine.GameObject("JobsBoardMasteryBannerTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.ShowLoginOverlay(false);
+                var tradeState = new TacSimTradeAndShipState();
+                hud.BindTradeState(tradeState);
+                string sentCmd = null;
+                hud.OnCommandSubmitted += c => sentCmd = c;
+
+                // 1. Active quest ready to turn in here -> Jobs banner shows [QUEST READY] + TURN IN (?)
+                hud.OpenTradeAndSailingModal("EXCHANGE", openSailingTab: false);
+                hud.SwitchTradeTerminalTab(TacSim.UI.TradeTerminalTab.Jobs, autoQuery: false);
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"",
+                        ""title"": ""Stock the Locker and Tanks"",
+                        ""turn_in_name"": ""Ilse Oduya-Brandt"",
+                        ""next_room_name"": ""Registry & Co-op Desk"",
+                        ""ready_to_finish"": true,
+                        ""can_finish_now"": true,
+                        ""finish_cmd"": ""+quest/finish #18=tok-step2"",
+                        ""checkpoints"": []
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                Assert.IsTrue(hud.EconomyPanels.IsJobsQuestBannerVisible);
+                StringAssert.Contains("[QUEST READY] Stock the Locker and Tanks", hud.EconomyPanels.JobsQuestBannerTextForTests);
+                StringAssert.Contains("[Step 2/7]", hud.EconomyPanels.JobsQuestBannerTextForTests);
+                Assert.AreEqual("TURN IN (?)", hud.EconomyPanels.JobsQuestButtonLabelForTests);
+                Assert.IsTrue(hud.EconomyPanels.TriggerJobsQuestFilterForTests());
+                Assert.AreEqual("+quest/finish #18=tok-step2", sentCmd);
+                Assert.IsFalse(hud.IsModalOpen, "Turning in from Jobs banner must close Trade modal");
+
+                // 2. All 7 guided quests completed -> Corridor Captain (7/7) open contracts welcome banner
+                sentCmd = null;
+                hud.OpenTradeAndSailingModal("EXCHANGE", openSailingTab: false);
+                hud.SwitchTradeTerminalTab(TacSim.UI.TradeTerminalTab.Jobs, autoQuery: false);
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [],
+                    ""available"": [],
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""S1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""S2"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""S3"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_04_return_haul"", ""title"": ""S4"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"", ""title"": ""S5"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"", ""title"": ""S6"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore"", ""title"": ""S7"" }
+                    ]
+                }")));
+                Assert.IsTrue(hud.EconomyPanels.IsJobsQuestBannerVisible);
+                StringAssert.Contains("[★ CORRIDOR CAPTAIN 7/7]", hud.EconomyPanels.JobsQuestBannerTextForTests);
+                Assert.AreEqual("Browse Haulage", hud.EconomyPanels.JobsQuestButtonLabelForTests);
+                Assert.IsTrue(hud.EconomyPanels.TriggerJobsQuestFilterForTests());
+                Assert.AreEqual("+market/jobs haul", sentCmd);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

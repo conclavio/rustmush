@@ -162,9 +162,13 @@ namespace TacSim.UI
         private Text _jobsOutputText;
         private RectTransform _jobsViewportRect;
         private GameObject _jobsQuestBanner;
+        private Image _jobsQuestBannerBg;
         private Text _jobsQuestLabel;
         private Text _jobsQuestBtnLabel;
         private string _jobsQuestFilterKind = string.Empty;
+        private string _jobsQuestReadyCommand = string.Empty;
+        private bool _jobsQuestIsWayfinder;
+        private bool _jobsQuestClosesTradeModal;
         private Text _industryOutputText;
         private RectTransform _industryViewportRect;
         private GameObject _industryQuestBanner;
@@ -196,10 +200,24 @@ namespace TacSim.UI
         public string IndustryQuestButtonLabelForTests => _industryQuestBtnLabel != null ? _industryQuestBtnLabel.text : string.Empty;
         public bool IsJobsQuestBannerVisible => _jobsQuestBanner != null && _jobsQuestBanner.activeSelf;
         public string JobsQuestBannerTextForTests => _jobsQuestLabel != null ? _jobsQuestLabel.text : string.Empty;
+        public string JobsQuestButtonLabelForTests => _jobsQuestBtnLabel != null ? _jobsQuestBtnLabel.text : string.Empty;
 
         public bool TriggerJobsQuestFilterForTests()
         {
-            if (!IsJobsQuestBannerVisible || string.IsNullOrEmpty(_jobsQuestFilterKind)) return false;
+            if (!IsJobsQuestBannerVisible) return false;
+            if (_jobsQuestIsWayfinder)
+            {
+                OnIndustryQuestWayfinderRequested?.Invoke();
+                return true;
+            }
+            if (!string.IsNullOrEmpty(_jobsQuestReadyCommand))
+            {
+                _emitCommand?.Invoke(_jobsQuestReadyCommand);
+                if (_jobsQuestClosesTradeModal)
+                    OnIndustryQuestTurnInDispatched?.Invoke();
+                return true;
+            }
+            if (string.IsNullOrEmpty(_jobsQuestFilterKind)) return false;
             _emitCommand?.Invoke(_jobsQuestFilterKind == "survey" ? "+market/jobs survey" : "+market/jobs haul");
             return true;
         }
@@ -261,7 +279,8 @@ namespace TacSim.UI
             string questStepTag = null,
             string readyTurnInSummary = null,
             string readyTurnInCommand = null,
-            bool readyTurnInWayfinder = false)
+            bool readyTurnInWayfinder = false,
+            bool guidedTourMastered = false)
         {
             _questHistorySlug = (tradeCommoditySlug ?? string.Empty).Trim().ToLowerInvariant();
             _questHistoryTitle = (tradeQuestTitle ?? string.Empty).Trim();
@@ -327,15 +346,34 @@ namespace TacSim.UI
             if (_industryViewportRect != null)
                 _industryViewportRect.offsetMax = new Vector2(0f, showInd ? -176f : -134f);
 
-            bool showJobs = hasSurfaceMiningQuest || !string.IsNullOrWhiteSpace(questDestPortLabel);
-            _jobsQuestFilterKind = hasSurfaceMiningQuest
-                ? "survey"
-                : (!string.IsNullOrWhiteSpace(questDestPortLabel) ? "haul" : string.Empty);
+            bool jobsCanFinishHere = !string.IsNullOrWhiteSpace(readyTurnInSummary) &&
+                                     !string.IsNullOrWhiteSpace(readyTurnInCommand);
+            bool jobsHasFilter = !jobsCanFinishHere && (hasSurfaceMiningQuest || !string.IsNullOrWhiteSpace(questDestPortLabel));
+            bool jobsRemoteReady = !jobsCanFinishHere && !jobsHasFilter && !string.IsNullOrWhiteSpace(readyTurnInSummary);
+            bool jobsMastery = !jobsCanFinishHere && !jobsHasFilter && !jobsRemoteReady && guidedTourMastered;
+            bool showJobs = jobsCanFinishHere || jobsHasFilter || jobsRemoteReady || jobsMastery;
+
+            _jobsQuestFilterKind = string.Empty;
+            _jobsQuestReadyCommand = string.Empty;
+            _jobsQuestIsWayfinder = false;
+            _jobsQuestClosesTradeModal = false;
             if (_jobsQuestBanner != null)
             {
                 _jobsQuestBanner.SetActive(showJobs);
-                if (showJobs)
+                if (jobsCanFinishHere)
                 {
+                    _jobsQuestReadyCommand = readyTurnInCommand.Trim();
+                    _jobsQuestClosesTradeModal = true;
+                    if (_jobsQuestLabel != null)
+                        _jobsQuestLabel.text = $"{readyTurnInSummary.Trim()}{stepSuffix}";
+                    if (_jobsQuestBtnLabel != null)
+                        _jobsQuestBtnLabel.text = "TURN IN (?)";
+                    if (_jobsQuestBannerBg != null)
+                        _jobsQuestBannerBg.color = new Color(0.08f, 0.34f, 0.22f, 0.94f);
+                }
+                else if (jobsHasFilter)
+                {
+                    _jobsQuestFilterKind = hasSurfaceMiningQuest ? "survey" : "haul";
                     if (_jobsQuestLabel != null)
                     {
                         _jobsQuestLabel.text = hasSurfaceMiningQuest
@@ -344,6 +382,29 @@ namespace TacSim.UI
                     }
                     if (_jobsQuestBtnLabel != null)
                         _jobsQuestBtnLabel.text = hasSurfaceMiningQuest ? "Filter Surveys" : "Filter Haulage";
+                    if (_jobsQuestBannerBg != null)
+                        _jobsQuestBannerBg.color = new Color(0.32f, 0.24f, 0.08f, 0.94f);
+                }
+                else if (jobsRemoteReady)
+                {
+                    _jobsQuestIsWayfinder = readyTurnInWayfinder;
+                    _jobsQuestClosesTradeModal = true;
+                    if (_jobsQuestLabel != null)
+                        _jobsQuestLabel.text = $"{readyTurnInSummary.Trim()}{stepSuffix}";
+                    if (_jobsQuestBtnLabel != null)
+                        _jobsQuestBtnLabel.text = "WAYFINDER";
+                    if (_jobsQuestBannerBg != null)
+                        _jobsQuestBannerBg.color = new Color(0.32f, 0.24f, 0.08f, 0.94f);
+                }
+                else if (jobsMastery)
+                {
+                    _jobsQuestFilterKind = "haul";
+                    if (_jobsQuestLabel != null)
+                        _jobsQuestLabel.text = "[★ CORRIDOR CAPTAIN 7/7] Guided Tour Complete — Open corridor freight & survey contracts unlocked";
+                    if (_jobsQuestBtnLabel != null)
+                        _jobsQuestBtnLabel.text = "Browse Haulage";
+                    if (_jobsQuestBannerBg != null)
+                        _jobsQuestBannerBg.color = new Color(0.08f, 0.34f, 0.22f, 0.94f);
                 }
             }
             if (_jobsViewportRect != null)
@@ -927,6 +988,7 @@ namespace TacSim.UI
             CreateButton(actRow, "My Crew", new Color(0.22f, 0.32f, 0.44f), () => _emitCommand?.Invoke("+sortie/contract"));
 
             _jobsQuestBanner = CreatePanel(JobsTabBody.transform, "JobsQuestBanner", new Vector2(0f, 1f), new Vector2(1f, 1f), new Vector2(0f, -170f), new Vector2(0f, -132f), new Color(0.32f, 0.24f, 0.08f, 0.94f));
+            _jobsQuestBannerBg = _jobsQuestBanner.GetComponent<Image>();
             _jobsQuestLabel = CreateText(_jobsQuestBanner.transform, "[QUEST] Jobs", 13, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(1f, 0.93f, 0.68f));
             SetRect(_jobsQuestLabel.rectTransform, Vector2.zero, Vector2.one, new Vector2(12f, 2f), new Vector2(-176f, -2f));
             var jqBtn = CreateButton(_jobsQuestBanner.transform, "Filter Jobs", new Color(0.56f, 0.39f, 0.10f), () => TriggerJobsQuestFilterForTests());
