@@ -740,4 +740,113 @@ describe("QuestTrackerPanel route step, guided tour pill, and quick-accept", () 
     await fireEvent.click(jobsBtn);
     expect(onCmd).toHaveBeenCalledWith("+market/jobs");
   });
+
+  it("renders Step 6 prospecting prep chips on the HUD Quest Tracker and prefills composer commands", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#19",
+      room_name: "Exchange Hall",
+      room_markers: [],
+      available: [],
+      completed: [],
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[5],
+          title: "Scan, Sound, and Mine a Landing Site",
+          next_step: "Get license, lease rig, and pick a landing site.",
+          checkpoints: [
+            {
+              id: "scan_landing_site",
+              title: "Complete a surface scan at a Ceres landing site",
+              instructions: "Run +tv/1 scan go",
+              checked: false,
+              live_ready: false,
+            },
+            {
+              id: "mine_carbon_ore",
+              title: "Mine at least 1 tonne of carbon ore on the surface",
+              instructions: "Run +tv/1 mine go",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    const focusComposer = vi.fn();
+    const app = { quests, tacsim: null, focusComposer } as unknown as GameApp;
+    const first = render(QuestTrackerPanel, { props: { app, onCmd: vi.fn() } });
+    const prep = screen.getByLabelText("Tracked quest prospecting prep");
+    expect(prep.textContent).toContain("[PREP]");
+    await fireEvent.click(screen.getByRole("button", { name: "License (+license)" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Lease Rig (+tv/lease)" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Ground Chart (+chart/ground)" }));
+    expect(focusComposer).toHaveBeenNthCalledWith(1, "+license");
+    expect(focusComposer).toHaveBeenNthCalledWith(2, "+tv/lease");
+    expect(focusComposer).toHaveBeenNthCalledWith(3, "+chart/ground");
+    first.unmount();
+
+    // After scan completes (still mining) -> switches to Ground Chart + Recover Rig
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#19",
+      room_name: "Freeport Commons",
+      room_markers: [],
+      available: [],
+      completed: [],
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[5],
+          title: "Scan, Sound, and Mine a Landing Site",
+          next_step: "Mine carbon_ore and recover rig.",
+          checkpoints: [
+            {
+              id: "scan_landing_site",
+              title: "Complete a surface scan at a Ceres landing site",
+              instructions: "Run +tv/1 scan go",
+              checked: true,
+              live_ready: true,
+            },
+            {
+              id: "mine_carbon_ore",
+              title: "Mine at least 1 tonne of carbon ore on the surface",
+              instructions: "Run +tv/1 mine go",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+    const second = render(QuestTrackerPanel, { props: { app, onCmd: vi.fn() } });
+    await fireEvent.click(screen.getByRole("button", { name: "Recover Rig (+tv/1 recover go)" }));
+    expect(focusComposer).toHaveBeenLastCalledWith("+tv/1 recover go");
+    second.unmount();
+
+    // Once ready_to_finish -> prep strip hides
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#19",
+      room_name: "Exchange Hall",
+      room_markers: [],
+      available: [],
+      completed: [],
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[5],
+          title: "Scan, Sound, and Mine a Landing Site",
+          ready_to_finish: true,
+          can_finish_now: true,
+          checkpoints: [
+            { id: "scan_landing_site", title: "Scan", checked: true, live_ready: true },
+            { id: "mine_carbon_ore", title: "Mine", checked: true, live_ready: true },
+          ],
+        },
+      ],
+    });
+    render(QuestTrackerPanel, { props: { app, onCmd: vi.fn() } });
+    expect(screen.queryByLabelText("Tracked quest prospecting prep")).toBeNull();
+  });
 });

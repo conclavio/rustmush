@@ -8,7 +8,9 @@
     GUIDED_TOUR_KEYS,
     evaluateSailingPreflightReadiness,
     extractActiveDestinationPort,
+    extractActiveSurfaceMiningStatus,
     extractActiveTradeNeed,
+    extractSurfaceMiningPrepActions,
     formatQuestHoldReadinessSummary,
     inferStationPortFromRoomEntry,
     needsOriginPortProcurement,
@@ -90,6 +92,14 @@
           liveStowage,
         )
       : null,
+  );
+  const trackedMining = $derived(
+    tracked ? extractActiveSurfaceMiningStatus([tracked], tracked.key) : null,
+  );
+  const trackedMiningPrep = $derived(
+    tracked && !tracked.canFinishNow && !tracked.readyToFinish
+      ? extractSurfaceMiningPrepActions(trackedMining)
+      : [],
   );
   const routeCrumb = $derived.by(() => {
     const tacsim = app.tacsim;
@@ -329,6 +339,21 @@
             <span>
               {trackedPreflight.propellantOk ? "✓" : "✗"} Propellant {trackedPreflight.propellantTonnes}t · {trackedPreflight.provisionsOk ? "✓" : "✗"} Provisions {trackedPreflight.provisionsDays}d → {trackedDest.portLabel}
             </span>
+          </div>
+        {/if}
+        {#if trackedMiningPrep.length > 0}
+          <div class="prep-strip" aria-label="Tracked quest prospecting prep">
+            <span class="hold-tag">[PREP]</span>
+            {#each trackedMiningPrep as act (act.command)}
+              <button
+                type="button"
+                class="prep-chip"
+                title={`Prefill ${act.command}`}
+                onclick={() => app.focusComposer?.(act.command)}
+              >
+                {act.label} ({act.command})
+              </button>
+            {/each}
           </div>
         {/if}
         <div class="next-row">
@@ -736,5 +761,30 @@
     font-family: var(--mono, monospace);
     font-size: 0.68rem;
     font-weight: 600;
+  }
+  .prep-strip {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    padding: 0.18rem 0.45rem;
+    border-radius: 5px;
+    border: 1px solid rgba(56, 189, 248, 0.4);
+    background: rgba(14, 42, 62, 0.4);
+    align-self: flex-start;
+  }
+  .prep-chip {
+    background: rgba(18, 60, 88, 0.72);
+    border: 1px solid rgba(56, 189, 248, 0.55);
+    color: #bae6fd;
+    border-radius: 4px;
+    padding: 0.1rem 0.42rem;
+    font-size: 0.7rem;
+    font-family: var(--mono, monospace);
+    cursor: pointer;
+  }
+  .prep-chip:hover {
+    background: rgba(24, 82, 118, 0.85);
+    color: #f0f9ff;
   }
 </style>
