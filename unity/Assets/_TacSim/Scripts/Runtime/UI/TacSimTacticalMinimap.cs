@@ -92,6 +92,9 @@ namespace TacSim.UI
         private float _nextRedrawAt;
         private bool _questObjectiveIsTurnIn;
         private bool _questCurrentRoomHasOffer;
+        private string _questStepTag = string.Empty;
+        private bool _questRecoverRigFirst;
+        private bool _questOreHoldReady;
 
         // Cached clickable bounds in UV space `[0,1]` for Station rooms / Ship compartments / Orbital blips
         private readonly List<(Rect uvRect, string id)> _stationRoomHitRects = new List<(Rect, string)>();
@@ -203,6 +206,9 @@ namespace TacSim.UI
             QuestObjectiveRoomEntry = string.Empty;
             _questObjectiveIsTurnIn = false;
             _questCurrentRoomHasOffer = false;
+            _questStepTag = string.Empty;
+            _questRecoverRigFirst = false;
+            _questOreHoldReady = false;
             LastStationMinimapHasQuestBeacon = false;
             LastStationMinimapQuestFloorDelta = 0;
             QuestShipCompartment = string.Empty;
@@ -216,12 +222,19 @@ namespace TacSim.UI
         /// Highlights the active quest target compartment (`bridge`, `bay`, `hold`, `airlock`)
         /// on the Ship Interior Deckplan Minimap with a golden outline, beacon, and header tag.
         /// </summary>
-        public void SetQuestShipCompartment(string compartmentId)
+        public void SetQuestShipCompartment(string compartmentId, string stepTag = null, bool recoverRigFirst = false, bool oreHoldReady = false)
         {
             string normalized = compartmentId ?? string.Empty;
-            if (string.Equals(QuestShipCompartment, normalized, StringComparison.OrdinalIgnoreCase))
+            string normStep = stepTag ?? string.Empty;
+            if (string.Equals(QuestShipCompartment, normalized, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(_questStepTag, normStep, StringComparison.Ordinal) &&
+                _questRecoverRigFirst == recoverRigFirst &&
+                _questOreHoldReady == oreHoldReady)
                 return;
             QuestShipCompartment = normalized;
+            if (stepTag != null) _questStepTag = normStep;
+            _questRecoverRigFirst = recoverRigFirst;
+            _questOreHoldReady = oreHoldReady;
             _nextRedrawAt = 0f;
         }
 
@@ -229,18 +242,21 @@ namespace TacSim.UI
         /// Highlights the active quest objective room (or current-room quest offer) on the Station Minimap
         /// with a golden beacon and cross-deck elevation tag (`▲ D2!` / `▼ D1?`).
         /// </summary>
-        public void SetQuestObjectiveRoom(string roomEntry, bool isTurnIn = false, bool currentRoomHasOffer = false)
+        public void SetQuestObjectiveRoom(string roomEntry, bool isTurnIn = false, bool currentRoomHasOffer = false, string stepTag = null)
         {
             string normalized = roomEntry ?? string.Empty;
+            string normStep = stepTag ?? string.Empty;
             if (string.Equals(QuestObjectiveRoomEntry, normalized, StringComparison.OrdinalIgnoreCase) &&
                 _questObjectiveIsTurnIn == isTurnIn &&
-                _questCurrentRoomHasOffer == currentRoomHasOffer)
+                _questCurrentRoomHasOffer == currentRoomHasOffer &&
+                (stepTag == null || string.Equals(_questStepTag, normStep, StringComparison.Ordinal)))
             {
                 return;
             }
             QuestObjectiveRoomEntry = normalized;
             _questObjectiveIsTurnIn = isTurnIn;
             _questCurrentRoomHasOffer = currentRoomHasOffer;
+            if (stepTag != null) _questStepTag = normStep;
             _nextRedrawAt = 0f;
         }
 
@@ -495,12 +511,18 @@ namespace TacSim.UI
             {
                 string deckTag = InspectedStationFloor == activeFloor ? $"DECK {InspectedStationFloor + 1}" : $"DECK {InspectedStationFloor + 1} (VIEW)";
                 string portName = !string.IsNullOrEmpty(pack.Name) ? pack.Name.ToUpperInvariant() : "STATION";
+                string stepPart = string.IsNullOrEmpty(_questStepTag) ? string.Empty : $" {_questStepTag}";
                 string questTag = string.Empty;
                 if (questRoom != null && LastStationMinimapQuestFloorDelta != 0)
                 {
                     string arrow = LastStationMinimapQuestFloorDelta > 0 ? "▲" : "▼";
                     string sym = _questObjectiveIsTurnIn ? "?" : "!";
-                    questTag = $" [{arrow} D{questRoom.FloorIndex + 1}{sym}]";
+                    questTag = $" [{arrow} D{questRoom.FloorIndex + 1}{sym}{stepPart}]";
+                }
+                else if (questRoom != null && !string.IsNullOrEmpty(_questStepTag))
+                {
+                    string sym = _questObjectiveIsTurnIn ? "?" : "!";
+                    questTag = $" [{sym}{stepPart}]";
                 }
                 _headerText.text = $"{deckTag} — {portName}{questTag}";
             }
@@ -617,10 +639,21 @@ namespace TacSim.UI
 
             if (_headerText != null)
             {
-                string questTag = !string.IsNullOrEmpty(effectiveTarget) &&
-                                  !string.Equals(effectiveTarget, activeId, StringComparison.OrdinalIgnoreCase)
-                    ? $" [→ {effectiveTarget.ToUpperInvariant()}!]"
-                    : string.Empty;
+                string stepPart = string.IsNullOrEmpty(_questStepTag) ? string.Empty : $" {_questStepTag}";
+                string questTag = string.Empty;
+                if (!string.IsNullOrEmpty(effectiveTarget) &&
+                    !string.Equals(effectiveTarget, activeId, StringComparison.OrdinalIgnoreCase))
+                {
+                    if (_questRecoverRigFirst &&
+                        string.Equals(QuestShipCompartment, "bay", StringComparison.OrdinalIgnoreCase))
+                        questTag = $" [RECOVER RIG -> {effectiveTarget.ToUpperInvariant()}!{stepPart}]";
+                    else
+                        questTag = $" [→ {effectiveTarget.ToUpperInvariant()}!{stepPart}]";
+                }
+                else if (_questRecoverRigFirst)
+                {
+                    questTag = $" [RECOVER RIG!{stepPart}]";
+                }
                 _headerText.text = $"HULL DECKPLAN — {(activeId ?? "ABOARD").ToUpperInvariant()}{questTag}";
             }
 
@@ -658,7 +691,10 @@ namespace TacSim.UI
             }
             if (beaconCenter.HasValue)
             {
-                DrawQuestBeaconPx(UvToPx(beaconCenter.Value), isTurnIn: false);
+                Vector2 bPx = UvToPx(beaconCenter.Value);
+                DrawQuestBeaconPx(bPx, isTurnIn: false);
+                if (_questRecoverRigFirst && string.Equals(QuestShipCompartment, "bay", StringComparison.OrdinalIgnoreCase))
+                    DrawCircleOutline(bPx, 11f, new Color32(255, 118, 98, 255));
                 LastShipMinimapHasQuestBeacon = true;
             }
             DrawHeadingArrowUv(activeCenter, playerYawDeg, new Color32(110, 255, 180, 255));
@@ -715,7 +751,16 @@ namespace TacSim.UI
         {
             ClearPixels(new Color32(14, 16, 20, 255));
             if (_headerText != null)
-                _headerText.text = $"QUARRY — {(_surface?.ActiveOreFamily ?? "VOLATILES").ToUpperInvariant()}";
+            {
+                string fam = (_surface?.ActiveOreFamily ?? "VOLATILES").ToUpperInvariant();
+                string stepPart = string.IsNullOrEmpty(_questStepTag) ? string.Empty : $" {_questStepTag}";
+                string qTag = _questRecoverRigFirst
+                    ? $" [RECOVER RIG{stepPart}]"
+                    : (_questOreHoldReady
+                        ? $" [ORE READY{stepPart}]"
+                        : (!string.IsNullOrEmpty(_questStepTag) ? $" [{_questStepTag}]" : string.Empty));
+                _headerText.text = $"QUARRY — {fam}{qTag}";
+            }
 
             var grid = _surface?.TerrainGrid;
             if (grid == null || grid.Width <= 0 || grid.Height <= 0)

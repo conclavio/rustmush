@@ -1395,6 +1395,7 @@ namespace TacSim.Core
         private void SyncMinimapQuestObjective()
         {
             if (Hud?.Minimap == null) return;
+            string stepTag = ResolveCompactQuestStepTag();
             if (Hud.QuestJournal != null &&
                 Hud.QuestJournal.TryGetMinimapObjective(out string roomEntry, out bool isTurnIn, out bool hasOffer))
             {
@@ -1411,19 +1412,39 @@ namespace TacSim.Core
                         minimapRoom = localRoom;
                     }
                 }
-                Hud.Minimap.SetQuestObjectiveRoom(minimapRoom, minimapTurnIn, hasOffer);
+                Hud.Minimap.SetQuestObjectiveRoom(minimapRoom, minimapTurnIn, hasOffer, stepTag);
                 SyncStationQuestBreadcrumb(roomEntry);
             }
             else
             {
-                Hud.Minimap.SetQuestObjectiveRoom(string.Empty, isTurnIn: false, currentRoomHasOffer: false);
+                Hud.Minimap.SetQuestObjectiveRoom(string.Empty, isTurnIn: false, currentRoomHasOffer: false, stepTag: stepTag);
                 SyncStationQuestBreadcrumb(string.Empty);
             }
+        }
+
+        private string ResolveCompactQuestStepTag()
+        {
+            if (Hud?.QuestJournal == null) return string.Empty;
+            var tracked = Hud.QuestJournal.GetTrackedActiveQuest();
+            int step = tracked != null ? TacSimQuestJournal.GuidedStepNumber(tracked.Key) : 0;
+            if (step <= 0 && Hud.QuestJournal.TryGetNextGuidedOffer(out var nextOffer))
+                step = nextOffer.Step;
+            return step > 0 ? $"{step}/7" : string.Empty;
         }
 
         private void SyncStationQuestBreadcrumb(string targetRoomEntry)
         {
             if (Hud == null) return;
+            string stepTag = ResolveCompactQuestStepTag();
+            bool recoverRigFirst = false;
+            bool oreHoldReady = false;
+            var trackedForMinimap = Hud.QuestJournal?.GetTrackedActiveQuest();
+            if (trackedForMinimap != null &&
+                Hud.QuestJournal.TryGetQuestHoldReadinessSummary(trackedForMinimap, out string holdSummary, out _))
+            {
+                recoverRigFirst = holdSummary.StartsWith("[RECOVER RIG FIRST]", StringComparison.Ordinal);
+                oreHoldReady = holdSummary.StartsWith("[ORE HOLD READY]", StringComparison.Ordinal);
+            }
             if (_isAboardShip)
             {
                 bool settledPad = _lastRoomView?.TacSim?.SettledPad == true;
@@ -1437,12 +1458,12 @@ namespace TacSim.Core
                     Hud.QuestJournal == null ||
                     !Hud.QuestJournal.TryGetActiveShipTargetCompartment(dockedPortSlug, out string shipTarget, settledPad: settledPad))
                 {
-                    Hud.Minimap?.SetQuestShipCompartment(string.Empty);
+                    Hud.Minimap?.SetQuestShipCompartment(string.Empty, stepTag, recoverRigFirst, oreHoldReady);
                     Hud.SetQuestExitBreadcrumb(string.Empty, string.Empty, 0);
                     Hud.QuestJournal?.SetTrackerRouteBreadcrumb(string.Empty, string.Empty, 0);
                     return;
                 }
-                Hud.Minimap?.SetQuestShipCompartment(shipTarget);
+                Hud.Minimap?.SetQuestShipCompartment(shipTarget, stepTag, recoverRigFirst, oreHoldReady);
                 string currentComp = !string.IsNullOrEmpty(ShipInterior.ActiveCompartmentId)
                     ? ShipInterior.ActiveCompartmentId
                     : _serverShipCompartment;
@@ -1464,7 +1485,7 @@ namespace TacSim.Core
                 }
                 return;
             }
-            Hud.Minimap?.SetQuestShipCompartment(string.Empty);
+            Hud.Minimap?.SetQuestShipCompartment(string.Empty, stepTag, recoverRigFirst, oreHoldReady);
             bool needsShipExpedition = Hud.QuestJournal != null && Hud.QuestJournal.NeedsSurfaceExpeditionBoarding();
             if (StationWorld == null || (string.IsNullOrEmpty(targetRoomEntry) && !needsShipExpedition))
             {
