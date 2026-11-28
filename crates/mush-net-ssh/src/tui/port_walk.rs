@@ -722,6 +722,10 @@ impl PortWalkState {
     }
 
     #[must_use]
+    pub fn is_aboard_ship(&self) -> bool {
+        self.aboard_ship
+    }
+
     pub fn has_stowage_loaded(&self) -> bool {
         self.stowage_loaded
     }

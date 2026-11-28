@@ -6137,15 +6137,17 @@ impl TuiApp {
             rest
         } else if self.active == CHART_SCREEN && body_area.height >= 6 {
             let tracked = self.quests_overlay.tracked_key.as_deref();
-            let cur_port = self.panels.get(CHART_FEED).and_then(|v| {
+            let vantage_port = self.panels.get(CHART_FEED).and_then(|v| {
                 v.pointer("/chart/vantage/port")
                     .and_then(Value::as_str)
                     .filter(|s| !s.is_empty())
-                    .or_else(|| {
-                        v.pointer("/chart/vantage/body")
-                            .and_then(Value::as_str)
-                            .filter(|s| !s.is_empty())
-                    })
+            });
+            let cur_port = vantage_port.or_else(|| {
+                self.panels.get(CHART_FEED).and_then(|v| {
+                    v.pointer("/chart/vantage/body")
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.is_empty())
+                })
             });
             let tracked_quest = self.quests_snap.ordered_active(tracked).into_iter().next();
             let step_badge = tracked_quest
@@ -6179,20 +6181,35 @@ impl TuiApp {
                     })
                 })
                 .or_else(|| self.quests_snap.next_guided_offer_destination(cur_port));
+            let arrived_at_dest = dest.as_ref().is_some_and(|d| {
+                if qm_raw.is_some()
+                    && !tracked_quest.is_some_and(|q| q.can_finish_now || q.ready_to_finish)
+                {
+                    return false;
+                }
+                vantage_port.is_some_and(|vp| {
+                    let low = vp.trim().to_ascii_lowercase();
+                    let pid = d.port_id.to_ascii_lowercase();
+                    let plbl = d.port_label.to_ascii_lowercase();
+                    !low.is_empty()
+                        && (low == pid || low == plbl || low.contains(&pid) || low.contains(&plbl))
+                })
+            });
             let qm = qm_raw.filter(|m| !m.mine_done);
             if dest.is_some() || qm.is_some() {
                 let [quest_bar, rest] =
                     Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(body_area);
                 let docking_live = self.pixel.docking_active();
+                let (tag_str, tag_col) = if docking_live && dest.is_some() {
+                    (" [QUEST DOCK] ", Color::Yellow)
+                } else if arrived_at_dest {
+                    (" [QUEST ARRIVED] ", Color::Green)
+                } else {
+                    (" [QUEST] ", Color::Yellow)
+                };
                 let mut spans = vec![Span::styled(
-                    if docking_live && dest.is_some() {
-                        " [QUEST DOCK] "
-                    } else {
-                        " [QUEST] "
-                    },
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
+                    tag_str,
+                    Style::default().fg(tag_col).add_modifier(Modifier::BOLD),
                 )];
                 if let Some(dest) = dest {
                     if docking_live {
@@ -6210,6 +6227,30 @@ impl TuiApp {
                             "(+ship/leave once docked)",
                             Style::default().fg(Color::Green),
                         ));
+                    } else if arrived_at_dest {
+                        spans.push(Span::styled(
+                            format!("At {} ", dest.port_label),
+                            Style::default()
+                                .fg(Color::White)
+                                .add_modifier(Modifier::BOLD),
+                        ));
+                        spans.push(Span::styled(
+                            format!("— {}{step_badge}  ", dest.quest_title),
+                            Style::default().fg(Color::Gray),
+                        ));
+                        let action_hint = if tracked_quest.is_some_and(|q| q.can_finish_now) {
+                            "(F11 -> Enter: Turn In [?])"
+                        } else if self.port_walk.is_aboard_ship() {
+                            "(+ship/leave to step ashore)"
+                        } else {
+                            "(F11 for Quest Log)"
+                        };
+                        spans.push(Span::styled(
+                            action_hint,
+                            Style::default()
+                                .fg(Color::Green)
+                                .add_modifier(Modifier::BOLD),
+                        ));
                     } else {
                         spans.push(Span::styled(
                             format!("Destination: {} ", dest.port_label),
@@ -6225,6 +6266,22 @@ impl TuiApp {
                             format!("(+ship/plan {})", dest.port_id),
                             Style::default().fg(Color::Cyan),
                         ));
+                        if let Some(q) = tracked_quest
+                            && let Some(st) = self.port_walk.quest_stowage_telemetry()
+                            && let Some((pf_line, pf_ok)) =
+                                super::quests::QuestsSnapshot::preflight_readiness_line_for(q, &st)
+                        {
+                            spans.push(Span::styled(
+                                format!("  |  {pf_line}"),
+                                Style::default()
+                                    .fg(if pf_ok {
+                                        Color::Green
+                                    } else {
+                                        Color::LightYellow
+                                    })
+                                    .add_modifier(Modifier::BOLD),
+                            ));
+                        }
                     }
                 } else if let Some(ref m) = qm {
                     spans.push(Span::styled(
@@ -15397,5 +15454,88 @@ mod tests {
         let text2 = dump(&painted(&mut app, 260, 32));
         assert!(text2.contains("[ORE HOLD READY]"), "{text2}");
         assert!(!text2.contains("[RECOVER RIG FIRST]"), "{text2}");
+    }
+
+    #[test]
+    fn chart_screen_shows_preflight_before_departure_and_quest_arrived_at_destination() {
+        let mut app = app();
+        let dump = |b: &ratatui::buffer::Buffer| -> String {
+            (0..b.area.height)
+                .map(|y| {
+                    (0..b.area.width)
+                        .map(|x| b[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(PORT_TRADE_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "ship": {
+                    "stowage": {
+                        "cargo_kg": 5000,
+                        "tank_kg": 0,
+                        "stores_days": 0,
+                        "items": [{ "good": "tacsim:metals", "label": "Metals", "qty": 5 }]
+                    }
+                }
+            }),
+        });
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "active": [{
+                    "key": "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+                    "title": "Metals Down the Corridor",
+                    "next_room_entry": "room.p07_receiving",
+                    "checkpoints": [{
+                        "id": "deliver_metals",
+                        "title": "Deliver 5t metals to Stickney Yards",
+                        "instructions": "+ship/plan stickney and sell metals.",
+                        "checked": false,
+                        "live_ready": false
+                    }]
+                }]
+            }),
+        });
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(CHART_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "chart": {
+                    "vantage": { "port": "Ceres Freeport", "body": "ceres" },
+                    "bodies": [],
+                    "routes": []
+                }
+            }),
+        });
+        app.active = CHART_SCREEN;
+
+        // 1. Origin port with 0 fuel/stores -> Destination + [CHECK BEFORE UNDOCK]
+        let txt1 = dump(&painted(&mut app, 240, 28));
+        assert!(txt1.contains("Destination: Stickney Yards"), "{txt1}");
+        assert!(txt1.contains("[CHECK BEFORE UNDOCK]"), "{txt1}");
+
+        // 2. Arrived at Stickney Yards -> [QUEST ARRIVED] At Stickney Yards
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(CHART_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "chart": {
+                    "vantage": { "port": "Stickney Yards", "body": "stickney" },
+                    "bodies": [],
+                    "routes": []
+                }
+            }),
+        });
+        let txt2 = dump(&painted(&mut app, 240, 28));
+        assert!(txt2.contains("[QUEST ARRIVED]"), "{txt2}");
+        assert!(txt2.contains("At Stickney Yards"), "{txt2}");
+        assert!(!txt2.contains("[CHECK BEFORE UNDOCK]"), "{txt2}");
     }
 }
