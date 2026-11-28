@@ -731,6 +731,19 @@ impl QuestsSnapshot {
         }
         None
     }
+
+    /// Returns a verified `+coop/...` action when the tracked active quest asks for Co-op enrollment or Dray-P refit.
+    #[must_use]
+    pub fn active_coop_action(&self, tracked_key: Option<&str>) -> Option<QuestSuggestedAction> {
+        for q in self.ordered_active(tracked_key) {
+            if let Some(act) = Self::suggested_action_for(q)
+                && act.command.starts_with("+coop/")
+            {
+                return Some(act);
+            }
+        }
+        None
+    }
 }
 
 fn str_field(v: &Value, key: &str) -> String {
@@ -1265,12 +1278,21 @@ pub fn render_quest_sheet_lines(
         return Vec::new();
     }
     let header = if let Some(tour) = snap.guided_tour_progress() {
-        format!(
-            "Guided Quests  —  Tour {} {}/{}",
-            tour.progress_bar(),
-            tour.completed,
-            tour.total
-        )
+        if tour.all_done {
+            format!(
+                "Guided Quests  —  Corridor Captain {} {}/{}",
+                tour.progress_bar(),
+                tour.completed,
+                tour.total
+            )
+        } else {
+            format!(
+                "Guided Quests  —  Tour {} {}/{}",
+                tour.progress_bar(),
+                tour.completed,
+                tour.total
+            )
+        }
     } else {
         "Guided Quests".to_string()
     };
@@ -1401,13 +1423,23 @@ pub fn render_quest_overlay(
         ),
     ];
     if let Some(tour) = snap.guided_tour_progress() {
-        tab_spans.push(Span::styled(
+        let label = if tour.all_done {
+            format!(
+                "  Corridor Captain {} {}/{}",
+                tour.progress_bar(),
+                tour.completed,
+                tour.total
+            )
+        } else {
             format!(
                 "  Tour {} {}/{}",
                 tour.progress_bar(),
                 tour.completed,
                 tour.total
-            ),
+            )
+        };
+        tab_spans.push(Span::styled(
+            label,
             Style::default()
                 .fg(if tour.all_done {
                     Color::Green
@@ -1945,5 +1977,27 @@ mod tests {
         assert!(sheet_text.contains("Guided Quests"));
         assert!(sheet_text.contains("First Papers (0/1)"));
         assert!(sheet_text.contains("Completed: 0"));
+
+        // Completing all 7 guided tour quests surfaces Corridor Captain (7/7) mastery
+        let mastered = parse_frame(&json!({
+            "schema": 1,
+            "completed": GUIDED_TOUR_KEYS
+                .iter()
+                .map(|k| json!({ "key": k, "title": "Done" }))
+                .collect::<Vec<_>>()
+        }));
+        let m_tour = mastered.guided_tour_progress().expect("mastered tour");
+        assert!(m_tour.all_done);
+        let m_text: String = render_quest_sheet_lines(&mastered, None)
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(m_text.contains("Corridor Captain [#######] 7/7"));
     }
 }
