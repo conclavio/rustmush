@@ -367,6 +367,57 @@ export function computeQuestWayfinderPoints(
   };
 }
 
+/**
+ * Pure helper computing a 3D world-space floor ribbon polyline between ship interior
+ * compartments along authoritative `ShipUnitTemplate` hatches.
+ */
+export function computeShipQuestWayfinderPoints(
+  template: ShipUnitTemplate,
+  fromCompId: string | null,
+  toCompId: string | null,
+  shipOrigin: THREE.Vector3,
+  floorLiftM = 0.28,
+): QuestWayfinderPath3D | null {
+  if (!fromCompId || !toCompId) return null;
+  const fromComp = resolveCompartmentDef(template, fromCompId);
+  const resolvedToId = template.compartments.has(toCompId)
+    ? toCompId
+    : toCompId === "bay" && template.compartments.has("hold")
+      ? "hold"
+      : toCompId;
+  const destComp = resolveCompartmentDef(template, resolvedToId);
+  if (!fromComp || !destComp || fromComp.id === destComp.id) return null;
+  const hops = findShipExitPath(template, fromComp.id, destComp.id);
+  if (hops.length === 0) return null;
+
+  const points: THREE.Vector3[] = [];
+  const pushCompCenter = (comp: ShipCompartmentDef): void => {
+    const wp = new THREE.Vector3(
+      shipOrigin.x + comp.localCenter.x,
+      shipOrigin.y + comp.localCenter.y - comp.localSize.y * 0.5 + floorLiftM,
+      shipOrigin.z + comp.localCenter.z,
+    );
+    const prev = points[points.length - 1];
+    if (!prev || prev.distanceTo(wp) > 0.2) {
+      points.push(wp);
+    }
+  };
+
+  pushCompCenter(fromComp);
+  for (const hop of hops) {
+    const c = resolveCompartmentDef(template, hop.targetCompartment);
+    if (c) pushCompCenter(c);
+  }
+  if (points.length < 2) return null;
+
+  return {
+    targetRoomEntry: destComp.id,
+    targetRoomName: destComp.name || destComp.id,
+    hopCount: hops.length,
+    points,
+  };
+}
+
 export class TacsimStage3D {
   readonly supported: boolean;
   private readonly headlessDom: boolean;
@@ -734,6 +785,7 @@ export class TacsimStage3D {
     actorComposing: Record<string, boolean>;
     roomMarkers?: ReadonlyArray<StageQuestMarker>;
     questRoomEntry?: string | null;
+    questShipCompartment?: string | null;
     stowageCargoKg: number;
     holotankData: unknown;
   }): void {
@@ -753,6 +805,7 @@ export class TacsimStage3D {
       actorComposing,
       roomMarkers,
       questRoomEntry,
+      questShipCompartment,
       stowageCargoKg,
       holotankData,
     } = params;
@@ -947,15 +1000,28 @@ export class TacsimStage3D {
       ? `ship:${shipTemplate.unitId}:${serverShipCompartment ?? "airlock"}`
       : `station:${stationPack.packId}:${serverStationRoomEntry ?? this.activeStationRoomEntry}`;
     this.syncOccupants(scopeKey, visibleActors, actorSpeech, actorComposing, roomMarkers ?? []);
-    this.syncQuestWayfinder(isAboardShip ? null : (questRoomEntry ?? null));
+    this.syncQuestWayfinder(
+      isAboardShip,
+      questRoomEntry ?? null,
+      questShipCompartment ?? null,
+    );
   }
 
-  private syncQuestWayfinder(targetRoomEntry: string | null): void {
+  private syncQuestWayfinder(
+    isAboardShip: boolean,
+    targetRoomEntry: string | null,
+    targetShipComp: string | null,
+  ): void {
     const pack = this.activeStationPack;
+    const shipTpl = this.activeShipTemplate;
     const fromRoom = this.activeStationRoomEntry ?? this.serverStationRoomEntry;
-    const sig =
-      pack && targetRoomEntry && fromRoom
-        ? `${pack.packId}:${fromRoom}:${targetRoomEntry}`
+    const fromComp = this.activeShipCompartment ?? this.serverShipCompartment;
+    const sig = isAboardShip
+      ? shipTpl && targetShipComp && fromComp
+        ? `ship:${shipTpl.unitId}:${fromComp}:${targetShipComp}`
+        : ""
+      : pack && targetRoomEntry && fromRoom
+        ? `station:${pack.packId}:${fromRoom}:${targetRoomEntry}`
         : "";
     if (sig === this.questWayfinderSig) return;
     this.questWayfinderSig = sig;
@@ -963,14 +1029,25 @@ export class TacsimStage3D {
     this.questWayfinderTargetRoom = null;
     this.questWayfinderHopCount = 0;
 
-    if (!pack || !targetRoomEntry || !fromRoom) return;
-    const route = computeQuestWayfinderPoints(
-      pack,
-      fromRoom,
-      targetRoomEntry,
-      this.originOffsetX,
-      this.originOffsetZ,
-    );
+    let route: QuestWayfinderPath3D | null = null;
+    if (isAboardShip) {
+      if (shipTpl && targetShipComp && fromComp) {
+        route = computeShipQuestWayfinderPoints(
+          shipTpl,
+          fromComp,
+          targetShipComp,
+          this.shipOrigin,
+        );
+      }
+    } else if (pack && targetRoomEntry && fromRoom) {
+      route = computeQuestWayfinderPoints(
+        pack,
+        fromRoom,
+        targetRoomEntry,
+        this.originOffsetX,
+        this.originOffsetZ,
+      );
+    }
     if (!route) return;
 
     const lineGeo = new THREE.BufferGeometry().setFromPoints(route.points);

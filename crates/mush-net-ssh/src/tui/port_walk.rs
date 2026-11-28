@@ -3103,6 +3103,82 @@ impl PortWalkState {
         out
     }
 
+    fn resolved_feed_quest_target(&self) -> Option<String> {
+        if self.aboard_ship {
+            if self.seated_at_helm {
+                return None;
+            }
+            let docked_at_station = self.docked_port_slug().is_some();
+            let docked_at_objective_port = self
+                .docked_port_slug()
+                .zip(
+                    self.quest_room_entry
+                        .as_deref()
+                        .and_then(infer_station_port_from_room_entry),
+                )
+                .is_some_and(|(docked, want)| docked.eq_ignore_ascii_case(want));
+            let mining_blocking = self
+                .quest_mining_status
+                .as_ref()
+                .is_some_and(|m| !m.mine_done);
+            let raw_target = if mining_blocking {
+                if docked_at_station && !self.settled_pad {
+                    "bridge"
+                } else {
+                    "bay"
+                }
+            } else if self.quest_ship_target.as_deref() == Some("airlock")
+                || docked_at_objective_port
+            {
+                "airlock"
+            } else if self.quest_mining_status.is_some() {
+                "bridge"
+            } else {
+                self.quest_ship_target
+                    .as_deref()
+                    .or_else(|| self.quest_dest_port.as_ref().map(|_| "bridge"))?
+            };
+            if self.ship_rooms.iter().any(|r| r.entry_id == raw_target) {
+                Some(raw_target.to_string())
+            } else if raw_target == "bay" && self.ship_rooms.iter().any(|r| r.entry_id == "hold") {
+                Some("hold".to_string())
+            } else {
+                None
+            }
+        } else if self.needs_surface_expedition_boarding() {
+            self.rooms
+                .iter()
+                .find(|r| r.entry_id.to_ascii_lowercase().contains("berth_gallery"))
+                .map(|r| r.entry_id.clone())
+        } else {
+            let raw_target = self.quest_room_entry.as_deref()?;
+            if self.rooms.iter().any(|r| r.entry_id == raw_target) {
+                Some(raw_target.to_string())
+            } else if infer_station_port_from_room_entry(raw_target).is_some() {
+                if self.needs_origin_port_procurement()
+                    && let Some(exchange) = self
+                        .rooms
+                        .iter()
+                        .find(|r| r.entry_id.to_ascii_lowercase().contains("exchange"))
+                        .or_else(|| {
+                            self.rooms.iter().find(|r| {
+                                let low = r.entry_id.to_ascii_lowercase();
+                                low.contains("chandlery") || low.contains("service")
+                            })
+                        })
+                {
+                    return Some(exchange.entry_id.clone());
+                }
+                self.rooms
+                    .iter()
+                    .find(|r| r.entry_id.to_ascii_lowercase().contains("berth_gallery"))
+                    .map(|r| r.entry_id.clone())
+            } else {
+                None
+            }
+        }
+    }
+
     /// Synthesize the [`mush_pixel::station_walk::STATION_WALK_FEED`] JSON keyframe.
     #[must_use]
     pub fn to_feed_value(&self) -> Value {
@@ -3117,14 +3193,13 @@ impl PortWalkState {
             &self.portals
         };
 
+        let feed_quest_target = self.resolved_feed_quest_target();
         let rooms_json: Vec<Value> = active_rooms
             .iter()
             .map(|r| {
-                let is_quest_target = !self.aboard_ship
-                    && self
-                        .quest_room_entry
-                        .as_deref()
-                        .is_some_and(|e| e == r.entry_id);
+                let is_quest_target = feed_quest_target
+                    .as_deref()
+                    .is_some_and(|e| e == r.entry_id);
                 json!({
                     "id": r.entry_id,
                     "name": r.name,
@@ -3136,7 +3211,7 @@ impl PortWalkState {
                     "active": r.entry_id == self.active_location_key,
                     "kind": r.kind,
                     "quest_target": is_quest_target,
-                    "quest_turn_in": is_quest_target && self.quest_room_turn_in,
+                    "quest_turn_in": is_quest_target && !self.aboard_ship && self.quest_room_turn_in,
                 })
             })
             .collect();
@@ -9783,5 +9858,88 @@ mod tests {
             "{rendered}"
         );
         assert!(rendered.contains("[Q] #22"), "{rendered}");
+    }
+
+    #[test]
+    fn to_feed_value_highlights_ship_compartment_and_cross_port_berth_as_quest_target() {
+        let mut st = PortWalkState::new();
+        let make_room = |id: &str, name: &str, mode: Option<&str>, port: Option<&str>| {
+            let mut ambient = std::collections::BTreeMap::new();
+            if mode == Some("interior") {
+                ambient.insert(
+                    "tacsim".into(),
+                    json!({
+                        "mode": "interior",
+                        "compartment": id,
+                        "docked": port.is_some(),
+                        "settled_pad": false,
+                        "port": port.unwrap_or("")
+                    }),
+                );
+            } else {
+                ambient.insert(
+                    "atlas".into(),
+                    json!({
+                        "pack": "neighborhood.ceres_freeport",
+                        "entry": id,
+                        "surface": "station"
+                    }),
+                );
+            }
+            RoomView {
+                id: id.into(),
+                name: name.into(),
+                desc: mush_proto::RichText::plain("Deck."),
+                exits: Vec::new(),
+                contents: Vec::new(),
+                zone: None,
+                ambient,
+            }
+        };
+
+        let find_quest_target_id = |feed: &Value| -> Option<String> {
+            feed.get("rooms")?
+                .as_array()?
+                .iter()
+                .find(|r| r.get("quest_target").and_then(Value::as_bool) == Some(true))
+                .and_then(|r| r.get("id").and_then(Value::as_str))
+                .map(str::to_string)
+        };
+
+        // 1. Ashore at Ceres with off-station Stickney target -> highlights Ceres Berth Gallery in 2.5D feed
+        st.observe_room(
+            &make_room("room.c03_arrivals", "Port Watch Arrivals", None, None),
+            Some("Pilot"),
+        );
+        st.observe_quest_objective_room(Some(("room.p07_receiving".into(), false)));
+        let ashore_feed = st.to_feed_value();
+        assert_eq!(
+            find_quest_target_id(&ashore_feed).as_deref(),
+            Some("room.c01_berth_gallery")
+        );
+
+        // 2. Aboard ship docked at Ceres with destination Stickney -> highlights Bridge compartment in 2.5D feed
+        st.observe_room(
+            &make_room("airlock", "Airlock", Some("interior"), Some("ceres")),
+            Some("Pilot"),
+        );
+        st.observe_quest_ship_target(Some("bridge"));
+        let bridge_feed = st.to_feed_value();
+        assert_eq!(
+            find_quest_target_id(&bridge_feed).as_deref(),
+            Some("bridge")
+        );
+
+        // 3. Docked at Stickney (objective room's port) -> highlights Airlock compartment to cycle ashore
+        st.observe_room(
+            &make_room("passage", "Passage", Some("interior"), Some("stickney")),
+            Some("Pilot"),
+        );
+        st.observe_quest_ship_target(Some("airlock"));
+        let airlock_feed = st.to_feed_value();
+        assert_eq!(
+            find_quest_target_id(&airlock_feed).as_deref(),
+            Some("airlock")
+        );
     }
 }
