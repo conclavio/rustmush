@@ -1015,11 +1015,24 @@
 
       {:else if modal === "npc" && app.tacsim.focusedNpc}
         {@const npc = app.tacsim.focusedNpc}
-        {@const npcQuestMarker = app.quests.roomMarkers.find((m) => m.npcId === npc.id) ?? null}
-        {@const npcHasQuest =
-          npcQuestMarker !== null ||
-          app.quests.available.some((q) => q.giverId === npc.id) ||
-          app.quests.active.some((q) => q.giverId === npc.id || q.turnInId === npc.id)}
+        {@const npcNameLow = npc.name.trim().toLowerCase()}
+        {@const npcQuestMarker =
+          app.quests.roomMarkers.find(
+            (m) => m.npcId === npc.id || m.npcName.trim().toLowerCase() === npcNameLow,
+          ) ?? null}
+        {@const npcOffer =
+          app.quests.available.find(
+            (q) => q.giverId === npc.id || q.giverName.trim().toLowerCase() === npcNameLow,
+          ) ?? null}
+        {@const npcActive =
+          app.quests.active.find(
+            (q) =>
+              q.turnInId === npc.id ||
+              q.giverId === npc.id ||
+              q.turnInName.trim().toLowerCase() === npcNameLow ||
+              q.giverName.trim().toLowerCase() === npcNameLow,
+          ) ?? null}
+        {@const npcHasQuest = npcQuestMarker !== null || npcOffer !== null || npcActive !== null}
         <header class="mhead">
           <div>
             <h2>{npc.name.toUpperCase()}</h2>
@@ -1031,20 +1044,66 @@
           <div class="act-row">
             <button
               type="button"
-              class={npcQuestMarker?.marker === "in_progress" ? "ghost" : "sellbtn"}
+              class={npcQuestMarker?.marker === "in_progress" && !npcActive?.canFinishNow && !npcActive?.canCheckNow ? "ghost" : "sellbtn"}
               onclick={() => {
                 app.tacsim.closeModal();
-                app.quests.openNpcDialog(npc.id);
+                const targetNpcId =
+                  npcQuestMarker?.npcId ||
+                  npcOffer?.giverId ||
+                  npcActive?.turnInId ||
+                  npcActive?.giverId ||
+                  npc.id;
+                if (targetNpcId) {
+                  app.quests.openNpcDialog(targetNpcId);
+                } else if (npcActive) {
+                  app.quests.openQuestDialog(npcActive.key);
+                } else if (npcOffer) {
+                  app.quests.openQuestDialog(npcOffer.key);
+                }
               }}
             >
-              {#if npcQuestMarker?.marker === "available"}
-                [!] Open Quest Dialog{npcQuestMarker.questTitle ? `: ${npcQuestMarker.questTitle}` : ""}
-              {:else if npcQuestMarker?.marker === "turn_in"}
-                [?] Turn In Quest{npcQuestMarker.questTitle ? `: ${npcQuestMarker.questTitle}` : ""}
+              {#if npcQuestMarker?.marker === "available" || npcOffer}
+                [!] Open Quest Dialog{npcQuestMarker?.questTitle || npcOffer?.title ? `: ${npcQuestMarker?.questTitle || npcOffer?.title}` : ""}
+              {:else if npcQuestMarker?.marker === "turn_in" || npcActive?.canFinishNow || npcActive?.readyToFinish}
+                [?] Turn In Quest{npcQuestMarker?.questTitle || npcActive?.title ? `: ${npcQuestMarker?.questTitle || npcActive?.title}` : ""}
               {:else}
-                [?] Open Quest Dialog
+                [?] Open Quest Dialog{npcActive?.title ? `: ${npcActive.title}` : ""}
               {/if}
             </button>
+            {#if npcActive?.canFinishNow && npcActive.finishCmd}
+              <button
+                type="button"
+                class="buybtn"
+                onclick={() => {
+                  onCmd(npcActive.finishCmd);
+                  app.tacsim.closeModal();
+                }}
+              >
+                [?] Complete Now
+              </button>
+            {:else if npcActive?.canCheckNow && npcActive.checkCmd}
+              <button
+                type="button"
+                class="buybtn"
+                onclick={() => {
+                  onCmd(npcActive.checkCmd);
+                  app.tacsim.closeModal();
+                }}
+              >
+                [◆] Verify Step
+              </button>
+            {:else if npcOffer?.acceptCmd}
+              <button
+                type="button"
+                class="buybtn"
+                onclick={() => {
+                  onCmd(npcOffer.acceptCmd);
+                  app.tacsim.closeModal();
+                }}
+              >
+                [!] Accept Now
+              </button>
+            {/if}
           </div>
         {/if}
         <div class="topic-list">

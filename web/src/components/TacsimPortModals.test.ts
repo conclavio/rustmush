@@ -243,4 +243,79 @@ describe("TacsimPortModals Dray-P Vehicle Bay and Co-op Refit quest guidance", (
     render(TacsimPortModals, { props: { app: atPortApp, onCmd: vi.fn() } });
     expect(screen.queryByRole("status", { name: "active quest destination" })).toBeNull();
   });
+
+  it("shows direct Accept Now and Complete Now quest buttons in NPC Talk modal with name-fallback matching", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      room_markers: [
+        { npc_id: "#18", npc_name: "Maren Halvorsen", marker: "available", quest_title: "First Papers at the Registry" },
+      ],
+      available: [
+        {
+          key: GUIDED_TOUR_KEYS[0],
+          title: "First Papers at the Registry",
+          giver_id: "#18",
+          giver_name: "Maren Halvorsen",
+          turn_in_id: "#19",
+          turn_in_name: "Ilse Oduya-Brandt",
+          accept_cmd: "+quest/accept #18=tok1",
+          checkpoints: [],
+        },
+      ],
+      active: [],
+      completed: [],
+    });
+
+    const offerApp = makeApp(quests, "trade");
+    (offerApp.tacsim as unknown as { activeModal: string; focusedNpc: { id: string; name: string; bio: string } }).activeModal = "npc";
+    (offerApp.tacsim as unknown as { focusedNpc: { id: string; name: string; bio: string } }).focusedNpc = {
+      id: "pack-maren",
+      name: "Maren Halvorsen",
+      bio: "Port Watch clerk",
+    };
+    const onCmd1 = vi.fn();
+    const first = render(TacsimPortModals, { props: { app: offerApp, onCmd: onCmd1 } });
+    expect(screen.getByRole("button", { name: /\[!\] Open Quest Dialog: First Papers at the Registry/i })).toBeTruthy();
+    await fireEvent.click(screen.getByRole("button", { name: /\[!\] Accept Now/i }));
+    expect(onCmd1).toHaveBeenCalledWith("+quest/accept #18=tok1");
+    expect(offerApp.tacsim.closeModal).toHaveBeenCalled();
+    first.unmount();
+
+    // Ready-to-finish active quest on Ilse -> shows [?] Turn In Quest + [?] Complete Now
+    quests.applyFrame({
+      schema: 1,
+      room_markers: [
+        { npc_id: "#19", npc_name: "Ilse Oduya-Brandt", marker: "turn_in", quest_title: "First Papers at the Registry" },
+      ],
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[0],
+          title: "First Papers at the Registry",
+          giver_id: "#18",
+          giver_name: "Maren Halvorsen",
+          turn_in_id: "#19",
+          turn_in_name: "Ilse Oduya-Brandt",
+          ready_to_finish: true,
+          can_finish_now: true,
+          finish_cmd: "+quest/finish #19=tok2",
+          checkpoints: [],
+        },
+      ],
+      available: [],
+      completed: [],
+    });
+    const finishApp = makeApp(quests, "trade");
+    (finishApp.tacsim as unknown as { activeModal: string; focusedNpc: { id: string; name: string; bio: string } }).activeModal = "npc";
+    (finishApp.tacsim as unknown as { focusedNpc: { id: string; name: string; bio: string } }).focusedNpc = {
+      id: "pack-ilse",
+      name: "Ilse Oduya-Brandt",
+      bio: "Co-op Registrar",
+    };
+    const onCmd2 = vi.fn();
+    render(TacsimPortModals, { props: { app: finishApp, onCmd: onCmd2 } });
+    expect(screen.getByRole("button", { name: /\[?\] Turn In Quest: First Papers at the Registry/i })).toBeTruthy();
+    await fireEvent.click(screen.getByRole("button", { name: /\[?\] Complete Now/i }));
+    expect(onCmd2).toHaveBeenCalledWith("+quest/finish #19=tok2");
+  });
 });
