@@ -53,7 +53,7 @@ use super::quests::{
     QUESTS_FEED, QuestMilestoneKind, QuestMilestoneTracker, QuestOverlayAction, QuestOverlayState,
     QuestTab, QuestsSnapshot, guided_step_badge, is_guided_quest,
     parse_frame as parse_quests_frame, parse_room_markers, render_quest_overlay_full,
-    render_quest_sheet_lines, render_quest_tracker_lines_full,
+    render_quest_sheet_lines_with_stowage, render_quest_tracker_lines_full,
 };
 use super::render::{
     BODY_GROUND_FEED, CHART_FEED, Entry, GUTTER_W, PaneRow, PaneRows, RenderCtx, SITE_MAP_FEED,
@@ -5668,7 +5668,12 @@ impl TuiApp {
                 Some(data) => {
                     let mut rows = render_sheet_rows(data, &ctx);
                     let tracked = self.quests_overlay.tracked_key.as_deref();
-                    for line in render_quest_sheet_lines(&self.quests_snap, tracked) {
+                    let stow = self.port_walk.quest_stowage_telemetry();
+                    for line in render_quest_sheet_lines_with_stowage(
+                        &self.quests_snap,
+                        tracked,
+                        stow.as_ref(),
+                    ) {
                         rows.rows.push(PaneRow::plain(line));
                     }
                     rows
