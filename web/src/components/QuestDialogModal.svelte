@@ -4,6 +4,7 @@
   import type { GameApp } from "$lib/game.svelte";
   import {
     GUIDED_TOUR_KEYS,
+    evaluateCheckpointLiveBadge,
     evaluateSailingPreflightReadiness,
     extractActiveDestinationPort,
     extractActiveSurfaceMiningStatus,
@@ -324,10 +325,18 @@
           <h3>Objectives</h3>
           <ul class="steps">
             {#each selectedActive.checkpoints as cp (cp.id)}
-              <li class="step" class:done={cp.checked} class:ready={!cp.checked && cp.liveReady}>
+              {@const liveBadge = evaluateCheckpointLiveBadge(cp, liveStowage)}
+              <li
+                class="step"
+                class:done={cp.checked}
+                class:ready={!cp.checked && (cp.liveReady || liveBadge?.kind === "ready")}
+              >
                 <div class="step-head">
-                  <span class="step-icon">{cp.checked ? "✓" : cp.liveReady ? "◆" : "○"}</span>
+                  <span class="step-icon">{cp.checked ? "✓" : cp.liveReady || liveBadge?.kind === "ready" ? "◆" : "○"}</span>
                   <strong>{cp.title}</strong>
+                  {#if liveBadge}
+                    <span class="cp-live-badge" data-kind={liveBadge.kind}>{liveBadge.label}</span>
+                  {/if}
                   {#if cp.roomName}<span class="room-tag">{cp.roomName}</span>{/if}
                 </div>
                 {#if cp.detailText}
@@ -718,8 +727,13 @@
                 <p class="next-line">Next: {item.nextStep}{#if item.nextRoomName} · <em>{item.nextRoomName}</em>{/if}</p>
                 <div class="qcard-steps">
                   {#each item.checkpoints as cp (cp.id)}
-                    <span class="mini-step" class:done={cp.checked} class:ready={!cp.checked && cp.liveReady}>
-                      {cp.checked ? "✓" : cp.liveReady ? "◆" : "○"} {cp.title}
+                    {@const liveBadge = evaluateCheckpointLiveBadge(cp, liveStowage)}
+                    <span
+                      class="mini-step"
+                      class:done={cp.checked}
+                      class:ready={!cp.checked && (cp.liveReady || liveBadge?.kind === "ready")}
+                    >
+                      {cp.checked ? "✓" : cp.liveReady || liveBadge?.kind === "ready" ? "◆" : "○"} {cp.title}{#if liveBadge}{" "}<span class="cp-live-badge" data-kind={liveBadge.kind}>{liveBadge.label}</span>{/if}
                     </span>
                   {/each}
                 </div>
@@ -1387,5 +1401,25 @@
     font-weight: 700;
     font-size: 0.82rem;
     text-align: center;
+  }
+  .cp-live-badge {
+    font-family: var(--mono, monospace);
+    font-size: 0.68rem;
+    font-weight: 700;
+    padding: 0.05rem 0.36rem;
+    border-radius: 4px;
+    border: 1px solid rgba(251, 191, 36, 0.5);
+    background: rgba(78, 56, 12, 0.45);
+    color: #fde68a;
+  }
+  .cp-live-badge[data-kind="ready"] {
+    border-color: rgba(52, 211, 153, 0.65);
+    background: rgba(16, 74, 52, 0.5);
+    color: #6ee7b7;
+  }
+  .cp-live-badge[data-kind="blocked"] {
+    border-color: rgba(248, 113, 113, 0.55);
+    background: rgba(92, 24, 24, 0.45);
+    color: #fca5a5;
   }
 </style>

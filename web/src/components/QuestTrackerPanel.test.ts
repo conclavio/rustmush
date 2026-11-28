@@ -1005,4 +1005,65 @@ describe("QuestTrackerPanel route step, guided tour pill, and quick-accept", () 
     const routeToRegistry = screen.getByRole("button", { name: /Walk →/i });
     expect(routeToRegistry.getAttribute("title")).toContain("Registry");
   });
+
+  it("renders per-checkpoint live [STOWED] and partial progress badges in the expanded Quest Tracker", () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#18",
+      room_name: "Co-op Chandlery",
+      room_markers: [],
+      available: [],
+      completed: [],
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[1],
+          title: "Stock the Locker and Tanks",
+          next_room_entry: "room.c08_chandlery",
+          next_step: "Buy provisions and propellant.",
+          checkpoints: [
+            {
+              id: "buy_provisions",
+              title: "Buy 10 provisions",
+              instructions: "Buy 10 provisions at Chandlery.",
+              room_name: "Co-op Chandlery",
+              checked: false,
+              live_ready: false,
+            },
+            {
+              id: "buy_propellant",
+              title: "Buy 5t propellant",
+              instructions: "Buy 5t propellant at Exchange.",
+              room_name: "Exchange Hall",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+    const app = {
+      quests,
+      tacsim: {
+        isAboardShip: false,
+        view3dOpen: false,
+        physicalLocationKey: null,
+        serverStationRoomEntry: "room.c08_chandlery",
+        stationPack: buildFallbackFreeport(),
+        ambient: {
+          ownStowage: {
+            cargoKg: 0,
+            propellantKg: 3_000,
+            provisionsCrewDays: 10,
+            cargoLines: [],
+          },
+        },
+      },
+      focusComposer: vi.fn(),
+    } as unknown as GameApp;
+
+    const view = render(QuestTrackerPanel, { props: { app, onCmd: vi.fn() } });
+    expect(view.container.textContent).toContain("[STOWED]");
+    expect(view.container.textContent).toContain("[3/5t]");
+  });
 });
