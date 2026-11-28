@@ -297,4 +297,100 @@ describe("ChartScreen quest destination guidance", () => {
     await fireEvent.click(screen.getByRole("button", { name: /Step Ashore \(\+ship\/leave\)/i }));
     expect(focusComposer).toHaveBeenCalledWith("+ship/leave");
   });
+
+  it("shows cargo-aware pre-flight and guards Step 6 post-mine ChartScreen with [RECOVER RIG FIRST] until ore is stowed", async () => {
+    const raw = skyChartFixture() as { chart: { vantage: { port: string; body: string } } };
+    const chart = new ChartStore();
+    chart.applyKeyframe(raw);
+    const quests = new QuestsStore();
+    const focusComposer = vi.fn();
+
+    // 1. Step 3 with fuel & stores OK but 0/5 metals -> [CHECK BEFORE UNDOCK] with ✗ metals 0/5
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+          title: "Metals Down the Corridor",
+          next_room_entry: "room.p07_receiving",
+          checkpoints: [
+            {
+              id: "deliver_metals",
+              title: "Deliver 5t metals to Stickney Yards",
+              instructions: "Buy 5t metals (+market/buy metals 5) then +ship/plan stickney and sell.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+    const ownStowage = {
+      cargoKg: 0,
+      propellantKg: 10_000,
+      provisionsCrewDays: 10,
+      cargoLines: [] as Array<{ good: string; label: string; qty: number }>,
+    };
+    const app = {
+      chart,
+      quests,
+      tacsim: {
+        selectedDestination: "ceres",
+        ambient: { ownStowage, settledPad: false },
+      },
+      focusComposer,
+    } as unknown as GameApp;
+
+    const r1 = render(ChartScreen, { props: { app } });
+    const pfMissing = await screen.findByLabelText("chart sailing preflight");
+    expect(pfMissing.textContent).toContain("[CHECK BEFORE UNDOCK]");
+    expect(pfMissing.textContent).toContain("✗ metals 0/5");
+    r1.unmount();
+
+    ownStowage.cargoKg = 5000;
+    ownStowage.cargoLines = [{ good: "tacsim:metals", label: "Metals", qty: 5 }];
+    const r2 = render(ChartScreen, { props: { app } });
+    const pfOk = await screen.findByLabelText("chart sailing preflight");
+    expect(pfOk.textContent).toContain("[PRE-FLIGHT OK]");
+    expect(pfOk.textContent).toContain("✓ metals 5/5");
+    r2.unmount();
+
+    // 2. Step 6 post-mine with 0t ore stowed (even with Ceres vantage & settledPad) -> [RECOVER RIG FIRST] (+tv/1 recover go)
+    ownStowage.cargoKg = 0;
+    ownStowage.cargoLines = [];
+    (app.tacsim.ambient as { settledPad: boolean }).settledPad = true;
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+          title: "Scan, Sound, and Mine a Landing Site",
+          next_room_entry: "room.c07_exchange",
+          checkpoints: [
+            { id: "scan_landing_site", title: "Scan site", checked: true, live_ready: true },
+            { id: "sound_pocket", title: "Sound pocket", checked: true, live_ready: true },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", checked: true, live_ready: true },
+          ],
+        },
+      ],
+    });
+    const r3 = render(ChartScreen, { props: { app } });
+    const bRecover = await screen.findByRole("status", { name: "active quest destination" });
+    expect(bRecover.textContent).toContain("[RECOVER RIG FIRST] Step 6/7");
+    expect(screen.queryByRole("button", { name: "Plan +ship/plan ceres" })).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: /Recover Rig \(\+tv\/1 recover go\)/i }));
+    expect(focusComposer).toHaveBeenCalledWith("+tv/1 recover go");
+    r3.unmount();
+
+    // 3. Rig recovered (1t carbon_ore stowed) -> [ORE HOLD READY] Return to: Ceres Freeport + Plan +ship/plan ceres
+    focusComposer.mockClear();
+    ownStowage.cargoKg = 1000;
+    ownStowage.cargoLines = [{ good: "tacsim:carbon_ore", label: "Carbon Ore", qty: 1 }];
+    render(ChartScreen, { props: { app } });
+    const bReady = await screen.findByRole("status", { name: "active quest destination" });
+    expect(bReady.textContent).toContain("[ORE HOLD READY] Step 6/7");
+    expect(bReady.textContent).toContain("Return to: Ceres Freeport");
+    await fireEvent.click(screen.getByRole("button", { name: "Plan +ship/plan ceres" }));
+    expect(focusComposer).toHaveBeenCalledWith("+ship/plan ceres");
+  });
 });
