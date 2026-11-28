@@ -12020,5 +12020,83 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void CommandPalette_SurfacesQuestRouteNextStepFinishAndCycleTracked()
+        {
+            var rootGo = new UnityEngine.GameObject("CommandPaletteQuestShortcutsTestRoot");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.CommandPalette.BindQuestJournal(hud.QuestJournal);
+
+                var executed = new List<string>();
+                var prefilled = new List<string>();
+                hud.CommandPalette.OnCommandRequested += cmd => executed.Add(cmd);
+                hud.CommandPalette.OnPrefillCommandRequested += cmd => prefilled.Add(cmd);
+
+                var panelJson = JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#18"",
+                    ""room_name"": ""Stickney Yard Gate"",
+                    ""active"": [
+                        {
+                            ""key"": ""q.refit"",
+                            ""title"": ""Refit the Dray"",
+                            ""next_step"": ""Refit your Dray at Stickney Yards (+coop/refit prospector)"",
+                            ""next_instructions"": ""Use +coop/refit prospector with an empty hold."",
+                            ""checkpoints"": []
+                        },
+                        {
+                            ""key"": ""q.sell"",
+                            ""title"": ""Sell Carbon Ore"",
+                            ""turn_in_name"": ""Kowalski"",
+                            ""next_step"": ""Turn in to Kowalski"",
+                            ""ready_to_finish"": true,
+                            ""can_finish_now"": true,
+                            ""finish_cmd"": ""+quest/finish q.sell"",
+                            ""checkpoints"": []
+                        }
+                    ],
+                    ""available"": []
+                }");
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(panelJson));
+
+                // 1. Suggested step prefills +coop/refit prospector
+                hud.CommandPalette.SetOpen(true);
+                hud.CommandPalette.SetQuery("quest step next refit");
+                Assert.Greater(hud.CommandPalette.FilteredMatchCount, 0);
+                Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
+                Assert.Contains("+coop/refit prospector", prefilled);
+
+                // 2. Live route breadcrumb (+ship/board) appears and executes +ship/board
+                hud.QuestJournal.SetTrackerRouteBreadcrumb("Board Ship", "+ship/board", 1);
+                hud.CommandPalette.SetOpen(true);
+                hud.CommandPalette.SetQuery("quest route board ship");
+                Assert.Greater(hud.CommandPalette.FilteredMatchCount, 0);
+                StringAssert.Contains("Board Ship", hud.CommandPalette.SelectedEntryTitle);
+                Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
+                Assert.Contains("+ship/board", executed);
+
+                // 3. Cycle Tracked Quest advances to q.sell
+                hud.CommandPalette.SetOpen(true);
+                hud.CommandPalette.SetQuery("cycle tracked quest");
+                Assert.Greater(hud.CommandPalette.FilteredMatchCount, 0);
+                Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
+                Assert.AreEqual("q.sell", hud.QuestJournal.TrackedQuestKey);
+
+                // 4. Finish Now dispatches +quest/finish q.sell
+                hud.CommandPalette.SetOpen(true);
+                hud.CommandPalette.SetQuery("finish now sell carbon");
+                Assert.Greater(hud.CommandPalette.FilteredMatchCount, 0);
+                Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
+                Assert.Contains("+quest/finish q.sell", executed);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
