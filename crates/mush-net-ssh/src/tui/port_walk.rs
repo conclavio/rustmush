@@ -26,8 +26,8 @@ use serde_json::{Value, json};
 use super::backend::sanitize_control_sequences as sanitize;
 use super::keys::{Arrow, Key};
 use super::quests::{
-    QuestDestinationHint, QuestMarker, QuestSuggestedAction, QuestTradeNeed,
-    infer_station_port_from_room_entry, parse_room_markers,
+    QuestDestinationHint, QuestMarker, QuestSuggestedAction, QuestSurfaceMiningStatus,
+    QuestTradeNeed, infer_station_port_from_room_entry, parse_room_markers,
 };
 
 /// Panel/query name for port trade & stowage telemetry.
@@ -497,6 +497,7 @@ pub struct PortWalkState {
     quest_room_turn_in: bool,
     quest_ship_target: Option<String>,
     quest_coop_action: Option<QuestSuggestedAction>,
+    quest_mining_status: Option<QuestSurfaceMiningStatus>,
     speech_bubbles: HashMap<String, (String, Instant)>,
     interactables: Vec<InteractableTarget>,
     focus_idx: usize,
@@ -605,6 +606,7 @@ impl PortWalkState {
             quest_room_turn_in: false,
             quest_ship_target: None,
             quest_coop_action: None,
+            quest_mining_status: None,
             speech_bubbles: HashMap::new(),
             interactables: Vec::new(),
             focus_idx: 0,
@@ -915,9 +917,14 @@ impl PortWalkState {
         self.bump_scene();
     }
 
-    /// Sync active Co-op enrollment / Dray-P refit quest action for the Co-op drawer.
+    /// Sync active Co-op enrollment / Dray-P refit quest action for the Co-op & Works drawers.
     pub fn observe_quest_coop_action(&mut self, action: Option<QuestSuggestedAction>) {
         self.quest_coop_action = action;
+    }
+
+    /// Sync active surface prospecting quest status for Vehicle Bay HUD guidance.
+    pub fn observe_quest_mining_status(&mut self, status: Option<QuestSurfaceMiningStatus>) {
+        self.quest_mining_status = status;
     }
 
     /// Active quest corridor destination hint (e.g., Stickney Yards), if any.
@@ -3049,6 +3056,23 @@ impl PortWalkState {
             ));
         }
         if self.aboard_ship
+            && self.active_location_key == "bay"
+            && let Some(qm) = &self.quest_mining_status
+        {
+            let chk = |done: bool| if done { "[x]" } else { "[ ]" };
+            let rig_cmd = if qm.mine_done {
+                "+tv/1 recover go"
+            } else {
+                "+tv/1 launch go"
+            };
+            top.push_str(&format!(
+                "  |  [QUEST] Rig Bay: {} Scan {} Sound {} Mine {} ({rig_cmd})",
+                chk(qm.scan_done),
+                chk(qm.sound_done),
+                chk(qm.mine_done),
+                qm.target_ore_slug
+            ));
+        } else if self.aboard_ship
             && let Some(dest) = &self.quest_dest_port
         {
             top.push_str(&format!("  |  [QUEST] Dest: {}", dest.port_label));
@@ -3313,6 +3337,14 @@ impl PortWalkState {
                 Key::Char('m') => {
                     out.commands.push("+market/mine".to_string());
                     self.push_drawer_log("> +market/mine".to_string());
+                }
+                Key::Char('p') => {
+                    if let Some(ref act) = self.quest_coop_action
+                        && act.command.starts_with("+coop/refit")
+                    {
+                        out.commands.push(act.command.clone());
+                        self.push_drawer_log(format!("> {}", act.command));
+                    }
                 }
                 Key::Enter => {
                     if let Some(&(label, cmd)) = DOC48_INDUSTRY_ACTIONS.get(self.cursor_row) {
@@ -4860,6 +4892,52 @@ impl PortWalkState {
                 }
             }
             PortDrawerKind::Industry => {
+                if let Some(ref act) = self.quest_coop_action
+                    && act.command.starts_with("+coop/refit")
+                {
+                    lines.push(Line::from(Span::styled(
+                        truncate_str(
+                            "[QUEST] Refit Dray-P Prospector (press p: +coop/refit prospector)",
+                            inner_w,
+                        ),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                    if let Some(refit) = self.quest_refit_hold_readiness() {
+                        let (msg, col) = if refit.ready {
+                            (
+                                format!(
+                                    "[READY] Hold empty | Stores empty | Tank {}t OK",
+                                    refit.propellant_tonnes
+                                ),
+                                Color::Green,
+                            )
+                        } else {
+                            let cargo_txt = if refit.cargo_empty {
+                                "OK".to_string()
+                            } else {
+                                format!("{}t", (refit.cargo_kg + 999) / 1000)
+                            };
+                            let stores_txt = if refit.provisions_empty {
+                                "OK".to_string()
+                            } else {
+                                format!("{}d", refit.provisions_days)
+                            };
+                            (
+                                format!(
+                                    "[CLEAR HOLD] Cargo: {cargo_txt} | Stores: {stores_txt} (Tank {}t OK)",
+                                    refit.propellant_tonnes
+                                ),
+                                Color::LightYellow,
+                            )
+                        };
+                        lines.push(Line::from(Span::styled(
+                            truncate_str(&msg, inner_w),
+                            Style::default().fg(col).add_modifier(Modifier::BOLD),
+                        )));
+                    }
+                }
                 lines.push(Line::from(Span::styled(
                     truncate_str(
                         "Works, Yard & 24wk — Up/Dn Enter:run  m:+market/mine",
@@ -8624,6 +8702,83 @@ mod tests {
         assert_eq!(leave_hop.next_room_name, "Cycle Ashore");
         assert_eq!(leave_hop.next_exit_command, "+ship/leave");
         assert_eq!(leave_hop.hops, 1);
+    }
+
+    #[test]
+    fn vehicle_bay_hud_shows_quest_mining_checklist_and_works_drawer_handles_refit_hotkey() {
+        let mut st = PortWalkState::new();
+        let now = Instant::now();
+        st.aboard_ship = true;
+        st.active_location_key = "bay".into();
+        st.observe_quest_mining_status(Some(QuestSurfaceMiningStatus {
+            quest_title: "Scan, Sound, and Mine a Landing Site".into(),
+            target_ore_slug: "carbon_ore".into(),
+            recommended_family: "carbon".into(),
+            scan_done: true,
+            sound_done: false,
+            mine_done: false,
+        }));
+        let (bay_top, _) = st.hud_lines("kitty");
+        assert!(
+            bay_top.contains(
+                "[QUEST] Rig Bay: [x] Scan [ ] Sound [ ] Mine carbon_ore (+tv/1 launch go)"
+            ),
+            "expected vehicle bay rig quest strip in HUD: {bay_top}"
+        );
+
+        // Once mine_done is true, HUD flips command cue to +tv/1 recover go
+        st.observe_quest_mining_status(Some(QuestSurfaceMiningStatus {
+            quest_title: "Scan, Sound, and Mine a Landing Site".into(),
+            target_ore_slug: "carbon_ore".into(),
+            recommended_family: "carbon".into(),
+            scan_done: true,
+            sound_done: true,
+            mine_done: true,
+        }));
+        let (bay_done_top, _) = st.hud_lines("kitty");
+        assert!(
+            bay_done_top.contains("(+tv/1 recover go)"),
+            "expected recover cue once mine_done: {bay_done_top}"
+        );
+
+        // Works & Yard drawer renders Step 5 refit banner + empty-hold readiness and dispatches on 'p'
+        st.stowage_loaded = true;
+        st.stowage.cargo_kg = 0;
+        st.stowage.stores_days = 0;
+        st.stowage.reaction_kg = 10_000;
+        st.observe_quest_coop_action(Some(QuestSuggestedAction {
+            label: "Refit Dray-P".into(),
+            command: "+coop/refit prospector".into(),
+        }));
+        let mut queries = Vec::new();
+        st.open_drawer(PortDrawerKind::Industry, &[], &mut queries, now);
+        let backend = ratatui::backend::TestBackend::new(88, 16);
+        let mut term = ratatui::Terminal::new(backend).expect("test terminal");
+        term.draw(|f| st.draw_drawer_box(f, f.area(), true))
+            .expect("draw works drawer");
+        let rendered: String = term
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            rendered.contains("[QUEST] Refit Dray-P Prospector"),
+            "expected refit banner in Works drawer: {rendered}"
+        );
+        assert!(
+            rendered.contains("[READY] Hold empty | Stores empty | Tank 10t OK"),
+            "expected ready refit hold line in Works drawer: {rendered}"
+        );
+
+        let out = st.handle_key(Key::Char('p'), false, false, &[], now);
+        assert!(out.consumed);
+        assert!(
+            out.commands.iter().any(|c| c == "+coop/refit prospector"),
+            "pressing p in Works drawer must submit '+coop/refit prospector', got {:?}",
+            out.commands
+        );
     }
 
     #[test]
