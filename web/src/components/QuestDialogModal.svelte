@@ -18,6 +18,7 @@
 
   const q = $derived(app.quests);
   const tour = $derived(q.guidedTourProgress);
+  const roadmap = $derived(tour ? q.guidedTourRoadmap : []);
 
   function prefillAndClose(cmd: string): void {
     confirmAbandonKey = null;
@@ -399,13 +400,45 @@
                 : `${tour.completed}/${tour.total} complete${tour.currentStep ? ` · Step ${tour.currentStep}` : ""}`}
             </span>
           </div>
-          <div class="tour-pips" role="presentation">
-            {#each [1, 2, 3, 4, 5, 6, 7] as stepNum (stepNum)}
-              <span
-                class="tour-pip"
-                class:done={stepNum <= tour.completed}
-                class:current={!tour.allDone && tour.currentStep === stepNum}
-              ></span>
+          <div class="tour-pips" role="group" aria-label="Guided corridor tour steps">
+            {#each roadmap as step (step.key)}
+              {@const clickable = step.status === "active" || step.status === "available"}
+              {@const badge =
+                step.status === "completed"
+                  ? "✓"
+                  : step.status === "active"
+                    ? step.readyToTurnIn
+                      ? "?"
+                      : "▸"
+                    : step.status === "available"
+                      ? "!"
+                      : "○"}
+              {@const tip = `Step ${step.step}/7 · ${step.shortLabel} · ${step.giverLabel} (${step.locationLabel})`}
+              {#if clickable}
+                <button
+                  type="button"
+                  class="tour-step"
+                  class:done={step.status === "completed"}
+                  class:current={step.status === "active"}
+                  class:ready={step.readyToTurnIn}
+                  class:avail={step.status === "available"}
+                  title={`${tip} — click to open quest dialog`}
+                  onclick={() => q.openQuestDialog(step.key)}
+                >
+                  <span class="tour-step-badge">{badge}</span>
+                  <span class="tour-step-name">{step.step}. {step.shortLabel}</span>
+                </button>
+              {:else}
+                <span
+                  class="tour-step"
+                  class:done={step.status === "completed"}
+                  class:upcoming={step.status === "upcoming"}
+                  title={tip}
+                >
+                  <span class="tour-step-badge">{badge}</span>
+                  <span class="tour-step-name">{step.step}. {step.shortLabel}</span>
+                </span>
+              {/if}
             {/each}
           </div>
         </div>
@@ -874,20 +907,57 @@
     font-family: var(--mono, monospace);
   }
   .tour-pips {
-    display: grid;
-    grid-template-columns: repeat(7, 1fr);
+    display: flex;
+    flex-wrap: wrap;
     gap: 0.3rem;
   }
-  .tour-pip {
-    height: 5px;
-    border-radius: 999px;
-    background: rgba(148, 163, 184, 0.25);
+  .tour-step {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    padding: 0.18rem 0.45rem;
+    border-radius: 5px;
+    border: 1px solid rgba(148, 163, 184, 0.25);
+    background: rgba(15, 23, 42, 0.55);
+    color: var(--fg-muted, #94a3b8);
+    font: inherit;
+    font-size: 0.72rem;
+    line-height: 1.2;
   }
-  .tour-pip.done {
-    background: #34d399;
+  button.tour-step {
+    cursor: pointer;
   }
-  .tour-pip.current {
-    background: #fbbf24;
+  button.tour-step:hover {
+    filter: brightness(1.15);
+  }
+  .tour-step.done {
+    border-color: rgba(52, 211, 153, 0.55);
+    background: rgba(16, 185, 129, 0.16);
+    color: #6ee7b7;
+  }
+  .tour-step.current {
+    border-color: rgba(251, 191, 36, 0.75);
+    background: rgba(212, 166, 74, 0.22);
+    color: #fde68a;
+    font-weight: 700;
+  }
+  .tour-step.current.ready {
+    border-color: #34d399;
+    background: rgba(16, 185, 129, 0.24);
+    color: #a7f3d0;
+  }
+  .tour-step.avail {
+    border-color: rgba(250, 204, 21, 0.7);
+    background: rgba(250, 204, 21, 0.14);
+    color: #fef08a;
+    font-weight: 700;
+  }
+  .tour-step.upcoming {
+    opacity: 0.68;
+  }
+  .tour-step-badge {
+    font-family: var(--mono, monospace);
+    font-weight: 800;
   }
   .prep-strip {
     display: flex;

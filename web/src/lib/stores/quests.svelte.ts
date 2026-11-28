@@ -346,20 +346,107 @@ export interface GuidedTourProgress {
   allDone: boolean;
 }
 
+export type GuidedTourStepStatus = "completed" | "active" | "available" | "upcoming";
+
+export interface GuidedTourRoadmapStep {
+  step: number;
+  key: string;
+  shortLabel: string;
+  giverLabel: string;
+  locationLabel: string;
+  status: GuidedTourStepStatus;
+  readyToTurnIn: boolean;
+}
+
 export interface QuestSuggestedAction {
   label: string;
   command: string;
 }
 
-export const GUIDED_TOUR_KEYS: readonly string[] = [
-  "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
-  "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel",
-  "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
-  "tacsim.quests.guided_onboarding/quest.guide_04_return_haul",
-  "tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector",
-  "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
-  "tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore",
+export const GUIDED_TOUR_ROADMAP_META: ReadonlyArray<{
+  readonly key: string;
+  readonly shortLabel: string;
+  readonly giverLabel: string;
+  readonly locationLabel: string;
+}> = [
+  {
+    key: "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+    shortLabel: "Co-op Charter",
+    giverLabel: "Maren Halvorsen",
+    locationLabel: "Ceres Arrivals -> Registry",
+  },
+  {
+    key: "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel",
+    shortLabel: "Locker & Tanks",
+    giverLabel: "Ilse Oduya-Brandt",
+    locationLabel: "Ceres Chandlery & Exchange",
+  },
+  {
+    key: "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+    shortLabel: "Metals Haul",
+    giverLabel: "Ilse Oduya-Brandt",
+    locationLabel: "Ceres -> Stickney Receiving",
+  },
+  {
+    key: "tacsim.quests.guided_onboarding/quest.guide_04_return_haul",
+    shortLabel: "Return Load",
+    giverLabel: "Jonas Achterberg-Nkemelu",
+    locationLabel: "Stickney -> Ceres Chandlery",
+  },
+  {
+    key: "tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector",
+    shortLabel: "Dray-P Refit",
+    giverLabel: "Ilse Oduya-Brandt",
+    locationLabel: "Ceres Registry -> Exchange",
+  },
+  {
+    key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+    shortLabel: "Surface Mining",
+    giverLabel: "Rosalind Qureshi-Mbeki",
+    locationLabel: "Ceres Surface Landing Site",
+  },
+  {
+    key: "tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore",
+    shortLabel: "Sell Mined Ore",
+    giverLabel: "Rosalind Qureshi-Mbeki",
+    locationLabel: "Ceres -> Stickney Service",
+  },
 ];
+
+export const GUIDED_TOUR_KEYS: readonly string[] = GUIDED_TOUR_ROADMAP_META.map((m) => m.key);
+
+export function buildGuidedTourRoadmap(
+  active: readonly ActiveQuestView[],
+  available: readonly AvailableQuestView[],
+  completed: readonly CompletedQuestView[],
+): GuidedTourRoadmapStep[] {
+  const doneSet = new Set(completed.map((c) => c.key));
+  const activeByKey = new Map(active.map((a) => [a.key, a]));
+  const availSet = new Set(available.map((av) => av.key));
+
+  return GUIDED_TOUR_ROADMAP_META.map((meta, idx) => {
+    const activeMatch = activeByKey.get(meta.key);
+    let status: GuidedTourStepStatus;
+    if (doneSet.has(meta.key)) {
+      status = "completed";
+    } else if (activeMatch) {
+      status = "active";
+    } else if (availSet.has(meta.key)) {
+      status = "available";
+    } else {
+      status = "upcoming";
+    }
+    return {
+      step: idx + 1,
+      key: meta.key,
+      shortLabel: meta.shortLabel,
+      giverLabel: meta.giverLabel,
+      locationLabel: meta.locationLabel,
+      status,
+      readyToTurnIn: Boolean(activeMatch && (activeMatch.canFinishNow || activeMatch.readyToFinish)),
+    };
+  });
+}
 
 function guidedStepNumber(key: string): number | null {
   const idx = GUIDED_TOUR_KEYS.indexOf(key);
@@ -936,6 +1023,10 @@ export class QuestsStore {
 
   get guidedTourProgress(): GuidedTourProgress | null {
     return computeGuidedTourProgress(this.active, this.available, this.completed);
+  }
+
+  get guidedTourRoadmap(): GuidedTourRoadmapStep[] {
+    return buildGuidedTourRoadmap(this.active, this.available, this.completed);
   }
 
   get suggestedAction(): QuestSuggestedAction | null {
