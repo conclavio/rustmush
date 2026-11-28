@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   QUESTS_FEED,
   QuestsStore,
+  buildGuidedTourRoadmap,
   evaluateQuestStowageReadiness,
   evaluateRefitHoldReadiness,
   evaluateSailingPreflightReadiness,
@@ -821,5 +822,41 @@ describe("QuestsStore", () => {
       ],
     });
     expect(store.activeDestinationPort).toBeNull();
+  });
+
+  it("builds a 7-step Guided Corridor Tour roadmap with completed, active, available, and upcoming states", () => {
+    const store = new QuestsStore();
+    store.applyFrame({
+      schema: 1,
+      completed: [
+        { key: "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll", title: "Step 1" },
+        { key: "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel", title: "Step 2" },
+      ],
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+          title: "Metals Down the Corridor",
+          ready_to_finish: true,
+          checkpoints: [],
+        },
+      ],
+      available: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_04_return_haul",
+          title: "A Return Load for Ceres",
+          checkpoints: [],
+        },
+      ],
+    });
+    const roadmap = buildGuidedTourRoadmap(store.active, store.available, store.completed);
+    expect(roadmap).toHaveLength(7);
+    expect(roadmap[0]).toMatchObject({ step: 1, shortLabel: "Co-op Charter", status: "completed", readyToTurnIn: false });
+    expect(roadmap[1]).toMatchObject({ step: 2, shortLabel: "Locker & Tanks", status: "completed" });
+    expect(roadmap[2]).toMatchObject({ step: 3, shortLabel: "Metals Haul", status: "active", readyToTurnIn: true });
+    expect(roadmap[3]).toMatchObject({ step: 4, shortLabel: "Return Load", status: "available" });
+    expect(roadmap[4]).toMatchObject({ step: 5, shortLabel: "Dray-P Refit", status: "upcoming" });
+    expect(roadmap[5]).toMatchObject({ step: 6, shortLabel: "Surface Mining", status: "upcoming" });
+    expect(roadmap[6]).toMatchObject({ step: 7, shortLabel: "Sell Mined Ore", status: "upcoming" });
+    expect(store.guidedTourRoadmap).toEqual(roadmap);
   });
 });
