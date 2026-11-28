@@ -1284,6 +1284,27 @@ impl PortWalkState {
         need.venue_hint_label()
     }
 
+    /// Returns true when the pilot is already docked or ashore at the active quest's corridor
+    /// destination port (excluding Step 6 pre-mine when still staging at Ceres).
+    #[must_use]
+    pub fn quest_arrived_at_destination(&self) -> bool {
+        let Some(ref dest) = self.quest_dest_port else {
+            return false;
+        };
+        if self
+            .quest_mining_status
+            .as_ref()
+            .is_some_and(|m| !m.mine_done)
+        {
+            return false;
+        }
+        if self.aboard_ship && (!self.docked || self.settled_pad) {
+            return false;
+        }
+        self.current_port_slug()
+            .is_some_and(|cur| cur.eq_ignore_ascii_case(&dest.port_id))
+    }
+
     pub fn quest_trade_ready_to_sail_dest(&self) -> Option<&QuestDestinationHint> {
         let need = self.effective_quest_trade_need()?;
         if need.wants_buy || !need.wants_sell {
@@ -4300,6 +4321,18 @@ impl PortWalkState {
                 Key::Char('b' | 'B') => {
                     self.drawer = Some(PortDrawerKind::Trade);
                 }
+                Key::Char('l' | 'L') => {
+                    if self.aboard_ship && self.quest_arrived_at_destination() {
+                        out.commands.push("+ship/leave".to_string());
+                        self.push_drawer_log("> +ship/leave".to_string());
+                        self.drawer = None;
+                    }
+                }
+                Key::Char('f' | 'F') => {
+                    if !self.aboard_ship && self.quest_arrived_at_destination() {
+                        self.try_trigger_quest_ready_turn_in(&mut out);
+                    }
+                }
                 Key::Char('u') => {
                     if let Some((dest_id, _, _)) = CORRIDORS.get(self.corridor_idx) {
                         out.commands.push(format!("+ship/undock {dest_id}"));
@@ -6155,54 +6188,101 @@ impl PortWalkState {
                     Style::default().fg(Color::DarkGray),
                 )));
                 if let Some(ref hint) = self.quest_dest_port {
-                    let qline =
-                        format!("[QUEST] Dest: {} (g:select){step_suffix}", hint.port_label);
-                    lines.push(Line::from(Span::styled(
-                        truncate_str(&qline, inner_w),
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
-                    )));
-                    if let Some(pf) = self.quest_sailing_preflight_readiness() {
-                        let cargo_part = if pf.cargo_required {
-                            let mark = if pf.cargo_ok { "OK" } else { "!" };
-                            format!(
-                                " | {} {}/{} {}",
-                                pf.cargo_label, pf.cargo_qty, pf.cargo_target, mark
-                            )
+                    if self.quest_arrived_at_destination() {
+                        if self.aboard_ship {
+                            let msg = format!(
+                                "[QUEST ARRIVED] Docked at {} -> l:Step Ashore (+ship/leave){step_suffix}",
+                                hint.port_label
+                            );
+                            lines.push(Line::from(Span::styled(
+                                truncate_str(&msg, inner_w),
+                                Style::default()
+                                    .fg(Color::Green)
+                                    .add_modifier(Modifier::BOLD),
+                            )));
+                        } else if let Some((banner, col)) =
+                            self.format_quest_ready_banner(step_suffix)
+                        {
+                            lines.push(Line::from(Span::styled(
+                                truncate_str(&banner, inner_w),
+                                Style::default().fg(col).add_modifier(Modifier::BOLD),
+                            )));
+                        } else if let Some(need) = self.effective_quest_trade_need() {
+                            let verb = if need.wants_sell { "Sell" } else { "Buy" };
+                            let msg = format!(
+                                "[QUEST ARRIVED] At {} -> b:Exchange ({verb} {} x {}){step_suffix}",
+                                hint.port_label,
+                                need.target_quantity,
+                                need.commodity_slug.replace('_', " ")
+                            );
+                            lines.push(Line::from(Span::styled(
+                                truncate_str(&msg, inner_w),
+                                Style::default()
+                                    .fg(Color::Green)
+                                    .add_modifier(Modifier::BOLD),
+                            )));
                         } else {
-                            String::new()
-                        };
-                        let (msg, col) = if pf.ready {
-                            (
-                                format!(
-                                    "[PRE-FLIGHT OK] Fuel {}t | Stores {}d{cargo_part}",
-                                    pf.propellant_tonnes, pf.provisions_days
-                                ),
-                                Color::Green,
-                            )
-                        } else {
-                            let fuel_txt = if pf.propellant_ok {
-                                format!("{}t OK", pf.propellant_tonnes)
-                            } else {
-                                "0t!".to_string()
-                            };
-                            let stores_txt = if pf.provisions_ok {
-                                format!("{}d OK", pf.provisions_days)
-                            } else {
-                                "0d!".to_string()
-                            };
-                            (
-                                format!(
-                                    "[CHECK] Fuel {fuel_txt} | Stores {stores_txt}{cargo_part} (b:Exchange)"
-                                ),
-                                Color::LightYellow,
-                            )
-                        };
+                            let msg = format!(
+                                "[QUEST ARRIVED] At {} (Esc:walk){step_suffix}",
+                                hint.port_label
+                            );
+                            lines.push(Line::from(Span::styled(
+                                truncate_str(&msg, inner_w),
+                                Style::default()
+                                    .fg(Color::Green)
+                                    .add_modifier(Modifier::BOLD),
+                            )));
+                        }
+                    } else {
+                        let qline =
+                            format!("[QUEST] Dest: {} (g:select){step_suffix}", hint.port_label);
                         lines.push(Line::from(Span::styled(
-                            truncate_str(&msg, inner_w),
-                            Style::default().fg(col).add_modifier(Modifier::BOLD),
+                            truncate_str(&qline, inner_w),
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
                         )));
+                        if let Some(pf) = self.quest_sailing_preflight_readiness() {
+                            let cargo_part = if pf.cargo_required {
+                                let mark = if pf.cargo_ok { "OK" } else { "!" };
+                                format!(
+                                    " | {} {}/{} {}",
+                                    pf.cargo_label, pf.cargo_qty, pf.cargo_target, mark
+                                )
+                            } else {
+                                String::new()
+                            };
+                            let (msg, col) = if pf.ready {
+                                (
+                                    format!(
+                                        "[PRE-FLIGHT OK] Fuel {}t | Stores {}d{cargo_part}",
+                                        pf.propellant_tonnes, pf.provisions_days
+                                    ),
+                                    Color::Green,
+                                )
+                            } else {
+                                let fuel_txt = if pf.propellant_ok {
+                                    format!("{}t OK", pf.propellant_tonnes)
+                                } else {
+                                    "0t!".to_string()
+                                };
+                                let stores_txt = if pf.provisions_ok {
+                                    format!("{}d OK", pf.provisions_days)
+                                } else {
+                                    "0d!".to_string()
+                                };
+                                (
+                                    format!(
+                                        "[CHECK] Fuel {fuel_txt} | Stores {stores_txt}{cargo_part} (b:Exchange)"
+                                    ),
+                                    Color::LightYellow,
+                                )
+                            };
+                            lines.push(Line::from(Span::styled(
+                                truncate_str(&msg, inner_w),
+                                Style::default().fg(col).add_modifier(Modifier::BOLD),
+                            )));
+                        }
                     }
                 } else if let Some(ref qm) = self.quest_mining_status
                     && !qm.mine_done
@@ -11826,5 +11906,75 @@ mod tests {
             !exch_txt.contains("[DESK] Not listed here"),
             "desk hint should clear when matching ask is listed:\n{exch_txt}"
         );
+    }
+
+    #[test]
+    fn sailing_drawer_shows_quest_arrived_step_ashore_and_exchange_handoff() {
+        use ratatui::{Terminal, backend::TestBackend};
+        let render_sailing = |st: &mut PortWalkState| -> String {
+            let backend = TestBackend::new(120, 22);
+            let mut term = Terminal::new(backend).expect("terminal");
+            term.draw(|f| st.draw_drawer_box(f, f.area(), true))
+                .expect("draw");
+            let buf = term.backend().buffer();
+            (0..buf.area.height)
+                .map(|y| {
+                    (0..buf.area.width)
+                        .map(|x| buf[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let mut st = PortWalkState::new();
+        st.drawer = Some(PortDrawerKind::Sailing);
+        st.aboard_ship = true;
+        st.docked = true;
+        st.docked_port = Some("stickney".into());
+        st.stowage_loaded = true;
+        st.stowage.reaction_kg = 0; // would normally trigger [CHECK] Fuel if not arrived
+        st.observe_quest_step_badge(" [Step 3/7]".into());
+        st.observe_quest_guidance(
+            Some(QuestTradeNeed {
+                quest_title: "Metals Down the Corridor".into(),
+                checkpoint_title: "Deliver 5t metals".into(),
+                commodity_slug: "metals".into(),
+                target_quantity: 5,
+                wants_buy: false,
+                wants_sell: true,
+                ..QuestTradeNeed::default()
+            }),
+            Some(QuestDestinationHint {
+                quest_title: "Metals Down the Corridor".into(),
+                port_id: "stickney".into(),
+                port_label: "Stickney Yards".into(),
+            }),
+        );
+
+        let aboard_txt = render_sailing(&mut st);
+        assert!(
+            aboard_txt.contains(
+                "[QUEST ARRIVED] Docked at Stickney Yards -> l:Step Ashore (+ship/leave)"
+            ),
+            "expected docked arrived banner:\n{aboard_txt}"
+        );
+        assert!(!aboard_txt.contains("[CHECK] Fuel"));
+        let out = st.handle_drawer_key(Key::Char('l'), &[], Instant::now());
+        assert_eq!(out.commands, vec!["+ship/leave"]);
+        assert_eq!(st.drawer, None);
+
+        // Once ashore at Stickney Yards -> prompts b:Exchange to sell metals
+        st.drawer = Some(PortDrawerKind::Sailing);
+        st.aboard_ship = false;
+        st.current_venue = Some("stickney".into());
+        let ashore_txt = render_sailing(&mut st);
+        assert!(
+            ashore_txt
+                .contains("[QUEST ARRIVED] At Stickney Yards -> b:Exchange (Sell 5 x metals)"),
+            "expected ashore Exchange handoff banner:\n{ashore_txt}"
+        );
+        let _ = st.handle_drawer_key(Key::Char('b'), &[], Instant::now());
+        assert_eq!(st.drawer, Some(PortDrawerKind::Trade));
     }
 }
