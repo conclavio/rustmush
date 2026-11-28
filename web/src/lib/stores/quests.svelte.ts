@@ -764,12 +764,20 @@ export function extractActiveTradeNeeds(
       ) {
         continue;
       }
-      const combined = `${idLow} ${titleLow} ${instrLow}`;
+      const primaryText = `${idLow} ${titleLow}`;
       let slug: string | null = null;
       for (const [candidate, pats] of KNOWN_TRADE_COMMODITIES) {
-        if (pats.some((p) => combined.includes(p))) {
+        if (pats.some((p) => primaryText.includes(p))) {
           slug = candidate;
           break;
+        }
+      }
+      if (!slug) {
+        for (const [candidate, pats] of KNOWN_TRADE_COMMODITIES) {
+          if (pats.some((p) => instrLow.includes(p))) {
+            slug = candidate;
+            break;
+          }
         }
       }
       if (!slug) continue;
