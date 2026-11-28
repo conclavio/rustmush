@@ -17818,5 +17818,115 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void OpsDirectoryAndStationWorld_TieBreakGuidedMarkersAndRenderStepBadges()
+        {
+            var rootGo = new UnityEngine.GameObject("GuidedMarkerStepBadgesTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                var stGo = new UnityEngine.GameObject("StationWorld");
+                stGo.transform.SetParent(rootGo.transform, false);
+                var station = stGo.AddComponent<StationWorldController>();
+                station.BuildStation(TacSimAssetCatalog.LoadOrDefault(), "ceres_freeport");
+
+                hud.OpsDirectory.BindSources(station, null, null, null, null, null, null);
+                hud.OpsDirectory.BindQuestJournal(hud.QuestJournal);
+
+                var rv = new MushRoomView
+                {
+                    Id = "#12",
+                    Name = "Port Watch Arrivals",
+                    Atlas = new AtlasRoomAmbient { Pack = "neighborhood.ceres_freeport", Entry = "room.c03_arrivals" }
+                };
+                rv.Contents.Add(new MushObjRef { Id = "#88", Name = "Dockside Broker" });
+                rv.Contents.Add(new MushObjRef { Id = "#42", Name = "Maren Halvorsen" });
+                rv.NpcIds.Add("#88");
+                rv.NpcIds.Add("#42");
+                rv.QuestMarkers.Add(new MushNpcQuestMarker
+                {
+                    NpcId = "#88",
+                    NpcName = "Dockside Broker",
+                    Marker = "available",
+                    Symbol = "!",
+                    QuestKey = "side.errand",
+                    QuestTitle = "Optional Dockside Errand",
+                    Category = "optional"
+                });
+                rv.QuestMarkers.Add(new MushNpcQuestMarker
+                {
+                    NpcId = "#42",
+                    NpcName = "Maren Halvorsen",
+                    Marker = "available",
+                    Symbol = "!",
+                    QuestKey = "side.extra_shift",
+                    QuestTitle = "Optional Shift",
+                    Category = "optional"
+                });
+                rv.QuestMarkers.Add(new MushNpcQuestMarker
+                {
+                    NpcId = "#42",
+                    NpcName = "Maren Halvorsen",
+                    Marker = "available",
+                    Symbol = "!",
+                    QuestKey = "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+                    QuestTitle = "First Papers at the Registry",
+                    Category = "guided"
+                });
+                station.ApplyRoomView(rv, "#1");
+
+                // 1. StationWorldController selects guided Step 1/7 over optional on Maren (#42) and writes [Step 1/7] + (+1 more)
+                var bestWorld = station.GetNpcQuestMarker("#42");
+                Assert.IsNotNull(bestWorld);
+                Assert.AreEqual("tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll", bestWorld.QuestKey);
+                var interactables = new System.Collections.Generic.List<WorldInteractable>(station.GetComponentsInChildren<WorldInteractable>(true));
+                var marenWi = interactables.Find(w => w.actorId == "#42");
+                Assert.IsNotNull(marenWi);
+                StringAssert.Contains("[!] Maren Halvorsen — Quest Available [Step 1/7]", marenWi.promptTitle);
+                StringAssert.Contains("First Papers at the Registry (+1 more)", marenWi.promptSubtitle);
+
+                // 2. OpsDirectory Room Presence floats Maren ahead of Dockside Broker at equal urgency, shows [Step 1/7] + (+1 more), and labels button OFFER
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_markers"": [
+                        { ""npc_id"": ""#88"", ""npc_name"": ""Dockside Broker"", ""marker"": ""available"", ""symbol"": ""!"", ""quest_key"": ""side.errand"", ""quest_title"": ""Optional Errand"", ""category"": ""optional"" },
+                        { ""npc_id"": ""#42"", ""npc_name"": ""Maren Halvorsen"", ""marker"": ""available"", ""symbol"": ""!"", ""quest_key"": ""side.extra_shift"", ""quest_title"": ""Optional Shift"", ""category"": ""optional"" },
+                        { ""npc_id"": ""#42"", ""npc_name"": ""Maren Halvorsen"", ""marker"": ""available"", ""symbol"": ""!"", ""quest_key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""quest_title"": ""First Papers at the Registry"", ""category"": ""guided"" }
+                    ],
+                    ""active"": [],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                hud.OpsDirectory.UpdateLiveRoom(rv, TacSimActiveStage.StationWalk);
+                hud.OpsDirectory.SetOpen(true);
+                hud.OpsDirectory.SelectTab(TacSim.UI.OpsDirectoryTab.RoomPresence);
+
+                StringAssert.Contains("Maren Halvorsen", hud.OpsDirectory.FirstPresenceRowLabel);
+                StringAssert.Contains("[! QUEST]", hud.OpsDirectory.FirstPresenceRowLabel);
+                StringAssert.Contains("[Step 1/7]", hud.OpsDirectory.FirstPresenceRowLabel);
+                StringAssert.Contains("(+1 more)", hud.OpsDirectory.FirstPresenceRowLabel);
+                Assert.AreEqual("OFFER", hud.OpsDirectory.FirstPresenceRowButtonLabel);
+
+                // 3. Turn-in marker switches action button label to TURN IN
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_markers"": [
+                        { ""npc_id"": ""#42"", ""npc_name"": ""Maren Halvorsen"", ""marker"": ""turn_in"", ""symbol"": ""?"", ""quest_key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""quest_title"": ""First Papers at the Registry"", ""category"": ""guided"" }
+                    ],
+                    ""active"": [],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                hud.OpsDirectory.RefreshModalContents();
+                Assert.AreEqual("TURN IN", hud.OpsDirectory.FirstPresenceRowButtonLabel);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

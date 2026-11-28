@@ -119,6 +119,7 @@ namespace TacSim.UI
         public string HighlightedQuestDirectoryRoomId { get; private set; } = string.Empty;
         public int HighlightedQuestPresenceRowCount { get; private set; }
         public string FirstPresenceRowLabel => _presPool.Count > 0 && _presPool[0].Root.activeSelf && _presPool[0].Label != null ? _presPool[0].Label.text : string.Empty;
+        public string FirstPresenceRowButtonLabel => _presPool.Count > 0 && _presPool[0].Root.activeSelf && _presPool[0].TalkButtonLabel != null ? _presPool[0].TalkButtonLabel.text : string.Empty;
         public string OpsSummarySnapshot => _opsSummaryText != null ? _opsSummaryText.text : string.Empty;
 
         public void BuildUi(Transform hudRoot, Font sharedFont)
@@ -709,28 +710,28 @@ namespace TacSim.UI
             if (_dirEmptyText != null) _dirEmptyText.gameObject.SetActive(used == 0);
         }
 
-        private static int QuestMarkerPriority(MushNpcQuestMarker marker)
+        private MushNpcQuestMarker FindQuestMarkerForNpc(string npcId, string npcName, out int distinctQuestCount)
         {
-            if (marker == null) return 3;
-            if (string.Equals(marker.Marker, "turn_in", StringComparison.OrdinalIgnoreCase)) return 0;
-            if (string.Equals(marker.Marker, "available", StringComparison.OrdinalIgnoreCase)) return 1;
-            return 2;
-        }
-
-        private MushNpcQuestMarker FindQuestMarkerForNpc(string npcId, string npcName)
-        {
+            distinctQuestCount = 0;
             var panel = _questJournal?.LatestPanel;
             if (panel == null || panel.RoomMarkers == null) return null;
             MushNpcQuestMarker best = null;
+            var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            int maxReportedCount = 0;
             for (int i = 0; i < panel.RoomMarkers.Count; i++)
             {
                 var m = panel.RoomMarkers[i];
                 if (m == null) continue;
                 bool matches = (!string.IsNullOrEmpty(npcId) && string.Equals(m.NpcId, npcId, StringComparison.Ordinal)) ||
                                (!string.IsNullOrEmpty(npcName) && string.Equals(m.NpcName, npcName, StringComparison.OrdinalIgnoreCase));
-                if (matches && (best == null || QuestMarkerPriority(m) < QuestMarkerPriority(best)))
+                if (!matches) continue;
+                string qKey = !string.IsNullOrEmpty(m.QuestKey) ? m.QuestKey : $"{m.Marker}:{m.QuestTitle}";
+                keys.Add(qKey);
+                if (m.QuestCount > maxReportedCount) maxReportedCount = m.QuestCount;
+                if (best == null || TacSimQuestJournal.CompareQuestMarkers(m, best) < 0)
                     best = m;
             }
+            distinctQuestCount = Math.Max(maxReportedCount, keys.Count);
             return best;
         }
 
@@ -740,7 +741,7 @@ namespace TacSim.UI
             HighlightedQuestPresenceRowCount = 0;
             if (_lastRoomView != null && _lastRoomView.Contents != null)
             {
-                var candidates = new List<(MushObjRef obj, bool isPlayer, bool isDormant, MushNpcQuestMarker marker, int origIdx)>();
+                var candidates = new List<(MushObjRef obj, bool isPlayer, bool isDormant, MushNpcQuestMarker marker, int questCount, int origIdx)>();
                 for (int i = 0; i < _lastRoomView.Contents.Count; i++)
                 {
                     var obj = _lastRoomView.Contents[i];
@@ -751,15 +752,15 @@ namespace TacSim.UI
                     bool isDormant = !string.IsNullOrEmpty(obj.Id) && _lastRoomView.DormantNpcIds.Contains(obj.Id);
                     if (!isPlayer && !isNpc && !isDormant) continue;
 
-                    var marker = !isPlayer ? FindQuestMarkerForNpc(obj.Id ?? string.Empty, obj.Name.Trim()) : null;
-                    candidates.Add((obj, isPlayer, isDormant, marker, i));
+                    int questCount = 0;
+                    var marker = !isPlayer ? FindQuestMarkerForNpc(obj.Id ?? string.Empty, obj.Name.Trim(), out questCount) : null;
+                    candidates.Add((obj, isPlayer, isDormant, marker, questCount, i));
                 }
 
                 candidates.Sort((a, b) =>
                 {
-                    int pa = QuestMarkerPriority(a.marker);
-                    int pb = QuestMarkerPriority(b.marker);
-                    if (pa != pb) return pa.CompareTo(pb);
+                    int cmp = TacSimQuestJournal.CompareQuestMarkers(a.marker, b.marker);
+                    if (cmp != 0) return cmp;
                     return a.origIdx.CompareTo(b.origIdx);
                 });
 
@@ -778,20 +779,25 @@ namespace TacSim.UI
 
                     if (marker != null)
                     {
-                        bool isGold = string.Equals(marker.Marker, "available", StringComparison.OrdinalIgnoreCase) ||
-                                      string.Equals(marker.Marker, "turn_in", StringComparison.OrdinalIgnoreCase);
+                        bool isTurnIn = string.Equals(marker.Marker, "turn_in", StringComparison.OrdinalIgnoreCase);
+                        bool isAvailable = string.Equals(marker.Marker, "available", StringComparison.OrdinalIgnoreCase);
+                        bool isGold = isAvailable || isTurnIn;
                         string sym = !string.IsNullOrEmpty(marker.Symbol)
                             ? marker.Symbol
-                            : (string.Equals(marker.Marker, "available", StringComparison.OrdinalIgnoreCase) ? "!" : "?");
+                            : (isAvailable ? "!" : "?");
                         string qBadge = isGold
                             ? $"<color=#FFDD44>[{MushProtocol.EscapeUnityRichText(sym)} QUEST]</color>"
                             : $"<color=#C8D6E4>[{MushProtocol.EscapeUnityRichText(sym)} QUEST]</color>";
-                        row.Label.text = $"{qBadge} <b>{MushProtocol.EscapeUnityRichText(row.BoundName)}</b>";
+                        int stepNo = TacSimQuestJournal.GuidedStepNumber(marker.QuestKey);
+                        string stepTag = stepNo > 0 ? $" <color=#66EEAA>[Step {stepNo}/7]</color>" : string.Empty;
+                        int extra = Math.Max(0, entry.questCount - 1);
+                        string moreTag = extra > 0 ? $" <color=#AACCDE>(+{extra} more)</color>" : string.Empty;
+                        row.Label.text = $"{qBadge} <b>{MushProtocol.EscapeUnityRichText(row.BoundName)}</b>{stepTag}{moreTag}";
                         row.Background.color = isGold
                             ? new Color(0.24f, 0.19f, 0.07f, 0.96f)
                             : new Color(0.10f, 0.15f, 0.22f, 0.94f);
                         row.BoundHasQuestDialog = true;
-                        if (row.TalkButtonLabel != null) row.TalkButtonLabel.text = isGold ? "QUEST" : "JOURNAL";
+                        if (row.TalkButtonLabel != null) row.TalkButtonLabel.text = isTurnIn ? "TURN IN" : (isAvailable ? "OFFER" : "JOURNAL");
                         if (row.TalkButtonBg != null) row.TalkButtonBg.color = isGold ? new Color(0.56f, 0.40f, 0.12f) : new Color(0.22f, 0.34f, 0.48f);
                         HighlightedQuestPresenceRowCount++;
                     }

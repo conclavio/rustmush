@@ -2046,18 +2046,11 @@ namespace TacSim.World
             ApplyQuestMarkers(rv.QuestMarkers);
         }
 
-        private static int QuestMarkerPriority(MushNpcQuestMarker marker)
-        {
-            if (marker == null) return 3;
-            if (string.Equals(marker.Marker, "turn_in", StringComparison.OrdinalIgnoreCase)) return 0;
-            if (string.Equals(marker.Marker, "available", StringComparison.OrdinalIgnoreCase)) return 1;
-            return 2;
-        }
-
         /// <summary>
         /// Renders or clears floating WoW-style 3D overhead quest markers above live NPCs:
         /// Gold '!' (available), Gold '?' (ready for turn-in), Silver '?' (in progress).
-        /// Prioritizes `turn_in` -> `available` -> `in_progress` when an NPC has multiple quests.
+        /// Prioritizes `turn_in` -> `available` -> `in_progress` (and guided tour steps ahead of optional
+        /// quests at equal urgency) when an NPC has multiple quests.
         /// Also updates the NPC's `[E]` interaction banner prompt so players immediately see quest actions.
         /// </summary>
         public void ApplyQuestMarkers(IReadOnlyList<MushNpcQuestMarker> markers)
@@ -2074,7 +2067,7 @@ namespace TacSim.World
                     string qKey = !string.IsNullOrEmpty(m.QuestKey) ? m.QuestKey : $"{m.Marker}:{m.QuestTitle}";
                     if (!string.IsNullOrEmpty(m.NpcId))
                     {
-                        if (!incoming.TryGetValue(m.NpcId, out var existing) || QuestMarkerPriority(m) < QuestMarkerPriority(existing))
+                        if (!incoming.TryGetValue(m.NpcId, out var existing) || TacSim.UI.TacSimQuestJournal.CompareQuestMarkers(m, existing) < 0)
                             incoming[m.NpcId] = m;
                         if (!keysById.TryGetValue(m.NpcId, out var idSet))
                         {
@@ -2110,7 +2103,7 @@ namespace TacSim.World
                         var candidate = markers[i];
                         if (candidate != null &&
                             string.Equals(candidate.NpcName, dispName, StringComparison.OrdinalIgnoreCase) &&
-                            (marker == null || QuestMarkerPriority(candidate) < QuestMarkerPriority(marker)))
+                            (marker == null || TacSim.UI.TacSimQuestJournal.CompareQuestMarkers(candidate, marker) < 0))
                         {
                             marker = candidate;
                         }
@@ -2154,8 +2147,10 @@ namespace TacSim.World
                             : string.Equals(marker.Marker, "available", StringComparison.OrdinalIgnoreCase)
                                 ? "Quest Available"
                                 : "Quest In Progress";
+                        int stepNo = TacSim.UI.TacSimQuestJournal.GuidedStepNumber(marker.QuestKey);
+                        string stepSuffix = stepNo > 0 ? $" [Step {stepNo}/7]" : string.Empty;
                         string moreSuffix = extraQuests > 0 ? $" (+{extraQuests} more)" : string.Empty;
-                        wi.promptTitle = $"[{marker.Symbol}] {safeActorName} — {roleTag}";
+                        wi.promptTitle = $"[{marker.Symbol}] {safeActorName} — {roleTag}{stepSuffix}";
                         if (!string.IsNullOrEmpty(marker.QuestTitle))
                             wi.promptSubtitle = $"{MushProtocol.EscapeUnityRichText(marker.QuestTitle)}{moreSuffix}";
                         else if (extraQuests > 0)

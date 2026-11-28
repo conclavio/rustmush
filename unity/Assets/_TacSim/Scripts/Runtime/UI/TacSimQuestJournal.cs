@@ -2999,6 +2999,46 @@ namespace TacSim.UI
             return 0;
         }
 
+        /// <summary>
+        /// Orders room NPC quest markers by action urgency (`turn_in` -> `available` -> `in_progress`),
+        /// tie-breaking Guided Captain's Tour markers ahead of optional side quests at equal urgency.
+        /// </summary>
+        public static int CompareQuestMarkers(MushNpcQuestMarker a, MushNpcQuestMarker b)
+        {
+            if (ReferenceEquals(a, b)) return 0;
+            if (a == null) return 1;
+            if (b == null) return -1;
+
+            int pa = MarkerUrgencyRank(a);
+            int pb = MarkerUrgencyRank(b);
+            if (pa != pb) return pa.CompareTo(pb);
+
+            int ga = IsGuidedMarker(a) ? 0 : 1;
+            int gb = IsGuidedMarker(b) ? 0 : 1;
+            if (ga != gb) return ga.CompareTo(gb);
+
+            int sa = GuidedStepNumber(a.QuestKey);
+            int sb = GuidedStepNumber(b.QuestKey);
+            int ka = sa > 0 ? sa : 999;
+            int kb = sb > 0 ? sb : 999;
+            return ka.CompareTo(kb);
+        }
+
+        private static int MarkerUrgencyRank(MushNpcQuestMarker m)
+        {
+            if (m == null) return 3;
+            if (string.Equals(m.Marker, "turn_in", StringComparison.OrdinalIgnoreCase)) return 0;
+            if (string.Equals(m.Marker, "available", StringComparison.OrdinalIgnoreCase)) return 1;
+            return 2;
+        }
+
+        private static bool IsGuidedMarker(MushNpcQuestMarker m)
+        {
+            if (m == null) return false;
+            return string.Equals(m.Category, "guided", StringComparison.OrdinalIgnoreCase) ||
+                   GuidedStepNumber(m.QuestKey) > 0;
+        }
+
         public bool TryGetGuidedTourProgress(out int completed, out int total, out int currentStep, out bool allDone)
         {
             completed = 0;
