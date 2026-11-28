@@ -295,6 +295,7 @@ namespace TacSim.Core
             {
                 if (ShipInterior != null)
                     ShipInterior.UpdateCargoVisualFill(TradeState.HoldMassTonnes);
+                SyncMinimapQuestObjective();
             };
 
             Player.OnFocusedInteractableChanged += wi =>
@@ -1352,13 +1353,15 @@ namespace TacSim.Core
             string currentRoom = !string.IsNullOrEmpty(StationWorld.ActiveRoomEntryId)
                 ? StationWorld.ActiveRoomEntryId
                 : _serverStationRoomEntry;
+            bool needsOriginExchange = Hud.QuestJournal != null && Hud.QuestJournal.NeedsOriginPortProcurement(TradeState);
             if (StationWorld.TryGetNextQuestExitBreadcrumb(
                     currentRoom,
                     targetRoomEntry,
                     out _,
                     out string nextRoomName,
                     out string nextCmd,
-                    out int hops))
+                    out int hops,
+                    needsOriginExchangeFirst: needsOriginExchange))
             {
                 Hud.SetQuestExitBreadcrumb(nextRoomName, nextCmd, hops);
                 Hud.QuestJournal?.SetTrackerRouteBreadcrumb(nextRoomName, nextCmd, hops);

@@ -427,6 +427,22 @@ namespace TacSim.UI
             return true;
         }
 
+        public bool NeedsOriginPortProcurement(TacSimTradeAndShipState trade)
+        {
+            if (trade == null || string.IsNullOrEmpty(trade.ShipHullId)) return false;
+            var tracked = GetTrackedActiveQuest();
+            if (tracked == null || tracked.ReadyToFinish || tracked.CanFinishNow) return false;
+            QuestTradeNeed need = default;
+            if (!TryGetActiveTradeNeed(out need)) return false;
+            if (!need.WantsBuy || !need.WantsSell) return false;
+            if (string.Equals(need.CommoditySlug, "propellant", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(need.CommoditySlug, "provisions", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+            return trade.GetHoldCommodityQuantity(need.CommoditySlug) < Mathf.Max(1, need.TargetQuantity);
+        }
+
         public static string InferStationPortFromRoomEntry(string roomEntry)
         {
             if (string.IsNullOrWhiteSpace(roomEntry)) return null;
