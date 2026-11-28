@@ -117,6 +117,18 @@ pub struct WalkKeyOutcome {
     pub open_quest_for_npc: Option<(String, String)>,
 }
 
+/// Active quest stowage/hold readiness computed against live ship tanks, stores, or cargo lots.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuestStowageReadiness {
+    pub commodity_slug: String,
+    pub label: String,
+    pub current_qty: i64,
+    pub target_qty: i64,
+    pub unit: &'static str,
+    pub ready: bool,
+    pub gauge_kind: &'static str, // "propellant" | "provisions" | "cargo"
+}
+
 /// Immediate next-hop station exit breadcrumb toward the tracked quest's objective room.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QuestExitBreadcrumb {
@@ -896,6 +908,65 @@ impl PortWalkState {
     #[must_use]
     pub fn quest_dest_hint(&self) -> Option<&QuestDestinationHint> {
         self.quest_dest_port.as_ref()
+    }
+
+    /// Evaluate active quest commodity readiness against live ship tanks, crew stores, or hold cargo lots.
+    #[must_use]
+    pub fn quest_stowage_readiness(&self) -> Option<QuestStowageReadiness> {
+        if !self.stowage_loaded {
+            return None;
+        }
+        let need = self.quest_trade_need.as_ref()?;
+        let target_qty = need.target_quantity.max(1);
+        let label = need.commodity_slug.replace('_', " ").to_ascii_uppercase();
+        if need.commodity_slug == "propellant" {
+            let current_qty = self.stowage.reaction_kg.max(0) / 1000;
+            return Some(QuestStowageReadiness {
+                commodity_slug: need.commodity_slug.clone(),
+                label,
+                current_qty,
+                target_qty,
+                unit: "t",
+                ready: current_qty >= target_qty,
+                gauge_kind: "propellant",
+            });
+        }
+        if need.commodity_slug == "provisions" {
+            let current_qty = self.stowage.stores_days.max(0);
+            return Some(QuestStowageReadiness {
+                commodity_slug: need.commodity_slug.clone(),
+                label,
+                current_qty,
+                target_qty,
+                unit: "d",
+                ready: current_qty >= target_qty,
+                gauge_kind: "provisions",
+            });
+        }
+        let norm = |raw: &str| -> String {
+            let trimmed = raw.trim().to_ascii_lowercase();
+            let tail = trimmed
+                .rsplit_once(':')
+                .map_or(trimmed.as_str(), |(_, r)| r);
+            tail.replace(['-', ' '], "_")
+        };
+        let mut current_qty = 0i64;
+        for lot in &self.cargo_lots {
+            if norm(&lot.good_id) == need.commodity_slug
+                || norm(&lot.good_name) == need.commodity_slug
+            {
+                current_qty += lot.quantity.max(0);
+            }
+        }
+        Some(QuestStowageReadiness {
+            commodity_slug: need.commodity_slug.clone(),
+            label,
+            current_qty,
+            target_qty,
+            unit: "u",
+            ready: current_qty >= target_qty,
+            gauge_kind: "cargo",
+        })
     }
 
     /// Compute the immediate next station exit along the shortest BFS path to the
@@ -4266,7 +4337,29 @@ impl PortWalkState {
                 gauge_row("Stores", 0.0, 1.0, "--".to_string(), utf8),
             ];
         }
-        vec![
+        let readiness = self.quest_stowage_readiness();
+        let hold_label = if readiness.as_ref().is_some_and(|r| r.gauge_kind == "cargo") {
+            "*Hold Mass"
+        } else {
+            "Hold Mass"
+        };
+        let react_label = if readiness
+            .as_ref()
+            .is_some_and(|r| r.gauge_kind == "propellant")
+        {
+            "*Reaction"
+        } else {
+            "Reaction"
+        };
+        let stores_label = if readiness
+            .as_ref()
+            .is_some_and(|r| r.gauge_kind == "provisions")
+        {
+            "*Stores"
+        } else {
+            "Stores"
+        };
+        let mut rows = vec![
             Line::from(vec![
                 Span::styled("Wallet: ", Style::default().fg(Color::Gray)),
                 Span::styled(
@@ -4277,7 +4370,7 @@ impl PortWalkState {
                 ),
             ]),
             gauge_row(
-                "Hold Mass",
+                hold_label,
                 st.cargo_kg as f64,
                 st.max_cargo_kg.max(1) as f64,
                 format!(
@@ -4295,20 +4388,35 @@ impl PortWalkState {
                 utf8,
             ),
             gauge_row(
-                "Reaction",
+                react_label,
                 st.reaction_kg as f64,
                 st.max_reaction_kg.max(1) as f64,
                 format!("{:.1} t", st.reaction_kg as f64 / 1000.0),
                 utf8,
             ),
             gauge_row(
-                "Stores",
+                stores_label,
                 st.stores_days as f64,
                 st.max_stores_days.max(1) as f64,
                 format!("{}/{} crew-days", st.stores_days, st.max_stores_days),
                 utf8,
             ),
-        ]
+        ];
+        if let Some(r) = readiness {
+            let (tag, col) = if r.ready {
+                ("[READY]", Color::Green)
+            } else {
+                ("[QUEST]", Color::Yellow)
+            };
+            rows.push(Line::from(Span::styled(
+                format!(
+                    "{tag} {}: {}/{} {}",
+                    r.label, r.current_qty, r.target_qty, r.unit
+                ),
+                Style::default().fg(col).add_modifier(Modifier::BOLD),
+            )));
+        }
+        rows
     }
 
     fn draw_drawer_box(&self, frame: &mut Frame<'_>, area: Rect, utf8: bool) {
@@ -4438,16 +4546,28 @@ impl PortWalkState {
                     } else {
                         "BUY"
                     };
+                    let hold_suffix = if let Some(r) = self.quest_stowage_readiness() {
+                        if r.ready {
+                            format!(" | {}/{} [READY]", r.current_qty, r.target_qty)
+                        } else {
+                            format!(" | {}/{}", r.current_qty, r.target_qty)
+                        }
+                    } else {
+                        String::new()
+                    };
                     let qline = format!(
-                        "[QUEST] {side_tag} {} x {} (g:jump+qty)",
+                        "[QUEST] {side_tag} {} x {} (g:jump+qty){hold_suffix}",
                         need.target_quantity,
                         need.commodity_slug.replace('_', " ")
                     );
+                    let banner_col = if self.quest_stowage_readiness().is_some_and(|r| r.ready) {
+                        Color::Green
+                    } else {
+                        Color::Yellow
+                    };
                     lines.push(Line::from(Span::styled(
                         truncate_str(&qline, inner_w),
-                        Style::default()
-                            .fg(Color::Yellow)
-                            .add_modifier(Modifier::BOLD),
+                        Style::default().fg(banner_col).add_modifier(Modifier::BOLD),
                     )));
                 }
 
@@ -8216,5 +8336,94 @@ mod tests {
             ship_top.contains("[QUEST] Dest: Stickney Yards"),
             "expected ship HUD quest destination: {ship_top}"
         );
+    }
+
+    #[test]
+    fn quest_stowage_readiness_tracks_propellant_provisions_and_hold_cargo_in_gauges() {
+        let mut st = PortWalkState::new();
+        st.stowage_loaded = true;
+        st.stowage.reaction_kg = 5_200;
+        st.stowage.max_reaction_kg = 20_000;
+        st.stowage.stores_days = 8;
+        st.stowage.max_stores_days = 30;
+        st.cargo_lots = vec![CargoLotRow {
+            good_id: "tacsim:metals".into(),
+            good_name: "Metals".into(),
+            quantity: 5,
+        }];
+
+        let lines_text = |lines: Vec<Line<'static>>| -> String {
+            lines
+                .iter()
+                .map(|l| {
+                    l.spans
+                        .iter()
+                        .map(|s| s.content.as_ref())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        // 1. Propellant readiness (5t >= 5t -> READY + *Reaction)
+        st.observe_quest_guidance(
+            Some(QuestTradeNeed {
+                quest_title: "Fuel".into(),
+                checkpoint_title: "Buy 5 propellant".into(),
+                commodity_slug: "propellant".into(),
+                target_quantity: 5,
+                wants_buy: true,
+                wants_sell: false,
+            }),
+            None,
+        );
+        let prop_r = st.quest_stowage_readiness().expect("propellant readiness");
+        assert!(prop_r.ready);
+        assert_eq!(prop_r.current_qty, 5);
+        assert_eq!(prop_r.gauge_kind, "propellant");
+        let prop_txt = lines_text(st.stowage_gauge_lines(true));
+        assert!(prop_txt.contains("*Reaction"), "{prop_txt}");
+        assert!(prop_txt.contains("[READY] PROPELLANT: 5/5 t"), "{prop_txt}");
+
+        // 2. Provisions loading (8d < 10d -> QUEST + *Stores)
+        st.observe_quest_guidance(
+            Some(QuestTradeNeed {
+                quest_title: "Stores".into(),
+                checkpoint_title: "Buy 10 provisions".into(),
+                commodity_slug: "provisions".into(),
+                target_quantity: 10,
+                wants_buy: true,
+                wants_sell: false,
+            }),
+            None,
+        );
+        let prov_r = st.quest_stowage_readiness().expect("provisions readiness");
+        assert!(!prov_r.ready);
+        assert_eq!(prov_r.current_qty, 8);
+        let prov_txt = lines_text(st.stowage_gauge_lines(true));
+        assert!(prov_txt.contains("*Stores"), "{prov_txt}");
+        assert!(
+            prov_txt.contains("[QUEST] PROVISIONS: 8/10 d"),
+            "{prov_txt}"
+        );
+
+        // 3. Cargo hold metals (5/5 -> READY + *Hold Mass)
+        st.observe_quest_guidance(
+            Some(QuestTradeNeed {
+                quest_title: "Metals".into(),
+                checkpoint_title: "Deliver 5 metals".into(),
+                commodity_slug: "metals".into(),
+                target_quantity: 5,
+                wants_buy: true,
+                wants_sell: true,
+            }),
+            None,
+        );
+        let cargo_r = st.quest_stowage_readiness().expect("cargo readiness");
+        assert!(cargo_r.ready);
+        assert_eq!(cargo_r.gauge_kind, "cargo");
+        let cargo_txt = lines_text(st.stowage_gauge_lines(true));
+        assert!(cargo_txt.contains("*Hold Mass"), "{cargo_txt}");
+        assert!(cargo_txt.contains("[READY] METALS: 5/5 u"), "{cargo_txt}");
     }
 }
