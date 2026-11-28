@@ -1433,7 +1433,24 @@ impl QuestsSnapshot {
         };
         let needs = single.active_trade_needs(Some(&q.key));
         if needs.is_empty() {
-            return None;
+            let mine = single.surface_mining_status(Some(&q.key))?;
+            let want = normalize_good_slug(&mine.target_ore_slug);
+            let current: i64 = stowage
+                .cargo_lots
+                .iter()
+                .filter(|(id, name, _)| {
+                    normalize_good_slug(id) == want || normalize_good_slug(name) == want
+                })
+                .map(|(_, _, qty)| (*qty).max(0))
+                .sum();
+            let ready = current >= 1;
+            let tag = if ready {
+                "[ORE HOLD READY]"
+            } else {
+                "[ORE HOLD]"
+            };
+            let label = mine.target_ore_slug.replace('_', " ").to_ascii_uppercase();
+            return Some((format!("{tag} {label}: {current}/1 t"), ready));
         }
         let eval_need = |need: &QuestTradeNeed| -> (String, i64, i64, &'static str, bool) {
             let target = need.target_quantity.max(1);
@@ -1482,6 +1499,52 @@ impl QuestsSnapshot {
             }
         }
         Some((text, *ready))
+    }
+
+    /// Format a compact cross-port sailing pre-flight fuel & provisions readiness line for
+    /// inter-station quests (Steps 3, 4, and 7) inside the F11 Quest Overlay.
+    #[must_use]
+    pub fn preflight_readiness_line_for(
+        q: &ActiveQuest,
+        stowage: &QuestStowageTelemetry,
+    ) -> Option<(String, bool)> {
+        let single = QuestsSnapshot {
+            active: vec![q.clone()],
+            ..Default::default()
+        };
+        let dest = single.active_destination_port(Some(&q.key))?;
+        let fuel_t = stowage.propellant_kg.max(0) / 1000;
+        let prov_d = stowage.provisions_days.max(0);
+        let fuel_ok = fuel_t > 0;
+        let prov_ok = prov_d > 0;
+        let ready = fuel_ok && prov_ok;
+        if ready {
+            Some((
+                format!(
+                    "[PRE-FLIGHT OK] Fuel {fuel_t}t | Provisions {prov_d}d -> {}",
+                    dest.port_label
+                ),
+                true,
+            ))
+        } else {
+            let fuel_txt = if fuel_ok {
+                format!("{fuel_t}t OK")
+            } else {
+                "0t!".to_string()
+            };
+            let prov_txt = if prov_ok {
+                format!("{prov_d}d OK")
+            } else {
+                "0d!".to_string()
+            };
+            Some((
+                format!(
+                    "[CHECK BEFORE UNDOCK] Fuel {fuel_txt} | Provisions {prov_txt} -> {}",
+                    dest.port_label
+                ),
+                false,
+            ))
+        }
     }
 
     /// Order room NPC quest markers by action urgency:
@@ -3013,6 +3076,21 @@ pub fn render_quest_overlay_full(
                         hold_line,
                         Style::default()
                             .fg(if ready { Color::Green } else { Color::Yellow })
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                }
+                if let Some(st) = stowage
+                    && let Some((pf_line, pf_ready)) =
+                        QuestsSnapshot::preflight_readiness_line_for(q, st)
+                {
+                    detail_lines.push(Line::from(Span::styled(
+                        pf_line,
+                        Style::default()
+                            .fg(if pf_ready {
+                                Color::Green
+                            } else {
+                                Color::LightYellow
+                            })
                             .add_modifier(Modifier::BOLD),
                     )));
                 }
@@ -5256,6 +5334,94 @@ mod tests {
         assert_eq!(
             st.handle_key_with_port(Key::Char('p'), &mastered, Some("stickney")),
             QuestOverlayAction::Prefill("+market/jobs".into())
+        );
+    }
+
+    #[test]
+    fn quest_overlay_shows_step6_ore_hold_and_step7_preflight_checks() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let step6 = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[5],
+                "title": "Scan, Sound, and Mine a Landing Site",
+                "checkpoints": [
+                    { "id": "scan_landing_site", "title": "Scan site", "instructions": "+tv/1 scan go", "checked": true, "live_ready": true },
+                    { "id": "mine_carbon_ore", "title": "Mine 1t carbon_ore", "instructions": "+tv/1 mine go", "checked": false, "live_ready": false }
+                ]
+            }],
+            "available": [],
+            "completed": []
+        }));
+        let stow_missing_stores = QuestStowageTelemetry {
+            cargo_kg: 2000,
+            propellant_kg: 12_000,
+            provisions_days: 0,
+            cargo_lots: vec![("tacsim:carbon_ore".into(), "Carbon Ore".into(), 2)],
+        };
+        let (ore_txt, ore_ready) =
+            QuestsSnapshot::hold_readiness_line_for(&step6.active[0], &stow_missing_stores)
+                .expect("expected Step 6 ore hold readiness");
+        assert!(ore_ready);
+        assert_eq!(ore_txt, "[ORE HOLD READY] CARBON ORE: 2/1 t");
+
+        let step7 = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[6],
+                "title": "Deliver Your Mined Ore to Market",
+                "checkpoints": [{
+                    "id": "sell_carbon_ore",
+                    "title": "Sell 1t carbon_ore at Stickney Yards",
+                    "instructions": "Fly to Stickney Yards (+ship/plan stickney) and +market/sell carbon_ore.",
+                    "checked": false,
+                    "live_ready": false
+                }]
+            }],
+            "available": [],
+            "completed": []
+        }));
+        let st = QuestOverlayState {
+            open: true,
+            tab: QuestTab::Active,
+            ..Default::default()
+        };
+        let render_with = |snap: &QuestsSnapshot, stow: &QuestStowageTelemetry| -> String {
+            let backend = TestBackend::new(120, 28);
+            let mut term = Terminal::new(backend).expect("terminal");
+            term.draw(|f| render_quest_overlay_with_stowage(f, f.area(), &st, snap, Some(stow)))
+                .expect("draw");
+            let buf = term.backend().buffer();
+            (0..buf.area.height)
+                .map(|y| {
+                    (0..buf.area.width)
+                        .map(|x| buf[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let txt_missing = render_with(&step7, &stow_missing_stores);
+        assert!(
+            txt_missing.contains("[CHECK BEFORE UNDOCK] Fuel 12t OK | Provisions 0d!"),
+            "expected Step 7 missing provisions warning in overlay:\n{txt_missing}"
+        );
+        assert!(
+            txt_missing.contains("Stickney Yards"),
+            "expected Stickney Yards destination in overlay:\n{txt_missing}"
+        );
+
+        let stow_ready = QuestStowageTelemetry {
+            provisions_days: 15,
+            ..stow_missing_stores
+        };
+        let txt_ok = render_with(&step7, &stow_ready);
+        assert!(
+            txt_ok.contains("[PRE-FLIGHT OK] Fuel 12t | Provisions 15d"),
+            "expected Step 7 pre-flight OK line in overlay:\n{txt_ok}"
         );
     }
 }
