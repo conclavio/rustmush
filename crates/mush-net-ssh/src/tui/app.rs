@@ -5394,9 +5394,15 @@ impl TuiApp {
             .next()
         {
             let mut pushed_suggested_cmd = String::new();
+            let mut route_cmd_lower = String::new();
             let tracked_ready_tag = quest_readiness_tag(tq);
+            let tracked_step_badge = guided_step_badge(&tq.key);
+            let tag_prefix = tracked_ready_tag
+                .map(|t| format!("{t} "))
+                .unwrap_or_default();
             if let Some(hop) = self.port_walk.next_quest_hop() {
-                let (route_label, search_head) = if hop.next_exit_command == "+ship/board" {
+                route_cmd_lower = hop.next_exit_command.trim().to_ascii_lowercase();
+                let (route_base, search_head) = if hop.next_exit_command == "+ship/board" {
                     ("[>] Board Ship".to_string(), "board ship route walk")
                 } else if hop.next_exit_command == "+ship/leave" {
                     ("[>] Cycle Ashore".to_string(), "ashore cycle leave route")
@@ -5413,9 +5419,10 @@ impl TuiApp {
                         "route walk",
                     )
                 };
+                let route_label = format!("{route_base}{tracked_step_badge}");
                 let hop_word = if hop.hops == 1 { "hop" } else { "hops" };
                 let detail = format!(
-                    "{} {} to {} · {}",
+                    "{tag_prefix}{} {} to {} · {}",
                     hop.hops, hop_word, hop.target_room_name, hop.next_exit_command
                 );
                 let search = format!(
@@ -5428,28 +5435,34 @@ impl TuiApp {
                     detail: detail.clone(),
                     quest_action: Some(PaletteQuestAction::PrefillCommand),
                 });
-            } else if let Some(suggested) =
+            }
+            if let Some(suggested) =
                 QuestsSnapshot::suggested_action_for_with_stowage(tq, stowage.as_ref())
             {
-                pushed_suggested_cmd = suggested.command.trim().to_ascii_lowercase();
-                let tag_prefix = tracked_ready_tag
-                    .map(|t| format!("{t} "))
-                    .unwrap_or_default();
-                let detail = if tq.next_step.is_empty() {
-                    format!("{tag_prefix}{}", suggested.command)
-                } else {
-                    format!("{tag_prefix}{} — {}", suggested.command, tq.next_step)
-                };
-                let search = format!(
-                    "next step {} {} {} quest",
-                    suggested.label, suggested.command, tq.title
-                );
-                consider(&search, &|| PaletteEntry {
-                    insert: suggested.command.clone(),
-                    label: format!("[>] Next: {}", suggested.label),
-                    detail: detail.clone(),
-                    quest_action: Some(PaletteQuestAction::PrefillCommand),
-                });
+                let sug_lower = suggested.command.trim().to_ascii_lowercase();
+                let dup_route = !route_cmd_lower.is_empty() && sug_lower == route_cmd_lower;
+                let dup_finish =
+                    tq.can_finish_now && tq.finish_cmd.trim().eq_ignore_ascii_case(&sug_lower);
+                let dup_check =
+                    tq.can_check_now && tq.check_cmd.trim().eq_ignore_ascii_case(&sug_lower);
+                if !dup_route && !dup_finish && !dup_check {
+                    pushed_suggested_cmd = sug_lower;
+                    let detail = if tq.next_step.is_empty() {
+                        format!("{tag_prefix}{}", suggested.command)
+                    } else {
+                        format!("{tag_prefix}{} — {}", suggested.command, tq.next_step)
+                    };
+                    let search = format!(
+                        "next step {} {} {} quest",
+                        suggested.label, suggested.command, tq.title
+                    );
+                    consider(&search, &|| PaletteEntry {
+                        insert: suggested.command.clone(),
+                        label: format!("[>] Next: {}{tracked_step_badge}", suggested.label),
+                        detail: detail.clone(),
+                        quest_action: Some(PaletteQuestAction::PrefillCommand),
+                    });
+                }
             }
 
             let tracked_snap = self
@@ -5577,8 +5590,9 @@ impl TuiApp {
                 });
             }
         } else if let Some(next_guided) = self.quests_snap.next_guided_offer() {
+            let next_step_badge = format!(" [Step {}/7]", next_guided.step);
             if let Some(hop) = self.port_walk.next_quest_hop() {
-                let (route_label, search_head) = if hop.next_exit_command == "+ship/board" {
+                let (route_base, search_head) = if hop.next_exit_command == "+ship/board" {
                     ("[>] Board Ship".to_string(), "board ship route walk")
                 } else if hop.next_exit_command == "+ship/leave" {
                     ("[>] Cycle Ashore".to_string(), "ashore cycle leave route")
@@ -5595,6 +5609,7 @@ impl TuiApp {
                         "route walk",
                     )
                 };
+                let route_label = format!("{route_base}{next_step_badge}");
                 let hop_word = if hop.hops == 1 { "hop" } else { "hops" };
                 let detail = format!(
                     "{} {} to {} · {}",
@@ -5631,7 +5646,7 @@ impl TuiApp {
                     "sail plan {} {} next guided quest",
                     dest.port_id, dest.port_label
                 );
-                let label = format!("[>] Sail -> {}", dest.port_label);
+                let label = format!("[>] Sail -> {}{next_step_badge}", dest.port_label);
                 let detail = format!("{cmd} — {}", dest.quest_title);
                 consider(&search, &|| PaletteEntry {
                     insert: cmd.clone(),
@@ -14844,6 +14859,121 @@ mod tests {
         assert!(app.palette_open());
         app.feed_input(b"\r");
         assert_eq!(app.line.text(), "+market/jobs");
+    }
+
+    #[test]
+    fn palette_cosurfaces_stowage_next_step_alongside_route_with_step_and_readiness_tags() {
+        let mut app = app();
+        // Default PortWalkState is at Ceres Freeport (room.c03_arrivals); Step 3 with 5/5t metals stowed
+        // routes toward Boarding / Berth Gallery AND must co-surface +ship/plan stickney with [Step 3/7] & [PRE-FLIGHT OK].
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static("port.trade"),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "enabled": true,
+                "venue": "ceres",
+                "ship": {
+                    "hull_id": "#99",
+                    "stowage": {
+                        "cargo_kg": 5000,
+                        "tank_kg": 10000,
+                        "stores_days": 10,
+                        "items": [{ "good": "tacsim:metals", "label": "Metals", "qty": 5 }]
+                    }
+                }
+            }),
+        });
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "active": [{
+                    "key": "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+                    "title": "Metals Down the Corridor",
+                    "next_room_entry": "room.p07_receiving",
+                    "next_step": "Sail to Stickney Yards",
+                    "checkpoints": [{
+                        "id": "deliver_metals",
+                        "title": "Buy 5t metals at Ceres and deliver to Stickney Yards",
+                        "instructions": "Buy 5t metals (+market/buy metals 5) then sail to Stickney Yards (+ship/plan stickney).",
+                        "room_entry": "room.p07_receiving",
+                        "checked": false,
+                        "live_ready": false
+                    }]
+                }],
+                "available": [],
+                "completed": []
+            }),
+        });
+        app.sync_port_walk_quest_state();
+        assert!(
+            app.port_walk.next_quest_hop().is_some(),
+            "expected live station route hop toward Boarding / Berth Gallery"
+        );
+
+        app.feed_input(b"\x0bquest");
+        let entries = &app.palette.as_ref().expect("open palette").entries;
+        let route_row = entries
+            .iter()
+            .find(|e| e.label.contains("[>] Walk ->") || e.label.contains("[>] Board Ship"))
+            .expect("expected active route row");
+        assert!(
+            route_row.label.contains("[Step 3/7]"),
+            "expected [Step 3/7] on route row: {}",
+            route_row.label
+        );
+        assert!(
+            route_row.detail.contains("[PRE-FLIGHT OK]"),
+            "expected [PRE-FLIGHT OK] on route detail: {}",
+            route_row.detail
+        );
+        let next_row = entries
+            .iter()
+            .find(|e| e.insert == "+ship/plan stickney")
+            .expect("expected co-surfaced Next: +ship/plan stickney alongside route");
+        assert!(
+            next_row
+                .label
+                .contains("Next: Plan Stickney Yards [Step 3/7]"),
+            "expected [Step 3/7] on co-surfaced Next row: {}",
+            next_row.label
+        );
+        assert!(
+            next_row.detail.contains("[PRE-FLIGHT OK]"),
+            "expected [PRE-FLIGHT OK] on co-surfaced Next detail: {}",
+            next_row.detail
+        );
+
+        // Between steps (1-3 complete, at Ceres) -> Sail -> Stickney Yards [Step 4/7]
+        app.feed_input(b"\x1b\x15");
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "active": [],
+                "available": [],
+                "completed": [
+                    { "key": "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll", "title": "S1" },
+                    { "key": "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel", "title": "S2" },
+                    { "key": "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery", "title": "S3" }
+                ]
+            }),
+        });
+        app.feed_input(b"\x0bsail");
+        let sail_entries = &app.palette.as_ref().expect("open palette").entries;
+        assert!(
+            sail_entries
+                .iter()
+                .any(|e| e.label.contains("Sail -> Stickney Yards [Step 4/7]")
+                    && e.insert == "+ship/plan stickney"),
+            "expected Sail -> Stickney Yards [Step 4/7], got {:?}",
+            sail_entries
+                .iter()
+                .map(|e| (&e.label, &e.insert))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]
