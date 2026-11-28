@@ -2512,6 +2512,7 @@ impl TuiApp {
                     if *kind == PanelFrameKind::Keyframe {
                         self.quests_snap = parse_quests_frame(data);
                         self.quests_overlay.clamp_selection(&self.quests_snap);
+                        self.quests_overlay.sync_tracked_for(&self.quests_snap);
                         self.sync_port_walk_quest_state();
                         let milestones = self.quest_milestones.observe(&self.quests_snap);
                         for m in &milestones {
@@ -4986,11 +4987,15 @@ impl TuiApp {
                     })
             })
             .or_else(|| self.port_walk.current_port_slug());
-        let dest_port = self
-            .quests_snap
-            .active_destination_port(tracked)
+        let tracked_snap = self.quests_snap.tracked_only(tracked);
+        let dest_port = tracked_snap
+            .as_ref()
+            .and_then(|s| s.active_destination_port(tracked))
             .or_else(|| self.quests_snap.next_guided_offer_destination(cur_port));
-        let trade_needs = self.quests_snap.active_trade_needs(tracked);
+        let trade_needs = tracked_snap
+            .as_ref()
+            .map(|s| s.active_trade_needs(tracked))
+            .unwrap_or_default();
         self.port_walk
             .observe_quest_guidance(trade_needs.first().cloned(), dest_port);
         self.port_walk.observe_quest_trade_needs(trade_needs);
@@ -5004,10 +5009,16 @@ impl TuiApp {
                     self.port_walk.settled_pad(),
                 ),
         );
-        self.port_walk
-            .observe_quest_coop_action(self.quests_snap.active_coop_action(tracked));
-        self.port_walk
-            .observe_quest_mining_status(self.quests_snap.surface_mining_status(tracked));
+        self.port_walk.observe_quest_coop_action(
+            tracked_snap
+                .as_ref()
+                .and_then(|s| s.active_coop_action(tracked)),
+        );
+        self.port_walk.observe_quest_mining_status(
+            tracked_snap
+                .as_ref()
+                .and_then(|s| s.surface_mining_status(tracked)),
+        );
     }
 
     // ---- palette and completion ------------------------------------------
@@ -14287,6 +14298,65 @@ mod tests {
         assert!(
             turnin_txt.contains("[?] Ilse Oduya-Brandt: Turn-In (F11)"),
             "{turnin_txt}"
+        );
+    }
+
+    #[test]
+    fn guided_auto_track_and_cycle_tracked_isolate_port_walk_quest_state() {
+        let mut app = app();
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "active": [
+                    {
+                        "key": "q.side_deimos",
+                        "title": "Deliver Water Ice to Deimos",
+                        "category": "optional",
+                        "next_room_entry": "room.d02_concourse",
+                        "checkpoints": [{
+                            "id": "deliver_water_ice",
+                            "title": "Deliver 3t water ice to Voltaire Anchorage",
+                            "instructions": "Run +ship/plan deimos and +market/sell water_ice.",
+                            "room_entry": "room.d02_concourse",
+                            "checked": false,
+                            "live_ready": false
+                        }]
+                    },
+                    {
+                        "key": "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+                        "title": "Scan, Sound, and Mine a Landing Site",
+                        "category": "guided",
+                        "next_room_entry": "room.c07_exchange",
+                        "checkpoints": [
+                            { "id": "scan_landing_site", "title": "Surface scan", "instructions": "+tv/1 scan go", "checked": false, "live_ready": false },
+                            { "id": "mine_carbon_ore", "title": "Mine 1t carbon_ore", "instructions": "+tv/1 mine go", "checked": false, "live_ready": false }
+                        ]
+                    }
+                ],
+                "available": [],
+                "completed": []
+            }),
+        });
+
+        // Auto-track prefers Guided Step 6 even though side job is first
+        assert_eq!(
+            app.quests_overlay.tracked_key.as_deref(),
+            Some("tacsim.quests.guided_onboarding/quest.guide_06_surface_mining")
+        );
+        assert!(app.port_walk.quest_dest_hint().is_none());
+
+        // Cycle to side job -> port_walk flips cleanly to Deimos without mining leakage
+        app.quests_overlay.cycle_tracked(&app.quests_snap);
+        app.sync_port_walk_quest_state();
+        assert_eq!(
+            app.quests_overlay.tracked_key.as_deref(),
+            Some("q.side_deimos")
+        );
+        assert_eq!(
+            app.port_walk.quest_dest_hint().map(|d| d.port_id.as_str()),
+            Some("deimos")
         );
     }
 }
