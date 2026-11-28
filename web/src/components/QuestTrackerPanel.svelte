@@ -21,6 +21,9 @@
   const doneCount = $derived(
     tracked ? tracked.checkpoints.filter((cp) => cp.checked).length : 0,
   );
+  const trackedIndex = $derived(
+    tracked ? Math.max(0, q.active.findIndex((item) => item.key === tracked.key)) : 0,
+  );
   const routeCrumb = $derived.by(() => {
     const tacsim = app.tacsim;
     if (!tracked || !tacsim) return null;
@@ -62,6 +65,16 @@
       <span class="progress">
         ({doneCount}/{tracked.checkpoints.length})
       </span>
+      {#if q.active.length > 1}
+        <button
+          type="button"
+          class="cycle-pill"
+          onclick={() => q.cycleTracked()}
+          title="Cycle tracked active quest"
+        >
+          {trackedIndex + 1}/{q.active.length} ▸
+        </button>
+      {/if}
       {#if tour}
         <button
           type="button"
@@ -71,6 +84,19 @@
           title="Guided Captain's Tour progress"
         >
           {tour.allDone ? `Corridor Captain ${tour.completed}/${tour.total}` : `Tour ${tour.completed}/${tour.total}`}
+        </button>
+      {/if}
+      {#if firstOffer}
+        <button
+          type="button"
+          class="offer-pill"
+          onclick={() =>
+            q.available.length === 1 && firstOffer.giverId
+              ? q.openNpcDialog(firstOffer.giverId)
+              : q.openLog("available")}
+          title="Available quest offers in this room"
+        >
+          [!] {q.available.length === 1 ? "1 offer here" : `${q.available.length} offers here`}
         </button>
       {/if}
       {#if q.trackerCollapsed}
@@ -296,6 +322,39 @@
     border-color: #34d399;
     background: rgba(16, 185, 129, 0.18);
     color: #a7f3d0;
+  }
+  .cycle-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.06rem 0.42rem;
+    border-radius: 999px;
+    border: 1px solid rgba(148, 163, 184, 0.45);
+    background: rgba(30, 41, 59, 0.72);
+    color: #cbd5e1;
+    font: inherit;
+    font-size: 0.69rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .cycle-pill:hover {
+    border-color: #fbbf24;
+    color: #fef3c7;
+  }
+  .offer-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.08rem 0.48rem;
+    border-radius: 999px;
+    border: 1px solid #fbbf24;
+    background: rgba(251, 191, 36, 0.2);
+    color: #fef3c7;
+    font: inherit;
+    font-size: 0.7rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .offer-pill:hover {
+    filter: brightness(1.14);
   }
   .tracker.mastered-hint {
     background: linear-gradient(90deg, rgba(16, 185, 129, 0.14), rgba(15, 23, 36, 0.92));
