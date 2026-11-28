@@ -495,7 +495,8 @@ namespace TacSim.UI
         {
             readiness = default;
             if (trade == null) return false;
-            if (!TryGetActiveDestinationPort(out _)) return false;
+            string curVenue = !string.IsNullOrEmpty(trade.ActiveVenue) ? trade.ActiveVenue : trade.AboardDockedPortHint;
+            if (!TryGetActiveDestinationPort(out _) && !TryGetNextGuidedOfferDestination(curVenue, out _)) return false;
 
             bool cargoRequired = false;
             string cargoLabel = string.Empty;
