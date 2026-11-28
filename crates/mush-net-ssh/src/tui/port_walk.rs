@@ -141,6 +141,17 @@ pub struct QuestRefitHoldReadiness {
     pub ready: bool,
 }
 
+/// Compact per-NPC quest status brief and 1-key quick action for the Talk drawer (`PortDrawerKind::Npc`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NpcQuestBrief {
+    pub npc_name: String,
+    pub status_line: String,
+    pub ready: bool,
+    pub quick_action_key: Option<char>,
+    pub quick_action_label: String,
+    pub quick_action_cmd: String,
+}
+
 /// Live Sailing Plan departure pre-flight readiness for an active destination quest
 /// (checks propellant tank, crew stores, and any required non-tank quest cargo in the hold).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -529,6 +540,7 @@ pub struct PortWalkState {
     quest_step_badge: String,
     quest_ready_turn_in: Option<QuestReadyTurnIn>,
     quest_tour_mastered: bool,
+    npc_quest_briefs: Vec<NpcQuestBrief>,
     speech_bubbles: HashMap<String, (String, Instant)>,
     interactables: Vec<InteractableTarget>,
     focus_idx: usize,
@@ -643,6 +655,7 @@ impl PortWalkState {
             quest_step_badge: String::new(),
             quest_ready_turn_in: None,
             quest_tour_mastered: false,
+            npc_quest_briefs: Vec::new(),
             speech_bubbles: HashMap::new(),
             interactables: Vec::new(),
             focus_idx: 0,
@@ -1023,6 +1036,46 @@ impl PortWalkState {
     /// Sync Guided Captain's Tour 7/7 completion mastery state for post-graduation Jobs Board greeting.
     pub fn observe_quest_tour_mastered(&mut self, mastered: bool) {
         self.quest_tour_mastered = mastered;
+    }
+
+    /// Sync per-NPC live quest status briefs & 1-key quick actions for the Talk drawer.
+    pub fn observe_npc_quest_briefs(&mut self, briefs: Vec<NpcQuestBrief>) {
+        self.npc_quest_briefs = briefs;
+    }
+
+    /// Resolve the live quest brief matching the currently selected NPC in the Talk drawer.
+    #[must_use]
+    pub fn selected_npc_quest_brief(&self) -> Option<&NpcQuestBrief> {
+        let fallback_marker_name = if self.selected_npc_name.trim().is_empty() {
+            self.selected_npc_quest_marker()
+                .map(|m| m.npc_name.trim())
+                .unwrap_or("")
+        } else {
+            ""
+        };
+        let sel = if !self.selected_npc_name.trim().is_empty() {
+            self.selected_npc_name.trim()
+        } else {
+            fallback_marker_name
+        };
+        if !sel.is_empty() {
+            if let Some(b) = self
+                .npc_quest_briefs
+                .iter()
+                .find(|b| b.npc_name.trim().eq_ignore_ascii_case(sel))
+            {
+                return Some(b);
+            }
+            let sel_low = sel.to_ascii_lowercase();
+            return self.npc_quest_briefs.iter().find(|b| {
+                let n = b.npc_name.trim().to_ascii_lowercase();
+                !n.is_empty() && (n.contains(&sel_low) || sel_low.contains(&n))
+            });
+        }
+        if self.npc_quest_briefs.len() == 1 {
+            return self.npc_quest_briefs.first();
+        }
+        None
     }
 
     fn format_quest_ready_banner(&self, step_suffix: &str) -> Option<(String, Color)> {
@@ -4546,6 +4599,26 @@ impl PortWalkState {
                         out.open_quest_for_npc = Some((m.npc_id, m.npc_name));
                     }
                 }
+                Key::Char('f' | 'F' | 'c' | 'C') => {
+                    if let Some(brief) = self.selected_npc_quest_brief().cloned()
+                        && brief.quick_action_key == Some('f')
+                        && !brief.quick_action_cmd.is_empty()
+                    {
+                        out.commands.push(brief.quick_action_cmd.clone());
+                        self.push_drawer_log(format!("> {}", brief.quick_action_cmd));
+                        self.close_drawer();
+                    }
+                }
+                Key::Char('a' | 'A') => {
+                    if let Some(brief) = self.selected_npc_quest_brief().cloned()
+                        && brief.quick_action_key == Some('a')
+                        && !brief.quick_action_cmd.is_empty()
+                    {
+                        out.commands.push(brief.quick_action_cmd.clone());
+                        self.push_drawer_log(format!("> {}", brief.quick_action_cmd));
+                        self.close_drawer();
+                    }
+                }
                 Key::Enter => {
                     if let Some(&(_, question)) = NPC_TOPICS.get(self.cursor_row) {
                         let cmd = if self.selected_npc_name.is_empty() {
@@ -5743,7 +5816,7 @@ impl PortWalkState {
         rows
     }
 
-    fn draw_drawer_box(&self, frame: &mut Frame<'_>, area: Rect, utf8: bool) {
+    pub(crate) fn draw_drawer_box(&self, frame: &mut Frame<'_>, area: Rect, utf8: bool) {
         let Some(active) = self.drawer else {
             return;
         };
@@ -6691,6 +6764,7 @@ impl PortWalkState {
                         .fg(Color::Cyan)
                         .add_modifier(Modifier::BOLD),
                 )));
+                let npc_brief = self.selected_npc_quest_brief();
                 if let Some(m) = self.selected_npc_quest_marker() {
                     let (prefix, col) = match m.marker.as_str() {
                         "available" => ("[!] Quest Available", Color::Yellow),
@@ -6709,12 +6783,39 @@ impl PortWalkState {
                         String::new()
                     };
                     let npc_step = super::quests::guided_step_badge(&m.quest_key);
+                    let quick_part = npc_brief
+                        .filter(|b| !b.quick_action_label.is_empty())
+                        .map(|b| format!("  [{}]", b.quick_action_label))
+                        .unwrap_or_default();
                     lines.push(Line::from(Span::styled(
                         truncate_str(
-                            &format!("{prefix}{title_part}{more_part} (q: quest dialog){npc_step}"),
+                            &format!(
+                                "{prefix}{title_part}{more_part} (q: quest dialog){npc_step}{quick_part}"
+                            ),
                             inner_w,
                         ),
                         Style::default().fg(col).add_modifier(Modifier::BOLD),
+                    )));
+                } else if let Some(b) = npc_brief
+                    && !b.quick_action_label.is_empty()
+                {
+                    lines.push(Line::from(Span::styled(
+                        truncate_str(&format!("[QUEST] [{}]", b.quick_action_label), inner_w),
+                        Style::default()
+                            .fg(if b.ready { Color::Green } else { Color::Yellow })
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                }
+                if let Some(b) = npc_brief
+                    && !b.status_line.is_empty()
+                {
+                    lines.push(Line::from(Span::styled(
+                        truncate_str(&b.status_line, inner_w),
+                        Style::default().fg(if b.ready {
+                            Color::Green
+                        } else {
+                            Color::LightCyan
+                        }),
                     )));
                 }
                 let list_rows = main_budget.saturating_sub(lines.len()).max(1);

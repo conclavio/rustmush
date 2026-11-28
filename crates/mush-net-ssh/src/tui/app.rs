@@ -5106,6 +5106,113 @@ impl TuiApp {
                 .guided_tour_progress()
                 .is_some_and(|p| p.all_done),
         );
+        let mut npc_briefs: Vec<super::port_walk::NpcQuestBrief> = Vec::new();
+        let mut push_brief = |brief: super::port_walk::NpcQuestBrief, rank: u8| {
+            let name_trim = brief.npc_name.trim();
+            if name_trim.is_empty() {
+                return;
+            }
+            if let Some(pos) = npc_briefs
+                .iter()
+                .position(|b| b.npc_name.trim().eq_ignore_ascii_case(name_trim))
+            {
+                let cur_rank = if npc_briefs[pos].quick_action_key == Some('f') {
+                    0
+                } else if npc_briefs[pos].quick_action_key == Some('a') {
+                    1
+                } else {
+                    2
+                };
+                if rank < cur_rank {
+                    npc_briefs[pos] = brief;
+                }
+            } else {
+                npc_briefs.push(brief);
+            }
+        };
+        for q in &self.quests_snap.active {
+            let mut parts: Vec<String> = Vec::new();
+            if !q.next_step.is_empty() {
+                parts.push(format!("Next: {}", q.next_step));
+            }
+            let hold_info = stowage
+                .as_ref()
+                .and_then(|st| QuestsSnapshot::hold_readiness_line_for(q, st));
+            let hold_ready = hold_info.as_ref().is_some_and(|(_, r)| *r);
+            if let Some((hold_txt, _)) = hold_info {
+                parts.push(hold_txt);
+            }
+            let (quick_key, quick_label, quick_cmd, rank) =
+                if q.can_finish_now && !q.finish_cmd.is_empty() {
+                    (
+                        Some('f'),
+                        "f:Complete Now".to_string(),
+                        q.finish_cmd.clone(),
+                        0,
+                    )
+                } else if q.can_check_now && !q.check_cmd.is_empty() {
+                    (
+                        Some('f'),
+                        "f:Verify Step".to_string(),
+                        q.check_cmd.clone(),
+                        0,
+                    )
+                } else {
+                    (None, String::new(), String::new(), 2)
+                };
+            let status_line = parts.join(" | ");
+            let ready = q.can_finish_now || q.ready_to_finish || hold_ready;
+            for npc_name in [q.turn_in_name.as_str(), q.giver_name.as_str()] {
+                if !npc_name.trim().is_empty() {
+                    push_brief(
+                        super::port_walk::NpcQuestBrief {
+                            npc_name: npc_name.to_string(),
+                            status_line: status_line.clone(),
+                            ready,
+                            quick_action_key: quick_key,
+                            quick_action_label: quick_label.clone(),
+                            quick_action_cmd: quick_cmd.clone(),
+                        },
+                        rank,
+                    );
+                }
+            }
+        }
+        for offer in &self.quests_snap.available {
+            if offer.giver_name.trim().is_empty() {
+                continue;
+            }
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(cp) = offer.checkpoints.first()
+                && !cp.title.is_empty()
+            {
+                parts.push(format!("Objective: {}", cp.title));
+            }
+            if !offer.reward_summary.is_empty() {
+                parts.push(format!("Reward: {}", offer.reward_summary));
+            }
+            let (quick_key, quick_label, quick_cmd) = if !offer.accept_cmd.is_empty() {
+                (
+                    Some('a'),
+                    "a:Accept Now".to_string(),
+                    offer.accept_cmd.clone(),
+                )
+            } else {
+                (None, String::new(), String::new())
+            };
+            push_brief(
+                super::port_walk::NpcQuestBrief {
+                    npc_name: offer.giver_name.clone(),
+                    status_line: parts.join(" | "),
+                    ready: false,
+                    quick_action_key: quick_key,
+                    quick_action_label: quick_label,
+                    quick_action_cmd: quick_cmd,
+                },
+                1,
+            );
+        }
+        self.port_walk.observe_npc_quest_briefs(npc_briefs);
     }
 
     // ---- palette and completion ------------------------------------------
@@ -16244,5 +16351,170 @@ mod tests {
                 .contains("Return -> Ceres Freeport [ORE HOLD READY]"),
             "{ret:?}"
         );
+    }
+
+    #[test]
+    fn npc_talk_drawer_renders_live_quest_brief_and_dispatches_accept_and_complete_hotkeys() {
+        use crate::tui::port_walk::{PortDrawerKind, PortWalkState};
+
+        let mut app = app();
+        let now = Instant::now();
+        let draw_npc = |pw: &mut PortWalkState| -> String {
+            let backend = ratatui::backend::TestBackend::new(112, 16);
+            let mut term = ratatui::Terminal::new(backend).expect("term");
+            term.draw(|f| pw.draw_drawer_box(f, f.area(), true))
+                .expect("draw");
+            term.backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect()
+        };
+
+        // 1. Available Step 1 offer from Maren -> Talk drawer shows objective + reward + [a:Accept Now], 'a' emits accept_cmd & closes
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "room_markers": [{
+                    "npc_id": "#11",
+                    "npc_name": "Maren Halvorsen",
+                    "marker": "available",
+                    "quest_key": "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+                    "quest_title": "First Papers at the Registry"
+                }],
+                "available": [{
+                    "key": "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+                    "title": "First Papers at the Registry",
+                    "giver_id": "#11",
+                    "giver_name": "Maren Halvorsen",
+                    "accept_cmd": "+quest/accept #11=tok1",
+                    "reward_summary": "Guided Tour Step 1/7",
+                    "checkpoints": [{
+                        "id": "enroll_coop",
+                        "title": "Enroll your Dray hull with Ilse",
+                        "instructions": "+coop/enroll <name>",
+                        "checked": false,
+                        "live_ready": false
+                    }]
+                }],
+                "active": [],
+                "completed": []
+            }),
+        });
+        let mut queries = Vec::new();
+        app.port_walk
+            .open_drawer(PortDrawerKind::Npc, &[], &mut queries, now);
+        let offer_txt = draw_npc(&mut app.port_walk);
+        assert!(offer_txt.contains("[a:Accept Now]"), "{offer_txt}");
+        assert!(
+            offer_txt.contains("Objective: Enroll your Dray hull with Ilse"),
+            "{offer_txt}"
+        );
+        assert!(
+            offer_txt.contains("Reward: Guided Tour Step 1/7"),
+            "{offer_txt}"
+        );
+
+        let accept_out = app
+            .port_walk
+            .handle_key(Key::Char('a'), false, false, &[], now);
+        assert_eq!(accept_out.commands, vec!["+quest/accept #11=tok1"]);
+        assert!(!app.port_walk.drawer_open());
+
+        // 2. Active Step 5 refit with cargo/stores aboard -> Talk drawer shows Next + [REFIT CHECK]
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(PORT_TRADE_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "enabled": true,
+                "venue": "ceres",
+                "ship": {
+                    "hull_id": "#99",
+                    "stowage": {
+                        "cargo_kg": 2000,
+                        "tank_kg": 12000,
+                        "stores_days": 4,
+                        "items": [{ "good": "tacsim:metals", "label": "Metals", "qty": 2 }]
+                    }
+                }
+            }),
+        });
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "room_markers": [{
+                    "npc_id": "#18",
+                    "npc_name": "Ilse Oduya-Brandt",
+                    "marker": "in_progress",
+                    "quest_key": "tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector",
+                    "quest_title": "Refit the Dray for Surface Mining"
+                }],
+                "active": [{
+                    "key": "tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector",
+                    "title": "Refit the Dray for Surface Mining",
+                    "giver_name": "Ilse Oduya-Brandt",
+                    "turn_in_name": "Rosalind Qureshi-Mbeki",
+                    "next_step": "Empty hold and run +coop/refit prospector",
+                    "checkpoints": [{
+                        "id": "refit_dray_p",
+                        "title": "Refit Dray-P",
+                        "instructions": "Empty hold and run +coop/refit prospector.",
+                        "checked": false,
+                        "live_ready": false
+                    }]
+                }],
+                "available": [],
+                "completed": []
+            }),
+        });
+        app.port_walk
+            .open_drawer(PortDrawerKind::Npc, &[], &mut queries, now);
+        let refit_txt = draw_npc(&mut app.port_walk);
+        assert!(
+            refit_txt.contains("Next: Empty hold and run +coop/refit prospector"),
+            "{refit_txt}"
+        );
+        assert!(refit_txt.contains("[REFIT CHECK]"), "{refit_txt}");
+
+        // 3. Turn-in ready quest -> shows [f:Complete Now], 'f' emits finish_cmd & closes
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "room_markers": [{
+                    "npc_id": "#18",
+                    "npc_name": "Ilse Oduya-Brandt",
+                    "marker": "turn_in",
+                    "quest_key": "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel",
+                    "quest_title": "Stock the Locker and Tanks"
+                }],
+                "active": [{
+                    "key": "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel",
+                    "title": "Stock the Locker and Tanks",
+                    "giver_name": "Ilse Oduya-Brandt",
+                    "turn_in_name": "Ilse Oduya-Brandt",
+                    "ready_to_finish": true,
+                    "can_finish_now": true,
+                    "finish_cmd": "+quest/finish #18=tok2",
+                    "next_step": "Report to Ilse",
+                    "checkpoints": []
+                }],
+                "available": [],
+                "completed": []
+            }),
+        });
+        let finish_txt = draw_npc(&mut app.port_walk);
+        assert!(finish_txt.contains("[f:Complete Now]"), "{finish_txt}");
+        let fin_out = app
+            .port_walk
+            .handle_key(Key::Char('f'), false, false, &[], now);
+        assert_eq!(fin_out.commands, vec!["+quest/finish #18=tok2"]);
+        assert!(!app.port_walk.drawer_open());
     }
 }
