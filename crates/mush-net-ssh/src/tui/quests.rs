@@ -2599,6 +2599,18 @@ pub fn render_quest_sheet_lines(
     snap: &QuestsSnapshot,
     tracked_key: Option<&str>,
 ) -> Vec<Line<'static>> {
+    render_quest_sheet_lines_with_stowage(snap, tracked_key, None)
+}
+
+/// Build golden Guided Quests summary lines for the TUI Character Sheet screen (`2 sheet`),
+/// including live ship hold / Step 5 refit / cross-port pre-flight readiness and the
+/// post-graduation `Corridor Captain (7/7)` Jobs Board pointer.
+#[must_use]
+pub fn render_quest_sheet_lines_with_stowage(
+    snap: &QuestsSnapshot,
+    tracked_key: Option<&str>,
+    stowage: Option<&QuestStowageTelemetry>,
+) -> Vec<Line<'static>> {
     if snap.active.is_empty() && snap.available.is_empty() && snap.completed.is_empty() {
         return Vec::new();
     }
@@ -2660,6 +2672,32 @@ pub fn render_quest_sheet_lines(
                 Span::styled("  Next: ", Style::default().fg(Color::Cyan)),
                 Span::raw(q.next_step.clone()),
             ]));
+        }
+        if let Some(st) = stowage
+            && let Some((hold_txt, hold_ready)) = QuestsSnapshot::hold_readiness_line_for(q, st)
+        {
+            let style = if hold_ready {
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Yellow)
+            };
+            lines.push(Line::from(Span::styled(format!("  {hold_txt}"), style)));
+        }
+        if let Some(st) = stowage
+            && let Some((pf_txt, pf_ready)) = QuestsSnapshot::preflight_readiness_line_for(q, st)
+        {
+            let style = if pf_ready {
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+                    .fg(Color::LightYellow)
+                    .add_modifier(Modifier::BOLD)
+            };
+            lines.push(Line::from(Span::styled(format!("  {pf_txt}"), style)));
         }
         let other_ready_here: Vec<&ActiveQuest> = snap
             .active
@@ -2726,6 +2764,21 @@ pub fn render_quest_sheet_lines(
                 "{} — speak with {} ({})",
                 next.short_label, next.giver_label, next.giver_room_name
             )),
+        ]));
+    } else if let Some(tour) = snap.guided_tour_progress()
+        && tour.all_done
+    {
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!(
+                    "  Guided Tour Complete ({}/{}) — ",
+                    tour.completed, tour.total
+                ),
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Jobs Board: +market/jobs", Style::default().fg(Color::Cyan)),
         ]));
     }
     lines.push(Line::from(vec![
@@ -5504,6 +5557,77 @@ mod tests {
         assert!(
             m_joined.contains("Jobs: +market/jobs"),
             "expected mastery tracker Jobs hint:\n{m_joined}"
+        );
+    }
+
+    #[test]
+    fn quest_sheet_shows_hold_preflight_and_mastery_jobs_hint() {
+        let step7 = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[6],
+                "title": "Deliver Your Mined Ore to Market",
+                "next_step": "Restock fuel and provisions, then sail to Stickney Yards.",
+                "checkpoints": [{
+                    "id": "sell_carbon_ore",
+                    "title": "Sell 1t carbon_ore at Stickney Yards",
+                    "instructions": "Fly to Stickney Yards (+ship/plan stickney) and +market/sell carbon_ore.",
+                    "checked": false,
+                    "live_ready": false
+                }]
+            }],
+            "available": [],
+            "completed": []
+        }));
+        let stow_missing = QuestStowageTelemetry {
+            cargo_kg: 2000,
+            propellant_kg: 12_000,
+            provisions_days: 0,
+            cargo_lots: vec![("tacsim:carbon_ore".into(), "Carbon Ore".into(), 2)],
+        };
+        let sheet_lines = render_quest_sheet_lines_with_stowage(&step7, None, Some(&stow_missing));
+        let joined = sheet_lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            joined.contains("[HOLD READY] CARBON ORE: 2/1 u"),
+            "expected hold readiness on sheet:\n{joined}"
+        );
+        assert!(
+            joined.contains("[CHECK BEFORE UNDOCK] Fuel 12t OK | Provisions 0d! -> Stickney Yards"),
+            "expected pre-flight readiness on sheet:\n{joined}"
+        );
+
+        let completed_all: Vec<serde_json::Value> = GUIDED_TOUR_KEYS
+            .iter()
+            .enumerate()
+            .map(|(i, k)| json!({ "key": k, "title": format!("Step {}", i + 1) }))
+            .collect();
+        let mastered = parse_frame(&json!({
+            "schema": 1,
+            "active": [],
+            "available": [],
+            "completed": completed_all
+        }));
+        let m_lines = render_quest_sheet_lines_with_stowage(&mastered, None, None);
+        let m_joined = m_lines
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            m_joined.contains("Corridor Captain"),
+            "expected Corridor Captain header on sheet:\n{m_joined}"
+        );
+        assert!(
+            m_joined.contains("Guided Tour Complete (7/7)"),
+            "expected Guided Tour Complete line on sheet:\n{m_joined}"
+        );
+        assert!(
+            m_joined.contains("Jobs Board: +market/jobs"),
+            "expected Jobs Board pointer on sheet:\n{m_joined}"
         );
     }
 }
