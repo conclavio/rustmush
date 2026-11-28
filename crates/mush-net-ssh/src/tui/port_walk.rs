@@ -516,6 +516,7 @@ pub struct PortWalkState {
     quest_ship_target: Option<String>,
     quest_coop_action: Option<QuestSuggestedAction>,
     quest_mining_status: Option<QuestSurfaceMiningStatus>,
+    quest_step_badge: String,
     speech_bubbles: HashMap<String, (String, Instant)>,
     interactables: Vec<InteractableTarget>,
     focus_idx: usize,
@@ -627,6 +628,7 @@ impl PortWalkState {
             quest_ship_target: None,
             quest_coop_action: None,
             quest_mining_status: None,
+            quest_step_badge: String::new(),
             speech_bubbles: HashMap::new(),
             interactables: Vec::new(),
             focus_idx: 0,
@@ -988,6 +990,11 @@ impl PortWalkState {
     pub fn observe_quest_mining_status(&mut self, status: Option<QuestSurfaceMiningStatus>) {
         self.quest_mining_status = status;
         self.refresh_npc_quest_labels();
+    }
+
+    /// Sync active tracked guided quest step badge (e.g., `" [Step 3/7]"`).
+    pub fn observe_quest_step_badge(&mut self, badge: String) {
+        self.quest_step_badge = badge;
     }
 
     /// Active quest corridor destination hint (e.g., Stickney Yards), if any.
@@ -5470,6 +5477,7 @@ impl PortWalkState {
         let main_budget = inner_h.saturating_sub(log_rows + log_hdr_rows).max(1);
 
         let mut lines: Vec<Line<'static>> = Vec::new();
+        let step_suffix = self.quest_step_badge.as_str();
         match active {
             PortDrawerKind::Trade => {
                 let gauge_count = if main_budget >= 7 { 3 } else { 1 };
@@ -5569,7 +5577,7 @@ impl PortWalkState {
                         String::new()
                     };
                     let qline = format!(
-                        "[QUEST] {side_tag} {} x {} (g:jump+qty){hold_suffix}{extra_suffix}",
+                        "[QUEST] {side_tag} {} x {} (g:jump+qty){hold_suffix}{extra_suffix}{step_suffix}",
                         need.target_quantity,
                         need.commodity_slug.replace('_', " ")
                     );
@@ -5684,7 +5692,12 @@ impl PortWalkState {
             PortDrawerKind::Jobs => {
                 let quest_job_cmd: Option<&str> = if self.quest_mining_status.is_some() {
                     lines.push(Line::from(Span::styled(
-                        truncate_str("[QUEST] Surface Surveys (f: +market/jobs survey)", inner_w),
+                        truncate_str(
+                            &format!(
+                                "[QUEST] Surface Surveys (f: +market/jobs survey){step_suffix}"
+                            ),
+                            inner_w,
+                        ),
                         Style::default()
                             .fg(Color::Yellow)
                             .add_modifier(Modifier::BOLD),
@@ -5694,7 +5707,7 @@ impl PortWalkState {
                     lines.push(Line::from(Span::styled(
                         truncate_str(
                             &format!(
-                                "[QUEST] Corridor Haul -> {} (f: +market/jobs haul)",
+                                "[QUEST] Corridor Haul -> {} (f: +market/jobs haul){step_suffix}",
                                 dest.port_label
                             ),
                             inner_w,
@@ -5742,7 +5755,9 @@ impl PortWalkState {
                 {
                     lines.push(Line::from(Span::styled(
                         truncate_str(
-                            "[QUEST] Refit Dray-P Prospector (press p: +coop/refit prospector)",
+                            &format!(
+                                "[QUEST] Refit Dray-P Prospector (press p: +coop/refit prospector){step_suffix}"
+                            ),
                             inner_w,
                         ),
                         Style::default()
@@ -5789,7 +5804,7 @@ impl PortWalkState {
                     lines.push(Line::from(Span::styled(
                         truncate_str(
                             &format!(
-                                "[QUEST] 24w Trend: {lbl} (h: +market/history tacsim:{})",
+                                "[QUEST] 24w Trend: {lbl} (h: +market/history tacsim:{}){step_suffix}",
                                 need.commodity_slug
                             ),
                             inner_w,
@@ -5851,7 +5866,8 @@ impl PortWalkState {
                     Style::default().fg(Color::DarkGray),
                 )));
                 if let Some(ref hint) = self.quest_dest_port {
-                    let qline = format!("[QUEST] Dest: {} (g:select)", hint.port_label);
+                    let qline =
+                        format!("[QUEST] Dest: {} (g:select){step_suffix}", hint.port_label);
                     lines.push(Line::from(Span::styled(
                         truncate_str(&qline, inner_w),
                         Style::default()
@@ -5903,7 +5919,7 @@ impl PortWalkState {
                     && !qm.mine_done
                 {
                     let qline = format!(
-                        "[QUEST] Surface Extraction: {} (g:Commons  c:+chart/ground)",
+                        "[QUEST] Surface Extraction: {} (g:Commons  c:+chart/ground){step_suffix}",
                         qm.target_ore_slug.replace('_', " ")
                     );
                     lines.push(Line::from(Span::styled(
@@ -5955,12 +5971,16 @@ impl PortWalkState {
             PortDrawerKind::Coop => {
                 if let Some(ref act) = self.quest_coop_action {
                     let banner = if act.command.starts_with("+coop/refit") {
-                        "[QUEST] Refit Dray-P Prospector (press p: +coop/refit prospector)"
+                        format!(
+                            "[QUEST] Refit Dray-P Prospector (press p: +coop/refit prospector){step_suffix}"
+                        )
                     } else {
-                        "[QUEST] Enroll Charter Hull (press Enter: +coop/enroll)"
+                        format!(
+                            "[QUEST] Enroll Charter Hull (press Enter: +coop/enroll){step_suffix}"
+                        )
                     };
                     lines.push(Line::from(Span::styled(
-                        truncate_str(banner, inner_w),
+                        truncate_str(&banner, inner_w),
                         Style::default()
                             .fg(Color::Yellow)
                             .add_modifier(Modifier::BOLD),
@@ -6121,9 +6141,10 @@ impl PortWalkState {
                     } else {
                         String::new()
                     };
+                    let npc_step = super::quests::guided_step_badge(&m.quest_key);
                     lines.push(Line::from(Span::styled(
                         truncate_str(
-                            &format!("{prefix}{title_part}{more_part} (q: quest dialog)"),
+                            &format!("{prefix}{title_part}{more_part} (q: quest dialog){npc_step}"),
                             inner_w,
                         ),
                         Style::default().fg(col).add_modifier(Modifier::BOLD),
@@ -10999,6 +11020,97 @@ mod tests {
         assert_eq!(
             st.interactables[0].action,
             InteractAction::Command("+tv/1 recover go")
+        );
+    }
+
+    #[test]
+    fn port_service_and_npc_drawers_display_guided_step_badges() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+
+        let mut st = PortWalkState::new();
+        st.observe_quest_step_badge(" [Step 3/7]".to_string());
+        st.observe_quest_guidance(
+            Some(QuestTradeNeed {
+                quest_title: "Metals Down the Corridor".into(),
+                checkpoint_title: "Buy 5t metals".into(),
+                commodity_slug: "metals".into(),
+                target_quantity: 5,
+                wants_buy: true,
+                wants_sell: false,
+            }),
+            Some(QuestDestinationHint {
+                quest_title: "Metals Down the Corridor".into(),
+                port_id: "stickney".into(),
+                port_label: "Stickney Yards".into(),
+            }),
+        );
+        st.observe_quest_coop_action(Some(QuestSuggestedAction {
+            label: "Enroll in Co-op".into(),
+            command: "+coop/enroll Starling".into(),
+        }));
+        st.observe_quest_markers(&[QuestMarker {
+            npc_id: "#11".into(),
+            npc_name: "Maren Halvorsen".into(),
+            marker: "available".into(),
+            symbol: "!".into(),
+            category: "guided".into(),
+            quest_key: "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll".into(),
+            quest_title: "First Papers at the Registry".into(),
+        }]);
+        st.selected_npc_name = "Maren Halvorsen".into();
+
+        let render_drawer_text = |st: &mut PortWalkState, kind: PortDrawerKind| -> String {
+            st.drawer = Some(kind);
+            let backend = TestBackend::new(120, 24);
+            let mut term = Terminal::new(backend).expect("terminal");
+            term.draw(|f| st.draw_drawer_box(f, f.area(), true))
+                .expect("draw");
+            let buf = term.backend().buffer();
+            let mut out = String::new();
+            for y in 0..buf.area.height {
+                for x in 0..buf.area.width {
+                    out.push_str(buf[(x, y)].symbol());
+                }
+                out.push('\n');
+            }
+            out
+        };
+
+        let trade_txt = render_drawer_text(&mut st, PortDrawerKind::Trade);
+        assert!(
+            trade_txt.contains("[Step 3/7]"),
+            "trade drawer missing step badge:\n{trade_txt}"
+        );
+
+        let sail_txt = render_drawer_text(&mut st, PortDrawerKind::Sailing);
+        assert!(
+            sail_txt.contains("[Step 3/7]"),
+            "sailing drawer missing step badge:\n{sail_txt}"
+        );
+
+        let jobs_txt = render_drawer_text(&mut st, PortDrawerKind::Jobs);
+        assert!(
+            jobs_txt.contains("[Step 3/7]"),
+            "jobs drawer missing step badge:\n{jobs_txt}"
+        );
+
+        let ind_txt = render_drawer_text(&mut st, PortDrawerKind::Industry);
+        assert!(
+            ind_txt.contains("[Step 3/7]"),
+            "industry drawer missing step badge:\n{ind_txt}"
+        );
+
+        let coop_txt = render_drawer_text(&mut st, PortDrawerKind::Coop);
+        assert!(
+            coop_txt.contains("[Step 3/7]"),
+            "coop drawer missing step badge:\n{coop_txt}"
+        );
+
+        let npc_txt = render_drawer_text(&mut st, PortDrawerKind::Npc);
+        assert!(
+            npc_txt.contains("[Step 1/7]"),
+            "npc drawer missing step badge:\n{npc_txt}"
         );
     }
 }

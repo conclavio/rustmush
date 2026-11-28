@@ -5059,6 +5059,21 @@ impl TuiApp {
                 .as_ref()
                 .and_then(|s| s.surface_mining_status(tracked)),
         );
+        let step_badge = tracked_snap
+            .as_ref()
+            .and_then(|s| {
+                s.active
+                    .first()
+                    .map(|q| guided_step_badge(&q.key))
+                    .filter(|b| !b.is_empty())
+            })
+            .or_else(|| {
+                self.quests_snap
+                    .next_guided_offer()
+                    .map(|o| guided_step_badge(o.key))
+            })
+            .unwrap_or_default();
+        self.port_walk.observe_quest_step_badge(step_badge);
     }
 
     // ---- palette and completion ------------------------------------------
