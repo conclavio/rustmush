@@ -141,6 +141,22 @@ pub struct QuestRefitHoldReadiness {
     pub ready: bool,
 }
 
+/// Live Sailing Plan departure pre-flight readiness for an active destination quest
+/// (checks propellant tank, crew stores, and any required non-tank quest cargo in the hold).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuestSailingPreflightReadiness {
+    pub propellant_tonnes: i64,
+    pub propellant_ok: bool,
+    pub provisions_days: i64,
+    pub provisions_ok: bool,
+    pub cargo_required: bool,
+    pub cargo_label: String,
+    pub cargo_qty: i64,
+    pub cargo_target: i64,
+    pub cargo_ok: bool,
+    pub ready: bool,
+}
+
 /// Immediate next-hop station exit breadcrumb toward the tracked quest's objective room.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QuestExitBreadcrumb {
@@ -1015,6 +1031,61 @@ impl PortWalkState {
             provisions_days,
             propellant_tonnes,
             ready: cargo_empty && provisions_empty,
+        })
+    }
+
+    /// Evaluate Sailing Plan departure pre-flight readiness for an active destination quest
+    /// (propellant tank, crew stores, and any required non-tank quest cargo in the hold).
+    #[must_use]
+    pub fn quest_sailing_preflight_readiness(&self) -> Option<QuestSailingPreflightReadiness> {
+        if !self.stowage_loaded || self.quest_dest_port.is_none() {
+            return None;
+        }
+        let propellant_tonnes = self.stowage.reaction_kg.max(0) / 1000;
+        let propellant_ok = self.stowage.reaction_kg > 0;
+        let provisions_days = self.stowage.stores_days.max(0);
+        let provisions_ok = provisions_days > 0;
+
+        let mut cargo_required = false;
+        let mut cargo_label = String::new();
+        let mut cargo_qty = 0i64;
+        let mut cargo_target = 0i64;
+        let mut cargo_ok = true;
+        if let Some(need) = self.quest_trade_need.as_ref()
+            && need.commodity_slug != "propellant"
+            && need.commodity_slug != "provisions"
+        {
+            cargo_required = true;
+            cargo_label = need.commodity_slug.replace('_', " ");
+            cargo_target = need.target_quantity.max(1);
+            let norm = |raw: &str| -> String {
+                let trimmed = raw.trim().to_ascii_lowercase();
+                let tail = trimmed
+                    .rsplit_once(':')
+                    .map_or(trimmed.as_str(), |(_, r)| r);
+                tail.replace(['-', ' '], "_")
+            };
+            for lot in &self.cargo_lots {
+                if norm(&lot.good_id) == need.commodity_slug
+                    || norm(&lot.good_name) == need.commodity_slug
+                {
+                    cargo_qty += lot.quantity.max(0);
+                }
+            }
+            cargo_ok = cargo_qty >= cargo_target;
+        }
+
+        Some(QuestSailingPreflightReadiness {
+            propellant_tonnes,
+            propellant_ok,
+            provisions_days,
+            provisions_ok,
+            cargo_required,
+            cargo_label,
+            cargo_qty,
+            cargo_target,
+            cargo_ok,
+            ready: propellant_ok && provisions_ok && cargo_ok,
         })
     }
 
@@ -3367,6 +3438,9 @@ impl PortWalkState {
                 Key::Char('g' | 'G') => {
                     self.apply_quest_destination_jump();
                 }
+                Key::Char('b' | 'B') => {
+                    self.drawer = Some(PortDrawerKind::Trade);
+                }
                 Key::Char('u') => {
                     if let Some((dest_id, _, _)) = CORRIDORS.get(self.corridor_idx) {
                         out.commands.push(format!("+ship/undock {dest_id}"));
@@ -4985,6 +5059,47 @@ impl PortWalkState {
                             .fg(Color::Yellow)
                             .add_modifier(Modifier::BOLD),
                     )));
+                    if let Some(pf) = self.quest_sailing_preflight_readiness() {
+                        let cargo_part = if pf.cargo_required {
+                            let mark = if pf.cargo_ok { "OK" } else { "!" };
+                            format!(
+                                " | {} {}/{} {}",
+                                pf.cargo_label, pf.cargo_qty, pf.cargo_target, mark
+                            )
+                        } else {
+                            String::new()
+                        };
+                        let (msg, col) = if pf.ready {
+                            (
+                                format!(
+                                    "[PRE-FLIGHT OK] Fuel {}t | Stores {}d{cargo_part}",
+                                    pf.propellant_tonnes, pf.provisions_days
+                                ),
+                                Color::Green,
+                            )
+                        } else {
+                            let fuel_txt = if pf.propellant_ok {
+                                format!("{}t OK", pf.propellant_tonnes)
+                            } else {
+                                "0t!".to_string()
+                            };
+                            let stores_txt = if pf.provisions_ok {
+                                format!("{}d OK", pf.provisions_days)
+                            } else {
+                                "0d!".to_string()
+                            };
+                            (
+                                format!(
+                                    "[CHECK] Fuel {fuel_txt} | Stores {stores_txt}{cargo_part} (b:Exchange)"
+                                ),
+                                Color::LightYellow,
+                            )
+                        };
+                        lines.push(Line::from(Span::styled(
+                            truncate_str(&msg, inner_w),
+                            Style::default().fg(col).add_modifier(Modifier::BOLD),
+                        )));
+                    }
                 }
                 let list_rows = main_budget.saturating_sub(lines.len()).max(1);
                 let cur = self.cursor_idx_clamped(CORRIDORS.len());
@@ -8975,5 +9090,97 @@ mod tests {
         // Seating at helm clears interior walk breadcrumb
         st.seated_at_helm = true;
         assert!(st.next_quest_hop().is_none());
+    }
+
+    #[test]
+    fn sailing_preflight_readiness_checks_fuel_stores_and_quest_cargo_and_jumps_to_exchange() {
+        let now = Instant::now();
+        let mut st = PortWalkState::new();
+        st.stowage_loaded = true;
+        st.stowage.reaction_kg = 0;
+        st.stowage.stores_days = 0;
+        st.cargo_lots = vec![CargoLotRow {
+            good_id: "tacsim:metals".into(),
+            good_name: "Metals".into(),
+            quantity: 2,
+        }];
+        st.observe_quest_guidance(
+            Some(QuestTradeNeed {
+                quest_title: "Metals Down the Corridor".into(),
+                checkpoint_title: "Deliver 5t metals to Stickney Yards".into(),
+                commodity_slug: "metals".into(),
+                target_quantity: 5,
+                wants_buy: true,
+                wants_sell: true,
+            }),
+            Some(QuestDestinationHint {
+                quest_title: "Metals Down the Corridor".into(),
+                port_id: "stickney".into(),
+                port_label: "Stickney Yards".into(),
+            }),
+        );
+
+        let blocked = st
+            .quest_sailing_preflight_readiness()
+            .expect("expected preflight readiness");
+        assert!(!blocked.ready);
+        assert!(!blocked.propellant_ok);
+        assert!(!blocked.provisions_ok);
+        assert!(blocked.cargo_required);
+        assert_eq!(blocked.cargo_qty, 2);
+        assert_eq!(blocked.cargo_target, 5);
+        assert!(!blocked.cargo_ok);
+
+        // Sailing drawer renders [CHECK] pre-flight line and 'b' jumps to Port Exchange (Trade)
+        let mut queries = Vec::new();
+        st.open_drawer(PortDrawerKind::Sailing, &[], &mut queries, now);
+        let backend = ratatui::backend::TestBackend::new(96, 16);
+        let mut term = ratatui::Terminal::new(backend).expect("test terminal");
+        term.draw(|f| st.draw_drawer_box(f, f.area(), true))
+            .expect("draw sailing drawer");
+        let rendered_blocked: String = term
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            rendered_blocked.contains("[CHECK] Fuel 0t! | Stores 0d! | metals 2/5 ! (b:Exchange)"),
+            "expected blocked pre-flight strip in Sailing drawer: {rendered_blocked}"
+        );
+
+        let out = st.handle_key(Key::Char('b'), false, false, &[], now);
+        assert!(out.consumed);
+        assert_eq!(st.drawer, Some(PortDrawerKind::Trade));
+
+        // Top up fuel, stores, and full 5t metals -> pre-flight OK
+        st.stowage.reaction_kg = 14_000;
+        st.stowage.stores_days = 12;
+        st.cargo_lots[0].quantity = 5;
+        let ready = st
+            .quest_sailing_preflight_readiness()
+            .expect("expected ready preflight");
+        assert!(ready.ready);
+        assert!(ready.propellant_ok);
+        assert_eq!(ready.propellant_tonnes, 14);
+        assert!(ready.provisions_ok);
+        assert_eq!(ready.provisions_days, 12);
+        assert!(ready.cargo_ok);
+
+        st.open_drawer(PortDrawerKind::Sailing, &[], &mut queries, now);
+        term.draw(|f| st.draw_drawer_box(f, f.area(), true))
+            .expect("draw ready sailing drawer");
+        let rendered_ready: String = term
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            rendered_ready.contains("[PRE-FLIGHT OK] Fuel 14t | Stores 12d | metals 5/5 OK"),
+            "expected ready pre-flight strip in Sailing drawer: {rendered_ready}"
+        );
     }
 }
