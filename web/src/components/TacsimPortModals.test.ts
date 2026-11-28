@@ -829,4 +829,96 @@ describe("TacsimPortModals Dray-P Vehicle Bay and Co-op Refit quest guidance", (
     await fireEvent.click(retBtn);
     expect(onCmd).toHaveBeenCalledWith("+ship/plan ceres");
   });
+
+  it("displays Step n/7 guided badges across Port Exchange, Sailing Plan, Co-op Desk, and NPC Conversation modals", () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[2],
+          title: "Metals Down the Corridor",
+          giver_id: "#18",
+          giver_name: "Ilse Oduya-Brandt",
+          turn_in_id: "#40",
+          turn_in_name: "Jonas Achterberg-Nkemelu",
+          checkpoints: [
+            {
+              id: "buy_metals",
+              title: "Buy 5t metals at Ceres Exchange",
+              instructions: "Buy 5t metals and file +ship/plan stickney.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    const tradeApp = makeApp(quests, "trade");
+    const rTrade = render(TacsimPortModals, { props: { app: tradeApp, onCmd: vi.fn() } });
+    expect(screen.getByRole("status", { name: "active quest trade guidance" }).textContent).toContain("Step 3/7");
+    rTrade.unmount();
+
+    const sailApp = makeApp(quests, "sailing");
+    const rSail = render(TacsimPortModals, { props: { app: sailApp, onCmd: vi.fn() } });
+    expect(screen.getByRole("status", { name: "active quest destination" }).textContent).toContain("Step 3/7");
+    rSail.unmount();
+
+    // Step 1 Co-op Desk + NPC Conversation modal
+    quests.applyFrame({
+      schema: 1,
+      room_markers: [
+        {
+          npc_id: "#11",
+          npc_name: "Maren Halvorsen",
+          marker: "available",
+          symbol: "!",
+          quest_key: GUIDED_TOUR_KEYS[0],
+          quest_title: "First Papers at the Registry",
+        },
+      ],
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[0],
+          title: "First Papers at the Registry",
+          checkpoints: [
+            {
+              id: "enroll",
+              title: "Enroll in Co-op",
+              instructions: "Run +coop/enroll <ship name> at Registry.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+      available: [
+        {
+          key: GUIDED_TOUR_KEYS[0],
+          title: "First Papers at the Registry",
+          giver_id: "#11",
+          giver_name: "Maren Halvorsen",
+          accept_cmd: "+quest/accept #11=tok1",
+          checkpoints: [],
+        },
+      ],
+    });
+
+    const coopApp = makeApp(quests, "coop");
+    const rCoop = render(TacsimPortModals, { props: { app: coopApp, onCmd: vi.fn() } });
+    expect(screen.getByRole("status", { name: "active quest coop guidance" }).textContent).toContain("Step 1/7");
+    rCoop.unmount();
+
+    const npcApp = makeApp(quests, "coop");
+    npcApp.tacsim.activeModal = "npc";
+    npcApp.tacsim.focusedNpc = {
+      id: "#11",
+      name: "Maren Halvorsen",
+      bio: "Port Watch clerk",
+      isNpc: true,
+    };
+    render(TacsimPortModals, { props: { app: npcApp, onCmd: vi.fn() } });
+    expect(screen.getByRole("button", { name: /Open Quest Dialog.*Step 1\/7/i })).toBeTruthy();
+  });
 });
