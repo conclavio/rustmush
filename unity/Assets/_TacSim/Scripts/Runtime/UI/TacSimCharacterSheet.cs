@@ -609,18 +609,58 @@ namespace TacSim.UI
                         if (activeQuest.Checkpoints[i].Checked || activeQuest.Checkpoints[i].LiveReady)
                             done++;
                     }
+                    int stepNo = TacSimQuestJournal.GuidedStepNumber(activeQuest.Key);
+                    string stepTag = stepNo > 0 ? $" [Step {stepNo}/7]" : string.Empty;
                     string prog = activeQuest.Checkpoints.Count > 0 ? $" ({done}/{activeQuest.Checkpoints.Count})" : string.Empty;
+                    string readyTag = (activeQuest.CanFinishNow || activeQuest.ReadyToFinish) ? " [READY]" : string.Empty;
                     string next = !string.IsNullOrEmpty(activeQuest.NextStep) ? $" — {MushProtocol.EscapeUnityRichText(activeQuest.NextStep)}" : string.Empty;
-                    sb.AppendFormat("<color=#FFDD44><b>ACTIVE QUEST:</b></color> <b>{0}</b>{1}{2}  |  Completed: {3}\n",
+                    sb.AppendFormat("<color=#FFDD44><b>ACTIVE QUEST:</b></color> <b>{0}</b>{1}{2}{3}{4}  |  Completed: {5}\n",
                         MushProtocol.EscapeUnityRichText(activeQuest.Title),
+                        stepTag,
                         prog,
+                        readyTag,
                         next,
                         qPanel.Completed.Count);
+
+                    int otherReadyCount = 0;
+                    string firstOtherReadyTitle = string.Empty;
+                    for (int i = 0; i < qPanel.Active.Count; i++)
+                    {
+                        var other = qPanel.Active[i];
+                        if (other != null && other.Key != activeQuest.Key && other.CanFinishNow)
+                        {
+                            if (otherReadyCount == 0)
+                                firstOtherReadyTitle = other.Title;
+                            otherReadyCount++;
+                        }
+                    }
+                    if (otherReadyCount == 1)
+                    {
+                        sb.AppendFormat("<color=#55EE99><b>[?] READY HERE:</b></color> <b>{0}</b> [J]\n",
+                            MushProtocol.EscapeUnityRichText(firstOtherReadyTitle));
+                    }
+                    else if (otherReadyCount > 1)
+                    {
+                        sb.AppendFormat("<color=#55EE99><b>[?] READY HERE:</b></color> <b>{0} quests ready to turn in</b> [J]\n",
+                            otherReadyCount);
+                    }
+                    if (qPanel.Available.Count > 0)
+                    {
+                        sb.AppendFormat("<color=#FFDD44><b>[!] {0} {1} HERE</b></color> [J]\n",
+                            qPanel.Available.Count,
+                            qPanel.Available.Count == 1 ? "OFFER" : "OFFERS");
+                    }
                 }
                 else if (qPanel.Available.Count > 0)
                 {
-                    sb.AppendFormat("<color=#FFDD44><b>QUEST AVAILABLE:</b></color> <b>{0}</b>  |  Completed: {1}\n",
-                        MushProtocol.EscapeUnityRichText(qPanel.Available[0].Title),
+                    var topOffer = _questJournal.GetPrioritizedAvailableOffer() ?? qPanel.Available[0];
+                    int offerStepNo = TacSimQuestJournal.GuidedStepNumber(topOffer.Key);
+                    string offerStepTag = offerStepNo > 0 ? $" [Step {offerStepNo}/7]" : string.Empty;
+                    string extraTag = qPanel.Available.Count > 1 ? $" (+{qPanel.Available.Count - 1} more)" : string.Empty;
+                    sb.AppendFormat("<color=#FFDD44><b>QUEST AVAILABLE:</b></color> <b>{0}</b>{1}{2}  |  Completed: {3}\n",
+                        MushProtocol.EscapeUnityRichText(topOffer.Title),
+                        extraTag,
+                        offerStepTag,
                         qPanel.Completed.Count);
                 }
                 else if (_questJournal.TryGetNextGuidedOffer(out var nextOffer))

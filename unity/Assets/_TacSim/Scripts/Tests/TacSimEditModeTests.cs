@@ -15194,5 +15194,67 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void CharacterSheet_ShowsStepBadgeSecondaryTurnInAndGuidedOfferPriority()
+        {
+            var rootGo = new UnityEngine.GameObject("SheetQuestPriorityTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                // 1. Active Step 2/7 tracked quest + secondary ready turn-in + 2 room offers
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""completed"": [{ ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""First Papers"" }],
+                    ""active"": [
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"",
+                            ""title"": ""Stock the Locker"",
+                            ""next_step"": ""Buy 10 provisions at Chandlery"",
+                            ""can_finish_now"": false,
+                            ""checkpoints"": [{ ""id"": ""buy_prov"", ""title"": ""Buy 10 provisions"", ""checked"": false, ""live_ready"": false }]
+                        },
+                        {
+                            ""key"": ""quest.side_ready"",
+                            ""title"": ""Dockside Ledger Check"",
+                            ""can_finish_now"": true,
+                            ""ready_to_finish"": true
+                        }
+                    ],
+                    ""available"": [
+                        { ""key"": ""quest.side_offer"", ""title"": ""Barge Sweeping"", ""category"": ""optional"", ""giver_name"": ""Dock Clerk"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""Metals Haul"", ""category"": ""guided"", ""giver_name"": ""Ilse"" }
+                    ]
+                }")));
+                hud.CharacterSheet.SetOpen(true);
+                string activeSnap = hud.CharacterSheet.PilotSummarySnapshot;
+                StringAssert.Contains("[Step 2/7]", activeSnap);
+                StringAssert.Contains("[?] READY HERE:", activeSnap);
+                StringAssert.Contains("Dockside Ledger Check", activeSnap);
+                StringAssert.Contains("[!] 2 OFFERS HERE", activeSnap);
+
+                // 2. Idle with side offer first & guided Step 3/7 second -> prioritizes guided offer with (+1 more) & [Step 3/7]
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""completed"": [{ ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""First Papers"" }],
+                    ""active"": [],
+                    ""available"": [
+                        { ""key"": ""quest.side_offer"", ""title"": ""Barge Sweeping"", ""category"": ""optional"", ""giver_name"": ""Dock Clerk"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""Metals Haul"", ""category"": ""guided"", ""giver_name"": ""Ilse"" }
+                    ]
+                }")));
+                hud.CharacterSheet.RefreshContents();
+                string idleSnap = hud.CharacterSheet.PilotSummarySnapshot;
+                StringAssert.Contains("Metals Haul", idleSnap);
+                StringAssert.Contains("(+1 more)", idleSnap);
+                StringAssert.Contains("[Step 3/7]", idleSnap);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
