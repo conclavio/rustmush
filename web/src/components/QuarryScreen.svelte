@@ -20,7 +20,12 @@
     siteCellOf,
   } from "$lib/quarry";
   import { expandRows } from "$lib/stores/map.svelte";
-  import { extractSurfaceMiningPrepActions } from "$lib/stores/quests.svelte";
+  import {
+    GUIDED_TOUR_KEYS,
+    extractSurfaceMiningPrepActions,
+    inferStationPortFromRoomEntry,
+    normalizeGoodSlug,
+  } from "$lib/stores/quests.svelte";
 
   let { app }: { app: GameApp } = $props();
 
@@ -69,9 +74,49 @@
     );
   });
 
-  const questReturnDest = $derived(
-    questMining?.mineDone ? (app.quests?.activeDestinationPort ?? null) : null,
-  );
+  const PORT_LABELS: Record<string, string> = {
+    ceres: "Ceres Freeport",
+    stickney: "Stickney Yards",
+    luna: "Aitken Basin",
+    deimos: "Voltaire Base",
+    titan: "Ligeia Dock",
+  };
+
+  const questMiningStep = $derived.by((): number | null => {
+    const key = app.quests?.trackedQuest?.key;
+    if (!key) return null;
+    const idx = GUIDED_TOUR_KEYS.indexOf(key);
+    return idx >= 0 ? idx + 1 : null;
+  });
+
+  const questMiningHoldQty = $derived.by((): number | null => {
+    if (!questMining) return null;
+    const st =
+      app.tacsim?.ambient?.ownStowage ??
+      app.tacsim?.ambient?.stowage ??
+      app.tacsim?.trade?.stowage ??
+      null;
+    if (!st || !Array.isArray(st.cargoLines)) return null;
+    const want = normalizeGoodSlug(questMining.targetOreSlug);
+    let total = 0;
+    for (const line of st.cargoLines) {
+      if (normalizeGoodSlug(line.good) === want || normalizeGoodSlug(line.label) === want) {
+        total += Math.max(0, line.qty);
+      }
+    }
+    return total;
+  });
+
+  const questReturnDest = $derived.by(() => {
+    if (!questMining?.mineDone) return null;
+    if (app.quests?.activeDestinationPort) return app.quests.activeDestinationPort;
+    const inferred = inferStationPortFromRoomEntry(app.quests?.trackedQuest?.nextRoomEntry) ?? "ceres";
+    return {
+      questTitle: questMining.questTitle,
+      portId: inferred,
+      portLabel: PORT_LABELS[inferred] ?? "Ceres Freeport",
+    };
+  });
 
   function isQuestReadingMatch(
     r: { target: string; line: string },
@@ -220,7 +265,7 @@
     {#if questMining}
       <div class="quest-mining-pill" role="status" aria-label="quest mining checklist">
         <div class="qm-head">
-          <span class="qm-tag">[QUEST]</span>
+          <span class="qm-tag">[QUEST]{#if questMiningStep !== null} Step {questMiningStep}/7{/if}</span>
           <strong>{questMining.questTitle}</strong>
           {#if questNextRigCmd}
             <button
@@ -276,6 +321,9 @@
           <span class:done={questMining.scanDone}>{questMining.scanDone ? "[✓]" : "[ ]"} Scan Site</span>
           <span class:done={questMining.soundDone}>{questMining.soundDone ? "[✓]" : "[ ]"} Sound Pocket</span>
           <span class:done={questMining.mineDone}>{questMining.mineDone ? "[✓]" : "[ ]"} Mine {questMining.targetOreSlug}</span>
+          {#if questMiningHoldQty !== null}
+            <span class:done={questMiningHoldQty > 0}>· Hold: {questMiningHoldQty}t {questMining.targetOreSlug.replaceAll("_", " ")}</span>
+          {/if}
         </div>
         {#if questMiningPrepActions.length > 0}
           <div class="qm-prep" aria-label="quest prospecting prep actions">
