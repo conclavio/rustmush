@@ -236,6 +236,18 @@
   const refitHoldReadiness = $derived(
     questCoopAction?.kind === "refit" ? evaluateRefitHoldReadiness(st) : null,
   );
+  const questReadyTurnIn = $derived.by(() => {
+    const q = app.quests?.trackedQuest;
+    if (!q || (!q.canFinishNow && !q.readyToFinish)) return null;
+    return {
+      key: q.key,
+      title: q.title,
+      turnInName: q.turnInName || "quest contact",
+      nextRoomName: q.nextRoomName || "",
+      canFinishNow: Boolean(q.canFinishNow && q.finishCmd),
+      finishCmd: q.finishCmd || "",
+    };
+  });
   const refitClearSlugs = $derived.by((): Set<string> => {
     const out = new Set<string>();
     if (!refitHoldReadiness || refitHoldReadiness.ready) return out;
@@ -567,6 +579,46 @@
                   Co-op Desk (+coop/refit)
                 </button>
               {/if}
+            </div>
+          {:else if questReadyTurnIn}
+            <div class="quest-banner" role="status" aria-label="active quest ready to turn in">
+              <div class="qb-text">
+                <span class="qtag">[QUEST READY]{questStepTag}</span>
+                <strong>{questReadyTurnIn.title}</strong>
+                <span class="muted">
+                  {#if questReadyTurnIn.canFinishNow}
+                    — Ready to turn in to {questReadyTurnIn.turnInName} here
+                  {:else}
+                    — Return to {questReadyTurnIn.turnInName}{questReadyTurnIn.nextRoomName
+                      ? ` (${questReadyTurnIn.nextRoomName})`
+                      : ""}
+                  {/if}
+                </span>
+              </div>
+              <div class="qb-text">
+                {#if questReadyTurnIn.canFinishNow}
+                  <button
+                    type="button"
+                    class="buybtn"
+                    onclick={() => {
+                      onCmd(questReadyTurnIn.finishCmd);
+                      app.tacsim.closeModal();
+                    }}
+                  >
+                    Turn In Now (?)
+                  </button>
+                {/if}
+                <button
+                  type="button"
+                  class="qbtn-gold"
+                  onclick={() => {
+                    app.tacsim.closeModal();
+                    app.quests.openQuestDialog(questReadyTurnIn.key);
+                  }}
+                >
+                  Open Quest Dialog
+                </button>
+              </div>
             </div>
           {/if}
 
