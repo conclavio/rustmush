@@ -3,6 +3,8 @@ import {
   QUESTS_FEED,
   QuestsStore,
   evaluateQuestStowageReadiness,
+  evaluateRefitHoldReadiness,
+  extractSurfaceMiningPrepActions,
   matchesQuestTradeRow,
   parseQuestMarkers,
 } from "./quests.svelte";
@@ -511,5 +513,85 @@ describe("QuestsStore", () => {
       ready: false,
       gaugeKind: "cargo",
     });
+  });
+
+  it("evaluates Dray-P refit empty-hold readiness (propellant OK) and surface mining prep/recovery chips", () => {
+    expect(
+      evaluateRefitHoldReadiness({
+        cargoKg: 2000,
+        propellantKg: 12000,
+        provisionsCrewDays: 5,
+        cargoLines: [{ qty: 2 }],
+      }),
+    ).toEqual({
+      cargoEmpty: false,
+      provisionsEmpty: false,
+      cargoKg: 2000,
+      provisionsCrewDays: 5,
+      propellantTonnes: 12,
+      ready: false,
+    });
+
+    // Empty cargo + empty provisions is ready even with propellant still in the tank
+    expect(
+      evaluateRefitHoldReadiness({
+        cargoKg: 0,
+        propellantKg: 15000,
+        provisionsCrewDays: 0,
+        cargoLines: [],
+      }),
+    ).toEqual({
+      cargoEmpty: true,
+      provisionsEmpty: true,
+      cargoKg: 0,
+      provisionsCrewDays: 0,
+      propellantTonnes: 15,
+      ready: true,
+    });
+
+    const beforeScan = extractSurfaceMiningPrepActions({
+      questTitle: "Scan, Sound, and Mine",
+      targetOreSlug: "carbon_ore",
+      recommendedFamily: "carbon",
+      hasScanStep: true,
+      scanDone: false,
+      hasSoundStep: true,
+      soundDone: false,
+      hasMineStep: true,
+      mineDone: false,
+      nextStepText: "Scan site",
+    });
+    expect(beforeScan.map((a) => a.command)).toEqual(["+license", "+tv/lease", "+chart/ground"]);
+
+    const midMining = extractSurfaceMiningPrepActions(
+      {
+        questTitle: "Scan, Sound, and Mine",
+        targetOreSlug: "carbon_ore",
+        recommendedFamily: "carbon",
+        hasScanStep: true,
+        scanDone: true,
+        hasSoundStep: true,
+        soundDone: false,
+        hasMineStep: true,
+        mineDone: false,
+        nextStepText: "Sound pocket",
+      },
+      2,
+    );
+    expect(midMining.map((a) => a.command)).toEqual(["+chart/ground", "+tv/2 recover go"]);
+
+    const afterMine = extractSurfaceMiningPrepActions({
+      questTitle: "Scan, Sound, and Mine",
+      targetOreSlug: "carbon_ore",
+      recommendedFamily: "carbon",
+      hasScanStep: true,
+      scanDone: true,
+      hasSoundStep: true,
+      soundDone: true,
+      hasMineStep: true,
+      mineDone: true,
+      nextStepText: "Recover rig",
+    });
+    expect(afterMine.map((a) => a.command)).toEqual(["+tv/1 recover go"]);
   });
 });

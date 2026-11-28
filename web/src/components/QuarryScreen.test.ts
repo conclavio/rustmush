@@ -107,5 +107,61 @@ describe("QuarryScreen's side pane", () => {
 
     const readingBtn = screen.getByRole("button", { name: /\[QUEST\] B · 140 m N — rich carbon_ore pocket/i });
     expect(readingBtn.classList.contains("quest-match")).toBe(true);
+
+    const chartBtn = screen.getByRole("button", { name: /Ground Chart/i });
+    chartBtn.click();
+    expect(focusComposer).toHaveBeenCalledWith("+chart/ground");
+
+    const recoverBtn = screen.getByRole("button", { name: /Recover Rig/i });
+    recoverBtn.click();
+    expect(focusComposer).toHaveBeenCalledWith("+tv/1 recover go");
+  });
+
+  it("shows prospecting prep chips before first scan and switches Next button to Recover Rig after mining", () => {
+    const raw = fixture("site_map_other.json");
+    const quarry = new QuarryStore();
+    quarry.applySite(raw, Date.now());
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+          title: "Scan, Sound, and Mine a Landing Site",
+          checkpoints: [
+            { id: "scan_landing_site", title: "Surface scan", instructions: "Run +tv/1 scan go.", checked: false, live_ready: false },
+            { id: "sound_mineral_pocket", title: "Sound pocket", instructions: "Run +tv/1 sound go.", checked: false, live_ready: false },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", instructions: "Run +tv/1 mine go.", checked: false, live_ready: false },
+          ],
+        },
+      ],
+    });
+    const focusComposer = vi.fn();
+    const app = { quarry, quests, focusComposer, refreshQuarry: vi.fn() } as unknown as GameApp;
+    const first = render(QuarryScreen, { props: { app } });
+
+    screen.getByRole("button", { name: /^License$/i }).click();
+    expect(focusComposer).toHaveBeenCalledWith("+license");
+    screen.getByRole("button", { name: /^Lease Rig$/i }).click();
+    expect(focusComposer).toHaveBeenCalledWith("+tv/lease");
+    first.unmount();
+
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+          title: "Scan, Sound, and Mine a Landing Site",
+          checkpoints: [
+            { id: "scan_landing_site", title: "Surface scan", instructions: "Run +tv/1 scan go.", checked: true, live_ready: true },
+            { id: "sound_mineral_pocket", title: "Sound pocket", instructions: "Run +tv/1 sound go.", checked: true, live_ready: true },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", instructions: "Run +tv/1 mine go.", checked: true, live_ready: true },
+          ],
+        },
+      ],
+    });
+    render(QuarryScreen, { props: { app } });
+    screen.getByRole("button", { name: /Next: Recover Rig/i }).click();
+    expect(focusComposer).toHaveBeenCalledWith("+tv recover go");
   });
 });

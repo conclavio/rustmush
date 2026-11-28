@@ -7,6 +7,7 @@
   import type { GameApp } from "$lib/game.svelte";
   import {
     evaluateQuestStowageReadiness,
+    evaluateRefitHoldReadiness,
     matchesQuestTradeRow,
     normalizeGoodSlug,
   } from "$lib/stores/quests.svelte";
@@ -98,6 +99,9 @@
       questTitle: app.quests?.trackedQuest?.title ?? "Guided Quest",
     };
   });
+  const refitHoldReadiness = $derived(
+    questCoopAction?.kind === "refit" ? evaluateRefitHoldReadiness(st) : null,
+  );
   const bayHullTarget = $derived(
     app.tacsim.activeHullRef ||
       app.tacsim.ambient.ownHullName ||
@@ -679,6 +683,22 @@
                   Run {questCoopAction.command}
                 </button>
               </div>
+              {#if refitHoldReadiness}
+                <div class="refit-check-strip" class:ready={refitHoldReadiness.ready} aria-label="refit hold readiness">
+                  <span class="qtag">{refitHoldReadiness.ready ? "[READY TO REFIT]" : "[CLEAR HOLD FIRST]"}</span>
+                  <span class:ok={refitHoldReadiness.cargoEmpty}>
+                    {refitHoldReadiness.cargoEmpty
+                      ? "✓ Cargo empty"
+                      : `✗ Cargo ${(refitHoldReadiness.cargoKg / 1000).toFixed(1)} t`}
+                  </span>
+                  <span class:ok={refitHoldReadiness.provisionsEmpty}>
+                    {refitHoldReadiness.provisionsEmpty
+                      ? "✓ Stores empty"
+                      : `✗ Stores ${refitHoldReadiness.provisionsCrewDays} d`}
+                  </span>
+                  <span class="muted">Propellant {refitHoldReadiness.propellantTonnes} t OK</span>
+                </div>
+              {/if}
             {/if}
             <div class="act-row">
               <button type="button" class="ghost sm" onclick={() => onCmd("+works")}>Works Status (+works)</button>
@@ -879,6 +899,22 @@
               </button>
             {/if}
           </div>
+          {#if refitHoldReadiness}
+            <div class="refit-check-strip" class:ready={refitHoldReadiness.ready} aria-label="refit hold readiness">
+              <span class="qtag">{refitHoldReadiness.ready ? "[READY TO REFIT]" : "[CLEAR HOLD FIRST]"}</span>
+              <span class:ok={refitHoldReadiness.cargoEmpty}>
+                {refitHoldReadiness.cargoEmpty
+                  ? "✓ Cargo empty"
+                  : `✗ Cargo ${(refitHoldReadiness.cargoKg / 1000).toFixed(1)} t`}
+              </span>
+              <span class:ok={refitHoldReadiness.provisionsEmpty}>
+                {refitHoldReadiness.provisionsEmpty
+                  ? "✓ Stores empty"
+                  : `✗ Stores ${refitHoldReadiness.provisionsCrewDays} d`}
+              </span>
+              <span class="muted">Propellant {refitHoldReadiness.propellantTonnes} t OK</span>
+            </div>
+          {/if}
         {/if}
         <p class="prose">
           The Co-op stakes a Stickney-built Dray bulk hauler and your initial hold; it takes its lay
@@ -1544,5 +1580,30 @@
     background: rgba(62, 48, 14, 0.48);
     color: #fef3c7;
     font-weight: 600;
+  }
+
+  .refit-check-strip {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.55rem;
+    padding: 0.35rem 0.65rem;
+    border-radius: 6px;
+    border: 1px solid rgba(212, 166, 52, 0.65);
+    background: rgba(54, 40, 10, 0.72);
+    color: #fde68a;
+    font-family: var(--font-mono);
+    font-size: 0.74rem;
+  }
+
+  .refit-check-strip.ready {
+    border-color: #34d399;
+    background: rgba(12, 64, 45, 0.78);
+    color: #a7f3d0;
+  }
+
+  .refit-check-strip.ready .qtag,
+  .refit-check-strip .ok {
+    color: #6ee7b7;
   }
 </style>

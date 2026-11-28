@@ -20,6 +20,7 @@
     siteCellOf,
   } from "$lib/quarry";
   import { expandRows } from "$lib/stores/map.svelte";
+  import { extractSurfaceMiningPrepActions } from "$lib/stores/quests.svelte";
 
   let { app }: { app: GameApp } = $props();
 
@@ -30,12 +31,15 @@
   const groundBlock = $derived(ground?.ground ?? null);
   const moving = $derived(block?.rigs.some((r) => r.leg !== null) ?? false);
   const questMining = $derived(app.quests?.surfaceMiningStatus ?? null);
+  const questMiningPrepActions = $derived(
+    extractSurfaceMiningPrepActions(questMining, q.selectedRig ?? 1),
+  );
   const questNextRigCmd = $derived.by((): { label: string; verb: string } | null => {
     if (!questMining) return null;
     if (!questMining.scanDone) return { label: "Scan Site", verb: "scan go" };
     if (!questMining.soundDone) return { label: "Sound Pocket", verb: "sound go" };
     if (!questMining.mineDone) return { label: "Mine Ore", verb: "mine go" };
-    return null;
+    return { label: "Recover Rig", verb: "recover go" };
   });
 
   function matchesQuestOre(text: string): boolean {
@@ -147,6 +151,21 @@
           <span class:done={questMining.soundDone}>{questMining.soundDone ? "[✓]" : "[ ]"} Sound Pocket</span>
           <span class:done={questMining.mineDone}>{questMining.mineDone ? "[✓]" : "[ ]"} Mine {questMining.targetOreSlug}</span>
         </div>
+        {#if questMiningPrepActions.length > 0}
+          <div class="qm-prep" aria-label="quest prospecting prep actions">
+            <span class="qm-prep-label">Prep:</span>
+            {#each questMiningPrepActions as act (act.command)}
+              <button
+                type="button"
+                class="qm-prep-btn"
+                title={`Prefill ${act.command}`}
+                onclick={() => prefill(act.command)}
+              >
+                {act.label}
+              </button>
+            {/each}
+          </div>
+        {/if}
       </div>
     {/if}
     {#if q.mode === "ground"}
@@ -482,5 +501,34 @@
   }
   .qm-steps .done {
     color: #6ee7a8;
+  }
+  .qm-prep {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex-wrap: wrap;
+    margin-top: 0.3rem;
+    padding-top: 0.25rem;
+    border-top: 1px solid rgba(212, 166, 52, 0.35);
+    font-size: 0.74rem;
+  }
+  .qm-prep-label {
+    color: #ffd84d;
+    font-weight: 700;
+    font-family: var(--mono, monospace);
+  }
+  .qm-prep-btn {
+    padding: 0.1rem 0.45rem;
+    border-radius: 4px;
+    border: 1px solid rgba(242, 201, 76, 0.65);
+    background: rgba(88, 64, 14, 0.72);
+    color: #fff6d4;
+    font: inherit;
+    font-size: 0.72rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .qm-prep-btn:hover {
+    background: rgba(132, 96, 20, 0.85);
   }
 </style>
