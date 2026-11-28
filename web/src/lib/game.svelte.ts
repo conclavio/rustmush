@@ -110,8 +110,12 @@ import {
   GUIDED_TOUR_KEYS,
   QUESTS_FEED,
   QuestsStore,
+  evaluateSailingPreflightReadiness,
   extractActiveDestinationPort,
   extractActiveSurfaceMiningStatus,
+  extractActiveTradeNeed,
+  extractQuestSuggestedAction,
+  formatQuestHoldReadinessSummary,
   inferStationPortFromRoomEntry,
   needsOriginPortProcurement,
   needsSurfaceExpeditionBoarding,
@@ -2148,6 +2152,28 @@ export class GameApp {
     const q = text.startsWith("/") ? text.slice(1) : text;
     const questItems: PaletteQuestAction[] = [];
     const tracked = this.quests.trackedQuest;
+    const liveStowage =
+      this.tacsim.ambient?.ownStowage ??
+      this.tacsim.ambient?.stowage ??
+      (this.tacsim.trade?.hullId ? this.tacsim.trade.stowage : null);
+
+    const questReadinessTag = (aq: typeof tracked): string => {
+      if (!aq || !liveStowage || aq.canFinishNow) return "";
+      const hold = formatQuestHoldReadinessSummary(aq, liveStowage);
+      if (hold && (hold.tag === "[RECOVER RIG FIRST]" || hold.tag === "[ORE HOLD READY]")) {
+        return hold.tag;
+      }
+      const dest = extractActiveDestinationPort([aq], aq.key);
+      if (dest) {
+        const pf = evaluateSailingPreflightReadiness(
+          dest,
+          extractActiveTradeNeed([aq], aq.key),
+          liveStowage,
+        );
+        if (pf) return pf.ready ? "[PRE-FLIGHT OK]" : "[CHECK BEFORE UNDOCK]";
+      }
+      return hold ? hold.tag : "";
+    };
 
     const stepSuffix = (key: string): string => {
       const idx = (GUIDED_TOUR_KEYS as readonly string[]).indexOf(key);
@@ -2210,10 +2236,6 @@ export class GameApp {
           routeCrumb = computeShipQuestBreadcrumb(this.tacsim.shipTemplate, currentComp, targetComp);
         }
       } else {
-        const liveStowage =
-          this.tacsim.ambient?.ownStowage ??
-          this.tacsim.ambient?.stowage ??
-          (this.tacsim.trade?.hullId ? this.tacsim.trade.stowage : null);
         const targetEntry =
           resolveStowageObjectiveRoom(this.quests.active, this.quests.trackedKey, liveStowage) ||
           tracked.nextRoomEntry ||
@@ -2241,6 +2263,7 @@ export class GameApp {
       }
 
       let pushedSuggestedCmd = "";
+      const trackedReadyTag = questReadinessTag(tracked);
       if (routeCrumb) {
         const routeTitle =
           routeCrumb.nextExitCommand === "+ship/board"
@@ -2258,17 +2281,18 @@ export class GameApp {
           detail: `${routeCrumb.hops} ${routeCrumb.hops === 1 ? "hop" : "hops"} to ${routeCrumb.targetRoomName} · ${routeCrumb.nextExitCommand}`,
         });
       } else {
-        const suggested = this.quests.suggestedAction;
+        const suggested = extractQuestSuggestedAction(tracked, liveStowage);
         if (suggested) {
           pushedSuggestedCmd = suggested.command.trim().toLowerCase();
+          const tagPrefix = trackedReadyTag ? `${trackedReadyTag} ` : "";
           questItems.push({
             kind: "step",
             key: tracked.key,
             command: suggested.command,
             title: `Next: ${suggested.label}`,
             detail: tracked.nextStep
-              ? `${suggested.command} — ${tracked.nextStep}`
-              : suggested.command,
+              ? `${tagPrefix}${suggested.command} — ${tracked.nextStep}`
+              : `${tagPrefix}${suggested.command}`,
           });
         }
       }
@@ -2287,33 +2311,48 @@ export class GameApp {
             });
           }
         } else if (!tracked.canFinishNow && !tracked.turnInHere) {
-          let returnDest = extractActiveDestinationPort([tracked], tracked.key);
-          if (!returnDest) {
-            const turnInRoom =
-              tracked.nextRoomEntry ||
-              tracked.checkpoints[tracked.checkpoints.length - 1]?.roomEntry ||
-              null;
-            const slug = inferStationPortFromRoomEntry(turnInRoom);
-            if (slug) {
-              const label =
-                slug === "ceres"
-                  ? "Ceres Freeport"
-                  : slug === "stickney"
-                    ? "Stickney Yards"
-                    : slug;
-              returnDest = { questTitle: tracked.title, portId: slug, portLabel: label };
-            }
-          }
-          if (returnDest) {
-            const planCmd = `+ship/plan ${returnDest.portId}`;
-            if (pushedSuggestedCmd !== planCmd.toLowerCase()) {
+          const miningHold = formatQuestHoldReadinessSummary(tracked, liveStowage);
+          if (miningHold?.tag === "[RECOVER RIG FIRST]") {
+            if (pushedSuggestedCmd !== "+tv/1 recover go") {
+              const oreLabel = mining.targetOreSlug.replaceAll("_", " ");
               questItems.push({
                 kind: "step",
                 key: tracked.key,
-                command: planCmd,
-                title: `Return → ${returnDest.portLabel}`,
-                detail: `${planCmd} — Return to ${tracked.turnInName || returnDest.portLabel} with mined ore`,
+                command: "+tv/1 recover go",
+                title: "Recover Rig First [RECOVER RIG FIRST]",
+                detail: `+tv/1 recover go — Stow mined ${oreLabel} in ship hold before returning to port`,
               });
+            }
+          } else {
+            let returnDest = extractActiveDestinationPort([tracked], tracked.key);
+            if (!returnDest) {
+              const turnInRoom =
+                tracked.nextRoomEntry ||
+                tracked.checkpoints[tracked.checkpoints.length - 1]?.roomEntry ||
+                null;
+              const slug = inferStationPortFromRoomEntry(turnInRoom);
+              if (slug) {
+                const label =
+                  slug === "ceres"
+                    ? "Ceres Freeport"
+                    : slug === "stickney"
+                      ? "Stickney Yards"
+                      : slug;
+                returnDest = { questTitle: tracked.title, portId: slug, portLabel: label };
+              }
+            }
+            if (returnDest) {
+              const planCmd = `+ship/plan ${returnDest.portId}`;
+              if (pushedSuggestedCmd !== planCmd.toLowerCase()) {
+                const oreBadge = miningHold?.tag === "[ORE HOLD READY]" ? " [ORE HOLD READY]" : "";
+                questItems.push({
+                  kind: "step",
+                  key: tracked.key,
+                  command: planCmd,
+                  title: `Return → ${returnDest.portLabel}${oreBadge}`,
+                  detail: `${planCmd} — Return to ${tracked.turnInName || returnDest.portLabel} with mined ore`,
+                });
+              }
             }
           }
         }
@@ -2419,11 +2458,13 @@ export class GameApp {
     }
 
     for (const aq of orderedActives) {
+      const rTag = questReadinessTag(aq);
+      const baseDetail = aq.nextStep || `Turn in to ${aq.turnInName}`;
       questItems.push({
         kind: "active",
         key: aq.key,
         title: `${aq.title}${stepSuffix(aq.key)}`,
-        detail: aq.nextStep || `Turn in to ${aq.turnInName}`,
+        detail: rTag ? `${rTag} ${baseDetail}` : baseDetail,
         ready: aq.readyToFinish || aq.canFinishNow,
       });
     }

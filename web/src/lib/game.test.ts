@@ -3469,4 +3469,115 @@ describe("quest command palette route, step and cycle shortcuts", () => {
     app.palettePick(false);
     expect(focused).toBe("+market/jobs");
   });
+
+  it("command palette surfaces stowage-aware Next action, pre-flight tag, and Step 6 [RECOVER RIG FIRST] guard", () => {
+    const { app } = boot();
+    let focused = "";
+    app.composer = {
+      focus: (prefill?: string) => {
+        focused = prefill ?? "";
+      },
+      blur: () => {},
+      cycleMode: () => {},
+      text: () => "",
+      setText: () => {},
+    };
+
+    const ownStowage = {
+      cargoKg: 0,
+      propellantKg: 10_000,
+      provisionsCrewDays: 10,
+      cargoLines: [] as Array<{ good: string; label: string; qty: number }>,
+    };
+    app.tacsim.ambient = { ownStowage } as unknown as typeof app.tacsim.ambient;
+
+    // 1. Step 3 with 0/5 metals stowed -> Buy Cargo (+market/list) + [CHECK BEFORE UNDOCK]
+    app.quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+          title: "Metals Down the Corridor",
+          next_step: "Buy 5t metals and sail to Stickney Yards",
+          checkpoints: [
+            {
+              id: "deliver_metals",
+              title: "Buy and deliver 5t metals to Stickney Yards",
+              instructions: "Buy 5t metals (+market/buy metals 5) then sail to Stickney Yards (+ship/plan stickney) and sell.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+      available: [],
+      completed: [],
+    });
+
+    app.paletteQuery("/next");
+    const buyEntry = app.paletteEntries.find(
+      (e) => e.questAction?.kind === "step" && e.questAction.command === "+market/list",
+    );
+    expect(buyEntry?.label).toContain("Buy Cargo (+market/list)");
+    expect(buyEntry?.detail).toContain("[CHECK BEFORE UNDOCK]");
+
+    // 2. Step 3 with 5t metals loaded -> Plan Stickney Yards (+ship/plan stickney) + [PRE-FLIGHT OK]
+    ownStowage.cargoKg = 5000;
+    ownStowage.cargoLines = [{ good: "tacsim:metals", label: "Metals", qty: 5 }];
+    app.paletteQuery("/next");
+    const sailEntry = app.paletteEntries.find(
+      (e) => e.questAction?.kind === "step" && e.questAction.command === "+ship/plan stickney",
+    );
+    expect(sailEntry?.label).toContain("Plan Stickney Yards");
+    expect(sailEntry?.detail).toContain("[PRE-FLIGHT OK]");
+
+    // 3. Step 6 post-mine with 0t ore in ship hold -> blocks premature Return with [RECOVER RIG FIRST] (+tv/1 recover go)
+    ownStowage.cargoKg = 0;
+    ownStowage.cargoLines = [];
+    app.quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+          title: "Scan, Sound, and Mine a Landing Site",
+          turn_in_name: "Rosalind Qureshi-Mbeki",
+          next_room_entry: "room.c07_exchange",
+          ready_to_finish: true,
+          can_finish_now: false,
+          turn_in_here: false,
+          checkpoints: [
+            { id: "scan_landing_site", title: "Scan site", checked: true, live_ready: true },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", room_entry: "room.c07_exchange", checked: true, live_ready: true },
+          ],
+        },
+      ],
+      available: [],
+      completed: [],
+    });
+
+    app.paletteQuery("/recover");
+    const recIdx = app.paletteEntries.findIndex(
+      (e) => e.questAction?.kind === "step" && e.questAction.command === "+tv/1 recover go",
+    );
+    expect(recIdx).toBeGreaterThanOrEqual(0);
+    expect(app.paletteEntries[recIdx]?.label).toContain("[RECOVER RIG FIRST]");
+    app.paletteSelected = recIdx;
+    app.palettePick(false);
+    expect(focused).toBe("+tv/1 recover go");
+    app.paletteQuery("/return");
+    expect(
+      app.paletteEntries.some(
+        (e) => e.questAction?.kind === "step" && e.questAction.command === "+ship/plan ceres",
+      ),
+    ).toBe(false);
+
+    // 4. Step 6 after rig recovery (1t carbon_ore stowed) -> Return -> Ceres Freeport [ORE HOLD READY]
+    ownStowage.cargoKg = 1000;
+    ownStowage.cargoLines = [{ good: "tacsim:carbon_ore", label: "Carbon Ore", qty: 1 }];
+    app.paletteQuery("/return");
+    const readyRet = app.paletteEntries.find(
+      (e) => e.questAction?.kind === "step" && e.questAction.command === "+ship/plan ceres",
+    );
+    expect(readyRet?.label).toContain("Return → Ceres Freeport [ORE HOLD READY]");
+  });
 });
