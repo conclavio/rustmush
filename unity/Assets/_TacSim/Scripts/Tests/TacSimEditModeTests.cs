@@ -15515,7 +15515,7 @@ namespace TacSim.Tests
                 int step6Idx = titles.FindIndex(t => t.Contains("Scan, Sound, and Mine a Landing Site [Step 6/7]"));
                 int guidedIdx = titles.FindIndex(t => t.Contains("Accept Quest [!]: First Papers at the Registry [Step 1/7]"));
                 int sideIdx = titles.FindIndex(t => t.Contains("Accept Quest [!]: Side Barge Audit"));
-                int bayIdx = titles.FindIndex(t => t == "Enter Vehicle Bay");
+                int bayIdx = titles.FindIndex(t => t == "Enter Vehicle Bay [Step 6/7]");
 
                 Assert.GreaterOrEqual(step6Idx, 0, "Expected Step 6/7 badge on active quest entry");
                 Assert.GreaterOrEqual(guidedIdx, 0, "Expected Step 1/7 badge on guided offer entry");
@@ -18475,8 +18475,21 @@ namespace TacSim.Tests
                 hud.CommandPalette.SetQuery("next plan stickney");
                 var titles2 = hud.CommandPalette.GetFilteredTitlesSnapshot();
                 var subs2 = hud.CommandPalette.GetFilteredSubtitlesSnapshot();
-                Assert.IsTrue(titles2.Exists(t => t.Contains("Plan Stickney Yards")), "Expected Plan Stickney Yards next entry");
+                Assert.IsTrue(titles2.Exists(t => t.Contains("Plan Stickney Yards [Step 3/7]")), "Expected Plan Stickney Yards [Step 3/7] next entry");
                 Assert.IsTrue(subs2.Exists(s => s.Contains("[PRE-FLIGHT OK]")), "Expected [PRE-FLIGHT OK] subtitle tag");
+
+                // 2b. Active route breadcrumb carries [Step 3/7] + [PRE-FLIGHT OK] AND co-surfaces Next: Plan Stickney Yards alongside it
+                hud.QuestJournal.SetTrackerRouteBreadcrumb("Berth Gallery", "+ship/board", 1);
+                hud.CommandPalette.RebuildCatalog();
+                hud.CommandPalette.SetQuery("quest route board ship");
+                var rTitles = hud.CommandPalette.GetFilteredTitlesSnapshot();
+                var rSubs = hud.CommandPalette.GetFilteredSubtitlesSnapshot();
+                Assert.IsTrue(rTitles.Exists(t => t.Contains("Board Ship [Step 3/7]")), "Expected [Step 3/7] on QUEST ROUTE title");
+                Assert.IsTrue(rSubs.Exists(s => s.Contains("[PRE-FLIGHT OK]")), "Expected [PRE-FLIGHT OK] on QUEST ROUTE subtitle");
+                hud.CommandPalette.SetQuery("next plan stickney");
+                Assert.IsTrue(hud.CommandPalette.GetFilteredTitlesSnapshot().Exists(t => t.Contains("Next: Plan Stickney Yards [Step 3/7]")),
+                    "Expected co-surfaced Next: Plan Stickney Yards [Step 3/7] even while route breadcrumb is active");
+                hud.QuestJournal.SetTrackerRouteBreadcrumb(string.Empty, string.Empty, 0);
 
                 // 3. Step 6 post-mine with 0t ore stowed -> Recover Rig First [RECOVER RIG FIRST] (+tv/1 recover go), no premature Return -> Ceres
                 tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
@@ -18539,6 +18552,26 @@ namespace TacSim.Tests
                     "Expected Return -> Ceres Freeport [ORE HOLD READY] after rig recovery");
                 Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
                 Assert.AreEqual("+ship/plan ceres", prefilled);
+
+                // 5. Between steps aboard ship at Ceres (no station pack bound) -> _trade fallback resolves Sail -> Stickney Yards [Step 4/7]
+                prefilled = string.Empty;
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{""enabled"":true,""venue"":""ceres"",""listings"":[]}"));
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [], ""available"": [],
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""S1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""S2"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""S3"" }
+                    ]
+                }")));
+                hud.CommandPalette.RebuildCatalog();
+                hud.CommandPalette.SetQuery("sail stickney");
+                var sailTitles = hud.CommandPalette.GetFilteredTitlesSnapshot();
+                Assert.IsTrue(sailTitles.Exists(t => t.Contains("Sail -> Stickney Yards [Step 4/7]")),
+                    "Expected Sail -> Stickney Yards [Step 4/7] using trade-state port fallback when aboard ship");
+                Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
+                Assert.AreEqual("+ship/plan stickney", prefilled);
             }
             finally
             {
