@@ -17,6 +17,7 @@
     needsOriginPortProcurement,
     needsSurfaceExpeditionBoarding,
     resolveQuestShipTargetCompartment,
+    resolveRefitHoldClearRoom,
     sortRoomQuestMarkers,
   } from "$lib/stores/quests.svelte";
 
@@ -59,17 +60,19 @@
         (tacsim.view3dOpen ? tacsim.physicalLocationKey : null) ?? tacsim.serverShipCompartment;
       return computeShipQuestBreadcrumb(tacsim.shipTemplate, currentComp, targetComp);
     }
+    const liveStowage =
+      tacsim.ambient?.ownStowage ??
+      tacsim.ambient?.stowage ??
+      (tacsim.trade?.hullId ? tacsim.trade.stowage : null);
+    const refitClearRoom = resolveRefitHoldClearRoom(quests.active, quests.trackedKey, liveStowage);
     const targetEntry =
+      refitClearRoom ||
       tracked?.nextRoomEntry ||
       tracked?.checkpoints.find((c) => !c.checked && !c.liveReady && c.roomEntry)?.roomEntry ||
       nextOffer?.giverRoomEntry ||
       null;
     const currentEntry =
       (tacsim.view3dOpen ? tacsim.physicalLocationKey : null) ?? tacsim.serverStationRoomEntry;
-    const liveStowage =
-      tacsim.ambient?.ownStowage ??
-      tacsim.ambient?.stowage ??
-      (tacsim.trade?.hullId ? tacsim.trade.stowage : null);
     const needsOriginExchange = needsOriginPortProcurement(
       quests.active,
       quests.trackedKey,

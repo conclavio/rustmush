@@ -412,6 +412,37 @@ export function needsOriginPortProcurement(
   return readiness !== null && !readiness.ready;
 }
 
+/**
+ * When the tracked active quest is Step 5 (`+coop/refit prospector`) and live stowage still
+ * carries cargo or crew provisions, return the Ceres station room where the pilot should sell
+ * off those items (`room.c07_exchange` for cargo, `room.c08_chandlery` for provisions) so
+ * station wayfinding never leaves them stranded at Registry while refit is blocked.
+ */
+export function resolveRefitHoldClearRoom(
+  active: readonly ActiveQuestView[],
+  trackedKey: string | null,
+  stowage:
+    | {
+        cargoKg: number;
+        propellantKg: number;
+        provisionsCrewDays: number;
+        cargoLines?: ReadonlyArray<{ qty: number }>;
+      }
+    | null
+    | undefined,
+): string | null {
+  if (!stowage) return null;
+  const tracked = orderedActiveQuests(active, trackedKey)[0] ?? null;
+  if (!tracked || tracked.readyToFinish || tracked.canFinishNow) return null;
+  const sug = extractQuestSuggestedAction(tracked);
+  if (!sug || !sug.command.startsWith("+coop/refit")) return null;
+  const refit = evaluateRefitHoldReadiness(stowage);
+  if (!refit || refit.ready) return null;
+  if (!refit.cargoEmpty) return "room.c07_exchange";
+  if (!refit.provisionsEmpty) return "room.c08_chandlery";
+  return null;
+}
+
 export interface QuestDestinationHint {
   questTitle: string;
   portId: string;

@@ -849,4 +849,83 @@ describe("QuestTrackerPanel route step, guided tour pill, and quick-accept", () 
     render(QuestTrackerPanel, { props: { app, onCmd: vi.fn() } });
     expect(screen.queryByLabelText("Tracked quest prospecting prep")).toBeNull();
   });
+
+  it("routes Step 5 Refit dynamically from Registry to Exchange/Chandlery while hold has cargo or stores, then clears back to Registry", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#15",
+      room_name: "Registry & Co-op Desk",
+      room_markers: [],
+      available: [],
+      completed: [],
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[4],
+          title: "Refit the Dray for Surface Mining",
+          next_room_entry: "room.c05_registry",
+          next_step: "Empty cargo and provisions, then run +coop/refit prospector.",
+          checkpoints: [
+            {
+              id: "refit_dray_p",
+              title: "Refit your Dray into a Dray-P prospector",
+              instructions: "Run +coop/refit prospector at Registry.",
+              room_entry: "room.c05_registry",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    const makeRegistryApp = (cargoKg: number, provisionsCrewDays: number, cargoLines: Array<{ good: string; label: string; qty: number }>) =>
+      ({
+        quests,
+        tacsim: {
+          isAboardShip: false,
+          view3dOpen: false,
+          physicalLocationKey: null,
+          serverStationRoomEntry: "room.c05_registry",
+          stationPack: buildFallbackFreeport(),
+          ambient: {
+            ownStowage: {
+              cargoKg,
+              propellantKg: 15_000,
+              provisionsCrewDays,
+              cargoLines,
+            },
+          },
+        },
+        focusComposer: vi.fn(),
+      }) as unknown as GameApp;
+
+    // 1. Standing at Registry with 2t cargo -> routes out toward Exchange Hall
+    const rCargo = render(QuestTrackerPanel, {
+      props: {
+        app: makeRegistryApp(2000, 8, [{ good: "tacsim:metals", label: "Metals", qty: 2 }]),
+        onCmd: vi.fn(),
+      },
+    });
+    const cargoRouteBtn = screen.getByRole("button", { name: /Walk →/i });
+    expect(cargoRouteBtn.getAttribute("title")).toContain("Exchange Hall");
+    rCargo.unmount();
+
+    // 2. Cargo sold, 8d provisions still in locker -> routes out toward Co-op Chandlery
+    const rStores = render(QuestTrackerPanel, {
+      props: { app: makeRegistryApp(0, 8, []), onCmd: vi.fn() },
+    });
+    const storesRouteBtn = screen.getByRole("button", { name: /Walk →/i });
+    expect(storesRouteBtn.getAttribute("title")).toContain("Chandlery");
+    rStores.unmount();
+
+    // 3. Both cargo & provisions empty (propellant stays!) -> already at Registry, offers Refit Dray-P action
+    const focusComposer = vi.fn();
+    const clearApp = makeRegistryApp(0, 0, []);
+    clearApp.focusComposer = focusComposer;
+    render(QuestTrackerPanel, { props: { app: clearApp, onCmd: vi.fn() } });
+    expect(screen.queryByRole("button", { name: /Walk →/i })).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: "Refit Dray-P" }));
+    expect(focusComposer).toHaveBeenCalledWith("+coop/refit prospector");
+  });
 });
