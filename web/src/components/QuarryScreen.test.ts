@@ -271,4 +271,66 @@ describe("QuarryScreen's side pane", () => {
     driveBtn.click();
     expect(focusComposer).toHaveBeenCalledWith("+tv drive B");
   });
+
+  it("sorts quest-matching landing sites and mineral readings first in the side pane", () => {
+    // 1. Ground Chart: place non-matching site first and carbon_ore site last -> carbon_ore site sorts first
+    const rawGround = fixture("body_ground.json") as unknown as {
+      ground: { sites: Array<{ venue: string; site: string; letter: string; best: string | null; best_line: string; here?: boolean }> };
+    };
+    expect(rawGround.ground.sites.length).toBeGreaterThanOrEqual(2);
+    for (const s of rawGround.ground.sites) {
+      s.best = null;
+      s.best_line = "No readings yet.";
+      s.here = false;
+    }
+    const lastSite = rawGround.ground.sites[rawGround.ground.sites.length - 1]!;
+    lastSite.best = "carbon_ore";
+    lastSite.best_line = "Your readings: carbon_ore rich.";
+
+    const quarryGround = new QuarryStore();
+    quarryGround.mode = "ground";
+    quarryGround.applyGround(rawGround);
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+          title: "Scan, Sound, and Mine a Landing Site",
+          checkpoints: [
+            { id: "scan_landing_site", title: "Surface scan", instructions: "+tv/1 scan go", checked: false, live_ready: false },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", instructions: "+tv/1 mine go", checked: false, live_ready: false },
+          ],
+        },
+      ],
+    });
+    const focusComposer = vi.fn();
+    const gView = render(QuarryScreen, {
+      props: { app: { quarry: quarryGround, quests, focusComposer, refreshQuarry: vi.fn() } as unknown as GameApp },
+    });
+    const siteButtons = [...document.querySelectorAll(".side ul button.row")];
+    expect(siteButtons.length).toBeGreaterThanOrEqual(2);
+    expect(siteButtons[0]!.textContent).toContain("[QUEST]");
+    expect(siteButtons[0]!.textContent).toContain(lastSite.site);
+    gView.unmount();
+
+    // 2. Site Map: non-matching volatiles reading listed before carbon_ore reading -> carbon_ore sorts first & Drive targets it
+    const rawSite = fixture("site_map_other.json");
+    rawSite.site.family = "volatiles";
+    rawSite.site.readings = [
+      { target: "A", line: "A · 90 m W — lean water_ice trace" },
+      { target: "C", line: "C · 170 m NE — rich carbon_ore pocket" },
+    ];
+    const quarrySite = new QuarryStore();
+    quarrySite.applySite(rawSite, Date.now());
+    render(QuarryScreen, {
+      props: { app: { quarry: quarrySite, quests, focusComposer, refreshQuarry: vi.fn() } as unknown as GameApp },
+    });
+    const readingButtons = [...document.querySelectorAll(".side ul button.row")];
+    expect(readingButtons.length).toBe(2);
+    expect(readingButtons[0]!.textContent).toContain("[QUEST]");
+    expect(readingButtons[0]!.textContent).toContain("C · 170 m NE — rich carbon_ore pocket");
+    screen.getByRole("button", { name: /Drive: C/i }).click();
+    expect(focusComposer).toHaveBeenCalledWith("+tv drive C");
+  });
 });

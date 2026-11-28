@@ -73,15 +73,35 @@
     questMining?.mineDone ? (app.quests?.activeDestinationPort ?? null) : null,
   );
 
+  function isQuestReadingMatch(
+    r: { target: string; line: string },
+    family: string,
+  ): boolean {
+    if (!questMining || questMining.mineDone) return false;
+    return (
+      matchesQuestOre(r.line) ||
+      family.toLowerCase() === questMining.recommendedFamily.toLowerCase()
+    );
+  }
+
+  const orderedReadings = $derived.by(() => {
+    if (!block) return [];
+    if (!questMining || questMining.mineDone) return block.readings;
+    const direct: typeof block.readings = [];
+    const familyOnly: typeof block.readings = [];
+    const rest: typeof block.readings = [];
+    const famMatch = block.family.toLowerCase() === questMining.recommendedFamily.toLowerCase();
+    for (const r of block.readings) {
+      if (matchesQuestOre(r.line)) direct.push(r);
+      else if (famMatch) familyOnly.push(r);
+      else rest.push(r);
+    }
+    return [...direct, ...familyOnly, ...rest];
+  });
+
   const firstQuestReading = $derived.by(() => {
     if (!questMining || questMining.mineDone || !block || q.mode === "ground") return null;
-    return (
-      block.readings.find(
-        (r) =>
-          block.family.toLowerCase() === questMining.recommendedFamily.toLowerCase() ||
-          matchesQuestOre(r.line),
-      ) ?? null
-    );
+    return orderedReadings.find((r) => isQuestReadingMatch(r, block.family)) ?? null;
   });
 
   function isHighlightedQuestSite(s: {
@@ -89,11 +109,29 @@
     best?: string | null;
     best_line?: string | null;
   }): boolean {
+    if (!questMining || questMining.mineDone) return false;
     return (
       matchesQuestSite(s) ||
       (recommendedQuestSite !== null && recommendedQuestSite.venue === s.venue)
     );
   }
+
+  const orderedGroundSites = $derived.by(() => {
+    if (!groundBlock) return [];
+    if (!questMining || questMining.mineDone) return groundBlock.sites;
+    const direct: typeof groundBlock.sites = [];
+    const recommended: typeof groundBlock.sites = [];
+    const rest: typeof groundBlock.sites = [];
+    for (const s of groundBlock.sites) {
+      if (matchesQuestSite(s)) direct.push(s);
+      else if (recommendedQuestSite !== null && recommendedQuestSite.venue === s.venue) {
+        recommended.push(s);
+      } else {
+        rest.push(s);
+      }
+    }
+    return [...direct, ...recommended, ...rest];
+  });
 
   function selectQuestWash(): void {
     if (!questMining) return;
@@ -377,7 +415,7 @@
       <h3>sites</h3>
       {#if groundBlock}
         <ul>
-          {#each groundBlock.sites as s (s.letter)}
+          {#each orderedGroundSites as s (s.letter)}
             {@const isQuestSite = isHighlightedQuestSite(s)}
             <li>
               <button
@@ -400,12 +438,8 @@
         {#if block.no_readings}<p class="muted">{block.no_readings}</p>{/if}
       {:else}
         <ul>
-          {#each block.readings as r, i (i)}
-            {@const isQuestReading = Boolean(
-              questMining &&
-                (block.family.toLowerCase() === questMining.recommendedFamily.toLowerCase() ||
-                  matchesQuestOre(r.line)),
-            )}
+          {#each orderedReadings as r, i (i)}
+            {@const isQuestReading = isQuestReadingMatch(r, block.family)}
             <li>
               <button
                 type="button"
