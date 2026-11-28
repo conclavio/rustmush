@@ -17555,5 +17555,93 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestJournalDialogAndTracker_RenderLivePerCheckpointStowageAndRefitBadges()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestLiveCheckpointBadgesTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                var tradeState = new TacSimTradeAndShipState();
+                hud.BindTradeState(tradeState);
+
+                // 10d provisions stowed + 2t propellant partial
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 0,
+                            ""tank_kg"": 2000,
+                            ""stores_days"": 10
+                        }
+                    }
+                }"));
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"",
+                            ""title"": ""Stock the Locker and Tanks"",
+                            ""checkpoints"": [
+                                { ""id"": ""buy_provisions"", ""title"": ""Buy 10 provisions"", ""instructions"": ""Buy 10 provisions."", ""room_name"": ""Co-op Chandlery"", ""checked"": false, ""live_ready"": false },
+                                { ""id"": ""buy_propellant"", ""title"": ""Buy 5t propellant"", ""instructions"": ""Buy 5t propellant."", ""room_name"": ""Exchange Hall"", ""checked"": false, ""live_ready"": false }
+                            ]
+                        },
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"",
+                            ""title"": ""Refit the Dray for Surface Mining"",
+                            ""checkpoints"": [
+                                { ""id"": ""refit_dray_p"", ""title"": ""Refit Dray to Dray-P"", ""instructions"": ""Run +coop/refit prospector."", ""room_name"": ""Registry"", ""checked"": false, ""live_ready"": false }
+                            ]
+                        }
+                    ],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+
+                // Tracker shows [STOWED] and [2/5t] for Step 2
+                StringAssert.Contains("[STOWED]", hud.QuestJournal.TrackerDetailSnapshot);
+                StringAssert.Contains("[2/5t]", hud.QuestJournal.TrackerDetailSnapshot);
+
+                // Quest Dialog shows [STOWED] and [2/5t] for Step 2
+                hud.QuestJournal.OpenQuestDialogByKey("tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel");
+                StringAssert.Contains("[STOWED]", hud.QuestJournal.DialogBodySnapshot);
+                StringAssert.Contains("[2/5t]", hud.QuestJournal.DialogBodySnapshot);
+
+                // Quest Dialog for Step 5 shows [CLEAR HOLD] while provisions remain
+                hud.QuestJournal.OpenQuestDialogByKey("tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector");
+                StringAssert.Contains("[CLEAR HOLD]", hud.QuestJournal.DialogBodySnapshot);
+
+                // Clearing provisions flips Step 5 live badge to [HOLD CLEAR] in Dialog & Journal
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 0,
+                            ""tank_kg"": 8000,
+                            ""stores_days"": 0
+                        }
+                    }
+                }"));
+                StringAssert.Contains("[HOLD CLEAR]", hud.QuestJournal.DialogBodySnapshot);
+                StringAssert.DoesNotContain("[CLEAR HOLD]", hud.QuestJournal.DialogBodySnapshot);
+
+                hud.QuestJournal.SetOpen(true);
+                hud.QuestJournal.SelectQuestSubTab("active");
+                StringAssert.Contains("[STOWED]", hud.QuestJournal.JournalBodySnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
