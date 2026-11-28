@@ -977,8 +977,16 @@ impl PortWalkState {
         self.quest_dest_port.as_ref()
     }
 
-    /// Resolve a room quest marker matching the currently selected NPC in the Talk drawer
-    /// (falling back to the sole room quest marker if no speaker is explicitly selected).
+    fn quest_marker_priority(m: &QuestMarker) -> u8 {
+        match m.marker.as_str() {
+            "turn_in" => 0,
+            "available" => 1,
+            _ => 2,
+        }
+    }
+
+    /// Resolve the highest-priority room quest marker (`turn_in` -> `available` -> `in_progress`)
+    /// matching the currently selected NPC in the Talk drawer.
     #[must_use]
     pub fn selected_npc_quest_marker(&self) -> Option<&QuestMarker> {
         let sel = self.selected_npc_name.trim();
@@ -986,15 +994,20 @@ impl PortWalkState {
             if let Some(m) = self
                 .quest_markers
                 .iter()
-                .find(|m| m.npc_name.trim().eq_ignore_ascii_case(sel))
+                .filter(|m| m.npc_name.trim().eq_ignore_ascii_case(sel))
+                .min_by_key(|m| Self::quest_marker_priority(m))
             {
                 return Some(m);
             }
             let sel_low = sel.to_ascii_lowercase();
-            return self.quest_markers.iter().find(|m| {
-                let n = m.npc_name.trim().to_ascii_lowercase();
-                !n.is_empty() && (n.contains(&sel_low) || sel_low.contains(&n))
-            });
+            return self
+                .quest_markers
+                .iter()
+                .filter(|m| {
+                    let n = m.npc_name.trim().to_ascii_lowercase();
+                    !n.is_empty() && (n.contains(&sel_low) || sel_low.contains(&n))
+                })
+                .min_by_key(|m| Self::quest_marker_priority(m));
         }
         if self.quest_markers.len() == 1 {
             return self.quest_markers.first();
@@ -1554,10 +1567,13 @@ impl PortWalkState {
     }
 
     fn find_quest_marker(&self, npc_id: &str, npc_name: &str) -> Option<&QuestMarker> {
-        self.quest_markers.iter().find(|m| {
-            (!npc_id.is_empty() && m.npc_id == npc_id)
-                || (!npc_name.is_empty() && m.npc_name.eq_ignore_ascii_case(npc_name))
-        })
+        self.quest_markers
+            .iter()
+            .filter(|m| {
+                (!npc_id.is_empty() && m.npc_id == npc_id)
+                    || (!npc_name.is_empty() && m.npc_name.eq_ignore_ascii_case(npc_name))
+            })
+            .min_by_key(|m| Self::quest_marker_priority(m))
     }
 
     fn format_npc_interact_label(&self, id: &str, name: &str, npc: bool) -> String {
@@ -10142,5 +10158,55 @@ mod tests {
 
         let out_survey = st.handle_key(Key::Char('f'), false, false, &[], now);
         assert_eq!(out_survey.commands, vec!["+market/jobs survey"]);
+    }
+
+    #[test]
+    fn port_walk_prioritizes_turn_in_over_available_marker_for_multi_quest_npc() {
+        let mut st = PortWalkState::new();
+        st.observe_quest_markers(&[
+            QuestMarker {
+                npc_id: "#18".into(),
+                npc_name: "Ilse Oduya-Brandt".into(),
+                marker: "in_progress".into(),
+                symbol: "?".into(),
+                quest_key: "side.in_progress".into(),
+                quest_title: "In-Progress Favor".into(),
+                category: "optional".into(),
+            },
+            QuestMarker {
+                npc_id: "#18".into(),
+                npc_name: "Ilse Oduya-Brandt".into(),
+                marker: "available".into(),
+                symbol: "!".into(),
+                quest_key: "side.offer".into(),
+                quest_title: "One-Shot Audit".into(),
+                category: "optional".into(),
+            },
+            QuestMarker {
+                npc_id: "#18".into(),
+                npc_name: "Ilse Oduya-Brandt".into(),
+                marker: "turn_in".into(),
+                symbol: "?".into(),
+                quest_key: "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll".into(),
+                quest_title: "First Papers at the Registry".into(),
+                category: "guided".into(),
+            },
+        ]);
+
+        // Both find_quest_marker and selected_npc_quest_marker select turn_in '?' over available '!' and in_progress '?'
+        let best = st
+            .find_quest_marker("#18", "Ilse Oduya-Brandt")
+            .expect("best marker");
+        assert_eq!(best.marker, "turn_in");
+        assert_eq!(
+            st.format_npc_interact_label("#18", "Ilse Oduya-Brandt", true),
+            "[?] Ilse Oduya-Brandt — Turn In Quest"
+        );
+
+        st.selected_npc_name = "Ilse Oduya-Brandt".into();
+        assert_eq!(
+            st.selected_npc_quest_marker().map(|m| m.marker.as_str()),
+            Some("turn_in")
+        );
     }
 }
