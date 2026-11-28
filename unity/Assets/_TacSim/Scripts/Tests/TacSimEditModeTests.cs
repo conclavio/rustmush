@@ -16474,5 +16474,102 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ExchangeModal_GuidesStep5RefitHoldClearingAndWorksRefitHandoff()
+        {
+            var rootGo = new UnityEngine.GameObject("ExchangeStep5RefitClearingTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                var tradeState = new TacSimTradeAndShipState();
+                hud.BindTradeState(tradeState);
+
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"",
+                        ""title"": ""Refit the Dray for Surface Mining"",
+                        ""next_room_entry"": ""room.c05_registry"",
+                        ""checkpoints"": [{
+                            ""id"": ""refit_dray_p"",
+                            ""title"": ""Refit your Dray into a Dray-P prospector"",
+                            ""instructions"": ""Empty cargo and provisions, then run +coop/refit prospector."",
+                            ""checked"": false,
+                            ""live_ready"": false
+                        }]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+
+                // 1. Stowed 2t metals + 8d provisions -> [REFIT PREP] banner, 2 matching bids sorted to top
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""listings"": [
+                        { ""id"": 901, ""side"": ""bid"", ""good"": ""tacsim:silicates"", ""item"": ""Silicates"", ""vendor"": ""Ceres Works"", ""qty"": 20, ""unit_price_minor"": 1200, ""unit_price"": ""12 cr"", ""funded"": true },
+                        { ""id"": 902, ""side"": ""bid"", ""good"": ""tacsim:provisions"", ""item"": ""Provisions"", ""vendor"": ""Co-op Chandlery"", ""qty"": 30, ""unit_price_minor"": 400, ""unit_price"": ""4 cr"", ""funded"": true },
+                        { ""id"": 903, ""side"": ""bid"", ""good"": ""tacsim:metals"", ""item"": ""Metals"", ""vendor"": ""Ceres Exchange"", ""qty"": 25, ""unit_price_minor"": 900, ""unit_price"": ""9 cr"", ""funded"": true }
+                    ],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 2000,
+                            ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 15000,
+                            ""tank_limit_kg"": 80000,
+                            ""stores_days"": 8,
+                            ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:metals"", ""label"": ""Metals"", ""qty"": 2 }]
+                        }
+                    }
+                }"));
+                hud.OpenTradeAndSailingModal("PORT EXCHANGE", openSailingTab: false);
+                hud.RefreshTradeTerminal();
+
+                Assert.IsTrue(hud.IsExchangeQuestBannerVisible);
+                StringAssert.Contains("[REFIT PREP] EMPTY HOLD BEFORE REFIT", hud.ExchangeQuestBannerText);
+                StringAssert.Contains("Cargo 2t & Stores 8d", hud.ExchangeQuestBannerText);
+                StringAssert.Contains("[Step 5/7]", hud.ExchangeQuestBannerText);
+                Assert.AreEqual(2, hud.HighlightedQuestListingCount);
+                Assert.AreEqual(902UL, hud.FirstExchangeListingIdSnapshot, "Matching refit-clear bid must sort ahead of unrelated bids");
+                Assert.IsFalse(hud.IsExchangeSailJumpVisible);
+
+                // 2. Cargo & Provisions cleared (propellant stays) -> [REFIT HOLD CLEAR] + WORKS & REFIT handoff button
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""listings"": [
+                        { ""id"": 901, ""side"": ""bid"", ""good"": ""tacsim:silicates"", ""item"": ""Silicates"", ""vendor"": ""Ceres Works"", ""qty"": 20, ""unit_price_minor"": 1200, ""unit_price"": ""12 cr"", ""funded"": true }
+                    ],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 0,
+                            ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 15000,
+                            ""tank_limit_kg"": 80000,
+                            ""stores_days"": 0,
+                            ""stores_limit_days"": 120,
+                            ""items"": []
+                        }
+                    }
+                }"));
+                hud.RefreshTradeTerminal();
+
+                Assert.IsTrue(hud.IsExchangeQuestBannerVisible);
+                StringAssert.Contains("[REFIT HOLD CLEAR]", hud.ExchangeQuestBannerText);
+                Assert.IsTrue(hud.IsExchangeSailJumpVisible);
+                Assert.AreEqual("WORKS & REFIT", hud.ExchangeSailJumpLabelSnapshot);
+                hud.JumpFromExchangeToRefitYard();
+                Assert.AreEqual(TacSim.UI.TradeTerminalTab.Industry, hud.ActiveTradeTab);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
