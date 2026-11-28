@@ -13093,5 +13093,66 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void OrbitalOpsBar_ShowsBetweenStepsNextGuidedDestinationAndStep6GroundChartAction()
+        {
+            var rootGo = new UnityEngine.GameObject("OrbitalOpsBarQuestTestRoot");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                var trade = new TacSim.World.TacSimTradeAndShipState();
+                hud.BindTradeState(trade);
+                trade.ApplyPortTradeFeed(JsonNode.Parse(@"{ ""enabled"": true, ""venue"": ""ceres"" }"));
+
+                string orbitalCmd = string.Empty;
+                bool groundOpened = false;
+                hud.Overlays.OnCommandRequested += c => orbitalCmd = c;
+                hud.Overlays.OnOpenGroundChartRequested += () => groundOpened = true;
+                hud.Overlays.SetHelmSeatedVisible(true);
+
+                // Between Steps 3 & 4 at Ceres -> Orbital Ops Bar shows Stickney destination & 1-click +ship/plan stickney
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""S1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""S2"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""S3"" }
+                    ],
+                    ""active"": [],
+                    ""available"": []
+                }")));
+                Assert.IsTrue(hud.Overlays.IsOrbitalQuestStripVisible);
+                StringAssert.Contains("STICKNEY YARDS", hud.Overlays.OrbitalQuestBannerSnapshot);
+                Assert.AreEqual("PLAN: STICKNEY", hud.Overlays.OrbitalQuestButtonLabel);
+                Assert.IsTrue(hud.Overlays.TriggerOrbitalQuestActionForTests());
+                Assert.AreEqual("+ship/plan stickney", orbitalCmd);
+
+                // Step 6 surface mining -> Orbital Ops Bar shows carbon_ore & GROUND [G]: CARBON shortcut
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Surface scan"", ""instructions"": ""+tv/1 scan go"", ""checked"": false, ""live_ready"": false },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""instructions"": ""+tv/1 mine go"", ""checked"": false, ""live_ready"": false }
+                        ]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                Assert.IsTrue(hud.Overlays.IsOrbitalQuestStripVisible);
+                StringAssert.Contains("carbon_ore", hud.Overlays.OrbitalQuestBannerSnapshot);
+                Assert.AreEqual("GROUND [G]: CARBON", hud.Overlays.OrbitalQuestButtonLabel);
+                Assert.IsTrue(hud.Overlays.TriggerOrbitalQuestActionForTests());
+                Assert.IsTrue(groundOpened);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
