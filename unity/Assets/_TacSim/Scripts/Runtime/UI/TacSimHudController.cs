@@ -201,6 +201,13 @@ namespace TacSim.UI
         private Text _shipAndClockText;
         private Text _socialTopBtnLabel;
         private Image _socialTopBtnImage;
+        private Text _logTopBtnLabel;
+        private Image _logTopBtnImage;
+        private Button _roomQuestBannerBtn;
+        private Text _roomQuestBannerLabel;
+        private Image _roomQuestBannerBg;
+        private string _roomQuestBannerNpcId = string.Empty;
+        private string _roomQuestBannerKey = string.Empty;
 
         // Composing typing indicator debounce
         private bool _composingActive;
@@ -656,6 +663,7 @@ namespace TacSim.UI
             {
                 _lastListingsSignature = null;
                 RefreshSailingQuestGuidance();
+                RefreshQuestTopBadgeAndRoomBanner();
                 if (_tradePanel != null && _tradePanel.activeSelf)
                     RefreshTradeTerminal();
             };
@@ -706,6 +714,7 @@ namespace TacSim.UI
             Minimap?.SetHiddenByHudPreset(_isCinematicHudActive);
             if (_cinematicRestoreChip != null)
                 _cinematicRestoreChip.SetActive(_isCinematicHudActive && !IsLoginOverlayVisible);
+            RefreshQuestTopBadgeAndRoomBanner();
         }
 
         private static void EnsureEventSystem()
@@ -756,6 +765,22 @@ namespace TacSim.UI
 
             var logTopBtn = CreateButton(topBar.transform, "[J] LOG", new Color(0.32f, 0.28f, 0.14f), () => QuestJournal?.ToggleOpen());
             SetRect(logTopBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-574f, 6f), new Vector2(-512f, -6f));
+            _logTopBtnLabel = logTopBtn.GetComponentInChildren<Text>();
+            _logTopBtnImage = logTopBtn.GetComponent<Image>();
+
+            // 1b. Center-Top Contextual Room Quest Action Banner (click to open NPC Quest Dialog directly)
+            _roomQuestBannerBtn = CreateButton(_hudRoot.transform, "[!] QUEST AVAILABLE", new Color(0.56f, 0.39f, 0.10f, 0.94f), HandleRoomQuestBannerClicked);
+            _roomQuestBannerBtn.name = "RoomQuestActionBanner";
+            SetRect(_roomQuestBannerBtn.GetComponent<RectTransform>(), new Vector2(0.5f, 1f), new Vector2(0.5f, 1f), new Vector2(-215f, -104f), new Vector2(215f, -70f));
+            _roomQuestBannerLabel = _roomQuestBannerBtn.GetComponentInChildren<Text>();
+            if (_roomQuestBannerLabel != null)
+            {
+                _roomQuestBannerLabel.fontSize = 13;
+                _roomQuestBannerLabel.fontStyle = FontStyle.Bold;
+                _roomQuestBannerLabel.color = new Color(1f, 0.96f, 0.80f);
+            }
+            _roomQuestBannerBg = _roomQuestBannerBtn.GetComponent<Image>();
+            _roomQuestBannerBtn.gameObject.SetActive(false);
 
             var navTopBtn = CreateButton(topBar.transform, "[N] NAV", new Color(0.14f, 0.38f, 0.44f), () => OpsDirectory?.ToggleOpen());
             SetRect(navTopBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-506f, 6f), new Vector2(-442f, -6f));
@@ -1423,6 +1448,80 @@ namespace TacSim.UI
                 _socialTopBtnLabel.text = unread > 0 ? $"MAIL({unread})" : "[O] SOC";
             if (_socialTopBtnImage != null)
                 _socialTopBtnImage.color = unread > 0 ? new Color(0.72f, 0.46f, 0.14f, 1f) : Color.white;
+        }
+
+        public string QuestTopButtonLabelForTests => _logTopBtnLabel != null ? _logTopBtnLabel.text : string.Empty;
+        public bool IsRoomQuestBannerVisible => _roomQuestBannerBtn != null && _roomQuestBannerBtn.gameObject.activeSelf;
+        public string RoomQuestBannerLabelForTests => _roomQuestBannerLabel != null ? _roomQuestBannerLabel.text : string.Empty;
+
+        public bool TriggerRoomQuestBannerForTests()
+        {
+            if (!IsRoomQuestBannerVisible) return false;
+            HandleRoomQuestBannerClicked();
+            return true;
+        }
+
+        private void HandleRoomQuestBannerClicked()
+        {
+            if (QuestJournal == null) return;
+            if (!string.IsNullOrEmpty(_roomQuestBannerNpcId) && QuestJournal.OpenNpcQuestDialog(_roomQuestBannerNpcId))
+                return;
+            if (!string.IsNullOrEmpty(_roomQuestBannerKey))
+                QuestJournal.OpenQuestDialogByKey(_roomQuestBannerKey);
+            else
+                QuestJournal.ToggleOpen();
+        }
+
+        private void RefreshQuestTopBadgeAndRoomBanner()
+        {
+            if (QuestJournal == null) return;
+            int activeCount = QuestJournal.ActiveQuestCount;
+            bool hasRoomAction = QuestJournal.TryGetTopRoomQuestAction(
+                out string sym,
+                out string npcName,
+                out string questTitle,
+                out string npcId,
+                out string questKey,
+                out bool isTurnIn);
+
+            if (hasRoomAction)
+            {
+                _roomQuestBannerNpcId = npcId;
+                _roomQuestBannerKey = questKey;
+                if (_logTopBtnLabel != null)
+                    _logTopBtnLabel.text = isTurnIn ? "[J] ?" : "[J] !";
+                if (_logTopBtnImage != null)
+                    _logTopBtnImage.color = isTurnIn
+                        ? new Color(0.16f, 0.56f, 0.36f, 1f)
+                        : new Color(0.76f, 0.52f, 0.12f, 1f);
+
+                if (_roomQuestBannerBtn != null)
+                {
+                    string actionVerb = isTurnIn ? "TURN IN" : "OFFER";
+                    string titleSuffix = string.IsNullOrEmpty(questTitle) ? string.Empty : $": {questTitle}";
+                    string who = string.IsNullOrEmpty(npcName) ? "Quest Contact" : npcName;
+                    if (_roomQuestBannerLabel != null)
+                        _roomQuestBannerLabel.text = $"[{sym}] {who} — {actionVerb}{titleSuffix}";
+                    if (_roomQuestBannerBg != null)
+                        _roomQuestBannerBg.color = isTurnIn
+                            ? new Color(0.12f, 0.44f, 0.28f, 0.94f)
+                            : new Color(0.56f, 0.39f, 0.10f, 0.94f);
+                    _roomQuestBannerBtn.gameObject.SetActive(!_isCinematicHudActive);
+                }
+            }
+            else
+            {
+                _roomQuestBannerNpcId = string.Empty;
+                _roomQuestBannerKey = string.Empty;
+                if (_logTopBtnLabel != null)
+                    _logTopBtnLabel.text = activeCount > 0 ? $"[J] Q({activeCount})" : "[J] LOG";
+                if (_logTopBtnImage != null)
+                    _logTopBtnImage.color = activeCount > 0
+                        ? new Color(0.46f, 0.36f, 0.14f, 1f)
+                        : new Color(0.32f, 0.28f, 0.14f, 1f);
+                if (_roomQuestBannerBtn != null)
+                    _roomQuestBannerBtn.gameObject.SetActive(false);
+            }
         }
 
         /// <summary>

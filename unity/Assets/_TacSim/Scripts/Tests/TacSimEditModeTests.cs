@@ -13496,5 +13496,113 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void TopBarQuestBadgeAndRoomBanner_PrioritizeTurnInOverOfferAndOpenNpcQuestDialogOnClick()
+        {
+            var rootGo = new UnityEngine.GameObject("TopBarQuestBadgeTestRoot");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                Assert.AreEqual("[J] LOG", hud.QuestTopButtonLabelForTests);
+                Assert.IsFalse(hud.IsRoomQuestBannerVisible);
+
+                // 1. Enter room with an available quest offer -> [J] ! and clickable gold room banner
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_markers"": [{
+                        ""npc_id"": ""#11"",
+                        ""npc_name"": ""Maren Halvorsen"",
+                        ""marker"": ""available"",
+                        ""symbol"": ""!"",
+                        ""quest_key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                        ""quest_title"": ""First Papers""
+                    }],
+                    ""available"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                        ""title"": ""First Papers"",
+                        ""giver_id"": ""#11"",
+                        ""giver_name"": ""Maren Halvorsen"",
+                        ""accept_cmd"": ""+quest/accept #11 tok1""
+                    }]
+                }")));
+                Assert.AreEqual("[J] !", hud.QuestTopButtonLabelForTests);
+                Assert.IsTrue(hud.IsRoomQuestBannerVisible);
+                StringAssert.Contains("[!] Maren Halvorsen", hud.RoomQuestBannerLabelForTests);
+                StringAssert.Contains("First Papers", hud.RoomQuestBannerLabelForTests);
+
+                Assert.IsTrue(hud.TriggerRoomQuestBannerForTests());
+                Assert.IsTrue(hud.QuestJournal.IsQuestDialogOpen);
+                Assert.AreEqual("tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll", hud.QuestJournal.DialogQuestKey);
+                hud.QuestJournal.CloseQuestDialog();
+
+                // 2. Room with BOTH an offer and a turn-in -> prioritizes turn-in (?) over offer (!)
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_markers"": [
+                        {
+                            ""npc_id"": ""#11"",
+                            ""npc_name"": ""Maren Halvorsen"",
+                            ""marker"": ""available"",
+                            ""symbol"": ""!"",
+                            ""quest_key"": ""q.side"",
+                            ""quest_title"": ""Side Job""
+                        },
+                        {
+                            ""npc_id"": ""#18"",
+                            ""npc_name"": ""Ilse Oduya-Brandt"",
+                            ""marker"": ""turn_in"",
+                            ""symbol"": ""?"",
+                            ""quest_key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                            ""quest_title"": ""First Papers""
+                        }
+                    ],
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                        ""title"": ""First Papers"",
+                        ""turn_in_id"": ""#18"",
+                        ""turn_in_name"": ""Ilse Oduya-Brandt"",
+                        ""can_finish_now"": true,
+                        ""finish_cmd"": ""+quest/finish #18 tok2""
+                    }],
+                    ""available"": [{
+                        ""key"": ""q.side"",
+                        ""title"": ""Side Job"",
+                        ""giver_id"": ""#11"",
+                        ""giver_name"": ""Maren Halvorsen"",
+                        ""accept_cmd"": ""+quest/accept #11 tok3""
+                    }]
+                }")));
+                Assert.AreEqual("[J] ?", hud.QuestTopButtonLabelForTests);
+                Assert.IsTrue(hud.IsRoomQuestBannerVisible);
+                StringAssert.Contains("[?] Ilse Oduya-Brandt", hud.RoomQuestBannerLabelForTests);
+                StringAssert.Contains("TURN IN", hud.RoomQuestBannerLabelForTests);
+
+                Assert.IsTrue(hud.TriggerRoomQuestBannerForTests());
+                Assert.IsTrue(hud.QuestJournal.IsQuestDialogOpen);
+                Assert.AreEqual("#18", hud.QuestJournal.DialogNpcId);
+                hud.QuestJournal.CloseQuestDialog();
+
+                // 3. Leave room while an active quest remains -> [J] Q(1) and room banner hides
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_markers"": [],
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"",
+                        ""title"": ""Stock the Locker and Tanks"",
+                        ""can_finish_now"": false
+                    }],
+                    ""available"": []
+                }")));
+                Assert.AreEqual("[J] Q(1)", hud.QuestTopButtonLabelForTests);
+                Assert.IsFalse(hud.IsRoomQuestBannerVisible);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

@@ -394,6 +394,88 @@ namespace TacSim.UI
         public string DialogNpcId { get; private set; } = string.Empty;
         public string DialogQuestKey { get; private set; } = string.Empty;
         public int ActiveQuestCount => LatestPanel?.Active.Count ?? 0;
+
+        /// <summary>
+        /// Resolves the highest-urgency quest action available in the player's current room:
+        /// gold turn-in (<c>?</c>) first, then gold available offer (<c>!</c>).
+        /// </summary>
+        public bool TryGetTopRoomQuestAction(
+            out string symbol,
+            out string npcName,
+            out string questTitle,
+            out string npcId,
+            out string questKey,
+            out bool isTurnIn)
+        {
+            symbol = string.Empty;
+            npcName = string.Empty;
+            questTitle = string.Empty;
+            npcId = string.Empty;
+            questKey = string.Empty;
+            isTurnIn = false;
+
+            var panel = LatestPanel;
+            if (panel == null) return false;
+
+            for (int i = 0; i < panel.RoomMarkers.Count; i++)
+            {
+                var m = panel.RoomMarkers[i];
+                if (string.Equals(m.Marker, "turn_in", StringComparison.OrdinalIgnoreCase))
+                {
+                    symbol = "?";
+                    npcName = m.NpcName ?? string.Empty;
+                    questTitle = m.QuestTitle ?? string.Empty;
+                    npcId = m.NpcId ?? string.Empty;
+                    questKey = m.QuestKey ?? string.Empty;
+                    isTurnIn = true;
+                    return true;
+                }
+            }
+
+            for (int i = 0; i < panel.Active.Count; i++)
+            {
+                var q = panel.Active[i];
+                if (q.CanFinishNow)
+                {
+                    symbol = "?";
+                    npcName = q.TurnInName ?? string.Empty;
+                    questTitle = q.Title ?? string.Empty;
+                    npcId = q.TurnInId ?? string.Empty;
+                    questKey = q.Key ?? string.Empty;
+                    isTurnIn = true;
+                    return true;
+                }
+            }
+
+            for (int i = 0; i < panel.RoomMarkers.Count; i++)
+            {
+                var m = panel.RoomMarkers[i];
+                if (string.Equals(m.Marker, "available", StringComparison.OrdinalIgnoreCase))
+                {
+                    symbol = "!";
+                    npcName = m.NpcName ?? string.Empty;
+                    questTitle = m.QuestTitle ?? string.Empty;
+                    npcId = m.NpcId ?? string.Empty;
+                    questKey = m.QuestKey ?? string.Empty;
+                    isTurnIn = false;
+                    return true;
+                }
+            }
+
+            if (panel.Available.Count > 0)
+            {
+                var offer = panel.Available[0];
+                symbol = "!";
+                npcName = offer.GiverName ?? string.Empty;
+                questTitle = offer.Title ?? string.Empty;
+                npcId = offer.GiverId ?? string.Empty;
+                questKey = offer.Key ?? string.Empty;
+                isTurnIn = false;
+                return true;
+            }
+
+            return false;
+        }
         public int AvailableQuestCount => LatestPanel?.Available.Count ?? 0;
         public int CompletedQuestCount => LatestPanel?.Completed.Count ?? 0;
 
