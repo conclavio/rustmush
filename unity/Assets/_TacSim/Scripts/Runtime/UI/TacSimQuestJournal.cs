@@ -3083,13 +3083,13 @@ namespace TacSim.UI
                 command = "+tv/1 mine go";
                 return true;
             }
-            if (TryGetActiveSurfaceMiningStatus(out var miningStatus) && miningStatus.MineDone)
+            if (TryGetSurfaceMiningStatusForQuest(active, out var miningStatus) && miningStatus.MineDone)
             {
                 label = "Recover Rig";
                 command = "+tv/1 recover go";
                 return true;
             }
-            if (TryGetActiveDestinationPort(out var dest))
+            if (TryGetDestinationPortForQuest(active, out var dest))
             {
                 label = $"Plan {dest.PortLabel}";
                 command = $"+ship/plan {dest.PortId}";
@@ -3102,6 +3102,102 @@ namespace TacSim.UI
                 return true;
             }
             return false;
+        }
+
+        /// <summary>
+        /// Live-stowage-aware suggested command for UI prefill buttons (Quest Dialog, Quest Journal,
+        /// and Command Palette):
+        /// - Step 5 refit with cargo/stores aboard -> Clear Hold (+market/list) until empty.
+        /// - Step 6 post-mine with mined ore stowed -> Plan <Return Port> (+ship/plan <port>).
+        /// - Steps 3 & 4 buy+deliver with cargo not yet loaded -> Buy Cargo (+market/list) until loaded.
+        /// </summary>
+        public bool TryGetStowageAwareSuggestedCommand(MushActiveQuest active, out string label, out string command)
+        {
+            label = string.Empty;
+            command = string.Empty;
+            if (active == null || active.CanFinishNow || active.CanCheckNow || active.ReadyToFinish)
+                return false;
+
+            bool hasHull = _boundTradeState != null && !string.IsNullOrEmpty(_boundTradeState.ShipHullId);
+            if (!TryGetSuggestedCommand(active, out string baseLbl, out string baseCmd))
+                return false;
+            if (!hasHull)
+            {
+                label = baseLbl;
+                command = baseCmd;
+                return true;
+            }
+
+            if (baseCmd.StartsWith("+coop/refit", StringComparison.OrdinalIgnoreCase))
+            {
+                bool cargoEmpty = _boundTradeState.HoldMassTonnes <= 0;
+                if (cargoEmpty && _boundTradeState.CargoLots != null)
+                {
+                    for (int i = 0; i < _boundTradeState.CargoLots.Count; i++)
+                    {
+                        if (_boundTradeState.CargoLots[i] != null && _boundTradeState.CargoLots[i].Quantity > 0)
+                        {
+                            cargoEmpty = false;
+                            break;
+                        }
+                    }
+                }
+                if (!cargoEmpty || _boundTradeState.StoresCrewDays > 0)
+                {
+                    label = "Clear Hold (+market/list)";
+                    command = "+market/list";
+                    return true;
+                }
+            }
+
+            if (TryGetSurfaceMiningStatusForQuest(active, out var qm) && qm.MineDone)
+            {
+                if (_boundTradeState.GetHoldCommodityQuantity(qm.TargetOreSlug) >= 1)
+                {
+                    string portId;
+                    string portLabel;
+                    if (TryGetDestinationPortForQuest(active, out var destPort))
+                    {
+                        portId = destPort.PortId;
+                        portLabel = destPort.PortLabel;
+                    }
+                    else
+                    {
+                        portId = InferStationPortFromRoomEntry(active.NextRoomEntry) ?? "ceres";
+                        portLabel = FormatPortDisplayName(portId);
+                    }
+                    label = $"Plan {portLabel}";
+                    command = $"+ship/plan {portId}";
+                    return true;
+                }
+            }
+
+            if (baseCmd.StartsWith("+ship/plan ", StringComparison.OrdinalIgnoreCase))
+            {
+                for (int i = 0; i < active.Checkpoints.Count; i++)
+                {
+                    var cp = active.Checkpoints[i];
+                    if (cp == null || cp.Checked || cp.LiveReady) continue;
+                    if (TryExtractTradeNeedFromCheckpoint(active.Title, cp, out var need) &&
+                        need.WantsBuy &&
+                        need.WantsSell &&
+                        !string.Equals(need.CommoditySlug, "propellant", StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(need.CommoditySlug, "provisions", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (_boundTradeState.GetHoldCommodityQuantity(need.CommoditySlug) < Mathf.Max(1, need.TargetQuantity))
+                        {
+                            label = "Buy Cargo (+market/list)";
+                            command = "+market/list";
+                            return true;
+                        }
+                        break;
+                    }
+                }
+            }
+
+            label = baseLbl;
+            command = baseCmd;
+            return true;
         }
 
         public bool TriggerJournalSuggestedPrefill()
@@ -3143,7 +3239,7 @@ namespace TacSim.UI
                 return false;
             }
             var active = LatestPanel.Active[_selectedQuestIndex % LatestPanel.Active.Count];
-            if (!TryGetSuggestedCommand(active, out _, out string cmd))
+            if (!TryGetStowageAwareSuggestedCommand(active, out _, out string cmd))
                 return false;
             SetOpen(false);
             OnPrefillCommandRequested?.Invoke(cmd);
@@ -3260,7 +3356,7 @@ namespace TacSim.UI
                         string pfCol = pfReady ? "#55EE99" : "#FFD166";
                         sb.Append($"<color={pfCol}><b>{MushProtocol.EscapeUnityRichText(pfSummary)}</b></color>\n");
                     }
-                    if (TryGetSuggestedCommand(active, out string sugLbl, out string sugCmd))
+                    if (TryGetStowageAwareSuggestedCommand(active, out string sugLbl, out string sugCmd))
                     {
                         sb.Append($"\n<color=#FFDD44><b>SUGGESTED CMD:</b></color> <color=#66EEAA>{MushProtocol.EscapeUnityRichText(sugCmd.Trim())}</color> ({MushProtocol.EscapeUnityRichText(sugLbl)})\n");
                     }
@@ -3588,7 +3684,7 @@ namespace TacSim.UI
                         }
                         if (_qPrefillBtn != null)
                         {
-                            bool hasSuggested = TryGetSuggestedCommand(q, out string sugLbl, out _);
+                            bool hasSuggested = TryGetStowageAwareSuggestedCommand(q, out string sugLbl, out _);
                             _qPrefillBtn.gameObject.SetActive(hasSuggested);
                             if (hasSuggested && _qPrefillLbl != null)
                                 _qPrefillLbl.text = sugLbl.ToUpperInvariant();

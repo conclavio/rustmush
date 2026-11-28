@@ -674,7 +674,7 @@ namespace TacSim.UI
                             () => OnCommandRequested?.Invoke(rCmd),
                             $"quest route walk board ashore vehicle bay {rRoom} {rCmd} {tracked.Title}"));
                     }
-                    else if (_quests.TryGetSuggestedCommand(tracked, out string sugLbl, out string sugCmd))
+                    else if (_quests.TryGetStowageAwareSuggestedCommand(tracked, out string sugLbl, out string sugCmd))
                     {
                         string cmdCopy = sugCmd;
                         pushedSuggestedCmd = (cmdCopy ?? string.Empty).Trim();

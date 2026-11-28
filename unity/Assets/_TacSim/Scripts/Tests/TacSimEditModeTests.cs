@@ -17727,5 +17727,96 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestJournalAndPalette_AdaptSuggestedCommandToLiveStowageOnSteps3_5_And_6()
+        {
+            var rootGo = new UnityEngine.GameObject("StowageAwareSuggestedCmdTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                var tradeState = new TacSimTradeAndShipState();
+                hud.BindTradeState(tradeState);
+                string prefilled = null;
+                hud.QuestJournal.OnPrefillCommandRequested += c => prefilled = c;
+
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"",
+                            ""title"": ""Metals Down the Corridor"",
+                            ""next_room_entry"": ""room.p07_receiving"",
+                            ""checkpoints"": [{
+                                ""id"": ""deliver_metals"",
+                                ""title"": ""Buy 5t metals and deliver to Stickney Yards"",
+                                ""instructions"": ""Buy 5t metals then +ship/plan stickney and sell."",
+                                ""checked"": false,
+                                ""live_ready"": false
+                            }]
+                        },
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"",
+                            ""title"": ""Refit the Dray for Surface Mining"",
+                            ""next_room_entry"": ""room.c05_registry"",
+                            ""checkpoints"": [{
+                                ""id"": ""refit_dray_p"",
+                                ""title"": ""Refit Dray to Dray-P"",
+                                ""instructions"": ""Run +coop/refit prospector."",
+                                ""checked"": false,
+                                ""live_ready"": false
+                            }]
+                        },
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                            ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                            ""next_room_entry"": ""room.c07_exchange"",
+                            ""checkpoints"": [
+                                { ""id"": ""scan_landing_site"", ""title"": ""Scan"", ""instructions"": ""+tv/1 scan go"", ""checked"": true, ""live_ready"": true },
+                                { ""id"": ""sound_pocket"", ""title"": ""Sound"", ""instructions"": ""+tv/1 sound go"", ""checked"": true, ""live_ready"": true },
+                                { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""instructions"": ""+tv/1 mine go"", ""checked"": true, ""live_ready"": true }
+                            ]
+                        }
+                    ],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+
+                // 1. Step 3 with 0t metals -> +market/list; with 5t metals -> +ship/plan stickney
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{""enabled"":true,""venue"":""ceres"",""listings"":[],""ship"":{""hull_id"":""#99"",""stowage"":{""cargo_kg"":0,""tank_kg"":8000,""stores_days"":10,""items"":[]}}}"));
+                hud.QuestJournal.SetOpen(true);
+                hud.QuestJournal.SelectQuestSubTab("active");
+                Assert.IsTrue(hud.QuestJournal.TriggerJournalSuggestedPrefill());
+                Assert.AreEqual("+market/list", prefilled);
+
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{""enabled"":true,""venue"":""ceres"",""listings"":[],""ship"":{""hull_id"":""#99"",""stowage"":{""cargo_kg"":5000,""tank_kg"":8000,""stores_days"":10,""items"":[{""good"":""tacsim:metals"",""label"":""Metals"",""qty"":5}]}}}"));
+                hud.QuestJournal.SetOpen(true);
+                Assert.IsTrue(hud.QuestJournal.TriggerJournalSuggestedPrefill());
+                Assert.AreEqual("+ship/plan stickney", prefilled);
+
+                // 2. Step 5 with 10d stores -> +market/list; empty -> +coop/refit prospector
+                var step5 = hud.QuestJournal.LatestPanel.Active[1];
+                Assert.IsTrue(hud.QuestJournal.TryGetStowageAwareSuggestedCommand(step5, out _, out string s5Blocked));
+                Assert.AreEqual("+market/list", s5Blocked);
+
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{""enabled"":true,""venue"":""ceres"",""listings"":[],""ship"":{""hull_id"":""#99"",""stowage"":{""cargo_kg"":0,""tank_kg"":8000,""stores_days"":0,""items"":[]}}}"));
+                Assert.IsTrue(hud.QuestJournal.TryGetStowageAwareSuggestedCommand(step5, out _, out string s5Ready));
+                Assert.AreEqual("+coop/refit prospector", s5Ready);
+
+                // 3. Step 6 post-mine: 0t ore -> +tv/1 recover go; 1t carbon_ore stowed -> +ship/plan ceres
+                var step6 = hud.QuestJournal.LatestPanel.Active[2];
+                Assert.IsTrue(hud.QuestJournal.TryGetStowageAwareSuggestedCommand(step6, out _, out string s6Hopper));
+                Assert.AreEqual("+tv/1 recover go", s6Hopper);
+
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{""enabled"":true,""venue"":""commons"",""listings"":[],""ship"":{""hull_id"":""#99"",""stowage"":{""cargo_kg"":1000,""tank_kg"":8000,""stores_days"":10,""items"":[{""good"":""tacsim:carbon_ore"",""label"":""Carbon Ore"",""qty"":1}]}}}"));
+                Assert.IsTrue(hud.QuestJournal.TryGetStowageAwareSuggestedCommand(step6, out _, out string s6Stowed));
+                Assert.AreEqual("+ship/plan ceres", s6Stowed);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
