@@ -18188,5 +18188,161 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void CharacterSheetPilotTab_ShowsStowageAwareNextCmdCargoPreflightAndStep6RigRecovery()
+        {
+            var rootGo = new UnityEngine.GameObject("SheetNextCmdPreflightTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.ShowLoginOverlay(false);
+                var tradeState = new TacSimTradeAndShipState();
+                hud.BindTradeState(tradeState);
+                hud.CharacterSheet.SetOpen(true);
+
+                // 1. Step 3 with fuel & stores OK but 0/5 metals -> [CHECK BEFORE UNDOCK] | metals 0/5! + NEXT CMD: Buy Cargo (+market/list)
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 0, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 10000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": []
+                        }
+                    }
+                }"));
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""S1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""S2"" }
+                    ],
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"",
+                        ""title"": ""Metals Down the Corridor"",
+                        ""next_step"": ""Buy 5t metals at Ceres Exchange and deliver to Stickney Yards"",
+                        ""checkpoints"": [{
+                            ""id"": ""deliver_metals"",
+                            ""title"": ""Buy and deliver 5t metals to Stickney Yards"",
+                            ""instructions"": ""Buy 5t metals (+market/buy metals 5) then sail to Stickney Yards (+ship/plan stickney) and sell."",
+                            ""checked"": false, ""live_ready"": false
+                        }]
+                    }],
+                    ""available"": []
+                }")));
+                hud.CharacterSheet.RefreshContents();
+                StringAssert.Contains("[CHECK BEFORE UNDOCK] Fuel 10t OK | Provisions 10d OK | metals 0/5! → Stickney Yards", hud.CharacterSheet.PilotSummarySnapshot);
+                StringAssert.Contains("NEXT CMD:</b></color> Buy Cargo (+market/list)", hud.CharacterSheet.PilotSummarySnapshot);
+
+                // 2. Step 3 with 5t metals loaded -> [PRE-FLIGHT OK] + NEXT CMD: Plan Stickney Yards (+ship/plan stickney)
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 5000, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 10000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:metals"", ""label"": ""Metals"", ""qty"": 5 }]
+                        }
+                    }
+                }"));
+                hud.CharacterSheet.RefreshContents();
+                StringAssert.Contains("[PRE-FLIGHT OK] Fuel 10t | Provisions 10d → Stickney Yards", hud.CharacterSheet.PilotSummarySnapshot);
+                StringAssert.Contains("NEXT CMD:</b></color> Plan Stickney Yards (+ship/plan stickney)", hud.CharacterSheet.PilotSummarySnapshot);
+
+                // 3. Step 6 post-mine with 0t ore stowed -> [RECOVER RIG FIRST] + NEXT CMD: Recover Rig (+tv/1 recover go)
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 0, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 10000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": []
+                        }
+                    }
+                }"));
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""S1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""S2"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""S3"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_04_return_haul"", ""title"": ""S4"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"", ""title"": ""S5"" }
+                    ],
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Prospect the Surface"",
+                        ""next_room_entry"": ""room.c07_exchange"",
+                        ""next_step"": ""Recover rig and return carbon_ore to Ceres Exchange"",
+                        ""checkpoints"": [
+                            { ""id"": ""buy_license"", ""title"": ""License"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""lease_rig"", ""title"": ""Lease"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""scan_site"", ""title"": ""Scan"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""sound_pocket"", ""title"": ""Sound"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""return_exchange"", ""title"": ""Return to Ceres Exchange"", ""checked"": false, ""live_ready"": false }
+                        ]
+                    }],
+                    ""available"": []
+                }")));
+                hud.CharacterSheet.RefreshContents();
+                StringAssert.Contains("[RECOVER RIG FIRST] CARBON ORE: 0/1 t (run +tv/1 recover go)", hud.CharacterSheet.PilotSummarySnapshot);
+                StringAssert.Contains("NEXT CMD:</b></color> Recover Rig (+tv/1 recover go)", hud.CharacterSheet.PilotSummarySnapshot);
+
+                // 4. Step 6 after rig recovery (1t carbon_ore stowed) -> [ORE HOLD READY] + NEXT CMD: Plan Ceres Freeport
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 1000, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 10000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:carbon_ore"", ""label"": ""Carbon Ore"", ""qty"": 1 }]
+                        }
+                    }
+                }"));
+                hud.CharacterSheet.RefreshContents();
+                StringAssert.Contains("[ORE HOLD READY] CARBON ORE: 1/1 t", hud.CharacterSheet.PilotSummarySnapshot);
+                StringAssert.Contains("NEXT CMD:</b></color> Plan Ceres Freeport (+ship/plan ceres)", hud.CharacterSheet.PilotSummarySnapshot);
+
+                // 5. Tracked quest ready to turn in here -> [?] READY TO TURN IN HERE
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"",
+                        ""title"": ""Stock the Locker and Tanks"",
+                        ""ready_to_finish"": true,
+                        ""can_finish_now"": true,
+                        ""finish_cmd"": ""+quest/finish #18=tok"",
+                        ""checkpoints"": []
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                hud.CharacterSheet.RefreshContents();
+                StringAssert.Contains("[?] READY TO TURN IN HERE", hud.CharacterSheet.PilotSummarySnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

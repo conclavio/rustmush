@@ -631,6 +631,20 @@ namespace TacSim.UI
                         string pfHex = pfReady ? "#55EE99" : "#FFD166";
                         sb.AppendFormat("<color={0}><b>{1}</b></color>\n", pfHex, MushProtocol.EscapeUnityRichText(pfSummary));
                     }
+                    if (activeQuest.CanFinishNow)
+                    {
+                        sb.Append("<color=#55EE99><b>[?] READY TO TURN IN HERE</b></color> — Press <b>[J]</b>\n");
+                    }
+                    else if (_questJournal.TryGetStowageAwareSuggestedCommand(activeQuest, out string sugLbl, out string sugCmd))
+                    {
+                        string cleanCmd = (sugCmd ?? string.Empty).Trim();
+                        string displayAction = !string.IsNullOrEmpty(cleanCmd) &&
+                                               sugLbl.IndexOf(cleanCmd, StringComparison.OrdinalIgnoreCase) >= 0
+                            ? sugLbl
+                            : $"{sugLbl} ({cleanCmd})";
+                        sb.AppendFormat("<color=#77DDFF><b>NEXT CMD:</b></color> {0}  <color=#88AAC8>[J]</color>\n",
+                            MushProtocol.EscapeUnityRichText(displayAction));
+                    }
 
                     int otherReadyCount = 0;
                     string firstOtherReadyTitle = string.Empty;

@@ -791,9 +791,19 @@ namespace TacSim.UI
                     return false;
                 int oreCur = _boundTradeState.GetHoldCommodityQuantity(qm.TargetOreSlug);
                 ready = oreCur >= 1;
-                string oreTag = ready ? "[ORE HOLD READY]" : "[ORE HOLD]";
                 string oreLabel = qm.TargetOreSlug.Replace('_', ' ').ToUpperInvariant();
-                summary = $"{oreTag} {oreLabel}: {oreCur}/1 t";
+                if (ready)
+                {
+                    summary = $"[ORE HOLD READY] {oreLabel}: {oreCur}/1 t";
+                }
+                else if (qm.MineDone)
+                {
+                    summary = $"[RECOVER RIG FIRST] {oreLabel}: {oreCur}/1 t (run +tv/1 recover go)";
+                }
+                else
+                {
+                    summary = $"[ORE HOLD] {oreLabel}: {oreCur}/1 t";
+                }
                 return true;
             }
 
@@ -861,7 +871,22 @@ namespace TacSim.UI
             int provD = Mathf.Max(0, _boundTradeState.StoresCrewDays);
             bool fuelOk = fuelT > 0;
             bool provOk = provD > 0;
-            ready = fuelOk && provOk;
+            bool cargoOk = true;
+            string cargoSeg = string.Empty;
+            if (TryGetFirstTradeNeedForQuest(q, out var need) &&
+                !string.Equals(need.CommoditySlug, "propellant", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(need.CommoditySlug, "provisions", StringComparison.OrdinalIgnoreCase))
+            {
+                int target = Mathf.Max(1, need.TargetQuantity);
+                int have = _boundTradeState.GetHoldCommodityQuantity(need.CommoditySlug);
+                if (have < target)
+                {
+                    cargoOk = false;
+                    string cargoLabel = need.CommoditySlug.Replace('_', ' ');
+                    cargoSeg = $" | {cargoLabel} {have}/{target}!";
+                }
+            }
+            ready = fuelOk && provOk && cargoOk;
             if (ready)
             {
                 summary = $"[PRE-FLIGHT OK] Fuel {fuelT}t | Provisions {provD}d → {dest.PortLabel}";
@@ -870,7 +895,7 @@ namespace TacSim.UI
             {
                 string fuelTxt = fuelOk ? $"{fuelT}t OK" : "0t!";
                 string provTxt = provOk ? $"{provD}d OK" : "0d!";
-                summary = $"[CHECK BEFORE UNDOCK] Fuel {fuelTxt} | Provisions {provTxt} → {dest.PortLabel}";
+                summary = $"[CHECK BEFORE UNDOCK] Fuel {fuelTxt} | Provisions {provTxt}{cargoSeg} → {dest.PortLabel}";
             }
             return true;
         }
