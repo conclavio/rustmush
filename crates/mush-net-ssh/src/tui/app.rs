@@ -5913,17 +5913,32 @@ impl TuiApp {
         if matches!(
             self.pixel.kind(),
             PictureKind::SpaceCockpit | PictureKind::Holotank | PictureKind::Docking
-        ) && let Some(dest) = self.port_walk.quest_dest_hint()
-        {
-            status_spans.push(Span::styled(
-                format!(
-                    "  |  [QUEST] Dest: {} (+ship/plan {})",
-                    dest.port_label, dest.port_id
-                ),
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ));
+        ) {
+            if let Some(dest) = self.port_walk.quest_dest_hint() {
+                status_spans.push(Span::styled(
+                    format!(
+                        "  |  [QUEST] Dest: {} (+ship/plan {})",
+                        dest.port_label, dest.port_id
+                    ),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            } else if let Some(qm) = self
+                .quests_snap
+                .surface_mining_status(self.quests_overlay.tracked_key.as_deref())
+                .filter(|m| !m.mine_done)
+            {
+                status_spans.push(Span::styled(
+                    format!(
+                        "  |  [QUEST] Mine {} (Alt+q quarry, z: ground, l: {})",
+                        qm.target_ore_slug, qm.recommended_family
+                    ),
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
         }
         frame.render_widget(Paragraph::new(Line::from(status_spans)), areas.status);
         let ctx = self.render_ctx();
@@ -13726,6 +13741,74 @@ mod tests {
         assert_eq!(
             out.open_quest_for_npc,
             Some(("#18".to_string(), "Maren Halvorsen".to_string()))
+        );
+    }
+
+    #[test]
+    fn space_cockpit_status_bar_shows_between_steps_next_guided_dest_and_step_6_mining_hint() {
+        let mut app = app();
+        app.pixel.probe_sent(std::time::Instant::now());
+        app.pixel.graphics_reply(true);
+        app.active = CHART_SCREEN;
+        let _ = app.feed_input(b"\x07");
+        let _ = app.feed_input(b"v");
+        let _ = app.feed_input(b"v");
+        assert_eq!(app.pixel.kind(), PictureKind::SpaceCockpit);
+
+        // Between Steps 3 & 4 at Ceres -> SpaceCockpit top status bar shows Stickney destination
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "completed": [
+                    { "key": "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll", "title": "S1" },
+                    { "key": "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel", "title": "S2" },
+                    { "key": "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery", "title": "S3" }
+                ],
+                "active": [],
+                "available": []
+            }),
+        });
+        let dump_buf = |a: &mut TuiApp| -> String {
+            let b = painted(a, 140, 34);
+            (0..b.area.height)
+                .map(|y| {
+                    (0..b.area.width)
+                        .map(|x| b[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let next_txt = dump_buf(&mut app);
+        assert!(
+            next_txt.contains("[QUEST] Dest: Stickney Yards (+ship/plan stickney)"),
+            "expected off-station Next Guided destination on SpaceCockpit status bar:\n{next_txt}"
+        );
+
+        // Active Step 6 surface mining -> SpaceCockpit status bar shows Quarry ground-wash hint
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "active": [{
+                    "key": "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+                    "title": "Scan, Sound, and Mine a Landing Site",
+                    "checkpoints": [
+                        { "id": "scan_landing_site", "title": "Surface scan", "instructions": "+tv/1 scan go", "checked": false, "live_ready": false },
+                        { "id": "mine_carbon_ore", "title": "Mine 1t carbon_ore", "instructions": "+tv/1 mine go", "checked": false, "live_ready": false }
+                    ]
+                }],
+                "available": [],
+                "completed": []
+            }),
+        });
+        let mine_txt = dump_buf(&mut app);
+        assert!(
+            mine_txt.contains("[QUEST] Mine carbon_ore (Alt+q quarry, z: ground, l: carbon)"),
+            "expected Step 6 mining hint on SpaceCockpit status bar:\n{mine_txt}"
         );
     }
 
