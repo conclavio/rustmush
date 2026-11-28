@@ -872,7 +872,37 @@
 
         {:else if modal === "trade" && tradeSubView === "jobs"}
           <div class="econ-pane">
-            {#if questJobGuidance}
+            {#if questReadyTurnIn && questReadyTurnIn.canFinishNow}
+              <div class="quest-banner" role="status" aria-label="active quest ready to turn in">
+                <div class="qb-text">
+                  <span class="qtag">[QUEST READY]{questStepTag}</span>
+                  <strong>{questReadyTurnIn.title}</strong>
+                  <span class="muted">— Ready to turn in to {questReadyTurnIn.turnInName} here</span>
+                </div>
+                <div class="qb-text">
+                  <button
+                    type="button"
+                    class="buybtn"
+                    onclick={() => {
+                      onCmd(questReadyTurnIn.finishCmd);
+                      app.tacsim.closeModal();
+                    }}
+                  >
+                    Turn In Now (?)
+                  </button>
+                  <button
+                    type="button"
+                    class="qbtn-gold"
+                    onclick={() => {
+                      app.tacsim.closeModal();
+                      app.quests.openQuestDialog(questReadyTurnIn.key);
+                    }}
+                  >
+                    Open Quest Dialog
+                  </button>
+                </div>
+              </div>
+            {:else if questJobGuidance}
               <div class="quest-banner" role="status" aria-label="active quest jobs guidance">
                 <div class="qb-text">
                   <span class="qtag">[QUEST]{questStepTag}</span>
@@ -899,6 +929,58 @@
                 >
                   {questJobGuidance.btnLabel}
                 </button>
+              </div>
+            {:else if questReadyTurnIn}
+              <div class="quest-banner" role="status" aria-label="active quest ready to turn in">
+                <div class="qb-text">
+                  <span class="qtag">[QUEST READY]{questStepTag}</span>
+                  <strong>{questReadyTurnIn.title}</strong>
+                  <span class="muted">
+                    — Return to {questReadyTurnIn.turnInName}{questReadyTurnIn.nextRoomName
+                      ? ` (${questReadyTurnIn.nextRoomName})`
+                      : ""}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  class="qbtn-gold"
+                  onclick={() => {
+                    app.tacsim.closeModal();
+                    app.quests.openQuestDialog(questReadyTurnIn.key);
+                  }}
+                >
+                  Open Quest Dialog
+                </button>
+              </div>
+            {:else if app.quests?.guidedTourProgress?.allDone}
+              <div class="quest-banner" role="status" aria-label="corridor captain jobs board">
+                <div class="qb-text">
+                  <span class="qtag">[★ CORRIDOR CAPTAIN 7/7]</span>
+                  <strong>GUIDED TOUR COMPLETE</strong>
+                  <span class="muted">— Open corridor freight &amp; surface survey contracts unlocked.</span>
+                </div>
+                <div class="qb-text">
+                  <button
+                    type="button"
+                    class="qbtn-gold"
+                    onclick={() => {
+                      activeJobFilter = "haul";
+                      onCmd("+market/jobs haul");
+                    }}
+                  >
+                    Haulage (+market/jobs haul)
+                  </button>
+                  <button
+                    type="button"
+                    class="ghost sm"
+                    onclick={() => {
+                      activeJobFilter = "survey";
+                      onCmd("+market/jobs survey");
+                    }}
+                  >
+                    Surveys (+market/jobs survey)
+                  </button>
+                </div>
               </div>
             {/if}
             <div class="qty-row">
