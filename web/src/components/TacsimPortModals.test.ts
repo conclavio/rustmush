@@ -1624,4 +1624,82 @@ describe("TacsimPortModals Dray-P Vehicle Bay and Co-op Refit quest guidance", (
     await fireEvent.click(screen.getByRole("button", { name: /Select Quest Port \(ceres\)/i }));
     expect(stowedApp.tacsim.selectedDestination).toBe("ceres");
   });
+
+  it("guards Step 5 Co-op Desk & Industry Refit CTAs with 1-click Exchange hold-clear handoff until cargo & stores are empty", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[4],
+          title: "Refit the Dray for Surface Mining",
+          checkpoints: [
+            {
+              id: "refit_dray_p",
+              title: "Refit Dray-P",
+              instructions: "Empty hold and run +coop/refit prospector.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    const loadedStowage = {
+      cargoKg: 2000,
+      cargoMaxKg: 100_000,
+      cargoL: 1000,
+      cargoMaxL: 120_000,
+      propellantKg: 12_000,
+      propellantMaxKg: 80_000,
+      provisionsCrewDays: 4,
+      provisionsMaxCrewDays: 120,
+      cargoLines: [{ good: "tacsim:metals", label: "Metals", qty: 2, unit: "u", massKg: 2000 }],
+    };
+
+    // 1. Co-op Desk with cargo & stores aboard -> [CLEAR HOLD FIRST] Step 5/7 + Open Exchange to Clear Hold
+    const onCmdCoopBlocked = vi.fn();
+    const coopBlockedApp = makeApp(quests, "coop", loadedStowage);
+    const r1 = render(TacsimPortModals, { props: { app: coopBlockedApp, onCmd: onCmdCoopBlocked } });
+    const coopBannerBlocked = screen.getByRole("status", { name: "active quest coop guidance" });
+    expect(coopBannerBlocked.textContent).toContain("[CLEAR HOLD FIRST] Step 5/7");
+    expect(screen.queryByRole("button", { name: "Refit Dray-P Now" })).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: "Open Exchange to Clear Hold" }));
+    expect(coopBlockedApp.tacsim.activeModal).toBe("trade");
+    expect(onCmdCoopBlocked).toHaveBeenCalledWith("+market/list");
+    r1.unmount();
+
+    // 2. Co-op Desk with empty hold & stores (propellant OK) -> [READY TO REFIT] Step 5/7 + Refit Dray-P Now
+    const onCmdCoopReady = vi.fn();
+    const coopReadyApp = makeApp(quests, "coop");
+    const r2 = render(TacsimPortModals, { props: { app: coopReadyApp, onCmd: onCmdCoopReady } });
+    const coopBannerReady = screen.getByRole("status", { name: "active quest coop guidance" });
+    expect(coopBannerReady.textContent).toContain("[READY TO REFIT] Step 5/7");
+    await fireEvent.click(screen.getByRole("button", { name: "Refit Dray-P Now" }));
+    expect(onCmdCoopReady).toHaveBeenCalledWith("+coop/refit prospector");
+    r2.unmount();
+
+    // 3. Industry tab with cargo & stores aboard -> [CLEAR HOLD FIRST] Step 5/7 + Clear Hold at Exchange switches to Book & emits +market/list
+    const onCmdIndBlocked = vi.fn();
+    const indBlockedApp = makeApp(quests, "trade", loadedStowage);
+    const r3 = render(TacsimPortModals, { props: { app: indBlockedApp, onCmd: onCmdIndBlocked } });
+    await fireEvent.click(screen.getByRole("button", { name: /^Works & Yard$/i }));
+    const indBannerBlocked = screen.getByRole("status", { name: "active quest refit guidance" });
+    expect(indBannerBlocked.textContent).toContain("[CLEAR HOLD FIRST] Step 5/7");
+    expect(screen.queryByRole("button", { name: /Run \+coop\/refit prospector/i })).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: "Clear Hold at Exchange" }));
+    expect(onCmdIndBlocked).toHaveBeenCalledWith("+market/list");
+    r3.unmount();
+
+    // 4. Industry tab with empty hold & stores -> [READY TO REFIT] Step 5/7 + Run +coop/refit prospector
+    const onCmdIndReady = vi.fn();
+    const indReadyApp = makeApp(quests, "trade");
+    render(TacsimPortModals, { props: { app: indReadyApp, onCmd: onCmdIndReady } });
+    await fireEvent.click(screen.getByRole("button", { name: /^Works & Yard$/i }));
+    const indBannerReady = screen.getByRole("status", { name: "active quest refit guidance" });
+    expect(indBannerReady.textContent).toContain("[READY TO REFIT] Step 5/7");
+    await fireEvent.click(screen.getByRole("button", { name: "Run +coop/refit prospector" }));
+    expect(onCmdIndReady).toHaveBeenCalledWith("+coop/refit prospector");
+  });
 });

@@ -1131,17 +1131,38 @@
             {#if questCoopAction?.kind === "refit"}
               <div class="quest-banner" role="status" aria-label="active quest refit guidance">
                 <div class="qb-text">
-                  <span class="qtag">[QUEST]{questStepTag}</span>
+                  <span class="qtag">
+                    {#if refitHoldReadiness && !refitHoldReadiness.ready}
+                      [CLEAR HOLD FIRST]
+                    {:else if refitHoldReadiness?.ready}
+                      [READY TO REFIT]
+                    {:else}
+                      [QUEST]
+                    {/if}{questStepTag}
+                  </span>
                   <strong>{questCoopAction.label.toUpperCase()}</strong>
                   <span class="muted">— {questCoopAction.questTitle}</span>
                 </div>
-                <button
-                  type="button"
-                  class="qbtn-gold"
-                  onclick={() => onCmd(questCoopAction.command)}
-                >
-                  Run {questCoopAction.command}
-                </button>
+                {#if refitHoldReadiness && !refitHoldReadiness.ready}
+                  <button
+                    type="button"
+                    class="qbtn-gold"
+                    onclick={() => {
+                      tradeSubView = "book";
+                      onCmd("+market/list");
+                    }}
+                  >
+                    Clear Hold at Exchange
+                  </button>
+                {:else}
+                  <button
+                    type="button"
+                    class="qbtn-gold"
+                    onclick={() => onCmd(questCoopAction.command)}
+                  >
+                    Run {questCoopAction.command}
+                  </button>
+                {/if}
               </div>
               {#if refitHoldReadiness}
                 <div class="refit-check-strip" class:ready={refitHoldReadiness.ready} aria-label="refit hold readiness">
@@ -1593,18 +1614,39 @@
         {#if questCoopAction}
           <div class="quest-banner" role="status" aria-label="active quest coop guidance">
             <div class="qb-text">
-              <span class="qtag">[QUEST]{questStepTag}</span>
+              <span class="qtag">
+                {#if questCoopAction.kind === "refit" && refitHoldReadiness && !refitHoldReadiness.ready}
+                  [CLEAR HOLD FIRST]
+                {:else if questCoopAction.kind === "refit" && refitHoldReadiness?.ready}
+                  [READY TO REFIT]
+                {:else}
+                  [QUEST]
+                {/if}{questStepTag}
+              </span>
               <strong>{questCoopAction.label.toUpperCase()}</strong>
               <span class="muted">— {questCoopAction.questTitle}</span>
             </div>
             {#if questCoopAction.kind === "refit"}
-              <button
-                type="button"
-                class="qbtn-gold"
-                onclick={() => onCmd(questCoopAction.command)}
-              >
-                Refit Dray-P Now
-              </button>
+              {#if refitHoldReadiness && !refitHoldReadiness.ready}
+                <button
+                  type="button"
+                  class="qbtn-gold"
+                  onclick={() => {
+                    app.tacsim.activeModal = "trade";
+                    onCmd("+market/list");
+                  }}
+                >
+                  Open Exchange to Clear Hold
+                </button>
+              {:else}
+                <button
+                  type="button"
+                  class="qbtn-gold"
+                  onclick={() => onCmd(questCoopAction.command)}
+                >
+                  Refit Dray-P Now
+                </button>
+              {/if}
             {:else}
               <button
                 type="button"
@@ -1692,7 +1734,7 @@
           <button type="button" class="ghost" onclick={() => onCmd("+coop/statement")}>Statement (+coop/statement)</button>
           <button
             type="button"
-            class={questCoopAction?.kind === "refit" ? "qbtn-gold" : "ghost"}
+            class={questCoopAction?.kind === "refit" && (!refitHoldReadiness || refitHoldReadiness.ready) ? "qbtn-gold" : "ghost"}
             onclick={() => onCmd("+coop/refit prospector")}
           >
             Refit Dray-P (+coop/refit prospector)
