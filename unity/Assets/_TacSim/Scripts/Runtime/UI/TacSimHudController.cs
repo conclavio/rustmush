@@ -677,6 +677,13 @@ namespace TacSim.UI
                 RefreshSailingQuestGuidance();
                 RefreshQuestTopBadgeAndRoomBanner();
                 RefreshEconomyPanelsQuestGuidance();
+                if (_quickActionsContainer != null && _lastQuickActionKey != null && _lastQuickActionSeated.HasValue)
+                {
+                    string key = _lastQuickActionKey;
+                    bool seated = _lastQuickActionSeated.Value;
+                    _lastQuickActionKey = null;
+                    RefreshContextualQuickActions(key, seated);
+                }
                 if (_tradePanel != null && _tradePanel.activeSelf)
                     RefreshTradeTerminal();
             };
@@ -2307,6 +2314,7 @@ namespace TacSim.UI
 
         public string QuestExitBreadcrumbLabel => _questBreadcrumbLabel;
         public string QuestExitBreadcrumbCommand => _questBreadcrumbCommand;
+        public int HighlightedQuestQuickActionCount { get; private set; }
 
         public void SetQuestExitBreadcrumb(string nextRoomName, string command, int hops)
         {
@@ -2372,17 +2380,29 @@ namespace TacSim.UI
             for (int i = _quickActionsContainer.childCount - 1; i >= 0; i--)
                 DestroySafe(_quickActionsContainer.GetChild(i).gameObject);
             _quickSlotActions.Clear();
+            HighlightedQuestQuickActionCount = 0;
 
             if (_helmFlightBar != null)
                 _helmFlightBar.SetActive(isSeatedAtHelm);
             Overlays?.SetHelmSeatedVisible(isSeatedAtHelm);
 
+            var activeQuest = QuestJournal?.GetTrackedActiveQuest();
+            string suggestedCmd = string.Empty;
+            bool hasSuggested = activeQuest != null && QuestJournal.TryGetSuggestedCommand(activeQuest, out _, out suggestedCmd);
+            bool questWantsEnroll = hasSuggested && suggestedCmd.StartsWith("+coop/enroll", StringComparison.OrdinalIgnoreCase);
+            bool questWantsRefit = hasSuggested && suggestedCmd.StartsWith("+coop/refit", StringComparison.OrdinalIgnoreCase);
+            bool questWantsLease = hasSuggested && suggestedCmd.StartsWith("+tv/lease", StringComparison.OrdinalIgnoreCase);
+            bool questWantsTrade = QuestJournal != null && QuestJournal.TryResolveContextualTradeNeed(_boundTradeState, out _, out _);
+            bool questWantsSailing = QuestJournal != null && QuestJournal.TryGetActiveDestinationPort(out _);
+            bool questWantsMining = QuestJournal != null && QuestJournal.TryGetActiveSurfaceMiningStatus(out var activeMining) && !activeMining.MineDone;
+
             if (isSeatedAtHelm)
             {
+                bool sailQ = questWantsSailing || questWantsMining;
                 AddQuickBtn("Stand Up", () => OnStandFromHelmRequested?.Invoke());
                 AddQuickBtn("Bridge Holo", () => OnCameraModeRequested?.Invoke(CameraRigMode.ShipBridgeHolo));
                 AddQuickBtn("Orbital View", () => OnCameraModeRequested?.Invoke(CameraRigMode.OrbitalExterior));
-                AddQuickBtn("Sailing Plan", () => OnCommandSubmitted?.Invoke("ui:open_sailing"));
+                AddQuickBtn(sailQ ? "[Q] Sailing Plan" : "Sailing Plan", () => OnCommandSubmitted?.Invoke("ui:open_sailing"), sailQ);
                 AddQuickBtn("Undock Port", () => OnCommandSubmitted?.Invoke("action:undock_selected"));
                 AddQuickBtn("Decouple 3D", () => OnCommandSubmitted?.Invoke("+helm/decouple"));
                 AddQuickBtn("6-DOF Dock", () => OnCommandSubmitted?.Invoke(ResolveDockCommand()));
@@ -2392,8 +2412,13 @@ namespace TacSim.UI
             if (!string.IsNullOrEmpty(_questBreadcrumbLabel) && !string.IsNullOrEmpty(_questBreadcrumbCommand))
             {
                 string crumbCmd = _questBreadcrumbCommand;
-                AddQuickBtn(_questBreadcrumbLabel, () => OnCommandSubmitted?.Invoke(crumbCmd));
+                AddQuickBtn(_questBreadcrumbLabel, () => OnCommandSubmitted?.Invoke(crumbCmd), isQuestHighlight: true);
             }
+
+            bool crumbIsBoard = string.Equals(_questBreadcrumbCommand, "+ship/board", StringComparison.OrdinalIgnoreCase);
+            bool crumbIsLeave = string.Equals(_questBreadcrumbCommand, "+ship/leave", StringComparison.OrdinalIgnoreCase);
+            bool crumbIsBay = string.Equals(_questBreadcrumbCommand, "+tv/bay in", StringComparison.OrdinalIgnoreCase) ||
+                              string.Equals(_questBreadcrumbCommand, "+tv/bay", StringComparison.OrdinalIgnoreCase);
 
             switch (roomOrModeKey)
             {
@@ -2424,23 +2449,23 @@ namespace TacSim.UI
                 case "room.p11_service":
                     AddQuickBtn("Shipyard (+yard)", () => OnCommandSubmitted?.Invoke("+yard"));
                     AddQuickBtn("Bay Status (+bay ship)", () => OnCommandSubmitted?.Invoke("+bay ship"));
-                    AddQuickBtn("Visual Trade Board", () => OnCommandSubmitted?.Invoke("ui:open_exchange"));
+                    AddQuickBtn(questWantsTrade ? "[Q] Visual Trade Board" : "Visual Trade Board", () => OnCommandSubmitted?.Invoke("ui:open_exchange"), questWantsTrade);
                     AddQuickBtn("Ship Status", () => OnCommandSubmitted?.Invoke("+ship"));
                     break;
                 case "room.c05_registry":
                     AddQuickBtn("Co-op Terms", () => OnCommandSubmitted?.Invoke("+coop"));
-                    AddQuickBtn("Enrol Charter Hull", () => OnCommandSubmitted?.Invoke("ui:open_coop_enrol"));
-                    AddQuickBtn("Refit Dray-P", () => OnCommandSubmitted?.Invoke("+coop/refit prospector"));
+                    AddQuickBtn(questWantsEnroll ? "[Q] Enroll Charter Hull" : "Enrol Charter Hull", () => OnCommandSubmitted?.Invoke("ui:open_coop_enrol"), questWantsEnroll);
+                    AddQuickBtn(questWantsRefit ? "[Q] Refit Dray-P" : "Refit Dray-P", () => OnCommandSubmitted?.Invoke("+coop/refit prospector"), questWantsRefit);
                     AddQuickBtn("Statement", () => OnCommandSubmitted?.Invoke("+coop/statement"));
                     break;
                 case "room.l05_registry":
                     AddQuickBtn("Co-op Terms", () => OnCommandSubmitted?.Invoke("+coop"));
-                    AddQuickBtn("Enrol Charter Hull", () => OnCommandSubmitted?.Invoke("ui:open_coop_enrol"));
+                    AddQuickBtn(questWantsEnroll ? "[Q] Enroll Charter Hull" : "Enrol Charter Hull", () => OnCommandSubmitted?.Invoke("ui:open_coop_enrol"), questWantsEnroll);
                     AddQuickBtn("Statement", () => OnCommandSubmitted?.Invoke("+coop/statement"));
                     break;
                 case "room.c07_exchange":
-                    AddQuickBtn("Visual Trade Board", () => OnCommandSubmitted?.Invoke("ui:open_exchange"));
-                    AddQuickBtn("Lease Rig Preview", () => OnCommandSubmitted?.Invoke("+tv/lease"));
+                    AddQuickBtn(questWantsTrade ? "[Q] Visual Trade Board" : "Visual Trade Board", () => OnCommandSubmitted?.Invoke("ui:open_exchange"), questWantsTrade);
+                    AddQuickBtn(questWantsLease ? "[Q] Lease Rig Preview" : "Lease Rig Preview", () => OnCommandSubmitted?.Invoke("+tv/lease"), questWantsLease);
                     AddQuickBtn("Credits", () => OnCommandSubmitted?.Invoke("+credit"));
                     AddQuickBtn("Ship Hold", () => OnCommandSubmitted?.Invoke("+ship/hold"));
                     break;
@@ -2448,41 +2473,44 @@ namespace TacSim.UI
                 case "room.p08_exchange":
                 case "room.p09_commissary":
                 case "room.l07_exchange":
-                    AddQuickBtn("Visual Trade Board", () => OnCommandSubmitted?.Invoke("ui:open_exchange"));
+                    AddQuickBtn(questWantsTrade ? "[Q] Visual Trade Board" : "Visual Trade Board", () => OnCommandSubmitted?.Invoke("ui:open_exchange"), questWantsTrade);
                     AddQuickBtn("Credits", () => OnCommandSubmitted?.Invoke("+credit"));
                     AddQuickBtn("Ship Hold", () => OnCommandSubmitted?.Invoke("+ship/hold"));
                     break;
                 case "room.c14_dockmaster":
                 case "room.p05_harbourmaster":
                 case "room.l12_dockmaster":
-                    AddQuickBtn("Sailing & Route Plan", () => OnCommandSubmitted?.Invoke("ui:open_sailing"));
-                    AddQuickBtn("Visual Trade Board", () => OnCommandSubmitted?.Invoke("ui:open_exchange"));
+                    AddQuickBtn((questWantsSailing || questWantsMining) ? "[Q] Sailing & Route Plan" : "Sailing & Route Plan", () => OnCommandSubmitted?.Invoke("ui:open_sailing"), questWantsSailing || questWantsMining);
+                    AddQuickBtn(questWantsTrade ? "[Q] Visual Trade Board" : "Visual Trade Board", () => OnCommandSubmitted?.Invoke("ui:open_exchange"), questWantsTrade);
                     AddQuickBtn("Ship Status", () => OnCommandSubmitted?.Invoke("+ship"));
                     break;
                 case "room.c01_berth_gallery":
                 case "room.p01_berth_gallery":
                 case "room.l01_berth_gallery":
-                    AddQuickBtn("Board Ship", () => OnCommandSubmitted?.Invoke("+ship/board"));
+                    if (!crumbIsBoard)
+                        AddQuickBtn("Board Ship", () => OnCommandSubmitted?.Invoke("+ship/board"));
                     AddQuickBtn("Ship Status", () => OnCommandSubmitted?.Invoke("+ship"));
-                    AddQuickBtn("Sailing Plan", () => OnCommandSubmitted?.Invoke("ui:open_sailing"));
+                    AddQuickBtn((questWantsSailing || questWantsMining) ? "[Q] Sailing Plan" : "Sailing Plan", () => OnCommandSubmitted?.Invoke("ui:open_sailing"), questWantsSailing || questWantsMining);
                     break;
                 case "interior:airlock":
-                    AddQuickBtn("Cycle Ashore", () => OnCommandSubmitted?.Invoke("+ship/leave"));
+                    if (!crumbIsLeave)
+                        AddQuickBtn("Cycle Ashore", () => OnCommandSubmitted?.Invoke("+ship/leave"));
                     AddQuickBtn("Ship Status", () => OnCommandSubmitted?.Invoke("+ship"));
                     break;
                 case "interior:hold":
                     AddQuickBtn("Hold Load Cells", () => OnCommandSubmitted?.Invoke("+ship/hold"));
-                    AddQuickBtn("Trade Summary", () => OnCommandSubmitted?.Invoke("ui:open_exchange"));
-                    AddQuickBtn("Vehicle Bay", () => OnCommandSubmitted?.Invoke("+tv/bay in"));
+                    AddQuickBtn(questWantsTrade ? "[Q] Trade Summary" : "Trade Summary", () => OnCommandSubmitted?.Invoke("ui:open_exchange"), questWantsTrade);
+                    if (!crumbIsBay)
+                        AddQuickBtn(questWantsMining ? "[Q] Vehicle Bay" : "Vehicle Bay", () => OnCommandSubmitted?.Invoke("+tv/bay in"), questWantsMining);
                     break;
                 case "interior:bay":
-                    AddQuickBtn("Launch Rig 1", () => OnCommandSubmitted?.Invoke("surface:launch"));
+                    AddQuickBtn(questWantsMining ? "[Q] Launch Rig 1" : "Launch Rig 1", () => OnCommandSubmitted?.Invoke("surface:launch"), questWantsMining);
                     AddQuickBtn("Rig Status (+tv)", () => OnCommandSubmitted?.Invoke("+tv"));
                     AddQuickBtn("Back to Hold", () => OnCommandSubmitted?.Invoke("+tv/bay out"));
                     break;
                 case "interior:bridge":
-                    AddQuickBtn("Take Helm", () => OnCommandSubmitted?.Invoke("seat:helm"));
-                    AddQuickBtn("Sailing & Route Plan", () => OnCommandSubmitted?.Invoke("ui:open_sailing"));
+                    AddQuickBtn((questWantsSailing || questWantsMining) ? "[Q] Take Helm" : "Take Helm", () => OnCommandSubmitted?.Invoke("seat:helm"), questWantsSailing || questWantsMining);
+                    AddQuickBtn((questWantsSailing || questWantsMining) ? "[Q] Sailing & Route Plan" : "Sailing & Route Plan", () => OnCommandSubmitted?.Invoke("ui:open_sailing"), questWantsSailing || questWantsMining);
                     AddQuickBtn("Dry-Run +ship/plan", () => OnCommandSubmitted?.Invoke("+ship/plan"));
                     break;
                 case "interior:passage":
@@ -3242,14 +3270,22 @@ namespace TacSim.UI
             LayoutRebuilder.ForceRebuildLayoutImmediate(_sailingPlanOutputText.rectTransform);
         }
 
-        private void AddQuickBtn(string label, Action onClick)
+        private void AddQuickBtn(string label, Action onClick, bool isQuestHighlight = false)
         {
             int slotNum = _quickSlotActions.Count + 1;
             _quickSlotActions.Add(onClick);
-            var btn = CreateButton(_quickActionsContainer, label, new Color(0.11f, 0.24f, 0.34f, 0.95f), onClick);
+            if (isQuestHighlight)
+                HighlightedQuestQuickActionCount++;
+            var bg = isQuestHighlight
+                ? new Color(0.42f, 0.30f, 0.08f, 0.98f)
+                : new Color(0.11f, 0.24f, 0.34f, 0.95f);
+            var btn = CreateButton(_quickActionsContainer, label, bg, onClick);
             if (slotNum <= 9)
             {
-                var badge = CreateText(btn.transform, slotNum.ToString(), 10, FontStyle.Bold, TextAnchor.UpperLeft, new Color(0.55f, 0.92f, 1f, 0.92f));
+                var badgeColor = isQuestHighlight
+                    ? new Color(1f, 0.92f, 0.48f, 0.98f)
+                    : new Color(0.55f, 0.92f, 1f, 0.92f);
+                var badge = CreateText(btn.transform, slotNum.ToString(), 10, FontStyle.Bold, TextAnchor.UpperLeft, badgeColor);
                 SetRect(badge.rectTransform, new Vector2(0f, 1f), new Vector2(0f, 1f), new Vector2(4f, -15f), new Vector2(18f, -1f));
             }
         }
