@@ -635,6 +635,24 @@ impl QuestsSnapshot {
         None
     }
 
+    /// Resolve the ship interior target compartment (`"bay"` for active surface
+    /// mining quests, `"bridge"` for active corridor flight quests).
+    #[must_use]
+    pub fn active_ship_target_compartment(
+        &self,
+        tracked_key: Option<&str>,
+    ) -> Option<&'static str> {
+        if let Some(mining) = self.surface_mining_status(tracked_key)
+            && !mining.mine_done
+        {
+            return Some("bay");
+        }
+        if self.active_destination_port(tracked_key).is_some() {
+            return Some("bridge");
+        }
+        None
+    }
+
     /// Compute 7-step guided onboarding progress across active, available, and completed quests.
     #[must_use]
     pub fn guided_tour_progress(&self) -> Option<GuidedTourProgress> {

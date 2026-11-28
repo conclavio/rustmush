@@ -2513,6 +2513,9 @@ impl TuiApp {
                         self.port_walk.observe_quest_objective_room(
                             self.quests_snap.active_objective_room(tracked),
                         );
+                        self.port_walk.observe_quest_ship_target(
+                            self.quests_snap.active_ship_target_compartment(tracked),
+                        );
                         self.port_walk.observe_quest_coop_action(
                             self.quests_snap.active_coop_action(tracked),
                         );
