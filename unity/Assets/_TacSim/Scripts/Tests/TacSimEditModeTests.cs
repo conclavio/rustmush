@@ -12184,5 +12184,105 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void OriginPortProcurementWayfinding_RoutesToExchangeUntilCargoLoaded_ThenFlipsToBerthGallery()
+        {
+            var rootGo = new UnityEngine.GameObject("OriginPortProcurementTestRoot");
+            try
+            {
+                var stGo = new UnityEngine.GameObject("CeresStation");
+                stGo.transform.SetParent(rootGo.transform, false);
+                var station = stGo.AddComponent<TacSim.World.StationWorldController>();
+                station.BuildStation(null, "neighborhood.ceres_freeport");
+
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                var trade = new TacSimTradeAndShipState();
+                hud.BindTradeState(trade);
+
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#15"",
+                    ""room_name"": ""Registry & Co-op Desk"",
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"",
+                        ""title"": ""Metals Down the Corridor"",
+                        ""next_room_entry"": ""room.p07_receiving"",
+                        ""checkpoints"": [{
+                            ""id"": ""deliver_metals"",
+                            ""title"": ""Buy 5 tonnes of metals at Ceres and deliver them to Stickney Yards"",
+                            ""instructions"": ""Buy metals at Ceres Exchange Hall, fly to Stickney, and +market/sell."",
+                            ""room_entry"": ""room.p07_receiving"",
+                            ""checked"": false,
+                            ""live_ready"": false
+                        }]
+                    }],
+                    ""available"": []
+                }")));
+
+                // Unloaded stowage -> false (default cross-port berth routing preserved)
+                Assert.IsFalse(hud.QuestJournal.NeedsOriginPortProcurement(trade));
+
+                // Loaded stowage with 2/5 metals -> needs origin Exchange first
+                trade.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 2000, ""cargo_limit_kg"": 100000,
+                            ""cargo_l"": 1000, ""cargo_limit_l"": 120000,
+                            ""tank_kg"": 12000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:metals"", ""label"": ""Metals"", ""qty"": 2 }]
+                        }
+                    }
+                }"));
+                Assert.IsTrue(hud.QuestJournal.NeedsOriginPortProcurement(trade));
+
+                // From Registry while procuring -> walks toward Exchange Hall (not Berth Gallery!)
+                Assert.IsTrue(station.TryGetNextQuestExitBreadcrumb(
+                    "room.c05_registry", "room.p07_receiving",
+                    out string nextFromReg, out _, out _, out int hopsToExch,
+                    needsOriginExchangeFirst: true));
+                Assert.GreaterOrEqual(hopsToExch, 1);
+                Assert.AreNotEqual("room.c01_berth_gallery", nextFromReg);
+
+                // Standing at Exchange Hall while procuring -> returns false (stay here to buy)
+                Assert.IsFalse(station.TryGetNextQuestExitBreadcrumb(
+                    "room.c07_exchange", "room.p07_receiving",
+                    out _, out _, out _, out _,
+                    needsOriginExchangeFirst: true));
+
+                // Top up to 5/5 metals -> NeedsOriginPortProcurement flips false and routes to Berth Gallery
+                trade.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 5000, ""cargo_limit_kg"": 100000,
+                            ""cargo_l"": 2500, ""cargo_limit_l"": 120000,
+                            ""tank_kg"": 12000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": [{ ""good"": ""tacsim:metals"", ""label"": ""Metals"", ""qty"": 5 }]
+                        }
+                    }
+                }"));
+                Assert.IsFalse(hud.QuestJournal.NeedsOriginPortProcurement(trade));
+                Assert.IsTrue(station.TryGetNextQuestExitBreadcrumb(
+                    "room.c01_berth_gallery", "room.p07_receiving",
+                    out _, out string boardName, out string boardCmd, out int boardHops,
+                    needsOriginExchangeFirst: false));
+                Assert.AreEqual("Board Ship", boardName);
+                Assert.AreEqual("+ship/board", boardCmd);
+                Assert.AreEqual(1, boardHops);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

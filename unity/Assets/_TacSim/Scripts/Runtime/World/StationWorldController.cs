@@ -166,7 +166,8 @@ namespace TacSim.World
             out string nextRoomEntry,
             out string nextRoomName,
             out string nextCommand,
-            out int hopCount)
+            out int hopCount,
+            bool needsOriginExchangeFirst = false)
         {
             nextRoomEntry = string.Empty;
             nextRoomName = string.Empty;
@@ -185,28 +186,58 @@ namespace TacSim.World
                 if (!IsCorridorStationRoomEntry(targetRoomEntry))
                     return false;
 
-                string berthEntry = null;
-                foreach (var kv in Pack.Rooms)
+                if (needsOriginExchangeFirst)
                 {
-                    if (kv.Key.IndexOf("berth_gallery", StringComparison.OrdinalIgnoreCase) >= 0)
+                    string exchangeEntry = null;
+                    string fallbackEntry = null;
+                    foreach (var kv in Pack.Rooms)
                     {
-                        berthEntry = kv.Key;
-                        break;
+                        if (kv.Key.IndexOf("exchange", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            exchangeEntry = kv.Key;
+                            break;
+                        }
+                        if (fallbackEntry == null &&
+                            (kv.Key.IndexOf("chandlery", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                             kv.Key.IndexOf("service", StringComparison.OrdinalIgnoreCase) >= 0))
+                        {
+                            fallbackEntry = kv.Key;
+                        }
+                    }
+                    string tradeRoom = !string.IsNullOrEmpty(exchangeEntry) ? exchangeEntry : fallbackEntry;
+                    if (!string.IsNullOrEmpty(tradeRoom))
+                    {
+                        if (string.Equals(fromRoomEntry, tradeRoom, StringComparison.Ordinal))
+                            return false;
+                        effectiveTarget = tradeRoom;
                     }
                 }
-                if (string.IsNullOrEmpty(berthEntry))
-                    return false;
 
-                if (string.Equals(fromRoomEntry, berthEntry, StringComparison.Ordinal))
+                if (string.Equals(effectiveTarget, targetRoomEntry, StringComparison.Ordinal))
                 {
-                    nextRoomEntry = "ship";
-                    nextRoomName = "Board Ship";
-                    nextCommand = "+ship/board";
-                    hopCount = 1;
-                    return true;
+                    string berthEntry = null;
+                    foreach (var kv in Pack.Rooms)
+                    {
+                        if (kv.Key.IndexOf("berth_gallery", StringComparison.OrdinalIgnoreCase) >= 0)
+                        {
+                            berthEntry = kv.Key;
+                            break;
+                        }
+                    }
+                    if (string.IsNullOrEmpty(berthEntry))
+                        return false;
+
+                    if (string.Equals(fromRoomEntry, berthEntry, StringComparison.Ordinal))
+                    {
+                        nextRoomEntry = "ship";
+                        nextRoomName = "Board Ship";
+                        nextCommand = "+ship/board";
+                        hopCount = 1;
+                        return true;
+                    }
+                    effectiveTarget = berthEntry;
+                    boardingCrossPort = true;
                 }
-                effectiveTarget = berthEntry;
-                boardingCrossPort = true;
             }
 
             var path = Pack.FindExitPath(fromRoomEntry, effectiveTarget);
