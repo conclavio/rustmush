@@ -5240,6 +5240,44 @@ impl TuiApp {
             }
         }
 
+        let stowage = self.port_walk.quest_stowage_telemetry();
+        let quest_readiness_tag = |q: &super::quests::ActiveQuest| -> Option<&'static str> {
+            let st = stowage.as_ref()?;
+            if q.can_finish_now {
+                return None;
+            }
+            if let Some((hold_line, _)) = QuestsSnapshot::hold_readiness_line_for(q, st) {
+                if hold_line.starts_with("[RECOVER RIG FIRST]") {
+                    return Some("[RECOVER RIG FIRST]");
+                }
+                if hold_line.starts_with("[ORE HOLD READY]") {
+                    return Some("[ORE HOLD READY]");
+                }
+            }
+            if let Some((_, pf_ready)) = QuestsSnapshot::preflight_readiness_line_for(q, st) {
+                return Some(if pf_ready {
+                    "[PRE-FLIGHT OK]"
+                } else {
+                    "[CHECK BEFORE UNDOCK]"
+                });
+            }
+            QuestsSnapshot::hold_readiness_line_for(q, st).and_then(|(line, _)| {
+                if line.starts_with("[HOLD READY]") {
+                    Some("[HOLD READY]")
+                } else if line.starts_with("[HOLD]") {
+                    Some("[HOLD]")
+                } else if line.starts_with("[READY]") {
+                    Some("[READY]")
+                } else if line.starts_with("[REFIT CHECK]") {
+                    Some("[REFIT CHECK]")
+                } else if line.starts_with("[ORE HOLD]") {
+                    Some("[ORE HOLD]")
+                } else {
+                    None
+                }
+            })
+        };
+
         if let Some(tq) = self
             .quests_snap
             .ordered_active(self.quests_overlay.tracked_key.as_deref())
@@ -5247,6 +5285,7 @@ impl TuiApp {
             .next()
         {
             let mut pushed_suggested_cmd = String::new();
+            let tracked_ready_tag = quest_readiness_tag(tq);
             if let Some(hop) = self.port_walk.next_quest_hop() {
                 let (route_label, search_head) = if hop.next_exit_command == "+ship/board" {
                     ("[>] Board Ship".to_string(), "board ship route walk")
@@ -5280,15 +5319,17 @@ impl TuiApp {
                     detail: detail.clone(),
                     quest_action: Some(PaletteQuestAction::PrefillCommand),
                 });
-            } else if let Some(suggested) = QuestsSnapshot::suggested_action_for_with_stowage(
-                tq,
-                self.port_walk.quest_stowage_telemetry().as_ref(),
-            ) {
+            } else if let Some(suggested) =
+                QuestsSnapshot::suggested_action_for_with_stowage(tq, stowage.as_ref())
+            {
                 pushed_suggested_cmd = suggested.command.trim().to_ascii_lowercase();
+                let tag_prefix = tracked_ready_tag
+                    .map(|t| format!("{t} "))
+                    .unwrap_or_default();
                 let detail = if tq.next_step.is_empty() {
-                    suggested.command.clone()
+                    format!("{tag_prefix}{}", suggested.command)
                 } else {
-                    format!("{} — {}", suggested.command, tq.next_step)
+                    format!("{tag_prefix}{} — {}", suggested.command, tq.next_step)
                 };
                 let search = format!(
                     "next step {} {} {} quest",
@@ -5329,43 +5370,77 @@ impl TuiApp {
                         });
                     }
                 } else if !tq.can_finish_now && !tq.turn_in_here {
-                    let return_dest = tracked_snap
+                    let mining_hold = stowage
                         .as_ref()
-                        .and_then(|s| s.active_destination_port(Some(tq.key.as_str())))
-                        .map(|d| (d.port_id, d.port_label))
-                        .or_else(|| {
-                            let room = if !tq.next_room_entry.is_empty() {
-                                tq.next_room_entry.as_str()
-                            } else {
-                                tq.checkpoints.last().map_or("", |c| c.room_entry.as_str())
-                            };
-                            let slug = super::quests::infer_station_port_from_room_entry(room)?;
-                            let lbl = match slug {
-                                "ceres" => "Ceres Freeport",
-                                "stickney" => "Stickney Yards",
-                                other => other,
-                            };
-                            Some((slug.to_string(), lbl.to_string()))
-                        });
-                    if let Some((port_id, port_label)) = return_dest {
-                        let plan_cmd = format!("+ship/plan {port_id}");
-                        if pushed_suggested_cmd != plan_cmd.to_ascii_lowercase() {
-                            let turn_in = if tq.turn_in_name.is_empty() {
-                                port_label.as_str()
-                            } else {
-                                tq.turn_in_name.as_str()
-                            };
-                            let label = format!("[>] Return -> {port_label}");
-                            let detail = format!("{plan_cmd} — Return to {turn_in} with mined ore");
+                        .and_then(|st| QuestsSnapshot::hold_readiness_line_for(tq, st));
+                    if mining_hold
+                        .as_ref()
+                        .is_some_and(|(line, _)| line.starts_with("[RECOVER RIG FIRST]"))
+                    {
+                        if pushed_suggested_cmd != "+tv/1 recover go" {
+                            let ore_label = mining.target_ore_slug.replace('_', " ");
+                            let label = "[>] Recover Rig First [RECOVER RIG FIRST]".to_string();
+                            let detail = format!(
+                                "+tv/1 recover go — Stow mined {ore_label} in ship hold before returning to port"
+                            );
                             let search = format!(
-                                "return sail plan {port_id} {port_label} {plan_cmd} mined ore quest"
+                                "recover rig first {ore_label} +tv/1 recover go mined ore quest"
                             );
                             consider(&search, &|| PaletteEntry {
-                                insert: plan_cmd.clone(),
+                                insert: "+tv/1 recover go".to_string(),
                                 label: label.clone(),
                                 detail: detail.clone(),
                                 quest_action: Some(PaletteQuestAction::PrefillCommand),
                             });
+                        }
+                    } else {
+                        let return_dest = tracked_snap
+                            .as_ref()
+                            .and_then(|s| s.active_destination_port(Some(tq.key.as_str())))
+                            .map(|d| (d.port_id, d.port_label))
+                            .or_else(|| {
+                                let room = if !tq.next_room_entry.is_empty() {
+                                    tq.next_room_entry.as_str()
+                                } else {
+                                    tq.checkpoints.last().map_or("", |c| c.room_entry.as_str())
+                                };
+                                let slug = super::quests::infer_station_port_from_room_entry(room)?;
+                                let lbl = match slug {
+                                    "ceres" => "Ceres Freeport",
+                                    "stickney" => "Stickney Yards",
+                                    other => other,
+                                };
+                                Some((slug.to_string(), lbl.to_string()))
+                            });
+                        if let Some((port_id, port_label)) = return_dest {
+                            let plan_cmd = format!("+ship/plan {port_id}");
+                            if pushed_suggested_cmd != plan_cmd.to_ascii_lowercase() {
+                                let turn_in = if tq.turn_in_name.is_empty() {
+                                    port_label.as_str()
+                                } else {
+                                    tq.turn_in_name.as_str()
+                                };
+                                let ore_badge = if mining_hold
+                                    .as_ref()
+                                    .is_some_and(|(line, _)| line.starts_with("[ORE HOLD READY]"))
+                                {
+                                    " [ORE HOLD READY]"
+                                } else {
+                                    ""
+                                };
+                                let label = format!("[>] Return -> {port_label}{ore_badge}");
+                                let detail =
+                                    format!("{plan_cmd} — Return to {turn_in} with mined ore");
+                                let search = format!(
+                                    "return sail plan {port_id} {port_label} {plan_cmd} mined ore quest"
+                                );
+                                consider(&search, &|| PaletteEntry {
+                                    insert: plan_cmd.clone(),
+                                    label: label.clone(),
+                                    detail: detail.clone(),
+                                    quest_action: Some(PaletteQuestAction::PrefillCommand),
+                                });
+                            }
                         }
                     }
                 }
@@ -5503,10 +5578,13 @@ impl TuiApp {
             } else {
                 "[*]"
             };
+            let tag_prefix = quest_readiness_tag(q)
+                .map(|t| format!("{t} "))
+                .unwrap_or_default();
             let detail = if q.next_step.is_empty() {
-                format!("Quest — {}", q.turn_in_name)
+                format!("{tag_prefix}Quest — {}", q.turn_in_name)
             } else {
-                format!("Quest — {}", q.next_step)
+                format!("{tag_prefix}Quest — {}", q.next_step)
             };
             consider(&search, &|| PaletteEntry {
                 insert: "/quests".to_string(),
@@ -15846,6 +15924,165 @@ mod tests {
             s6_ready
                 .contains("[ORE HOLD READY] Return: Ceres Freeport (+ship/plan ceres) [Step 6/7]"),
             "{s6_ready}"
+        );
+    }
+
+    #[test]
+    fn command_palette_surfaces_stowage_preflight_tags_and_step6_rig_recovery_guard() {
+        let mut app = app();
+        // 1. Step 3 with 0/5 metals -> Buy Cargo (+market/list) with [CHECK BEFORE UNDOCK]
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(PORT_TRADE_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "enabled": true,
+                "venue": "ceres",
+                "ship": {
+                    "hull_id": "#99",
+                    "stowage": { "cargo_kg": 0, "tank_kg": 10000, "stores_days": 10, "items": [] }
+                }
+            }),
+        });
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "active": [{
+                    "key": "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+                    "title": "Metals Down the Corridor",
+                    "next_step": "Buy 5t metals and deliver to Stickney Yards",
+                    "checkpoints": [{
+                        "id": "deliver_metals",
+                        "title": "Buy and deliver 5t metals to Stickney Yards",
+                        "instructions": "Buy 5t metals (+market/buy metals 5) then sail to Stickney Yards (+ship/plan stickney) and sell.",
+                        "checked": false,
+                        "live_ready": false
+                    }]
+                }]
+            }),
+        });
+        app.feed_input(b"\x0bnext");
+        let entries = &app.palette.as_ref().expect("palette open").entries;
+        let buy = entries
+            .iter()
+            .find(|e| e.insert == "+market/list")
+            .expect("expected Buy Cargo entry");
+        assert!(buy.label.contains("Buy Cargo (+market/list)"), "{buy:?}");
+        assert!(buy.detail.contains("[CHECK BEFORE UNDOCK]"), "{buy:?}");
+        app.feed_input(b"\x1b");
+        app.line.clear();
+
+        // 2. Load 5t metals -> Plan Stickney Yards (+ship/plan stickney) with [PRE-FLIGHT OK]
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(PORT_TRADE_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "enabled": true,
+                "venue": "ceres",
+                "ship": {
+                    "hull_id": "#99",
+                    "stowage": {
+                        "cargo_kg": 5000,
+                        "tank_kg": 10000,
+                        "stores_days": 10,
+                        "items": [{ "good": "tacsim:metals", "label": "Metals", "qty": 5 }]
+                    }
+                }
+            }),
+        });
+        app.feed_input(b"\x0bnext");
+        let entries2 = &app.palette.as_ref().expect("palette open").entries;
+        let sail = entries2
+            .iter()
+            .find(|e| e.insert == "+ship/plan stickney")
+            .unwrap_or_else(|| panic!("expected Plan Stickney Yards entry, got: {entries2:?}"));
+        assert!(sail.label.contains("Plan Stickney Yards"), "{sail:?}");
+        assert!(sail.detail.contains("[PRE-FLIGHT OK]"), "{sail:?}");
+        app.feed_input(b"\x1b");
+        app.line.clear();
+
+        // 3. Step 6 post-mine with 0t ore stowed -> Recover Rig First [RECOVER RIG FIRST] (+tv/1 recover go), no premature +ship/plan ceres
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(PORT_TRADE_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "enabled": true,
+                "venue": "commons",
+                "ship": {
+                    "hull_id": "#99",
+                    "stowage": { "cargo_kg": 0, "tank_kg": 10000, "stores_days": 10, "items": [] }
+                }
+            }),
+        });
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "active": [{
+                    "key": "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+                    "title": "Scan, Sound, and Mine a Landing Site",
+                    "turn_in_name": "Rosalind Qureshi-Mbeki",
+                    "next_room_entry": "room.c07_exchange",
+                    "ready_to_finish": true,
+                    "can_finish_now": false,
+                    "turn_in_here": false,
+                    "checkpoints": [
+                        { "id": "scan_landing_site", "title": "Scan", "checked": true, "live_ready": true },
+                        { "id": "mine_carbon_ore", "title": "Mine 1t carbon_ore", "room_entry": "room.c07_exchange", "checked": true, "live_ready": true }
+                    ]
+                }]
+            }),
+        });
+        app.feed_input(b"\x0brecover");
+        let entries3 = &app.palette.as_ref().expect("palette open").entries;
+        let rec = entries3
+            .iter()
+            .find(|e| e.insert == "+tv/1 recover go")
+            .unwrap_or_else(|| panic!("expected Recover Rig First entry, got: {entries3:?}"));
+        assert!(rec.label.contains("[RECOVER RIG FIRST]"), "{rec:?}");
+        app.feed_input(b"\x1b");
+        app.line.clear();
+        app.feed_input(b"\x0breturn");
+        let entries3_ret = &app.palette.as_ref().expect("palette open").entries;
+        assert!(
+            !entries3_ret.iter().any(|e| e.insert == "+ship/plan ceres"),
+            "Must not offer premature +ship/plan ceres before rig recovery: {entries3_ret:?}"
+        );
+        app.feed_input(b"\x1b");
+        app.line.clear();
+
+        // 4. Step 6 after rig recovery (1t carbon_ore stowed) -> Return -> Ceres Freeport [ORE HOLD READY]
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(PORT_TRADE_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "enabled": true,
+                "venue": "commons",
+                "ship": {
+                    "hull_id": "#99",
+                    "stowage": {
+                        "cargo_kg": 1000,
+                        "tank_kg": 10000,
+                        "stores_days": 10,
+                        "items": [{ "good": "tacsim:carbon_ore", "label": "Carbon Ore", "qty": 1 }]
+                    }
+                }
+            }),
+        });
+        app.feed_input(b"\x0breturn");
+        let entries4 = &app.palette.as_ref().expect("palette open").entries;
+        let ret = entries4
+            .iter()
+            .find(|e| e.insert == "+ship/plan ceres")
+            .unwrap_or_else(|| {
+                panic!("expected Return -> Ceres Freeport entry, got: {entries4:?}")
+            });
+        assert!(
+            ret.label
+                .contains("Return -> Ceres Freeport [ORE HOLD READY]"),
+            "{ret:?}"
         );
     }
 }
