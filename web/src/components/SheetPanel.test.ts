@@ -339,20 +339,40 @@ describe("SheetPanel guided corridor tour summary", () => {
     const holdRecover = screen.getByLabelText("sheet quest hold readiness");
     expect(holdRecover.textContent).toContain("[RECOVER RIG FIRST]");
     expect(holdRecover.textContent).toContain("+tv/1 recover go");
+    // Premature [PRE-FLIGHT OK] must stay hidden until mined ore is recovered into ship hold
+    expect(screen.queryByLabelText("sheet quest sailing preflight")).toBeNull();
     const recBtn = screen.getByRole("button", { name: /Next: Recover Rig \(\+tv\/1 recover go\)/i });
     await fireEvent.click(recBtn);
     expect(focusComposer).toHaveBeenCalledWith("+tv/1 recover go");
     s6Recover.unmount();
 
-    // 4. Step 6 after rig recovery (1t carbon_ore stowed) -> [ORE HOLD READY] + Plan Ceres Freeport (+ship/plan ceres)
+    // 4. Step 6 after rig recovery (1t carbon_ore stowed) -> [ORE HOLD READY] + [PRE-FLIGHT OK] + Plan Ceres Freeport (+ship/plan ceres)
     focusComposer.mockClear();
     ownStowage.cargoKg = 1000;
     ownStowage.cargoLines = [{ good: "tacsim:carbon_ore", label: "Carbon Ore", qty: 1 }];
-    render(SheetPanel, { props: { app } });
+    const s6Ready = render(SheetPanel, { props: { app } });
     const holdReady = screen.getByLabelText("sheet quest hold readiness");
     expect(holdReady.textContent).toContain("[ORE HOLD READY]");
+    const pfReady = screen.getByLabelText("sheet quest sailing preflight");
+    expect(pfReady.textContent).toContain("[PRE-FLIGHT OK]");
+    expect(pfReady.textContent).toContain("→ Ceres Freeport");
     const retBtn = screen.getByRole("button", { name: /Next: Plan Ceres Freeport \(\+ship\/plan ceres\)/i });
     await fireEvent.click(retBtn);
     expect(focusComposer).toHaveBeenCalledWith("+ship/plan ceres");
+    s6Ready.unmount();
+
+    // 5. Between guided steps at an off-port station (Step 3 done, standing at Ceres while Step 4 giver Jonas is at Stickney) -> 1-click Sail button
+    focusComposer.mockClear();
+    quests.applyFrame({
+      schema: 1,
+      completed: GUIDED_TOUR_KEYS.slice(0, 3).map((key, i) => ({ key, title: `S${i + 1}` })),
+      active: [],
+      available: [],
+    });
+    (app.tacsim as unknown as { ambient: { port?: string; ownStowage: typeof ownStowage } }).ambient.port = "ceres";
+    render(SheetPanel, { props: { app } });
+    const offPortSail = screen.getByRole("button", { name: /Sail → Stickney Yards \(\+ship\/plan stickney\)/i });
+    await fireEvent.click(offPortSail);
+    expect(focusComposer).toHaveBeenCalledWith("+ship/plan stickney");
   });
 });

@@ -13,6 +13,8 @@
     extractActiveTradeNeed,
     extractQuestSuggestedAction,
     formatQuestHoldReadinessSummary,
+    inferStationPortFromRoomEntry,
+    resolveNextGuidedOfferDestination,
   } from "$lib/stores/quests.svelte";
   import {
     approvalKind,
@@ -64,12 +66,26 @@
     trackedQuest ? extractActiveDestinationPort([trackedQuest], trackedQuest.key) : null,
   );
   const trackedPreflight = $derived(
-    trackedQuest && trackedDest
+    trackedQuest && trackedDest && holdReadiness?.tag !== "[RECOVER RIG FIRST]"
       ? evaluateSailingPreflightReadiness(
           trackedDest,
           extractActiveTradeNeed([trackedQuest], trackedQuest.key),
           liveStowage,
         )
+      : null,
+  );
+  const currentPort = $derived(
+    app.tacsim?.ambient?.port ??
+      app.tacsim?.trade?.hullPort ??
+      app.tacsim?.trade?.venueId ??
+      inferStationPortFromRoomEntry(
+        (app.tacsim?.view3dOpen ? app.tacsim?.physicalLocationKey : null) ??
+          app.tacsim?.serverStationRoomEntry,
+      ),
+  );
+  const nextOfferDest = $derived(
+    !trackedQuest && nextGuidedOffer && currentPort
+      ? resolveNextGuidedOfferDestination(nextGuidedOffer, currentPort)
       : null,
   );
   const suggestedAction = $derived(
@@ -341,6 +357,17 @@
             <p class="qsum-next">
               <strong>Next Guided ({nextGuidedOffer.step}/7):</strong> {nextGuidedOffer.shortLabel} — speak with <strong>{nextGuidedOffer.giverLabel}</strong> ({nextGuidedOffer.giverRoomName})
             </p>
+            {#if nextOfferDest}
+              <div class="qsum-actions">
+                <button
+                  type="button"
+                  class="qsum-action-btn step"
+                  onclick={() => app.focusComposer?.(`+ship/plan ${nextOfferDest.portId}`)}
+                >
+                  Sail → {nextOfferDest.portLabel} (+ship/plan {nextOfferDest.portId})
+                </button>
+              </div>
+            {/if}
           {:else if guidedTour?.allDone}
             <div class="qsum-actions">
               <button
