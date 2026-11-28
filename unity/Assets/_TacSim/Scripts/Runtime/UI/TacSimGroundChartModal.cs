@@ -451,6 +451,67 @@ namespace TacSim.UI
             return true;
         }
 
+        private static bool MatchesQuestOreText(string text, in QuestSurfaceMiningStatus qMine)
+        {
+            if (string.IsNullOrEmpty(text)) return false;
+            string low = text.ToLowerInvariant();
+            string slug = (qMine.TargetOreSlug ?? string.Empty).ToLowerInvariant();
+            string spaced = slug.Replace('_', ' ');
+            string fam = (qMine.RecommendedFamily ?? string.Empty).ToLowerInvariant();
+            if (!string.IsNullOrEmpty(slug) && (low.Contains(slug, StringComparison.Ordinal) || low.Contains(spaced, StringComparison.Ordinal)))
+                return true;
+            return !string.IsNullOrEmpty(fam) && low.Contains(fam, StringComparison.Ordinal);
+        }
+
+        private static bool MatchesQuestSite(GroundChartSite site, in QuestSurfaceMiningStatus qMine)
+        {
+            if (site == null) return false;
+            return MatchesQuestOreText(site.BestLine, qMine) || MatchesQuestOreText(site.Best, qMine);
+        }
+
+        public bool TryGetRecommendedQuestSite(out GroundChartSite site)
+        {
+            site = null;
+            if (CurrentFrame == null || _questJournal == null) return false;
+            if (!_questJournal.TryGetActiveSurfaceMiningStatus(out var qMine) || qMine.MineDone)
+                return false;
+
+            for (int i = 0; i < CurrentFrame.Sites.Count; i++)
+            {
+                var s = CurrentFrame.Sites[i];
+                if (!s.Here && !string.IsNullOrEmpty(s.Venue) && MatchesQuestSite(s, qMine))
+                {
+                    site = s;
+                    return true;
+                }
+            }
+            string[] starterVenues = { "commons", "ahuna" };
+            for (int v = 0; v < starterVenues.Length; v++)
+            {
+                for (int i = 0; i < CurrentFrame.Sites.Count; i++)
+                {
+                    var s = CurrentFrame.Sites[i];
+                    if (!s.Here && string.Equals(s.Venue, starterVenues[v], StringComparison.OrdinalIgnoreCase))
+                    {
+                        site = s;
+                        return true;
+                    }
+                }
+            }
+            for (int i = 0; i < CurrentFrame.Sites.Count; i++)
+            {
+                var s = CurrentFrame.Sites[i];
+                if (!s.Here && !string.IsNullOrEmpty(s.Venue) &&
+                    !string.IsNullOrEmpty(s.Tenure) &&
+                    s.Tenure.IndexOf("open", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    site = s;
+                    return true;
+                }
+            }
+            return false;
+        }
+
         private void RefreshQuestMiningBanner()
         {
             if (_questBanner == null) return;
@@ -460,8 +521,17 @@ namespace TacSim.UI
                 string scanMark = qMine.ScanDone ? "<color=#55EE99>[✓]</color>" : "<color=#99BBCC>[ ]</color>";
                 string soundMark = qMine.SoundDone ? "<color=#55EE99>[✓]</color>" : "<color=#99BBCC>[ ]</color>";
                 string mineMark = qMine.MineDone ? "<color=#55EE99>[✓]</color>" : "<color=#99BBCC>[ ]</color>";
+                string extra = string.Empty;
+                if (qMine.MineDone && _questJournal.TryGetActiveDestinationPort(out var returnDest))
+                {
+                    extra = $"  ·  <color=#55EE99>Return: {MushProtocol.EscapeUnityRichText(returnDest.PortLabel)} (+ship/plan {MushProtocol.EscapeUnityRichText(returnDest.PortId)})</color>";
+                }
+                else if (!qMine.MineDone && TryGetRecommendedQuestSite(out var recSite))
+                {
+                    extra = $"  ·  <color=#FFDD44>Site: [!]{MushProtocol.EscapeUnityRichText(recSite.Site)} (+ship/plan {MushProtocol.EscapeUnityRichText(recSite.Venue)})</color>";
+                }
                 if (_questBannerText != null)
-                    _questBannerText.text = $"[QUEST] {scanMark} Scan  {soundMark} Sound  {mineMark} Mine {MushProtocol.EscapeUnityRichText(qMine.TargetOreSlug)}";
+                    _questBannerText.text = $"[QUEST] {scanMark} Scan  {soundMark} Sound  {mineMark} Mine {MushProtocol.EscapeUnityRichText(qMine.TargetOreSlug)}{extra}";
                 if (_questWashBtnLbl != null)
                     _questWashBtnLbl.text = $"{qMine.RecommendedFamily.ToUpperInvariant()} WASH";
                 _questBanner.SetActive(true);
@@ -524,15 +594,19 @@ namespace TacSim.UI
             if (!string.IsNullOrWhiteSpace(frame.FamilyWord))
                 ActiveFamily = frame.FamilyWord.Trim().ToLowerInvariant();
 
-            // Preserve selected site if still present, else default to current `here` site or first listed site
+            // Preserve selected site if still present, else default to current `here` site,
+            // then recommended active-quest landing site, else first listed site.
             var existing = frame.FindSiteByVenueOrLetter(!string.IsNullOrEmpty(SelectedSiteVenue) ? SelectedSiteVenue : SelectedSiteLetter);
             if (existing == null && frame.Sites.Count > 0)
             {
-                existing = frame.Sites[0];
                 for (int i = 0; i < frame.Sites.Count; i++)
                 {
                     if (frame.Sites[i].Here) { existing = frame.Sites[i]; break; }
                 }
+                if (existing == null && TryGetRecommendedQuestSite(out var recSite))
+                    existing = recSite;
+                if (existing == null)
+                    existing = frame.Sites[0];
             }
             if (existing != null)
             {
@@ -639,6 +713,9 @@ namespace TacSim.UI
         private void RefreshSiteRowsAndDossier()
         {
             int count = CurrentFrame != null ? CurrentFrame.Sites.Count : 0;
+            QuestSurfaceMiningStatus qMineRow = default;
+            bool hasQuestMining = _questJournal != null && _questJournal.TryGetActiveSurfaceMiningStatus(out qMineRow);
+            string recVenue = TryGetRecommendedQuestSite(out var recRowSite) ? recRowSite.Venue : string.Empty;
             for (int i = 0; i < _sitePool.Count; i++)
             {
                 var row = _sitePool[i];
@@ -649,13 +726,19 @@ namespace TacSim.UI
                     row.BoundLetter = s.Letter;
                     bool sel = (!string.IsNullOrEmpty(SelectedSiteVenue) && string.Equals(s.Venue, SelectedSiteVenue, StringComparison.OrdinalIgnoreCase)) ||
                                (!string.IsNullOrEmpty(SelectedSiteLetter) && string.Equals(s.Letter, SelectedSiteLetter, StringComparison.OrdinalIgnoreCase));
+                    bool isQuestSite = hasQuestMining && !qMineRow.MineDone &&
+                                       (MatchesQuestSite(s, qMineRow) ||
+                                        (!string.IsNullOrEmpty(recVenue) && string.Equals(s.Venue, recVenue, StringComparison.OrdinalIgnoreCase)));
                     row.Bg.color = sel
                         ? new Color(0.16f, 0.44f, 0.58f, 0.98f)
-                        : new Color(0.06f, 0.12f, 0.18f, 0.90f);
+                        : isQuestSite
+                            ? new Color(0.20f, 0.16f, 0.05f, 0.94f)
+                            : new Color(0.06f, 0.12f, 0.18f, 0.90f);
+                    string questTag = isQuestSite ? "<color=#FFDD44>[!]</color> " : string.Empty;
                     string hereTag = s.Here ? " <color=#66FFAA>[HERE]</color>" : string.Empty;
                     string darkTag = s.Dark ? " <color=#FFAA55>[DARK]</color>" : string.Empty;
                     string pass = !string.IsNullOrEmpty(s.Passage) ? $" · <color=#99CCEE>{MushProtocol.EscapeUnityRichText(s.Passage)}</color>" : string.Empty;
-                    row.Label.text = $"<color=#FFDD66>[{MushProtocol.EscapeUnityRichText(s.Letter)}]</color> {MushProtocol.EscapeUnityRichText(s.Site)}{hereTag}{darkTag}{pass}";
+                    row.Label.text = $"{questTag}<color=#FFDD66>[{MushProtocol.EscapeUnityRichText(s.Letter)}]</color> {MushProtocol.EscapeUnityRichText(s.Site)}{hereTag}{darkTag}{pass}";
                     row.Root.SetActive(true);
                 }
                 else
@@ -691,8 +774,14 @@ namespace TacSim.UI
                 sb.AppendLine($"PASSAGE: <color=#99DDFF>{MushProtocol.EscapeUnityRichText(active.Passage)}</color>");
             if (!string.IsNullOrEmpty(active.BestLine))
                 sb.AppendLine($"READINGS: {MushProtocol.EscapeUnityRichText(active.BestLine)}");
-            if (_questJournal != null && _questJournal.TryGetActiveSurfaceMiningStatus(out var qMineDossier))
-                sb.AppendLine($"<color=#FFDD44>[PROSPECTING]</color> <color=#77DDFF>{MushProtocol.EscapeUnityRichText(qMineDossier.FormatPrepHintLine())}</color>");
+            if (hasQuestMining && !qMineRow.MineDone &&
+                (MatchesQuestSite(active, qMineRow) ||
+                 (!string.IsNullOrEmpty(recVenue) && string.Equals(active.Venue, recVenue, StringComparison.OrdinalIgnoreCase))))
+            {
+                sb.AppendLine($"<color=#FFDD44><b>[QUEST TARGET SITE]</b> Recommended for {MushProtocol.EscapeUnityRichText(qMineRow.TargetOreSlug)} (+ship/plan {MushProtocol.EscapeUnityRichText(active.Venue)})</color>");
+            }
+            if (hasQuestMining)
+                sb.AppendLine($"<color=#FFDD44>[PROSPECTING]</color> <color=#77DDFF>{MushProtocol.EscapeUnityRichText(qMineRow.FormatPrepHintLine())}</color>");
             _dossierText.text = sb.ToString();
         }
 
@@ -745,7 +834,10 @@ namespace TacSim.UI
                     DrawFilledBox(cx, cy, 4, portCol);
                 }
 
-                // Draw prospecting sites as bright cyan/white discs + selection reticle
+                // Draw prospecting sites as bright cyan/white discs + quest/selection reticle
+                QuestSurfaceMiningStatus qMineMap = default;
+                bool hasQuestMining = _questJournal != null && _questJournal.TryGetActiveSurfaceMiningStatus(out qMineMap) && !qMineMap.MineDone;
+                string recMapVenue = hasQuestMining && TryGetRecommendedQuestSite(out var recMapSite) ? recMapSite.Venue : string.Empty;
                 for (int i = 0; i < CurrentFrame.Sites.Count; i++)
                 {
                     var s = CurrentFrame.Sites[i];
@@ -754,9 +846,18 @@ namespace TacSim.UI
                     int cy = Mathf.Clamp(Mathf.RoundToInt(uv.y * (TexHeight - 1)), 5, TexHeight - 6);
                     bool sel = (!string.IsNullOrEmpty(SelectedSiteVenue) && string.Equals(s.Venue, SelectedSiteVenue, StringComparison.OrdinalIgnoreCase)) ||
                                (!string.IsNullOrEmpty(SelectedSiteLetter) && string.Equals(s.Letter, SelectedSiteLetter, StringComparison.OrdinalIgnoreCase));
+                    bool isQuestSite = hasQuestMining &&
+                                       (MatchesQuestSite(s, qMineMap) ||
+                                        (!string.IsNullOrEmpty(recMapVenue) && string.Equals(s.Venue, recMapVenue, StringComparison.OrdinalIgnoreCase)));
 
-                    Color32 siteCol = s.Here ? new Color32(96, 255, 170, 255) : new Color32(146, 224, 255, 255);
+                    Color32 siteCol = s.Here
+                        ? new Color32(96, 255, 170, 255)
+                        : isQuestSite
+                            ? new Color32(255, 224, 96, 255)
+                            : new Color32(146, 224, 255, 255);
                     DrawFilledBox(cx, cy, s.Here ? 4 : 3, siteCol);
+                    if (isQuestSite && !sel)
+                        DrawHollowRing(cx, cy, 6, new Color32(255, 210, 72, 255));
                     if (sel)
                         DrawHollowRing(cx, cy, 8, new Color32(255, 220, 90, 255));
                 }

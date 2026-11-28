@@ -12515,5 +12515,79 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void GroundChartQuestRecommendation_AutoSelectsCarbonOrStarterSiteAndShowsReturnBanner()
+        {
+            var rootGo = new UnityEngine.GameObject("GroundChartQuestRecTestRoot");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                // Active Step 6 quest before mining
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#17"",
+                    ""room_name"": ""Exchange Hall"",
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""next_room_entry"": ""room.c07_exchange"",
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Surface scan"", ""instructions"": ""+tv/1 scan go"", ""checked"": false, ""live_ready"": false },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""instructions"": ""+tv/1 mine go"", ""checked"": false, ""live_ready"": false }
+                        ]
+                    }]
+                }")));
+
+                // Apply Ground Chart where Freeport Commons has carbon_ore reading -> auto-selected & banner shows Site
+                hud.GroundChart.ApplyGroundFrame(JsonNode.Parse(@"{
+                    ""width"": 8, ""height"": 4, ""title"": ""Ceres — Carbon Wash"",
+                    ""rows"": [ ""8."", ""8."", ""8."", ""8."" ],
+                    ""ground"": {
+                        ""body"": ""ceres"", ""name"": ""Ceres"",
+                        ""family"": ""carbon"", ""family_word"": ""carbon"",
+                        ""families"": [ ""volatiles"", ""metals"", ""strategic"", ""carbon"" ],
+                        ""ports"": [],
+                        ""sites"": [
+                            { ""letter"": ""A"", ""site"": ""Occator Rim"", ""venue"": ""occator"", ""lat_mdeg"": 19800, ""lon_mdeg"": 239300, ""tenure"": ""open"", ""here"": false, ""best"": ""water_ice"", ""best_line"": ""water_ice fair"" },
+                            { ""letter"": ""C"", ""site"": ""Freeport Commons"", ""venue"": ""commons"", ""lat_mdeg"": 1000, ""lon_mdeg"": 12000, ""tenure"": ""open"", ""here"": false, ""best"": ""carbon_ore"", ""best_line"": ""carbon_ore rich"" }
+                        ],
+                        ""lines"": [ ""A Occator Rim"", ""C Freeport Commons"" ]
+                    }
+                }"));
+
+                Assert.IsTrue(hud.GroundChart.TryGetRecommendedQuestSite(out var rec));
+                Assert.AreEqual("commons", rec.Venue);
+                Assert.AreEqual("commons", hud.GroundChart.SelectedSiteVenue);
+                StringAssert.Contains("Freeport Commons", hud.GroundChart.QuestMiningBannerText);
+                StringAssert.Contains("+ship/plan commons", hud.GroundChart.QuestMiningBannerText);
+
+                // Post-mine -> banner switches to Return: Ceres Freeport (+ship/plan ceres)
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#50"",
+                    ""room_name"": ""M/V Starling - Passage"",
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""next_room_entry"": ""room.c07_exchange"",
+                        ""ready_to_finish"": true,
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Surface scan"", ""instructions"": ""+tv/1 scan go"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""instructions"": ""+tv/1 mine go"", ""checked"": true, ""live_ready"": true }
+                        ]
+                    }]
+                }")));
+                Assert.IsFalse(hud.GroundChart.TryGetRecommendedQuestSite(out _));
+                StringAssert.Contains("Return: Ceres Freeport", hud.GroundChart.QuestMiningBannerText);
+                StringAssert.Contains("+ship/plan ceres", hud.GroundChart.QuestMiningBannerText);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
