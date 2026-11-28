@@ -66,34 +66,45 @@ export interface StageQuestMarker {
   questTitle?: string;
 }
 
+export function questMarkerPriority(marker: StageQuestMarker["marker"]): number {
+  if (marker === "turn_in") return 0;
+  if (marker === "available") return 1;
+  return 2;
+}
+
 export function formatActorInteractPrompt(
   name: string,
   isNpc: boolean,
   shortDesc: string,
   questMarker: StageQuestMarker | null,
+  extraQuestCount = 0,
 ): { title: string; subtitle: string } {
+  const moreSuffix = extraQuestCount > 0 ? ` (+${extraQuestCount} more)` : "";
   if (questMarker) {
     if (questMarker.marker === "turn_in") {
       return {
         title: `[?] ${name} — Turn In Quest`,
-        subtitle: questMarker.questTitle
-          ? `Complete: ${questMarker.questTitle}`
-          : "Ready to turn in quest",
+        subtitle:
+          (questMarker.questTitle
+            ? `Complete: ${questMarker.questTitle}`
+            : "Ready to turn in quest") + moreSuffix,
       };
     }
     if (questMarker.marker === "available") {
       return {
         title: `[!] ${name} — Quest Available`,
-        subtitle: questMarker.questTitle
-          ? `Offer: ${questMarker.questTitle}`
-          : "Optional quest available",
+        subtitle:
+          (questMarker.questTitle
+            ? `Offer: ${questMarker.questTitle}`
+            : "Optional quest available") + moreSuffix,
       };
     }
     return {
       title: `[?] Talk to ${name}`,
-      subtitle: questMarker.questTitle
-        ? `Active quest: ${questMarker.questTitle}`
-        : shortDesc || "Speak with station cast",
+      subtitle:
+        (questMarker.questTitle
+          ? `Active quest: ${questMarker.questTitle}`
+          : shortDesc || "Speak with station cast") + moreSuffix,
     };
   }
   return {
@@ -1216,9 +1227,35 @@ export class TacsimStage3D {
 
     const markerById = new Map<string, StageQuestMarker>();
     const markerByName = new Map<string, StageQuestMarker>();
+    const keysById = new Map<string, Set<string>>();
+    const keysByName = new Map<string, Set<string>>();
     for (const m of roomMarkers) {
-      if (m.npcId) markerById.set(m.npcId, m);
-      if (m.npcName) markerByName.set(m.npcName.toLowerCase(), m);
+      const qKey = m.questKey || `${m.marker}:${m.questTitle ?? ""}`;
+      if (m.npcId) {
+        const cur = markerById.get(m.npcId);
+        if (!cur || questMarkerPriority(m.marker) < questMarkerPriority(cur.marker)) {
+          markerById.set(m.npcId, m);
+        }
+        let set = keysById.get(m.npcId);
+        if (!set) {
+          set = new Set<string>();
+          keysById.set(m.npcId, set);
+        }
+        set.add(qKey);
+      }
+      if (m.npcName) {
+        const nameKey = m.npcName.toLowerCase();
+        const cur = markerByName.get(nameKey);
+        if (!cur || questMarkerPriority(m.marker) < questMarkerPriority(cur.marker)) {
+          markerByName.set(nameKey, m);
+        }
+        let set = keysByName.get(nameKey);
+        if (!set) {
+          set = new Set<string>();
+          keysByName.set(nameKey, set);
+        }
+        set.add(qKey);
+      }
     }
 
     const seenIds = new Set<string>();
@@ -1228,9 +1265,27 @@ export class TacsimStage3D {
       seenIds.add(act.id);
       const spot = this.computeActorStandSpot(idx);
       const safeBounds = this.computeCurrentRoomSafeBounds();
+      const actNameLow = act.name.toLowerCase();
+      const byId = markerById.get(act.id) ?? null;
+      const byName = markerByName.get(actNameLow) ?? null;
       const qMarker =
-        markerById.get(act.id) ?? markerByName.get(act.name.toLowerCase()) ?? null;
-      const prompt = formatActorInteractPrompt(act.name, act.isNpc, act.shortDesc, qMarker);
+        byId && byName
+          ? questMarkerPriority(byName.marker) < questMarkerPriority(byId.marker)
+            ? byName
+            : byId
+          : (byId ?? byName);
+      const distinctKeys = new Set<string>([
+        ...(keysById.get(act.id) ?? []),
+        ...(keysByName.get(actNameLow) ?? []),
+      ]);
+      const extraQuestCount = Math.max(0, distinctKeys.size - 1);
+      const prompt = formatActorInteractPrompt(
+        act.name,
+        act.isNpc,
+        act.shortDesc,
+        qMarker,
+        extraQuestCount,
+      );
 
       const existing = this.spawnedActors.get(act.id);
       if (existing) {

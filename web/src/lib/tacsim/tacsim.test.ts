@@ -3071,4 +3071,85 @@ describe("PR #693 Web review regressions (items 1-7, 9-11)", () => {
     expect(app.quests.logOpen).toBe(true);
     deck.unmount();
   });
+
+  it("prioritizes turn_in over available and in_progress markers in TacsimStage3D and appends extra quest count", () => {
+    const ceres = parseNeighborhoodPack(
+      readRepoContent("atlas/neighborhood.ceres_freeport.json"),
+      "neighborhood.ceres_freeport",
+    );
+    const drayP = parseShipUnitJson(readRepoContent("units/dray_p.json"), "tacsim.unit.dray_p");
+    const canvas = document.createElement("canvas");
+    const mockRenderer = () => ({
+      setPixelRatio: () => {},
+      setSize: () => {},
+      render: () => {},
+      dispose: () => {},
+      toneMapping: 0 as unknown as import("three").ToneMapping,
+      toneMappingExposure: 1,
+    });
+    const stage = new TacsimStage3D(canvas, {
+      onSendCommand: () => {},
+      onPhysicalLocationChanged: () => {},
+      onFocusedPromptChanged: () => {},
+      onInteractableTriggered: () => {},
+      isUiBlockingInput: () => false,
+      createRenderer: mockRenderer,
+    });
+
+    stage.syncWorldState({
+      stationPack: ceres,
+      shipTemplate: drayP,
+      isAboardShip: false,
+      serverStationRoomEntry: "room.c05_registry",
+      serverShipCompartment: null,
+      roomRevision: 1,
+      ambient: decodeTacsimRoomAmbient(null),
+      visibleActors: [
+        { id: "#50", name: "Ilse Oduya-Brandt", isNpc: true, isMale: false, shortDesc: "Registry clerk" },
+      ],
+      roomMarkers: [
+        {
+          npcId: "#50",
+          npcName: "Ilse Oduya-Brandt",
+          marker: "in_progress",
+          symbol: "?",
+          questKey: "q.active",
+          questTitle: "Active Check",
+        },
+        {
+          npcId: "#50",
+          npcName: "Ilse Oduya-Brandt",
+          marker: "turn_in",
+          symbol: "?",
+          questKey: "q.turnin",
+          questTitle: "First Papers at the Registry",
+        },
+        {
+          npcId: "#50",
+          npcName: "Ilse Oduya-Brandt",
+          marker: "available",
+          symbol: "!",
+          questKey: "q.next",
+          questTitle: "Locker & Tanks",
+        },
+      ],
+      actorSpeech: {},
+      actorComposing: {},
+      stowageCargoKg: 0,
+      holotankData: null,
+    });
+
+    const chosen = stage.getSpawnedActorQuestMarkerForTest("#50");
+    expect(chosen?.marker).toBe("turn_in");
+    expect(chosen?.symbol).toBe("?");
+    expect(chosen?.questKey).toBe("q.turnin");
+
+    const intern = stage as unknown as {
+      interactables: Array<{ id: string; title: string; subtitle: string }>;
+    };
+    const ilseWi = intern.interactables.find((i) => i.id === "actor:#50");
+    expect(ilseWi?.title).toBe("[?] Ilse Oduya-Brandt — Turn In Quest");
+    expect(ilseWi?.subtitle).toBe("Complete: First Papers at the Registry (+2 more)");
+    stage.dispose();
+  });
 });

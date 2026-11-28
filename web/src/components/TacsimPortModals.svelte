@@ -1109,21 +1109,37 @@
         {@const npc = app.tacsim.focusedNpc}
         {@const npcNameLow = npc.name.trim().toLowerCase()}
         {@const npcQuestMarker =
-          app.quests.roomMarkers.find(
+          app.quests.prioritizedRoomMarkers.find(
             (m) => m.npcId === npc.id || m.npcName.trim().toLowerCase() === npcNameLow,
           ) ?? null}
         {@const npcOffer =
           app.quests.available.find(
             (q) => q.giverId === npc.id || q.giverName.trim().toLowerCase() === npcNameLow,
           ) ?? null}
+        {@const npcMatchingActives = app.quests.active.filter(
+          (q) =>
+            q.turnInId === npc.id ||
+            q.giverId === npc.id ||
+            q.turnInName.trim().toLowerCase() === npcNameLow ||
+            q.giverName.trim().toLowerCase() === npcNameLow,
+        )}
         {@const npcActive =
-          app.quests.active.find(
-            (q) =>
-              q.turnInId === npc.id ||
-              q.giverId === npc.id ||
-              q.turnInName.trim().toLowerCase() === npcNameLow ||
-              q.giverName.trim().toLowerCase() === npcNameLow,
-          ) ?? null}
+          npcMatchingActives.find((q) => q.canFinishNow || q.readyToFinish) ??
+          npcMatchingActives[0] ??
+          null}
+        {@const npcDistinctQuestKeys = new Set([
+          ...app.quests.roomMarkers
+            .filter((m) => m.npcId === npc.id || m.npcName.trim().toLowerCase() === npcNameLow)
+            .map((m) => m.questKey || `${m.marker}:${m.questTitle}`),
+          ...app.quests.available
+            .filter((q) => q.giverId === npc.id || q.giverName.trim().toLowerCase() === npcNameLow)
+            .map((q) => q.key),
+          ...npcMatchingActives.map((q) => q.key),
+        ])}
+        {@const extraNpcQuests = Math.max(0, npcDistinctQuestKeys.size - 1)}
+        {@const npcTurnInUrgent =
+          npcQuestMarker?.marker === "turn_in" ||
+          Boolean(npcActive?.canFinishNow || npcActive?.readyToFinish)}
         {@const npcHasQuest = npcQuestMarker !== null || npcOffer !== null || npcActive !== null}
         <header class="mhead">
           <div>
@@ -1136,11 +1152,12 @@
           <div class="act-row">
             <button
               type="button"
-              class={npcQuestMarker?.marker === "in_progress" && !npcActive?.canFinishNow && !npcActive?.canCheckNow ? "ghost" : "sellbtn"}
+              class={npcQuestMarker?.marker === "in_progress" && !npcTurnInUrgent && !npcOffer && !npcActive?.canCheckNow ? "ghost" : "sellbtn"}
               onclick={() => {
                 app.tacsim.closeModal();
                 const targetNpcId =
                   npcQuestMarker?.npcId ||
+                  (npcTurnInUrgent ? npcActive?.turnInId || npcActive?.giverId : "") ||
                   npcOffer?.giverId ||
                   npcActive?.turnInId ||
                   npcActive?.giverId ||
@@ -1154,12 +1171,18 @@
                 }
               }}
             >
-              {#if npcQuestMarker?.marker === "available" || npcOffer}
-                [!] Open Quest Dialog{npcQuestMarker?.questTitle || npcOffer?.title ? `: ${npcQuestMarker?.questTitle || npcOffer?.title}` : ""}
-              {:else if npcQuestMarker?.marker === "turn_in" || npcActive?.canFinishNow || npcActive?.readyToFinish}
-                [?] Turn In Quest{npcQuestMarker?.questTitle || npcActive?.title ? `: ${npcQuestMarker?.questTitle || npcActive?.title}` : ""}
+              {#if npcTurnInUrgent}
+                {@const turnInTitle =
+                  (npcQuestMarker?.marker === "turn_in" ? npcQuestMarker.questTitle : "") ||
+                  npcActive?.title ||
+                  npcQuestMarker?.questTitle ||
+                  ""}
+                [?] Turn In Quest{turnInTitle ? `: ${turnInTitle}` : ""}{extraNpcQuests > 0 ? ` (+${extraNpcQuests} more)` : ""}
+              {:else if npcQuestMarker?.marker === "available" || npcOffer}
+                {@const offerTitle = npcQuestMarker?.questTitle || npcOffer?.title || ""}
+                [!] Open Quest Dialog{offerTitle ? `: ${offerTitle}` : ""}{extraNpcQuests > 0 ? ` (+${extraNpcQuests} more)` : ""}
               {:else}
-                [?] Open Quest Dialog{npcActive?.title ? `: ${npcActive.title}` : ""}
+                [?] Open Quest Dialog{npcActive?.title ? `: ${npcActive.title}` : ""}{extraNpcQuests > 0 ? ` (+${extraNpcQuests} more)` : ""}
               {/if}
             </button>
             {#if npcActive?.canFinishNow && npcActive.finishCmd}
