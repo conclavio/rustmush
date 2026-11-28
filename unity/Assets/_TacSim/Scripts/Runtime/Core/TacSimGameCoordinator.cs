@@ -1294,26 +1294,57 @@ namespace TacSim.Core
                 Hud.QuestJournal.TryGetMinimapObjective(out string roomEntry, out bool isTurnIn, out bool hasOffer))
             {
                 Hud.Minimap.SetQuestObjectiveRoom(roomEntry, isTurnIn, hasOffer);
+                SyncStationQuestBreadcrumb(roomEntry);
             }
             else
             {
                 Hud.Minimap.SetQuestObjectiveRoom(string.Empty, isTurnIn: false, currentRoomHasOffer: false);
+                Hud.SetQuestExitBreadcrumb(string.Empty, string.Empty, 0);
+            }
+        }
+
+        private void SyncStationQuestBreadcrumb(string targetRoomEntry)
+        {
+            if (Hud == null) return;
+            if (_isAboardShip || StationWorld == null || string.IsNullOrEmpty(targetRoomEntry))
+            {
+                Hud.SetQuestExitBreadcrumb(string.Empty, string.Empty, 0);
+                return;
+            }
+            string currentRoom = !string.IsNullOrEmpty(StationWorld.ActiveRoomEntryId)
+                ? StationWorld.ActiveRoomEntryId
+                : _serverStationRoomEntry;
+            if (StationWorld.TryGetNextQuestExitBreadcrumb(
+                    currentRoom,
+                    targetRoomEntry,
+                    out _,
+                    out string nextRoomName,
+                    out string nextCmd,
+                    out int hops))
+            {
+                Hud.SetQuestExitBreadcrumb(nextRoomName, nextCmd, hops);
+            }
+            else
+            {
+                Hud.SetQuestExitBreadcrumb(string.Empty, string.Empty, 0);
             }
         }
 
         private void SyncQuestDestinationToBridgeHolo()
         {
+            QuestDestinationHint destHint = default;
+            bool hasDest = Hud?.QuestJournal != null &&
+                           Hud.QuestJournal.TryGetActiveDestinationPort(out destHint);
             if (ShipInterior != null)
             {
-                if (Hud?.QuestJournal != null &&
-                    Hud.QuestJournal.TryGetActiveDestinationPort(out var destHint))
-                {
-                    ShipInterior.SetQuestDestinationPort(destHint.PortId);
-                }
+                ShipInterior.SetQuestDestinationPort(hasDest ? destHint.PortId : string.Empty);
+            }
+            if (Hud?.TacticalBrackets != null)
+            {
+                if (hasDest)
+                    Hud.TacticalBrackets.SetSpaceQuestDestination(destHint.PortId, destHint.PortLabel);
                 else
-                {
-                    ShipInterior.SetQuestDestinationPort(string.Empty);
-                }
+                    Hud.TacticalBrackets.SetSpaceQuestDestination(string.Empty, string.Empty);
             }
             if (SurfaceStage != null)
             {

@@ -2177,6 +2177,32 @@ namespace TacSim.UI
 
         private string _lastQuickActionKey;
         private bool? _lastQuickActionSeated;
+        private string _questBreadcrumbLabel = string.Empty;
+        private string _questBreadcrumbCommand = string.Empty;
+
+        public string QuestExitBreadcrumbLabel => _questBreadcrumbLabel;
+        public string QuestExitBreadcrumbCommand => _questBreadcrumbCommand;
+
+        public void SetQuestExitBreadcrumb(string nextRoomName, string command, int hops)
+        {
+            string nextLabel = !string.IsNullOrWhiteSpace(nextRoomName) && !string.IsNullOrWhiteSpace(command) && hops > 0
+                ? $"[Q] -> {nextRoomName.Trim()} ({hops}h)"
+                : string.Empty;
+            string nextCmd = !string.IsNullOrEmpty(nextLabel) ? command.Trim() : string.Empty;
+            if (string.Equals(_questBreadcrumbLabel, nextLabel, StringComparison.Ordinal) &&
+                string.Equals(_questBreadcrumbCommand, nextCmd, StringComparison.Ordinal))
+                return;
+
+            _questBreadcrumbLabel = nextLabel;
+            _questBreadcrumbCommand = nextCmd;
+            if (_quickActionsContainer != null && _lastQuickActionKey != null && _lastQuickActionSeated.HasValue)
+            {
+                string key = _lastQuickActionKey;
+                bool seated = _lastQuickActionSeated.Value;
+                _lastQuickActionKey = null;
+                RefreshContextualQuickActions(key, seated);
+            }
+        }
 
         private static void DestroySafe(UnityEngine.Object obj)
         {
@@ -2225,6 +2251,12 @@ namespace TacSim.UI
                 AddQuickBtn("Decouple 3D", () => OnCommandSubmitted?.Invoke("+helm/decouple"));
                 AddQuickBtn("6-DOF Dock", () => OnCommandSubmitted?.Invoke(ResolveDockCommand()));
                 return;
+            }
+
+            if (!string.IsNullOrEmpty(_questBreadcrumbLabel) && !string.IsNullOrEmpty(_questBreadcrumbCommand))
+            {
+                string crumbCmd = _questBreadcrumbCommand;
+                AddQuickBtn(_questBreadcrumbLabel, () => OnCommandSubmitted?.Invoke(crumbCmd));
             }
 
             switch (roomOrModeKey)

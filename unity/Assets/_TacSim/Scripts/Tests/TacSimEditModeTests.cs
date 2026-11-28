@@ -11379,5 +11379,68 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestSpaceHudDestinationBanner_AndStationExitBreadcrumb_WorkEndToEnd()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestSpaceHudAndBreadcrumbTestRoot");
+            try
+            {
+                var station = rootGo.AddComponent<StationWorldController>();
+                station.BuildStation(null, "neighborhood.ceres_freeport");
+
+                // 1. Multi-hop BFS breadcrumb from Visiting Berth Gallery to Registry & Co-op Desk
+                Assert.IsTrue(
+                    station.TryGetNextQuestExitBreadcrumb(
+                        "room.c01_berth_gallery",
+                        "room.c05_registry",
+                        out string nextEntry,
+                        out string nextName,
+                        out string nextCmd,
+                        out int hops));
+                Assert.IsFalse(string.IsNullOrEmpty(nextEntry));
+                Assert.IsFalse(string.IsNullOrEmpty(nextName));
+                Assert.IsTrue(nextCmd.StartsWith("goto ", System.StringComparison.OrdinalIgnoreCase), $"Unexpected exit cmd: {nextCmd}");
+                Assert.GreaterOrEqual(hops, 2);
+
+                // Arriving at target clears breadcrumb
+                Assert.IsFalse(
+                    station.TryGetNextQuestExitBreadcrumb(
+                        "room.c05_registry",
+                        "room.c05_registry",
+                        out _, out _, out _, out _));
+
+                // 2. HUD surfaces 1-click [Q] -> <NextRoom> (<N>h) quick action breadcrumb
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.RefreshContextualQuickActions("room.c01_berth_gallery", false);
+                hud.SetQuestExitBreadcrumb(nextName, nextCmd, hops);
+                Assert.AreEqual($"[Q] -> {nextName} ({hops}h)", hud.QuestExitBreadcrumbLabel);
+                Assert.AreEqual(nextCmd, hud.QuestExitBreadcrumbCommand);
+
+                hud.SetQuestExitBreadcrumb(string.Empty, string.Empty, 0);
+                Assert.AreEqual(string.Empty, hud.QuestExitBreadcrumbLabel);
+
+                // 3. Space flight tactical HUD displays golden [QUEST] DEST banner when seated at Bridge Helm
+                hud.TacticalBrackets.SetSpaceQuestDestination("stickney", "Stickney Yards");
+                hud.TacticalBrackets.SyncBrackets(TacSimActiveStage.ShipHelmSeated, null);
+                Assert.IsTrue(hud.TacticalBrackets.IsSpaceQuestBannerVisible);
+                Assert.AreEqual(
+                    "[QUEST] DEST: STICKNEY YARDS (+ship/plan stickney)",
+                    hud.TacticalBrackets.SpaceQuestBannerSnapshot);
+
+                // Hides automatically on StationWalk or when cleared
+                hud.TacticalBrackets.SyncBrackets(TacSimActiveStage.StationWalk, null);
+                Assert.IsFalse(hud.TacticalBrackets.IsSpaceQuestBannerVisible);
+
+                hud.TacticalBrackets.SetSpaceQuestDestination(string.Empty, string.Empty);
+                hud.TacticalBrackets.SyncBrackets(TacSimActiveStage.ShipHelmSeated, null);
+                Assert.IsFalse(hud.TacticalBrackets.IsSpaceQuestBannerVisible);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
