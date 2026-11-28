@@ -968,4 +968,99 @@ describe("QuestDialogModal guided corridor tour roadmap", () => {
     await fireEvent.click(screen.getByRole("button", { name: /Plan Ceres Freeport/i }));
     expect(focusComposer).toHaveBeenLastCalledWith("+ship/plan ceres");
   });
+
+  it("surfaces cargo shortfall in sailing preflight, shows Step 6 recover-rig hint, and hides redundant Recover Rig prep once ore is stowed", () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#18",
+      room_name: "Exchange Hall",
+      active: [
+        {
+          key: GUIDED_TOUR_KEYS[2],
+          title: "Metals Down the Corridor",
+          next_room_entry: "room.p07_receiving",
+          checkpoints: [
+            {
+              id: "deliver_metals",
+              title: "Buy 5t metals and deliver to Stickney Yards",
+              instructions: "Buy 5t metals then +ship/plan stickney and sell.",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+        {
+          key: GUIDED_TOUR_KEYS[5],
+          title: "Scan, Sound, and Mine a Landing Site",
+          next_room_entry: "room.c07_exchange",
+          checkpoints: [
+            { id: "scan_landing_site", title: "Scan site", instructions: "+tv/1 scan go", checked: true, live_ready: true },
+            { id: "sound_pocket", title: "Sound pocket", instructions: "+tv/1 sound go", checked: true, live_ready: true },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", instructions: "+tv/1 mine go", checked: true, live_ready: true },
+          ],
+        },
+      ],
+      available: [],
+      completed: [],
+    });
+
+    const makeApp = (cargoLines: Array<{ good: string; label: string; qty: number }>) =>
+      ({
+        quests,
+        tacsim: {
+          trade: {
+            hullId: "#99",
+            stowage: {
+              cargoKg: cargoLines.reduce((acc, l) => acc + l.qty * 1000, 0),
+              propellantKg: 10_000,
+              provisionsCrewDays: 12,
+              cargoLines,
+            },
+          },
+        },
+        focusComposer: vi.fn(),
+      }) as unknown as GameApp;
+
+    // 1. Step 3 with 0t metals -> preflight explicitly explains cargo shortfall (✗ metals 0/5) in Dialog and Log
+    quests.openQuestDialog(GUIDED_TOUR_KEYS[2]!);
+    const dlg3Empty = render(QuestDialogModal, { app: makeApp([]), onCmd: vi.fn() });
+    const pf3Empty = screen.getByLabelText("quest sailing preflight");
+    expect(pf3Empty.textContent).toContain("[CHECK BEFORE UNDOCK]");
+    expect(pf3Empty.textContent).toContain("✗ metals 0/5");
+    dlg3Empty.unmount();
+
+    // 2. Step 6 post-mine with 0t carbon_ore -> [RECOVER RIG FIRST] + recover rig hint, suppresses premature [PRE-FLIGHT OK], keeps Recover Rig prep chip
+    quests.openQuestDialog(GUIDED_TOUR_KEYS[5]!);
+    const dlg6Recover = render(QuestDialogModal, { app: makeApp([]), onCmd: vi.fn() });
+    const hold6Recover = screen.getByLabelText("quest hold progress");
+    expect(hold6Recover.textContent).toContain("[RECOVER RIG FIRST]");
+    expect(hold6Recover.textContent).toContain("recover rig (+tv/1 recover go)");
+    expect(screen.queryByLabelText("quest sailing preflight")).toBeNull();
+    expect(screen.getByLabelText("surface prospecting quick commands")).toBeTruthy();
+    dlg6Recover.unmount();
+
+    // 3. Step 6 post-mine with 1t carbon_ore stowed -> [ORE HOLD READY], shows [PRE-FLIGHT OK] -> Ceres Freeport, hides redundant Recover Rig prep strip
+    quests.openQuestDialog(GUIDED_TOUR_KEYS[5]!);
+    const dlg6Stowed = render(QuestDialogModal, {
+      app: makeApp([{ good: "tacsim:carbon_ore", label: "Carbon Ore", qty: 1 }]),
+      onCmd: vi.fn(),
+    });
+    expect(screen.getByLabelText("quest hold progress").textContent).toContain("[ORE HOLD READY]");
+    const pf6Ready = screen.getByLabelText("quest sailing preflight");
+    expect(pf6Ready.textContent).toContain("[PRE-FLIGHT OK]");
+    expect(pf6Ready.textContent).toContain("→ Ceres Freeport");
+    expect(screen.queryByLabelText("surface prospecting quick commands")).toBeNull();
+    dlg6Stowed.unmount();
+
+    // 4. Active Log tab mirrors cargo shortfall on Step 3 and [RECOVER RIG FIRST] suppression on Step 6
+    quests.openLog("active");
+    const logView = render(QuestDialogModal, { app: makeApp([]), onCmd: vi.fn() });
+    const preflights = screen.getAllByLabelText("quest sailing preflight");
+    expect(preflights).toHaveLength(1);
+    expect(preflights[0]!.textContent).toContain("✗ metals 0/5");
+    expect(logView.container.textContent).toContain("[RECOVER RIG FIRST]");
+    expect(logView.container.textContent).toContain("recover rig (+tv/1 recover go)");
+    logView.unmount();
+  });
 });
