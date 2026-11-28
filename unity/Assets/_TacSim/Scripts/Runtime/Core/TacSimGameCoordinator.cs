@@ -872,6 +872,8 @@ namespace TacSim.Core
                 {
                     SyncMinimapQuestObjective();
                     SyncQuestDestinationToBridgeHolo();
+                    if (Player != null && Player.EffectiveTarget != null)
+                        SyncTargetFrameForInteractable(Player.EffectiveTarget);
                 };
                 Hud.QuestJournal.OnQuestMilestoneReached += HandleQuestMilestoneReached;
             }
@@ -1106,6 +1108,86 @@ namespace TacSim.Core
                         () => ExecutePlayerCommand(lookCmd),
                         "MAIL",
                         () => Hud.SocialModal?.OpenComposeMailTo(safeName));
+                    return;
+                }
+
+                MushNpcQuestMarker qm = null;
+                int extraQuestCount = 0;
+                if (Hud.QuestJournal != null)
+                    Hud.QuestJournal.TryGetNpcRoomQuestMarker(wi.actorId, rawName, out qm, out extraQuestCount);
+
+                if (qm != null)
+                {
+                    string openNpcId = !string.IsNullOrEmpty(qm.NpcId) ? qm.NpcId : wi.actorId;
+                    int stepNo = TacSimQuestJournal.GuidedStepNumber(qm.QuestKey);
+                    string stepSuffix = stepNo > 0 ? $" [Step {stepNo}/7]" : string.Empty;
+                    string moreSuffix = extraQuestCount > 0 ? $" (+{extraQuestCount} more)" : string.Empty;
+                    bool isTurnIn = string.Equals(qm.Marker, "turn_in", StringComparison.OrdinalIgnoreCase);
+                    bool isAvailable = string.Equals(qm.Marker, "available", StringComparison.OrdinalIgnoreCase);
+                    string qTitle = !string.IsNullOrEmpty(qm.QuestTitle) ? qm.QuestTitle : "Quest";
+
+                    if (isTurnIn)
+                    {
+                        Hud.UnitFrames.SetTarget(
+                            "[?]",
+                            new Color(0.14f, 0.58f, 0.34f, 0.98f),
+                            rawName,
+                            $"Turn In: {qTitle}{stepSuffix}{moreSuffix}",
+                            inRange ? 1f : rangeFrac,
+                            inRange ? $"{distM:0.0}m — [E] TURN IN" : $"{distM:0.0}m — WALK CLOSER",
+                            new Color(0.22f, 0.84f, 0.48f, 0.95f),
+                            "TURN IN",
+                            () =>
+                            {
+                                if (Hud?.QuestJournal == null || !Hud.QuestJournal.OpenNpcQuestDialog(openNpcId))
+                                    HandleWorldInteractable(wi);
+                            },
+                            "TALK",
+                            () => OpenNpcConversationModal(wi),
+                            "LOOK",
+                            () => ExecutePlayerCommand(lookCmd));
+                        return;
+                    }
+                    if (isAvailable)
+                    {
+                        Hud.UnitFrames.SetTarget(
+                            "[!]",
+                            new Color(0.72f, 0.50f, 0.12f, 0.98f),
+                            rawName,
+                            $"Offer: {qTitle}{stepSuffix}{moreSuffix}",
+                            inRange ? 1f : rangeFrac,
+                            inRange ? $"{distM:0.0}m — [E] QUEST" : $"{distM:0.0}m — WALK CLOSER",
+                            new Color(0.94f, 0.74f, 0.22f, 0.95f),
+                            "QUEST",
+                            () =>
+                            {
+                                if (Hud?.QuestJournal == null || !Hud.QuestJournal.OpenNpcQuestDialog(openNpcId))
+                                    HandleWorldInteractable(wi);
+                            },
+                            "TALK",
+                            () => OpenNpcConversationModal(wi),
+                            "LOOK",
+                            () => ExecutePlayerCommand(lookCmd));
+                        return;
+                    }
+                    Hud.UnitFrames.SetTarget(
+                        "[?]",
+                        new Color(0.28f, 0.38f, 0.50f, 0.96f),
+                        rawName,
+                        $"Active: {qTitle}{stepSuffix}{moreSuffix}",
+                        inRange ? 1f : rangeFrac,
+                        inRange ? $"{distM:0.0}m — [E] TALK" : $"{distM:0.0}m — WALK CLOSER",
+                        new Color(0.46f, 0.68f, 0.86f, 0.95f),
+                        "TALK",
+                        () => OpenNpcConversationModal(wi),
+                        "QUEST",
+                        () =>
+                        {
+                            if (Hud?.QuestJournal == null || !Hud.QuestJournal.OpenNpcQuestDialog(openNpcId))
+                                Hud?.QuestJournal?.ToggleOpen();
+                        },
+                        "LOOK",
+                        () => ExecutePlayerCommand(lookCmd));
                     return;
                 }
 

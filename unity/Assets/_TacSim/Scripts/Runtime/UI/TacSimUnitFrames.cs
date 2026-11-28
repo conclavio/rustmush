@@ -14,7 +14,9 @@ namespace TacSim.UI
         public bool IsTargetVisible => _targetRoot != null && _targetRoot.activeSelf;
         public bool IsFrameRootVisible => _root != null && _root.activeSelf;
         public string PlayerTitleText => _playerTitle != null ? _playerTitle.text : string.Empty;
+        public string TargetCrestText => _targetCrestText != null ? _targetCrestText.text : string.Empty;
         public string TargetTitleText => _targetTitle != null ? _targetTitle.text : string.Empty;
+        public string TargetSubtitleText => _targetSubtitle != null ? _targetSubtitle.text : string.Empty;
         public string TargetAction1Label => (_targetAct1Btn != null && _targetAct1Btn.gameObject.activeSelf && _targetAct1Label != null) ? _targetAct1Label.text : string.Empty;
         public string TargetAction2Label => (_targetAct2Btn != null && _targetAct2Btn.gameObject.activeSelf && _targetAct2Label != null) ? _targetAct2Label.text : string.Empty;
         public string TargetAction3Label => (_targetAct3Btn != null && _targetAct3Btn.gameObject.activeSelf && _targetAct3Label != null) ? _targetAct3Label.text : string.Empty;

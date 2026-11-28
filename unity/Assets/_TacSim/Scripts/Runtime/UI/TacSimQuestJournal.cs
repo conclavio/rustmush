@@ -452,6 +452,62 @@ namespace TacSim.UI
         /// Resolves the highest-urgency quest action available in the player's current room:
         /// gold turn-in (<c>?</c>) first, then gold available offer (<c>!</c>).
         /// </summary>
+        public bool TryGetNpcRoomQuestMarker(
+            string npcId,
+            string npcName,
+            out MushNpcQuestMarker bestMarker,
+            out int extraCount)
+        {
+            bestMarker = null;
+            extraCount = 0;
+            var panel = LatestPanel;
+            if (panel == null || panel.RoomMarkers == null || panel.RoomMarkers.Count == 0)
+                return false;
+
+            string idTrim = (npcId ?? string.Empty).Trim();
+            string nameTrim = (npcName ?? string.Empty).Trim();
+            if (string.IsNullOrEmpty(idTrim) && string.IsNullOrEmpty(nameTrim))
+                return false;
+
+            int bestRank = int.MaxValue;
+            int bestGuided = int.MaxValue;
+            var distinctKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            for (int i = 0; i < panel.RoomMarkers.Count; i++)
+            {
+                var m = panel.RoomMarkers[i];
+                if (m == null) continue;
+                bool idMatch = !string.IsNullOrEmpty(idTrim) &&
+                               string.Equals((m.NpcId ?? string.Empty).Trim(), idTrim, StringComparison.OrdinalIgnoreCase);
+                bool nameMatch = !idMatch && !string.IsNullOrEmpty(nameTrim) &&
+                                 string.Equals((m.NpcName ?? string.Empty).Trim(), nameTrim, StringComparison.OrdinalIgnoreCase);
+                if (!idMatch && !nameMatch) continue;
+
+                string distinctKey = !string.IsNullOrEmpty(m.QuestKey)
+                    ? m.QuestKey
+                    : $"{m.Marker}:{m.QuestTitle}";
+                distinctKeys.Add(distinctKey);
+
+                int rank = string.Equals(m.Marker, "turn_in", StringComparison.OrdinalIgnoreCase)
+                    ? 0
+                    : (string.Equals(m.Marker, "available", StringComparison.OrdinalIgnoreCase) ? 1 : 2);
+                int guidedRank = (GuidedStepNumber(m.QuestKey) > 0 ||
+                                  string.Equals(m.Category, "guided", StringComparison.OrdinalIgnoreCase))
+                    ? 0
+                    : 1;
+                if (rank < bestRank || (rank == bestRank && guidedRank < bestGuided))
+                {
+                    bestRank = rank;
+                    bestGuided = guidedRank;
+                    bestMarker = m;
+                }
+            }
+
+            if (bestMarker == null) return false;
+            extraCount = Math.Max(0, distinctKeys.Count - 1);
+            return true;
+        }
+
         public bool TryGetTopRoomQuestAction(
             out string symbol,
             out string npcName,
