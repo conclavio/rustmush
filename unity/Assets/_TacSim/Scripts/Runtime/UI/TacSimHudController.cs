@@ -2545,6 +2545,8 @@ namespace TacSim.UI
             return _boundTradeState.SelectedSellAll ? 50 : Mathf.Max(5, _boundTradeState.SelectedTradeQuantity);
         }
 
+        public string TradeStowageQuestSummarySnapshot { get; private set; } = string.Empty;
+
         public void RefreshTradeTerminal()
         {
             if (_boundTradeState == null || _tradePanel == null || !_tradePanel.activeSelf)
@@ -2553,25 +2555,60 @@ namespace TacSim.UI
             if (_tradeCreditsText != null)
                 _tradeCreditsText.text = $"CREDITS: {_boundTradeState.CreditsText}";
 
+            QuestTradeNeed qNeed = default;
+            bool hasQuestNeed = QuestJournal != null && QuestJournal.TryGetActiveTradeNeed(out qNeed);
+            string qGaugeKind = string.Empty;
+            int qCurQty = 0;
+            int qTargetQty = 1;
+            bool qReady = false;
+            if (hasQuestNeed)
+            {
+                qTargetQty = Mathf.Max(1, qNeed.TargetQuantity);
+                qCurQty = _boundTradeState.GetHoldCommodityQuantity(qNeed.CommoditySlug);
+                qReady = qCurQty >= qTargetQty;
+                qGaugeKind = string.Equals(qNeed.CommoditySlug, "propellant", StringComparison.OrdinalIgnoreCase)
+                    ? "propellant"
+                    : (string.Equals(qNeed.CommoditySlug, "provisions", StringComparison.OrdinalIgnoreCase)
+                        ? "provisions"
+                        : "cargo");
+                string unit = qGaugeKind == "propellant" ? "t" : (qGaugeKind == "provisions" ? "d" : "u");
+                string tag = qReady ? "[READY]" : "[QUEST]";
+                string itemLabel = qNeed.CommoditySlug.Replace('_', ' ').ToUpperInvariant();
+                TradeStowageQuestSummarySnapshot = $"{tag} {itemLabel}: {qCurQty}/{qTargetQty} {unit}";
+            }
+            else
+            {
+                TradeStowageQuestSummarySnapshot = string.Empty;
+            }
+
+            Color qHighlight = qReady ? new Color(0.26f, 0.90f, 0.58f) : new Color(0.98f, 0.80f, 0.22f);
+            string qTagShort = qReady ? " [READY]" : " [Q]";
+
+            string massText = $"{_boundTradeState.HoldMassTonnes} / {_boundTradeState.HoldMassLimitTonnes} t" +
+                (qGaugeKind == "cargo" ? $"{qTagShort} {qCurQty}/{qTargetQty}" : string.Empty);
             UpdateGaugeBar(_massBarFill, _massBarLabel,
                 _boundTradeState.HoldMassTonnes / (float)Mathf.Max(1, _boundTradeState.HoldMassLimitTonnes),
-                $"{_boundTradeState.HoldMassTonnes} / {_boundTradeState.HoldMassLimitTonnes} t",
-                new Color(0.22f, 0.72f, 0.95f));
+                massText,
+                qGaugeKind == "cargo" ? qHighlight : new Color(0.22f, 0.72f, 0.95f));
 
             UpdateGaugeBar(_volBarFill, _volBarLabel,
                 _boundTradeState.HoldVolumeM3 / Mathf.Max(1f, _boundTradeState.HoldVolumeLimitM3),
                 $"{_boundTradeState.HoldVolumeM3:0.0} / {_boundTradeState.HoldVolumeLimitM3:0} m³",
                 new Color(0.32f, 0.85f, 0.65f));
 
+            string tankText = $"{_boundTradeState.TankTonnes} / {_boundTradeState.TankLimitTonnes} t" +
+                (qGaugeKind == "propellant" ? $"{qTagShort} {qCurQty}/{qTargetQty}" : string.Empty);
             UpdateGaugeBar(_tankBarFill, _tankBarLabel,
                 _boundTradeState.TankTonnes / (float)Mathf.Max(1, _boundTradeState.TankLimitTonnes),
-                $"{_boundTradeState.TankTonnes} / {_boundTradeState.TankLimitTonnes} t",
-                new Color(0.92f, 0.58f, 0.18f));
+                tankText,
+                qGaugeKind == "propellant" ? qHighlight : new Color(0.92f, 0.58f, 0.18f));
 
+            string storesText = $"{_boundTradeState.StoresCrewDays} / {_boundTradeState.StoresLimitCrewDays} d" +
+                (qGaugeKind == "provisions" ? $"{qTagShort} {qCurQty}/{qTargetQty}" : string.Empty);
             UpdateGaugeBar(_storesBarFill, _storesBarLabel,
                 _boundTradeState.StoresCrewDays / (float)Mathf.Max(1, _boundTradeState.StoresLimitCrewDays),
-                $"{_boundTradeState.StoresCrewDays} / {_boundTradeState.StoresLimitCrewDays} d",
-                new Color(0.68f, 0.55f, 0.95f));
+                storesText,
+                qGaugeKind == "provisions" ? qHighlight : new Color(0.68f, 0.55f, 0.95f));
 
             if (!_tradeSailingTabActive)
                 RebuildListingCards();
@@ -2759,7 +2796,10 @@ namespace TacSim.UI
                     string itemLabel = questNeed.CommoditySlug.Replace('_', ' ').ToUpperInvariant();
                     if (_exchangeQuestBannerText != null)
                     {
-                        _exchangeQuestBannerText.text = $"<color=#FFDD44>[QUEST]</color> {verb} <b>{questNeed.TargetQuantity}</b> × <b>{MushProtocol.EscapeUnityRichText(itemLabel)}</b>  <color=#BBD4E6>— {MushProtocol.EscapeUnityRichText(questNeed.QuestTitle)}</color>";
+                        string holdPart = !string.IsNullOrEmpty(TradeStowageQuestSummarySnapshot)
+                            ? $"  |  <color={(TradeStowageQuestSummarySnapshot.StartsWith("[READY]", StringComparison.Ordinal) ? "#55EE99" : "#FFDD44")}>{MushProtocol.EscapeUnityRichText(TradeStowageQuestSummarySnapshot)}</color>"
+                            : string.Empty;
+                        _exchangeQuestBannerText.text = $"<color=#FFDD44>[QUEST]</color> {verb} <b>{questNeed.TargetQuantity}</b> × <b>{MushProtocol.EscapeUnityRichText(itemLabel)}</b>  <color=#BBD4E6>— {MushProtocol.EscapeUnityRichText(questNeed.QuestTitle)}</color>{holdPart}";
                     }
                     if (_exchangeQuestQtyBtnLbl != null)
                         _exchangeQuestQtyBtnLbl.text = $"SET QUEST QTY ({questNeed.TargetQuantity})";

@@ -11539,5 +11539,89 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestTradeStowageReadiness_HighlightsTargetedGaugeAndCargoHoldProgress()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestTradeStowageReadinessTestRoot");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                var tradeState = new TacSimTradeAndShipState();
+                hud.BindTradeState(tradeState);
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""balance_text"": ""5,000.00 cr"",
+                    ""listings"": [],
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 5000,
+                            ""cargo_limit_kg"": 100000,
+                            ""cargo_l"": 2000,
+                            ""cargo_limit_l"": 120000,
+                            ""tank_kg"": 5200,
+                            ""tank_limit_kg"": 80000,
+                            ""stores_days"": 8,
+                            ""stores_limit_days"": 120,
+                            ""items"": [
+                                { ""good"": ""tacsim:metals"", ""label"": ""Metals"", ""qty"": 5 }
+                            ]
+                        }
+                    }
+                }"));
+
+                Assert.AreEqual(5, tradeState.GetHoldCommodityQuantity("propellant"));
+                Assert.AreEqual(8, tradeState.GetHoldCommodityQuantity("provisions"));
+                Assert.AreEqual(5, tradeState.GetHoldCommodityQuantity("metals"));
+
+                // 1. Provisions quest (8/10 -> loading)
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#18"",
+                    ""room_name"": ""Co-op Chandlery"",
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"",
+                        ""title"": ""Stock the Locker and Tanks"",
+                        ""checkpoints"": [{
+                            ""id"": ""buy_provisions"",
+                            ""title"": ""Buy at least 10 provisions"",
+                            ""instructions"": ""Buy 10 provisions."",
+                            ""checked"": false,
+                            ""live_ready"": false
+                        }]
+                    }]
+                }")));
+                hud.OpenTradeAndSailingModal("EXCHANGE", openSailingTab: false);
+                Assert.AreEqual("[QUEST] PROVISIONS: 8/10 d", hud.TradeStowageQuestSummarySnapshot);
+
+                // 2. Metals haul quest (5/5 -> READY)
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#17"",
+                    ""room_name"": ""Exchange Hall"",
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"",
+                        ""title"": ""Metals Down the Corridor"",
+                        ""checkpoints"": [{
+                            ""id"": ""deliver_metals"",
+                            ""title"": ""Buy 5 tonnes of metals and deliver to Stickney Yards"",
+                            ""instructions"": ""Buy 5 metals and sell at Stickney."",
+                            ""checked"": false,
+                            ""live_ready"": false
+                        }]
+                    }]
+                }")));
+                hud.RefreshTradeTerminal();
+                Assert.AreEqual("[READY] METALS: 5/5 u", hud.TradeStowageQuestSummarySnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
