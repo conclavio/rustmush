@@ -873,6 +873,20 @@ export class QuestsStore {
     this.trackerCollapsed = false;
   }
 
+  cycleTracked(): string | null {
+    if (this.active.length === 0) return null;
+    if (this.active.length === 1) {
+      this.trackedKey = this.active[0]!.key;
+      return this.trackedKey;
+    }
+    const curIdx = this.active.findIndex((q) => q.key === this.trackedKey);
+    const nextIdx = curIdx >= 0 ? (curIdx + 1) % this.active.length : 1;
+    const next = this.active[nextIdx]!;
+    this.trackedKey = next.key;
+    this.trackerCollapsed = false;
+    return next.key;
+  }
+
   openNpcDialog(npcId: string): void {
     this.logOpen = false;
     this.dialogNpcId = npcId;

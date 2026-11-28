@@ -363,4 +363,62 @@ describe("QuestTrackerPanel route step, guided tour pill, and quick-accept", () 
     await fireEvent.click(screen.getByRole("button", { name: /Cycle Ashore/i }));
     expect(onCmdLeave).toHaveBeenCalledWith("+ship/leave");
   });
+
+  it("cycles multiple active quests directly on the HUD tracker and shows simultaneous room offers", async () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#18",
+      room_name: "Registry & Co-op Desk",
+      room_markers: [
+        {
+          npc_id: "#42",
+          npc_name: "Ilse Oduya-Brandt",
+          marker: "available",
+          symbol: "!",
+          quest_key: GUIDED_TOUR_KEYS[1],
+          quest_title: "Stock the Locker and Tanks",
+        },
+      ],
+      active: [
+        {
+          key: "q.first",
+          title: "First Active Quest",
+          next_step: "Finish step A",
+          checkpoints: [],
+        },
+        {
+          key: "q.second",
+          title: "Second Active Quest",
+          next_step: "Finish step B",
+          checkpoints: [],
+        },
+      ],
+      available: [
+        {
+          key: GUIDED_TOUR_KEYS[1],
+          title: "Stock the Locker and Tanks",
+          giver_id: "#42",
+          giver_name: "Ilse Oduya-Brandt",
+          accept_cmd: "+quest/accept #42 tok",
+          checkpoints: [],
+        },
+      ],
+    });
+
+    const app = { quests, tacsim: null } as unknown as GameApp;
+    render(QuestTrackerPanel, { props: { app, onCmd: vi.fn() } });
+
+    expect(screen.getByRole("button", { name: "First Active Quest" })).toBeTruthy();
+    const cycleBtn = screen.getByRole("button", { name: "1/2 ▸" });
+    await fireEvent.click(cycleBtn);
+    expect(quests.trackedKey).toBe("q.second");
+    expect(screen.getByRole("button", { name: "Second Active Quest" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "2/2 ▸" })).toBeTruthy();
+
+    const offerPill = screen.getByRole("button", { name: "[!] 1 offer here" });
+    await fireEvent.click(offerPill);
+    expect(quests.dialogOpen).toBe(true);
+    expect(quests.dialogNpcId).toBe("#42");
+  });
 });
