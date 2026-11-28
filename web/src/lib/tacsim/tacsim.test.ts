@@ -3152,4 +3152,89 @@ describe("PR #693 Web review regressions (items 1-7, 9-11)", () => {
     expect(ilseWi?.subtitle).toBe("Complete: First Papers at the Registry (+2 more)");
     stage.dispose();
   });
+
+  it("highlights matching 60 Hz Dock button and renders Quest Docking Approach banner in Bridge Flight Visor", async () => {
+    let ws: FakeSocket | null = null;
+    const app = new GameApp({
+      url: "ws://test/ws",
+      webSocketFactory: (url) => (ws = new FakeSocket(url)),
+      random: () => 1,
+    });
+    app.client.connect("tok", "7");
+    const sock = ws as unknown as FakeSocket;
+    sock.readyState = 1;
+    sock.onopen?.();
+    sock.deliver(
+      {
+        t: "hello",
+        d: {
+          proto: 1,
+          server: "test",
+          features: [],
+          panels: [PORT_TRADE_FEED, TACSIM_CONTENT_FEED],
+        },
+      } as OutputEvent,
+      0,
+    );
+    sock.deliver(
+      {
+        t: "panel",
+        d: {
+          feed: "space.cockpit",
+          kind: "keyframe",
+          data: { active: true, site_id: "stickney_yards" },
+        },
+      } as OutputEvent,
+      1,
+    );
+    sock.deliver(
+      {
+        t: "panel",
+        d: {
+          feed: "space.docking",
+          kind: "keyframe",
+          data: { active: true, site_id: "stickney_yards", range_m: 140 },
+        },
+      } as OutputEvent,
+      2,
+    );
+    app.tacsim.view3dOpen = true;
+    app.tacsim.isAboardShip = true;
+    app.tacsim.seatedAtBridgeHelm = true;
+    app.quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+          title: "Metals Down the Corridor",
+          next_step: "Dock at Stickney Yards and sell 5t metals",
+          next_room_entry: "room.p07_receiving",
+          checkpoints: [
+            {
+              id: "deliver_metals",
+              title: "Deliver 5t metals to Stickney Yards",
+              instructions: "Dock and +market/sell at Stickney.",
+              room_entry: "room.p07_receiving",
+              checked: false,
+              live_ready: false,
+            },
+          ],
+        },
+      ],
+      available: [],
+      completed: [],
+    });
+
+    const onCmd = vi.fn();
+    const deck = render(TacsimSceneDeck, { props: { app, onCmd } });
+    await tick();
+
+    const dockBtn = screen.getByRole("button", { name: /\[Q\] 60 Hz Dock \(stickney\)/i });
+    expect(dockBtn.classList.contains("quest-dock")).toBe(true);
+    const approachBanner = screen.getByRole("status", { name: "quest docking approach" });
+    expect(approachBanner.textContent).toContain("[QUEST DOCK]");
+    expect(approachBanner.textContent).toContain("Stickney Yards");
+    expect(approachBanner.textContent).toContain("Metals Down the Corridor");
+    deck.unmount();
+  });
 });
