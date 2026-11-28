@@ -53,6 +53,7 @@ pub struct ActiveQuest {
     pub reward_summary: String,
     pub giver_name: String,
     pub turn_in_name: String,
+    pub turn_in_here: bool,
     pub allow_restart: bool,
     pub ready_to_finish: bool,
     pub next_step: String,
@@ -547,10 +548,12 @@ impl QuestsSnapshot {
         tracked_key: Option<&str>,
     ) -> Option<QuestDestinationHint> {
         for q in self.ordered_active(tracked_key) {
+            let mut has_pending_cp = false;
             for cp in &q.checkpoints {
                 if cp.checked || cp.live_ready {
                     continue;
                 }
+                has_pending_cp = true;
                 let combined = format!("{} {} {}", cp.instructions, cp.title, q.introduction)
                     .to_ascii_lowercase();
                 for prefix in ["+ship/plan ", "+ship/order depart ", "+ship/undock "] {
@@ -574,6 +577,30 @@ impl QuestsSnapshot {
                 if let Some((id, label, _)) = KNOWN_DESTINATIONS
                     .iter()
                     .find(|(_, _, pats)| pats.iter().any(|p| combined.contains(p)))
+                {
+                    return Some(QuestDestinationHint {
+                        quest_title: q.title.clone(),
+                        port_id: (*id).to_string(),
+                        port_label: (*label).to_string(),
+                    });
+                }
+            }
+            if !q.can_finish_now
+                && !q.turn_in_here
+                && (q.ready_to_finish || (!has_pending_cp && !q.checkpoints.is_empty()))
+            {
+                let turn_in_room = if !q.next_room_entry.is_empty() {
+                    Some(q.next_room_entry.as_str())
+                } else {
+                    q.checkpoints
+                        .last()
+                        .map(|c| c.room_entry.as_str())
+                        .filter(|s| !s.is_empty())
+                };
+                if let Some(port_slug) = turn_in_room.and_then(infer_station_port_from_room_entry)
+                    && let Some((id, label, _)) = KNOWN_DESTINATIONS
+                        .iter()
+                        .find(|(id, _, _)| *id == port_slug)
                 {
                     return Some(QuestDestinationHint {
                         quest_title: q.title.clone(),
@@ -978,6 +1005,7 @@ pub fn parse_frame(data: &Value) -> QuestsSnapshot {
                         reward_summary: str_field(item, "reward_summary"),
                         giver_name: str_field(item, "giver_name"),
                         turn_in_name: str_field(item, "turn_in_name"),
+                        turn_in_here: bool_field(item, "turn_in_here"),
                         allow_restart: bool_field(item, "allow_restart"),
                         ready_to_finish: bool_field(item, "ready_to_finish"),
                         next_step: str_field(item, "next_step"),
@@ -2537,5 +2565,46 @@ mod tests {
             "{second_txt}"
         );
         assert_eq!(overlay.cycle_tracked(&snap), Some("q.first"));
+    }
+
+    #[test]
+    fn active_destination_port_falls_back_to_turn_in_station_when_objectives_complete() {
+        let ready_off_world = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+                "title": "Scan, Sound, and Mine a Landing Site",
+                "next_room_entry": "room.c07_exchange",
+                "turn_in_here": false,
+                "ready_to_finish": true,
+                "can_finish_now": false,
+                "checkpoints": [
+                    { "id": "scan_landing_site", "title": "Surface scan", "room_entry": "room.c07_exchange", "checked": true, "live_ready": true },
+                    { "id": "mine_carbon_ore", "title": "Mine carbon_ore", "room_entry": "room.c07_exchange", "checked": true, "live_ready": true }
+                ]
+            }]
+        }));
+        let dest = ready_off_world
+            .active_destination_port(None)
+            .expect("expected Ceres Freeport turn-in destination");
+        assert_eq!(dest.port_id, "ceres");
+        assert_eq!(dest.port_label, "Ceres Freeport");
+
+        // Standing in Rosalind's room (turn_in_here: true) clears corridor destination
+        let at_turn_in = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+                "title": "Scan, Sound, and Mine a Landing Site",
+                "next_room_entry": "room.c07_exchange",
+                "turn_in_here": true,
+                "ready_to_finish": true,
+                "can_finish_now": true,
+                "checkpoints": [
+                    { "id": "mine_carbon_ore", "title": "Mine carbon_ore", "room_entry": "room.c07_exchange", "checked": true, "live_ready": true }
+                ]
+            }]
+        }));
+        assert!(at_turn_in.active_destination_port(None).is_none());
     }
 }
