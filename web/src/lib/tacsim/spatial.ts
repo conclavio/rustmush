@@ -1033,10 +1033,27 @@ export interface LocalStationQuestTarget {
   isBoardingTarget: boolean;
 }
 
+function findSameStationRoleRoom(
+  pack: AtlasNeighborhoodPack,
+  targetRoomEntry: string,
+): string | null {
+  const m = /^(room\.[cpldt])\d+_([a-z0-9_]+)$/i.exec(targetRoomEntry.trim());
+  if (!m) return null;
+  const prefix = m[1]!.toLowerCase();
+  const suffix = `_${m[2]!.toLowerCase()}`;
+  for (const r of pack.rooms.values()) {
+    const id = r.entryId.toLowerCase();
+    if (id.startsWith(prefix) && id.endsWith(suffix)) {
+      return r.entryId;
+    }
+  }
+  return null;
+}
+
 /**
  * Resolve an active quest's target room onto the player's currently loaded station pack:
  * - Step 6 surface expeditions resolve to the local `berth_gallery` (`isBoardingTarget: true`).
- * - Same-station targets resolve directly.
+ * - Same-station targets resolve directly (with same-station role-suffix fallback for fallback packs).
  * - Cross-port targets (e.g. Stickney while standing on Ceres) resolve to the local Exchange /
  *   Chandlery / Service Counter while `needsOriginExchangeFirst` is true, or to the local
  *   `berth_gallery` (`isBoardingTarget: true`) once ready to sail.
@@ -1057,6 +1074,10 @@ export function resolveLocalStationQuestTarget(
   const raw = targetRoomEntry ?? "";
   if (pack.rooms.has(raw)) {
     return { roomEntry: raw, isBoardingTarget: false };
+  }
+  const sameStationMatch = findSameStationRoleRoom(pack, raw);
+  if (sameStationMatch) {
+    return { roomEntry: sameStationMatch, isBoardingTarget: false };
   }
   if (!/^room\.[cpldt]\d/i.test(raw.trim())) {
     return null;
@@ -1116,42 +1137,50 @@ export function computeNextQuestExitBreadcrumb(
     effectiveTarget = berth.entryId;
     boardingCrossPort = true;
   } else if (!pack.rooms.has(effectiveTarget)) {
-    if (!/^room\.[cpldt]\d/i.test(effectiveTarget.trim())) {
-      return null;
-    }
-    if (needsOriginExchangeFirst) {
-      const exchange =
-        [...pack.rooms.values()].find((r) => r.entryId.toLowerCase().includes("exchange")) ??
-        [...pack.rooms.values()].find(
-          (r) =>
-            r.entryId.toLowerCase().includes("chandlery") ||
-            r.entryId.toLowerCase().includes("service"),
-        );
-      if (exchange) {
-        if (currentRoomEntry === exchange.entryId) {
-          return null;
+    const sameStationMatch = findSameStationRoleRoom(pack, effectiveTarget);
+    if (sameStationMatch) {
+      if (currentRoomEntry === sameStationMatch) {
+        return null;
+      }
+      effectiveTarget = sameStationMatch;
+    } else {
+      if (!/^room\.[cpldt]\d/i.test(effectiveTarget.trim())) {
+        return null;
+      }
+      if (needsOriginExchangeFirst) {
+        const exchange =
+          [...pack.rooms.values()].find((r) => r.entryId.toLowerCase().includes("exchange")) ??
+          [...pack.rooms.values()].find(
+            (r) =>
+              r.entryId.toLowerCase().includes("chandlery") ||
+              r.entryId.toLowerCase().includes("service"),
+          );
+        if (exchange) {
+          if (currentRoomEntry === exchange.entryId) {
+            return null;
+          }
+          effectiveTarget = exchange.entryId;
         }
-        effectiveTarget = exchange.entryId;
       }
-    }
-    if (effectiveTarget === (targetRoomEntry ?? "")) {
-      const berth = [...pack.rooms.values()].find((r) =>
-        r.entryId.toLowerCase().includes("berth_gallery"),
-      );
-      if (!berth) return null;
-      if (currentRoomEntry === berth.entryId) {
-        return {
-          nextRoomEntry: "ship",
-          nextRoomName: "Board Ship",
-          nextExitCommand: "+ship/board",
-          nextExitLabel: "Board Ship",
-          targetRoomEntry: effectiveTarget,
-          targetRoomName: "Board Ship",
-          hops: 1,
-        };
+      if (effectiveTarget === (targetRoomEntry ?? "")) {
+        const berth = [...pack.rooms.values()].find((r) =>
+          r.entryId.toLowerCase().includes("berth_gallery"),
+        );
+        if (!berth) return null;
+        if (currentRoomEntry === berth.entryId) {
+          return {
+            nextRoomEntry: "ship",
+            nextRoomName: "Board Ship",
+            nextExitCommand: "+ship/board",
+            nextExitLabel: "Board Ship",
+            targetRoomEntry: effectiveTarget,
+            targetRoomName: "Board Ship",
+            hops: 1,
+          };
+        }
+        effectiveTarget = berth.entryId;
+        boardingCrossPort = true;
       }
-      effectiveTarget = berth.entryId;
-      boardingCrossPort = true;
     }
   }
 

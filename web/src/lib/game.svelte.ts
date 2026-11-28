@@ -117,6 +117,7 @@ import {
   needsSurfaceExpeditionBoarding,
   resolveNextGuidedOfferDestination,
   resolveQuestShipTargetCompartment,
+  resolveRefitHoldClearRoom,
 } from "./stores/quests.svelte";
 import {
   computeNextQuestExitBreadcrumb,
@@ -936,14 +937,15 @@ export class GameApp {
           : null;
       const atlasEntry = typeof atlas?.["entry"] === "string" ? atlas["entry"] : "";
       const tracked = this.quests.trackedQuest;
-      const objRoom =
-        tracked?.nextRoomEntry ||
-        tracked?.checkpoints.find((c) => !c.checked && !c.liveReady && c.roomEntry)?.roomEntry ||
-        "";
       const liveStowage =
         this.tacsim.ambient?.ownStowage ??
         this.tacsim.ambient?.stowage ??
         (this.tacsim.trade?.hullId ? this.tacsim.trade.stowage : null);
+      const objRoom =
+        resolveRefitHoldClearRoom(this.quests.active, this.quests.trackedKey, liveStowage) ||
+        tracked?.nextRoomEntry ||
+        tracked?.checkpoints.find((c) => !c.checked && !c.liveReady && c.roomEntry)?.roomEntry ||
+        "";
       const localTarget = tracked
         ? resolveLocalStationQuestTarget(
             this.tacsim.stationPack,
@@ -2205,17 +2207,18 @@ export class GameApp {
           routeCrumb = computeShipQuestBreadcrumb(this.tacsim.shipTemplate, currentComp, targetComp);
         }
       } else {
+        const liveStowage =
+          this.tacsim.ambient?.ownStowage ??
+          this.tacsim.ambient?.stowage ??
+          (this.tacsim.trade?.hullId ? this.tacsim.trade.stowage : null);
         const targetEntry =
+          resolveRefitHoldClearRoom(this.quests.active, this.quests.trackedKey, liveStowage) ||
           tracked.nextRoomEntry ||
           tracked.checkpoints.find((c) => !c.checked && !c.liveReady && c.roomEntry)?.roomEntry ||
           null;
         const currentEntry =
           (this.tacsim.view3dOpen ? this.tacsim.physicalLocationKey : null) ??
           this.tacsim.serverStationRoomEntry;
-        const liveStowage =
-          this.tacsim.ambient?.ownStowage ??
-          this.tacsim.ambient?.stowage ??
-          (this.tacsim.trade?.hullId ? this.tacsim.trade.stowage : null);
         const needsOriginExchange = needsOriginPortProcurement(
           this.quests.active,
           this.quests.trackedKey,
