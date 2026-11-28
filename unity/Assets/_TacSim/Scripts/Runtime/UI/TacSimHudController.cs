@@ -3729,6 +3729,22 @@ namespace TacSim.UI
             if (QuestJournal != null)
             {
                 bool hasDest = QuestJournal.TryGetActiveDestinationPort(out var qDest);
+                if (!hasDest && QuestJournal.TryGetActiveSurfaceMiningStatus(out var qMine) && qMine.MineDone)
+                {
+                    var trackedMine = QuestJournal.GetTrackedActiveQuest();
+                    string retSlug = TacSimQuestJournal.InferStationPortFromRoomEntry(trackedMine?.NextRoomEntry);
+                    if (string.IsNullOrEmpty(retSlug)) retSlug = "ceres";
+                    string retLabel = retSlug switch
+                    {
+                        "stickney" => "Stickney Yards",
+                        "luna" => "Aitken Basin",
+                        "deimos" => "Voltaire Base",
+                        "titan" => "Ligeia Dock",
+                        _ => "Ceres Freeport"
+                    };
+                    qDest = new QuestDestinationHint(qMine.QuestTitle, retSlug, retLabel);
+                    hasDest = true;
+                }
                 if (!hasDest)
                     hasDest = QuestJournal.TryGetNextGuidedOfferDestination(_activePortHint, out qDest);
                 if (hasDest && !string.IsNullOrEmpty(qDest.PortLabel))
@@ -3737,8 +3753,11 @@ namespace TacSim.UI
                     string stepSuffix = tracked != null && !string.IsNullOrEmpty(tracked.NextStep)
                         ? $" · {MushProtocol.EscapeUnityRichText(tracked.NextStep)}"
                         : string.Empty;
+                    string dockStepTag = ResolveActiveQuestStepTag();
+                    string dockStepPart = string.IsNullOrEmpty(dockStepTag) ? string.Empty : $" <color=#FFDD44>{dockStepTag}</color>";
                     sb.AppendFormat(
-                        "<color=#FFDD44>[QUEST DOCK]</color> <b>{0}</b> — {1}{2}\n",
+                        "<color=#FFDD44>[QUEST DOCK]</color>{0} <b>{1}</b> — {2}{3}\n",
+                        dockStepPart,
                         MushProtocol.EscapeUnityRichText(qDest.PortLabel),
                         MushProtocol.EscapeUnityRichText(qDest.QuestTitle),
                         stepSuffix);

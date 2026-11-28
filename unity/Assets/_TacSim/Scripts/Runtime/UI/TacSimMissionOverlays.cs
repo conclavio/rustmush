@@ -788,12 +788,23 @@ namespace TacSim.UI
                 _questJournal != null &&
                 _questJournal.TryGetActiveSurfaceMiningStatus(out qm);
 
+            string stepSuffix = string.Empty;
+            if (_questJournal != null)
+            {
+                var tracked = _questJournal.GetTrackedActiveQuest();
+                int step = tracked != null ? TacSimQuestJournal.GuidedStepNumber(tracked.Key) : 0;
+                if (step <= 0 && _questJournal.TryGetNextGuidedOffer(out var nextOffer))
+                    step = nextOffer.Step;
+                if (step > 0)
+                    stepSuffix = $" [Step {step}/7]";
+            }
+
             if (hasDest)
             {
                 _orbitalQuestPlanPort = hint.PortId;
                 _orbitalQuestOpenGround = false;
                 if (_orbitalQuestText != null)
-                    _orbitalQuestText.text = $"[QUEST] Dest: {hint.PortLabel.ToUpperInvariant()} — {hint.QuestTitle}";
+                    _orbitalQuestText.text = $"[QUEST] Dest: {hint.PortLabel.ToUpperInvariant()} — {hint.QuestTitle}{stepSuffix}";
                 if (_orbitalQuestBtnLbl != null)
                     _orbitalQuestBtnLbl.text = $"PLAN: {hint.PortId.ToUpperInvariant()}";
                 _orbitalQuestStrip.SetActive(true);
@@ -803,7 +814,7 @@ namespace TacSim.UI
                 _orbitalQuestPlanPort = string.Empty;
                 _orbitalQuestOpenGround = true;
                 if (_orbitalQuestText != null)
-                    _orbitalQuestText.text = $"[QUEST] Surface Mining: {qm.TargetOreSlug} — {qm.QuestTitle}";
+                    _orbitalQuestText.text = $"[QUEST] Surface Mining: {qm.TargetOreSlug} — {qm.QuestTitle}{stepSuffix}";
                 if (_orbitalQuestBtnLbl != null)
                     _orbitalQuestBtnLbl.text = $"GROUND [G]: {qm.RecommendedFamily.ToUpperInvariant()}";
                 _orbitalQuestStrip.SetActive(true);
@@ -813,7 +824,7 @@ namespace TacSim.UI
                 _orbitalQuestPlanPort = retPortId;
                 _orbitalQuestOpenGround = false;
                 if (_orbitalQuestText != null)
-                    _orbitalQuestText.text = $"[QUEST] Return: {retPortLabel.ToUpperInvariant()} — {qm.QuestTitle}";
+                    _orbitalQuestText.text = $"[QUEST] Return: {retPortLabel.ToUpperInvariant()} — {qm.QuestTitle}{stepSuffix}";
                 if (_orbitalQuestBtnLbl != null)
                     _orbitalQuestBtnLbl.text = $"PLAN: {retPortId.ToUpperInvariant()}";
                 _orbitalQuestStrip.SetActive(true);
