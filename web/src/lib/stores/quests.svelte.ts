@@ -221,6 +221,71 @@ export function evaluateQuestStowageReadiness(
   };
 }
 
+export interface QuestSailingPreflightReadiness {
+  propellantTonnes: number;
+  propellantOk: boolean;
+  provisionsDays: number;
+  provisionsOk: boolean;
+  cargoRequired: boolean;
+  cargoLabel: string;
+  cargoQty: number;
+  cargoTarget: number;
+  cargoOk: boolean;
+  ready: boolean;
+}
+
+export function evaluateSailingPreflightReadiness(
+  dest: QuestDestinationHint | null,
+  need: QuestTradeNeed | null,
+  stowage:
+    | {
+        propellantKg: number;
+        provisionsCrewDays: number;
+        cargoLines: ReadonlyArray<{ good: string; label: string; qty: number }>;
+      }
+    | null
+    | undefined,
+): QuestSailingPreflightReadiness | null {
+  if (!dest || !stowage) return null;
+  const propellantTonnes = Math.floor(Math.max(0, stowage.propellantKg) / 1000);
+  const propellantOk = stowage.propellantKg > 0;
+  const provisionsDays = Math.floor(Math.max(0, stowage.provisionsCrewDays));
+  const provisionsOk = stowage.provisionsCrewDays > 0;
+
+  let cargoRequired = false;
+  let cargoLabel = "";
+  let cargoQty = 0;
+  let cargoTarget = 0;
+  let cargoOk = true;
+  if (need && need.commoditySlug !== "propellant" && need.commoditySlug !== "provisions") {
+    cargoRequired = true;
+    cargoLabel = need.commoditySlug.replaceAll("_", " ");
+    cargoTarget = Math.max(1, need.targetQuantity);
+    for (const line of stowage.cargoLines) {
+      if (
+        normalizeGoodSlug(line.good) === need.commoditySlug ||
+        normalizeGoodSlug(line.label) === need.commoditySlug
+      ) {
+        cargoQty += Math.max(0, line.qty);
+      }
+    }
+    cargoOk = cargoQty >= cargoTarget;
+  }
+
+  return {
+    propellantTonnes,
+    propellantOk,
+    provisionsDays,
+    provisionsOk,
+    cargoRequired,
+    cargoLabel,
+    cargoQty,
+    cargoTarget,
+    cargoOk,
+    ready: propellantOk && provisionsOk && cargoOk,
+  };
+}
+
 export interface QuestDestinationHint {
   questTitle: string;
   portId: string;
@@ -381,7 +446,7 @@ export function matchesQuestTradeRow(
 }
 
 function extractLeadingPositiveInt(text: string): number {
-  const m = /\b(\d{1,4})\b/.exec(text);
+  const m = /\b(\d{1,4})(?:t\b|\b)/i.exec(text);
   if (!m) return 0;
   const n = Number.parseInt(m[1]!, 10);
   return Number.isFinite(n) && n > 0 ? n : 0;
