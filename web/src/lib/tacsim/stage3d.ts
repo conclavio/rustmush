@@ -5,6 +5,7 @@
 
 import * as THREE from "three";
 import { isTextField } from "../keys";
+import { GUIDED_TOUR_KEYS, guidedStepNumber } from "../stores/quests.svelte";
 import { tacsimAudio } from "./audio";
 import {
   AMBER_RIG_RAMP,
@@ -81,9 +82,11 @@ export function formatActorInteractPrompt(
 ): { title: string; subtitle: string } {
   const moreSuffix = extraQuestCount > 0 ? ` (+${extraQuestCount} more)` : "";
   if (questMarker) {
+    const stepNo = questMarker.questKey ? guidedStepNumber(questMarker.questKey) : null;
+    const stepSuffix = stepNo !== null ? ` [Step ${stepNo}/${GUIDED_TOUR_KEYS.length}]` : "";
     if (questMarker.marker === "turn_in") {
       return {
-        title: `[?] ${name} — Turn In Quest`,
+        title: `[?] ${name} — Turn In Quest${stepSuffix}`,
         subtitle:
           (questMarker.questTitle
             ? `Complete: ${questMarker.questTitle}`
@@ -92,7 +95,7 @@ export function formatActorInteractPrompt(
     }
     if (questMarker.marker === "available") {
       return {
-        title: `[!] ${name} — Quest Available`,
+        title: `[!] ${name} — Quest Available${stepSuffix}`,
         subtitle:
           (questMarker.questTitle
             ? `Offer: ${questMarker.questTitle}`
@@ -100,7 +103,7 @@ export function formatActorInteractPrompt(
       };
     }
     return {
-      title: `[?] Talk to ${name}`,
+      title: `[?] Talk to ${name}${stepSuffix}`,
       subtitle:
         (questMarker.questTitle
           ? `Active quest: ${questMarker.questTitle}`

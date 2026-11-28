@@ -680,9 +680,19 @@
         {/if}
 
         {#if app.tacsim.focusedPrompt}
+          {@const fpTitle = app.tacsim.focusedPrompt.title}
+          {@const fpKind =
+            fpTitle.startsWith("[?]") && fpTitle.includes("Turn In")
+              ? "turn_in"
+              : fpTitle.startsWith("[!]")
+                ? "available"
+                : fpTitle.startsWith("[?]")
+                  ? "in_progress"
+                  : "default"}
           <button
             type="button"
             class="interact-banner"
+            data-quest-prompt={fpKind}
             onclick={() => {
               // Trigger focused interactable on click too
               const ev = new KeyboardEvent("keydown", { code: "KeyE", key: "e", bubbles: true });
@@ -874,6 +884,35 @@
     border: 1px solid #44d492;
     cursor: pointer;
     box-shadow: 0 4px 16px rgb(0 0 0 / 45%);
+  }
+
+  .interact-banner[data-quest-prompt="available"] {
+    background: rgb(32 23 5 / 92%);
+    border-color: #eab308;
+    box-shadow: 0 4px 18px rgb(234 179 8 / 32%);
+  }
+
+  .interact-banner[data-quest-prompt="available"] .ititle {
+    color: #fde047;
+  }
+
+  .interact-banner[data-quest-prompt="turn_in"] {
+    background: rgb(7 32 20 / 92%);
+    border-color: #34d399;
+    box-shadow: 0 4px 18px rgb(52 211 153 / 36%);
+  }
+
+  .interact-banner[data-quest-prompt="turn_in"] .ititle {
+    color: #6ee7b7;
+  }
+
+  .interact-banner[data-quest-prompt="in_progress"] {
+    background: rgb(14 23 36 / 90%);
+    border-color: #64748b;
+  }
+
+  .interact-banner[data-quest-prompt="in_progress"] .ititle {
+    color: #e2e8f0;
   }
 
   .ititle {
