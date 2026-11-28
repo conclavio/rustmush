@@ -3745,6 +3745,13 @@ impl PortWalkState {
                         self.push_drawer_log(format!("> {}", act.command));
                     }
                 }
+                Key::Char('h') => {
+                    if let Some(need) = self.effective_quest_trade_need() {
+                        let cmd = format!("+market/history tacsim:{}", need.commodity_slug);
+                        out.commands.push(cmd.clone());
+                        self.push_drawer_log(format!("> {cmd}"));
+                    }
+                }
                 Key::Enter => {
                     if let Some(&(label, cmd)) = DOC48_INDUSTRY_ACTIONS.get(self.cursor_row) {
                         out.commands.push(cmd.to_string());
@@ -5371,6 +5378,22 @@ impl PortWalkState {
                         )));
                     }
                 }
+                let quest_hist_need = self.effective_quest_trade_need();
+                if let Some(ref need) = quest_hist_need {
+                    let lbl = need.commodity_slug.replace('_', " ").to_ascii_uppercase();
+                    lines.push(Line::from(Span::styled(
+                        truncate_str(
+                            &format!(
+                                "[QUEST] 24w Trend: {lbl} (h: +market/history tacsim:{})",
+                                need.commodity_slug
+                            ),
+                            inner_w,
+                        ),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                }
                 lines.push(Line::from(Span::styled(
                     truncate_str(
                         "Works, Yard & 24wk — Up/Dn Enter:run  m:+market/mine",
@@ -5383,15 +5406,27 @@ impl PortWalkState {
                 for idx in visible_window(DOC48_INDUSTRY_ACTIONS.len(), cur, list_rows) {
                     if let Some(&(label, cmd)) = DOC48_INDUSTRY_ACTIONS.get(idx) {
                         let sel = idx == cur;
+                        let is_quest_row = quest_hist_need.as_ref().is_some_and(|need| {
+                            cmd == format!("+market/history tacsim:{}", need.commodity_slug)
+                        });
                         let mark = if sel { "> " } else { "  " };
                         let st = if sel {
                             Style::default()
                                 .fg(Color::Green)
                                 .add_modifier(Modifier::BOLD)
+                        } else if is_quest_row {
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD)
                         } else {
                             Style::default().fg(Color::Gray)
                         };
-                        let row = format!("{mark}{label:<26} ({cmd})");
+                        let disp = if is_quest_row {
+                            format!("[Q] {label}")
+                        } else {
+                            label.to_string()
+                        };
+                        let row = format!("{mark}{disp:<26} ({cmd})");
                         lines.push(Line::from(Span::styled(truncate_str(&row, inner_w), st)));
                     }
                 }
@@ -9941,5 +9976,53 @@ mod tests {
             find_quest_target_id(&airlock_feed).as_deref(),
             Some("airlock")
         );
+    }
+
+    #[test]
+    fn industry_drawer_shows_quest_history_banner_highlights_row_and_h_hotkey_runs_trend() {
+        let mut st = PortWalkState::new();
+        let now = Instant::now();
+        st.observe_quest_trade_needs(vec![QuestTradeNeed {
+            quest_title: "Metals Down the Corridor".into(),
+            checkpoint_title: "Deliver 5t metals".into(),
+            commodity_slug: "metals".into(),
+            target_quantity: 5,
+            wants_buy: true,
+            wants_sell: true,
+        }]);
+        let mut queries = Vec::new();
+        st.open_drawer(PortDrawerKind::Industry, &[], &mut queries, now);
+
+        let backend = ratatui::backend::TestBackend::new(96, 18);
+        let mut term = ratatui::Terminal::new(backend).expect("test terminal");
+        term.draw(|f| st.draw_drawer_box(f, f.area(), true))
+            .expect("draw industry drawer");
+        let rendered: String = term
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(
+            rendered.contains("[QUEST] 24w Trend: METALS (h: +market/history tacsim:metals)"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("[Q] 24-Week Metals Trend"), "{rendered}");
+
+        let out = st.handle_key(Key::Char('h'), false, false, &[], now);
+        assert_eq!(out.commands, vec!["+market/history tacsim:metals"]);
+
+        // Step 7 mined carbon_ore uses exact tacsim:carbon_ore history command
+        st.observe_quest_trade_needs(vec![QuestTradeNeed {
+            quest_title: "Deliver Your Mined Ore to Market".into(),
+            checkpoint_title: "Sell 1t carbon ore".into(),
+            commodity_slug: "carbon_ore".into(),
+            target_quantity: 1,
+            wants_buy: false,
+            wants_sell: true,
+        }]);
+        let out7 = st.handle_key(Key::Char('h'), false, false, &[], now);
+        assert_eq!(out7.commands, vec!["+market/history tacsim:carbon_ore"]);
     }
 }
