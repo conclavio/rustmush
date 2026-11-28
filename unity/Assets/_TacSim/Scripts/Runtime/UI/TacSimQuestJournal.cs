@@ -266,8 +266,28 @@ namespace TacSim.UI
                     else bar.Append('-');
                 }
                 bar.Append(']');
-                return $"TOUR {bar} {done}/{total}";
+                return allDone
+                    ? $"CORRIDOR CAPTAIN {bar} {done}/{total}"
+                    : $"TOUR {bar} {done}/{total}";
             }
+        }
+
+        public bool TryGetActiveCoopAction(out string questTitle, out string label, out string command)
+        {
+            questTitle = string.Empty;
+            label = string.Empty;
+            command = string.Empty;
+            var active = GetTrackedActiveQuest();
+            if (active != null &&
+                TryGetSuggestedCommand(active, out string sugLbl, out string sugCmd) &&
+                sugCmd.StartsWith("+coop/", StringComparison.OrdinalIgnoreCase))
+            {
+                questTitle = active.Title;
+                label = sugLbl;
+                command = sugCmd;
+                return true;
+            }
+            return false;
         }
         public string PinnedCategory { get; private set; } = string.Empty;
         public string PinnedTitle { get; private set; } = string.Empty;
