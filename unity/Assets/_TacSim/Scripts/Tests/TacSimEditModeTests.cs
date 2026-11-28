@@ -16383,5 +16383,96 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void CommandPalette_SurfacesStep6GroundChartPostMineReturnAndCorridorCaptainJobs()
+        {
+            var rootGo = new UnityEngine.GameObject("CommandPaletteStep6AndMasteryTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                string prefilled = string.Empty;
+                hud.CommandPalette.OnPrefillCommandRequested += cmd => prefilled = cmd;
+
+                // 1. Step 6 pre-mine -> Ground Chart (+chart/ground)
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""turn_in_name"": ""Rosalind Qureshi-Mbeki"",
+                        ""next_room_entry"": ""room.c07_exchange"",
+                        ""next_step"": ""Scan a Ceres landing site and mine 1t carbon_ore."",
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Complete a surface scan"", ""instructions"": ""Run +tv/1 scan go"", ""checked"": false, ""live_ready"": false },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine at least 1 tonne of carbon ore"", ""instructions"": ""Run +tv/1 mine go"", ""room_entry"": ""room.c07_exchange"", ""checked"": false, ""live_ready"": false }
+                        ]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                hud.CommandPalette.SetOpen(true);
+                hud.CommandPalette.SetQuery("ground chart");
+                var groundTitles = hud.CommandPalette.GetFilteredTitlesSnapshot();
+                Assert.IsTrue(groundTitles.Exists(t => t.Contains("Ground Chart: carbon ore (carbon)")), "Expected Step 6 Ground Chart entry");
+                Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
+                Assert.AreEqual("+chart/ground", prefilled);
+
+                // 2. Step 6 post-mine off-station -> Return -> Ceres Freeport (+ship/plan ceres)
+                prefilled = string.Empty;
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""turn_in_name"": ""Rosalind Qureshi-Mbeki"",
+                        ""next_room_entry"": ""room.c07_exchange"",
+                        ""ready_to_finish"": true,
+                        ""can_finish_now"": false,
+                        ""turn_in_here"": false,
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Complete a surface scan"", ""instructions"": ""Run +tv/1 scan go"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine at least 1 tonne of carbon ore"", ""instructions"": ""Run +tv/1 mine go"", ""room_entry"": ""room.c07_exchange"", ""checked"": true, ""live_ready"": true }
+                        ]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                hud.CommandPalette.SetOpen(true);
+                hud.CommandPalette.SetQuery("return ceres");
+                var returnTitles = hud.CommandPalette.GetFilteredTitlesSnapshot();
+                Assert.IsTrue(returnTitles.Exists(t => t.Contains("Return -> Ceres Freeport")), "Expected Step 6 post-mine Return entry");
+                Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
+                Assert.AreEqual("+ship/plan ceres", prefilled);
+
+                // 3. All 7 guided quests completed -> Corridor Captain (7/7) Jobs Board (+market/jobs)
+                prefilled = string.Empty;
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [],
+                    ""available"": [],
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""S1"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""S2"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""S3"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_04_return_haul"", ""title"": ""S4"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"", ""title"": ""S5"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"", ""title"": ""S6"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore"", ""title"": ""S7"" }
+                    ]
+                }")));
+                hud.CommandPalette.SetOpen(true);
+                hud.CommandPalette.SetQuery("corridor captain");
+                var capTitles = hud.CommandPalette.GetFilteredTitlesSnapshot();
+                Assert.IsTrue(capTitles.Exists(t => t.Contains("Corridor Captain (7/7)") && t.Contains("Jobs Board")), "Expected Corridor Captain Jobs Board entry");
+                Assert.IsTrue(hud.CommandPalette.ExecuteSelected());
+                Assert.AreEqual("+market/jobs", prefilled);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

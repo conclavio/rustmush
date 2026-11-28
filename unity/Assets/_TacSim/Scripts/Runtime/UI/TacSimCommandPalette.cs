@@ -658,6 +658,7 @@ namespace TacSim.UI
 
                 if (tracked != null)
                 {
+                    string pushedSuggestedCmd = string.Empty;
                     if (_quests.TrackerRouteHops > 0 && !string.IsNullOrEmpty(_quests.TrackerRouteCommand))
                     {
                         string rCmd = _quests.TrackerRouteCommand;
@@ -675,6 +676,7 @@ namespace TacSim.UI
                     else if (_quests.TryGetSuggestedCommand(tracked, out string sugLbl, out string sugCmd))
                     {
                         string cmdCopy = sugCmd;
+                        pushedSuggestedCmd = (cmdCopy ?? string.Empty).Trim();
                         string sub = !string.IsNullOrEmpty(tracked.NextStep)
                             ? $"{cmdCopy} — {tracked.NextStep}"
                             : cmdCopy;
@@ -684,6 +686,72 @@ namespace TacSim.UI
                             sub,
                             () => OnPrefillCommandRequested?.Invoke(cmdCopy),
                             $"quest next step action {sugLbl} {cmdCopy} {tracked.Title}"));
+                    }
+
+                    if (TacSimQuestJournal.TryGetSurfaceMiningStatusForQuest(tracked, out var mining))
+                    {
+                        if (!mining.MineDone)
+                        {
+                            if (!string.Equals(pushedSuggestedCmd, "+chart/ground", StringComparison.OrdinalIgnoreCase))
+                            {
+                                string oreLabel = (mining.TargetOreSlug ?? "carbon_ore").Replace('_', ' ');
+                                _allEntries.Add(new PaletteEntry(
+                                    "QUEST GROUND",
+                                    $"Ground Chart: {oreLabel} ({mining.RecommendedFamily})",
+                                    "+chart/ground — Pick a Ceres landing site (Freeport Commons / Ahuna Flank)",
+                                    () => OnPrefillCommandRequested?.Invoke("+chart/ground"),
+                                    $"quest ground chart mining {oreLabel} {mining.RecommendedFamily} +chart/ground"));
+                            }
+                        }
+                        else if (!tracked.CanFinishNow && !tracked.TurnInHere)
+                        {
+                            string retPortId = string.Empty;
+                            string retLabel = string.Empty;
+                            if (_quests.TryGetActiveDestinationPort(out var retDest))
+                            {
+                                retPortId = retDest.PortId;
+                                retLabel = retDest.PortLabel;
+                            }
+                            else
+                            {
+                                string roomEntry = tracked.NextRoomEntry;
+                                if (string.IsNullOrEmpty(roomEntry))
+                                {
+                                    for (int cIdx = tracked.Checkpoints.Count - 1; cIdx >= 0; cIdx--)
+                                    {
+                                        if (!string.IsNullOrEmpty(tracked.Checkpoints[cIdx].RoomEntry))
+                                        {
+                                            roomEntry = tracked.Checkpoints[cIdx].RoomEntry;
+                                            break;
+                                        }
+                                    }
+                                }
+                                string slug = TacSimQuestJournal.InferStationPortFromRoomEntry(roomEntry);
+                                if (!string.IsNullOrEmpty(slug))
+                                {
+                                    retPortId = slug;
+                                    retLabel = string.Equals(slug, "ceres", StringComparison.OrdinalIgnoreCase)
+                                        ? "Ceres Freeport"
+                                        : string.Equals(slug, "stickney", StringComparison.OrdinalIgnoreCase)
+                                            ? "Stickney Yards"
+                                            : slug;
+                                }
+                            }
+                            if (!string.IsNullOrEmpty(retPortId))
+                            {
+                                string planCmd = $"+ship/plan {retPortId}";
+                                if (!string.Equals(pushedSuggestedCmd, planCmd, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    string turnIn = !string.IsNullOrEmpty(tracked.TurnInName) ? tracked.TurnInName : retLabel;
+                                    _allEntries.Add(new PaletteEntry(
+                                        "QUEST SAIL",
+                                        $"Return -> {retLabel}",
+                                        $"{planCmd} — Return to {turnIn} with mined ore",
+                                        () => OnPrefillCommandRequested?.Invoke(planCmd),
+                                        $"quest return sail plan {retPortId} {retLabel} {planCmd} mined ore"));
+                                }
+                            }
+                        }
                     }
 
                     if (qp.Active.Count > 1)
@@ -763,6 +831,17 @@ namespace TacSim.UI
                         $"Speak with {nextGuided.GiverLabel} ({nextGuided.GiverRoomName})",
                         () => _quests?.SetOpen(true, QuestJournalTab.Quests),
                         $"quest next guided tour offer {nextGuided.ShortLabel} {nextGuided.GiverLabel} {nextGuided.GiverRoomName}"));
+                }
+                else if (qp.Available.Count == 0 &&
+                         _quests.TryGetGuidedTourProgress(out int tourDone, out int tourTotal, out _, out bool allTourDone) &&
+                         allTourDone)
+                {
+                    _allEntries.Add(new PaletteEntry(
+                        "QUEST MASTER",
+                        $"★ Corridor Captain ({tourDone}/{tourTotal}) — Jobs Board",
+                        "+market/jobs — Browse corridor freight & mining contracts",
+                        () => OnPrefillCommandRequested?.Invoke("+market/jobs"),
+                        "quest corridor captain jobs board market +market/jobs guided tour complete"));
                 }
             }
 
