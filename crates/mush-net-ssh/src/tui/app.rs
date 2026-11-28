@@ -5186,6 +5186,81 @@ impl TuiApp {
                     quest_action: Some(PaletteQuestAction::CycleTracked),
                 });
             }
+        } else if let Some(next_guided) = self.quests_snap.next_guided_offer() {
+            if let Some(hop) = self.port_walk.next_quest_hop() {
+                let (route_label, search_head) = if hop.next_exit_command == "+ship/board" {
+                    ("[>] Board Ship".to_string(), "board ship route walk")
+                } else if hop.next_exit_command == "+ship/leave" {
+                    ("[>] Cycle Ashore".to_string(), "ashore cycle leave route")
+                } else {
+                    (
+                        format!("[>] Walk -> {} ({}h)", hop.next_room_name, hop.hops),
+                        "route walk",
+                    )
+                };
+                let hop_word = if hop.hops == 1 { "hop" } else { "hops" };
+                let detail = format!(
+                    "{} {} to {} · {}",
+                    hop.hops, hop_word, next_guided.giver_room_name, hop.next_exit_command
+                );
+                let search = format!(
+                    "{search_head} {} {} {} next guided quest",
+                    hop.next_room_name, next_guided.giver_room_name, hop.next_exit_command
+                );
+                consider(&search, &|| PaletteEntry {
+                    insert: hop.next_exit_command.clone(),
+                    label: route_label.clone(),
+                    detail: detail.clone(),
+                    quest_action: Some(PaletteQuestAction::PrefillCommand),
+                });
+            }
+            let cur_port = self
+                .panels
+                .get(CHART_FEED)
+                .and_then(|v| {
+                    v.pointer("/chart/vantage/port")
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.is_empty())
+                        .or_else(|| {
+                            v.pointer("/chart/vantage/body")
+                                .and_then(Value::as_str)
+                                .filter(|s| !s.is_empty())
+                        })
+                })
+                .or_else(|| self.port_walk.docked_port_slug());
+            if let Some(dest) = self.quests_snap.next_guided_offer_destination(cur_port) {
+                let cmd = format!("+ship/plan {}", dest.port_id);
+                let search = format!(
+                    "sail plan {} {} next guided quest",
+                    dest.port_id, dest.port_label
+                );
+                let label = format!("[>] Sail -> {}", dest.port_label);
+                let detail = format!("{cmd} — {}", dest.quest_title);
+                consider(&search, &|| PaletteEntry {
+                    insert: cmd.clone(),
+                    label: label.clone(),
+                    detail: detail.clone(),
+                    quest_action: Some(PaletteQuestAction::PrefillCommand),
+                });
+            }
+            let search = format!(
+                "next guided tour offer {} {} {} quest",
+                next_guided.short_label, next_guided.giver_label, next_guided.giver_room_name
+            );
+            let label = format!(
+                "[!] Next Guided ({}/7): {}",
+                next_guided.step, next_guided.short_label
+            );
+            let detail = format!(
+                "Speak with {} ({})",
+                next_guided.giver_label, next_guided.giver_room_name
+            );
+            consider(&search, &|| PaletteEntry {
+                insert: "/quests".to_string(),
+                label: label.clone(),
+                detail: detail.clone(),
+                quest_action: Some(PaletteQuestAction::OpenDialog(QuestTab::Active, 0)),
+            });
         }
         let mut entries = prefix;
         entries.extend(rest);
@@ -13451,6 +13526,56 @@ mod tests {
         assert!(app.palette_open());
         app.feed_input(b"\r");
         assert_eq!(app.line.text(), "+quest/finish q.sell");
+    }
+
+    #[test]
+    fn palette_surfaces_between_steps_next_guided_offer_and_sail_shortcut() {
+        let mut app = app();
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(CHART_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "chart": {
+                    "vantage": { "port": "Ceres Freeport", "body": "ceres" }
+                }
+            }),
+        });
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "completed": [
+                    { "key": "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll", "title": "S1" },
+                    { "key": "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel", "title": "S2" },
+                    { "key": "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery", "title": "S3" }
+                ],
+                "active": [],
+                "available": []
+            }),
+        });
+
+        // Off-station at Ceres between Steps 3 & 4 -> Ctrl-K + "sail" prefills +ship/plan stickney
+        app.feed_input(b"\x0bsail");
+        assert!(app.palette_open());
+        app.feed_input(b"\r");
+        assert_eq!(app.line.text(), "+ship/plan stickney");
+
+        // Escape clears line, then Ctrl-K + "route" prefills the station hop toward Berth Gallery
+        app.feed_input(b"\x1b");
+        app.feed_input(b"\x0broute");
+        assert!(app.palette_open());
+        app.feed_input(b"\r");
+        assert!(!app.line.text().is_empty());
+
+        // Escape clears line, then Ctrl-K + "offer" opens the F11 Active pane with roadmap + Next Guided banner
+        app.feed_input(b"\x1b");
+        app.feed_input(b"\x0boffer");
+        assert!(app.palette_open());
+        assert_eq!(app.palette_entries(), vec!["/quests".to_string()]);
+        app.feed_input(b"\r");
+        assert!(app.quests_overlay.open);
+        assert_eq!(app.quests_overlay.tab, QuestTab::Active);
     }
 
     #[test]
