@@ -14992,5 +14992,85 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestJournalAndDialog_FocusUrgentTurnInAndGuidedOffersWithStepBadges()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestJournalUrgencyAndStepBadgesTest");
+            try
+            {
+                var journal = rootGo.AddComponent<TacSim.UI.TacSimQuestJournal>();
+                journal.BuildUi(rootGo.transform, null);
+                journal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_name"": ""Registry & Co-op Desk"",
+                    ""active"": [
+                        {
+                            ""key"": ""side.parcel"",
+                            ""title"": ""Side Parcel"",
+                            ""category"": ""optional"",
+                            ""giver_id"": ""#30"", ""giver_name"": ""Clerk"",
+                            ""turn_in_id"": ""#30"", ""turn_in_name"": ""Clerk"",
+                            ""can_finish_now"": false
+                        },
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"",
+                            ""title"": ""Stock the Locker and Tanks"",
+                            ""category"": ""guided"",
+                            ""giver_id"": ""#18"", ""giver_name"": ""Ilse Oduya-Brandt"",
+                            ""turn_in_id"": ""#18"", ""turn_in_name"": ""Ilse Oduya-Brandt"",
+                            ""can_finish_now"": true,
+                            ""ready_to_finish"": true,
+                            ""finish_cmd"": ""+quest/complete #18 tok2""
+                        }
+                    ],
+                    ""available"": [
+                        {
+                            ""key"": ""side.audit"",
+                            ""title"": ""Optional Ledger Audit"",
+                            ""category"": ""optional"",
+                            ""giver_id"": ""#18"", ""giver_name"": ""Ilse Oduya-Brandt"",
+                            ""turn_in_id"": ""#18"", ""turn_in_name"": ""Ilse Oduya-Brandt"",
+                            ""accept_cmd"": ""+quest/accept #18 tok_side""
+                        },
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"",
+                            ""title"": ""Metals Down the Corridor"",
+                            ""category"": ""guided"",
+                            ""giver_id"": ""#18"", ""giver_name"": ""Ilse Oduya-Brandt"",
+                            ""turn_in_id"": ""#40"", ""turn_in_name"": ""Jonas"",
+                            ""accept_cmd"": ""+quest/accept #18 tok_g3""
+                        }
+                    ],
+                    ""completed"": []
+                }")));
+
+                // 1. Active sub-tab auto-focuses ready turn-in Step 2/7 ahead of side parcel
+                journal.SetOpen(true, TacSim.UI.QuestJournalTab.Quests);
+                journal.SelectQuestSubTab("active");
+                StringAssert.Contains("Stock the Locker and Tanks", journal.JournalBodySnapshot);
+                StringAssert.Contains("[Step 2/7]", journal.JournalBodySnapshot);
+                StringAssert.Contains("READY TO COMPLETE HERE", journal.JournalBodySnapshot);
+
+                // 2. Available sub-tab auto-focuses Guided Step 3/7 ahead of optional audit
+                journal.SelectQuestSubTab("available");
+                StringAssert.Contains("Metals Down the Corridor", journal.JournalBodySnapshot);
+                StringAssert.Contains("[Step 3/7]", journal.JournalBodySnapshot);
+
+                // 3. NPC Dialog for #18 shows turn-in Step 2/7 first, cycling moves to Guided Step 3/7 before optional audit
+                Assert.IsTrue(journal.OpenNpcQuestDialog("#18"));
+                Assert.AreEqual("tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel", journal.DialogQuestKey);
+                StringAssert.Contains("[Step 2/7]", journal.DialogBodySnapshot);
+                StringAssert.Contains("READY TO COMPLETE HERE", journal.DialogBodySnapshot);
+
+                journal.CycleNpcDialogQuest();
+                Assert.AreEqual("tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery", journal.DialogQuestKey);
+                StringAssert.Contains("[Step 3/7]", journal.DialogBodySnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
