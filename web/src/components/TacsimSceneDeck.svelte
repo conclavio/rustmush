@@ -625,20 +625,31 @@
         </div>
 
         {#if trackedQuest}
+          {@const pillRecover = dockHoldReadiness?.tag === "[RECOVER RIG FIRST]"}
           <button
             type="button"
             class="quest-hud-pill"
-            data-ready={trackedQuest.readyToFinish || trackedQuest.canFinishNow ? "true" : "false"}
+            data-ready={(trackedQuest.readyToFinish || trackedQuest.canFinishNow) && !pillRecover ? "true" : "false"}
+            data-recover={pillRecover ? "true" : "false"}
             onclick={() => app.quests?.openQuestDialog(trackedQuest.key)}
             title="Open quest dialog"
           >
-            <span class="qhud-crest">{trackedQuest.readyToFinish || trackedQuest.canFinishNow ? "?" : "▸"}</span>
+            <span class="qhud-crest">{pillRecover ? "!" : trackedQuest.readyToFinish || trackedQuest.canFinishNow ? "?" : "▸"}</span>
             <span class="qhud-body">
               <strong>{trackedQuest.title}{#if trackedStepNo > 0} [Step {trackedStepNo}/7]{/if}</strong>
               {#if shipTargetDeckLabel}
-                <span>Deck: Go to {shipTargetDeckLabel}{#if trackedQuest.nextStep} · {trackedQuest.nextStep}{/if}</span>
+                <span>Deck: Go to {shipTargetDeckLabel}{#if pillRecover && shipTargetDeckLabel === "Vehicle Bay"}{" "}(Recover Rig){/if}{#if trackedQuest.nextStep}{" "}· {trackedQuest.nextStep}{/if}</span>
               {:else}
                 <span>{trackedQuest.nextStep}</span>
+              {/if}
+              {#if dockHoldReadiness}
+                <span
+                  class="qhud-hold"
+                  class:ready={dockHoldReadiness.ready}
+                  class:recover={pillRecover}
+                >
+                  {dockHoldReadiness.tag} {dockHoldReadiness.text}
+                </span>
               {/if}
             </span>
           </button>
@@ -668,7 +679,7 @@
             <span class="qhud-body">
               <strong>Next Guided ({nextGuidedOffer.step}/7): {nextGuidedOffer.shortLabel}</strong>
               <span>
-                Speak with {nextGuidedOffer.giverLabel} ({nextGuidedOffer.giverRoomName}){#if questDest} · Sail: +ship/plan {questDest.portId}{/if}
+                {#if shipTargetDeckLabel}Deck: Go to {shipTargetDeckLabel} · {/if}Speak with {nextGuidedOffer.giverLabel} ({nextGuidedOffer.giverRoomName}){#if questDest} · Sail: +ship/plan {questDest.portId}{/if}
               </span>
             </span>
           </button>
@@ -1167,6 +1178,17 @@
     box-shadow: 0 0 12px rgba(251, 191, 36, 0.35);
   }
 
+  .quest-hud-pill[data-recover="true"] {
+    border-color: #f87171;
+    background: rgba(48, 12, 16, 0.94);
+    box-shadow: 0 0 12px rgba(248, 113, 113, 0.4);
+  }
+
+  .quest-hud-pill[data-recover="true"] .qhud-crest {
+    background: #f87171;
+    color: #240709;
+  }
+
   .quest-hud-pill:hover {
     filter: brightness(1.12);
   }
@@ -1205,5 +1227,21 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .qhud-body .qhud-hold {
+    margin-top: 0.1rem;
+    color: #fde047;
+    font-family: var(--font-mono);
+    font-size: 0.67rem;
+    font-weight: 700;
+  }
+
+  .qhud-body .qhud-hold.ready {
+    color: #6ee7b7;
+  }
+
+  .qhud-body .qhud-hold.recover {
+    color: #fecaca;
   }
 </style>

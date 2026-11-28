@@ -3630,4 +3630,98 @@ describe("PR #693 Web review regressions (items 1-7, 9-11)", () => {
     ).toBeGreaterThanOrEqual(2);
     deck.unmount();
   });
+
+  it("surfaces live hold readiness, crimson rig-recovery alert & between-steps deck directives inside the 3D quest HUD pill", async () => {
+    const app = new GameApp({
+      url: "ws://test/ws",
+      webSocketFactory: (u) => new FakeSocket(u),
+      random: () => 1,
+    });
+    app.tacsim.view3dOpen = true;
+    app.tacsim.isAboardShip = true;
+    app.tacsim.seatedAtBridgeHelm = false;
+    app.tacsim.serverShipCompartment = "bridge";
+    app.tacsim.ambient = {
+      ...decodeTacsimRoomAmbient(null),
+      docked: false,
+      settledPad: true,
+      port: "ceres",
+    };
+    app.tacsim.trade.hullId = "#99";
+    app.tacsim.trade.stowage = {
+      ...app.tacsim.trade.stowage,
+      cargoKg: 0,
+      propellantKg: 12_000,
+      provisionsCrewDays: 10,
+      cargoLines: [],
+    };
+    app.quests.applyFrame({
+      schema: 1,
+      active: [
+        {
+          key: "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+          title: "Scan, Sound, and Mine a Landing Site",
+          next_room_entry: "room.c07_exchange",
+          next_step: "Recover rig and return to Ceres Exchange",
+          ready_to_finish: true,
+          checkpoints: [
+            { id: "scan_landing_site", title: "Scan site", checked: true, live_ready: true },
+            { id: "sound_mineral_pocket", title: "Sound pocket", checked: true, live_ready: true },
+            { id: "mine_carbon_ore", title: "Mine 1t carbon_ore", checked: true, live_ready: true },
+          ],
+        },
+      ],
+      available: [],
+      completed: [],
+    });
+
+    const deck = render(TacsimSceneDeck, { props: { app, onCmd: vi.fn() } });
+    await tick();
+
+    // 1. Step 6 post-mine with 0t ore stowed while on bridge -> data-recover="true", data-ready="false", Deck: Go to Vehicle Bay (Recover Rig)
+    const pillRecover = deck.container.querySelector(".quest-hud-pill") as HTMLButtonElement;
+    expect(pillRecover).toBeTruthy();
+    expect(pillRecover.getAttribute("data-recover")).toBe("true");
+    expect(pillRecover.getAttribute("data-ready")).toBe("false");
+    expect(pillRecover.textContent).toContain("Deck: Go to Vehicle Bay (Recover Rig)");
+    expect(pillRecover.textContent).toContain("[RECOVER RIG FIRST]");
+
+    // 2. Rig recovered (1t carbon_ore stowed) while in bay -> flips to Deck: Go to Bridge + [ORE HOLD READY]
+    app.tacsim.serverShipCompartment = "bay";
+    app.tacsim.trade.stowage = {
+      ...app.tacsim.trade.stowage,
+      cargoKg: 1000,
+      cargoLines: [{ good: "tacsim:carbon_ore", label: "Carbon Ore", qty: 1, unit: "u", massKg: 1000 }],
+    };
+    await tick();
+    const pillOre = deck.container.querySelector(".quest-hud-pill") as HTMLButtonElement;
+    expect(pillOre.getAttribute("data-recover")).toBe("false");
+    expect(pillOre.getAttribute("data-ready")).toBe("true");
+    expect(pillOre.textContent).toContain("Deck: Go to Bridge");
+    expect(pillOre.textContent).toContain("[ORE HOLD READY]");
+
+    // 3. Between steps aboard ship docked at Stickney on bridge -> Deck: Go to Airlock for Jonas (Step 4/7)
+    app.tacsim.serverShipCompartment = "bridge";
+    app.tacsim.ambient = {
+      ...decodeTacsimRoomAmbient(null),
+      docked: true,
+      settledPad: false,
+      port: "stickney",
+    };
+    app.quests.applyFrame({
+      schema: 1,
+      active: [],
+      available: [],
+      completed: [
+        { key: "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll", title: "S1" },
+        { key: "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel", title: "S2" },
+        { key: "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery", title: "S3" },
+      ],
+    });
+    await tick();
+    const pillNext = deck.container.querySelector(".quest-hud-pill") as HTMLButtonElement;
+    expect(pillNext.textContent).toContain("Next Guided (4/7)");
+    expect(pillNext.textContent).toContain("Deck: Go to Airlock");
+    deck.unmount();
+  });
 });
