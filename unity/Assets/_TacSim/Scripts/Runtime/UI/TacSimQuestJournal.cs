@@ -2275,6 +2275,13 @@ namespace TacSim.UI
                       .Append(MushProtocol.EscapeUnityRichText(pfSummary))
                       .Append("</color>\n");
                 }
+                if (!active.CanFinishNow && !active.ReadyToFinish &&
+                    TryGetSurfaceMiningStatusForQuest(active, out var trkMining))
+                {
+                    sb.Append("<color=#77DDFF>")
+                      .Append(MushProtocol.EscapeUnityRichText(trkMining.FormatPrepHintLine()))
+                      .Append("</color>\n");
+                }
                 if (!active.CanFinishNow && !active.CanCheckNow && !string.IsNullOrEmpty(_trackerRouteRoomName) && _trackerRouteHops > 0)
                 {
                     sb.Append("<color=#FFDD44>Route:</color> ")
