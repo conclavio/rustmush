@@ -682,9 +682,25 @@ pub fn infer_station_port_from_room_entry(room_entry: &str) -> Option<&'static s
 }
 
 impl QuestsSnapshot {
+    /// Default tracked quest key: prefers an active Guided Tour quest over unrelated side jobs.
+    #[must_use]
+    pub fn default_tracked_key(&self) -> Option<&str> {
+        self.active
+            .iter()
+            .find(|q| {
+                GUIDED_TOUR_KEYS.contains(&q.key.as_str())
+                    || q.category.eq_ignore_ascii_case("guided")
+            })
+            .or_else(|| self.active.first())
+            .map(|q| q.key.as_str())
+    }
+
     pub(crate) fn ordered_active<'a>(&'a self, tracked_key: Option<&str>) -> Vec<&'a ActiveQuest> {
         let mut out = Vec::with_capacity(self.active.len());
-        if let Some(tk) = tracked_key
+        let effective_key = tracked_key
+            .filter(|tk| self.active.iter().any(|q| q.key == *tk))
+            .or_else(|| self.default_tracked_key());
+        if let Some(tk) = effective_key
             && let Some(found) = self.active.iter().find(|q| q.key == tk)
         {
             out.push(found);
@@ -952,6 +968,17 @@ impl QuestsSnapshot {
         self.active_ship_target_compartment_for_location(tracked_key, docked_port, false)
     }
 
+    /// Return a single-quest snapshot containing only the currently tracked active quest,
+    /// preventing station/ship wayfinding from leaking into untracked quests in the log.
+    #[must_use]
+    pub fn tracked_only(&self, tracked_key: Option<&str>) -> Option<Self> {
+        let q = self.ordered_active(tracked_key).into_iter().next()?;
+        Some(Self {
+            active: vec![q.clone()],
+            ..Default::default()
+        })
+    }
+
     /// Docked-port and settled-pad aware ship compartment resolver:
     /// - Docked at station (`!settled_pad`) with incomplete Step 6 mining -> `"bridge"` (fly to surface site).
     /// - Settled on a surface pad (or station-docked unset) with incomplete Step 6 mining -> `"bay"`.
@@ -964,14 +991,17 @@ impl QuestsSnapshot {
         docked_port: Option<&str>,
         settled_pad: bool,
     ) -> Option<&'static str> {
-        let mining = self.surface_mining_status(tracked_key);
+        let tracked_snap = self.tracked_only(tracked_key);
+        let mining = tracked_snap
+            .as_ref()
+            .and_then(|s| s.surface_mining_status(tracked_key));
         let docked_station = if settled_pad {
             None
         } else {
             docked_port.filter(|s| !s.is_empty())
         };
         if let Some(docked) = docked_station
-            && let Some(q) = self.ordered_active(tracked_key).into_iter().next()
+            && let Some(q) = tracked_snap.as_ref().and_then(|s| s.active.first())
         {
             let mining_blocking = mining.as_ref().is_some_and(|m| !m.mine_done);
             if (!mining_blocking || q.ready_to_finish || q.can_finish_now)
@@ -992,10 +1022,16 @@ impl QuestsSnapshot {
             }
             return Some("bridge");
         }
-        if self.active_destination_port(tracked_key).is_some() {
+        if tracked_snap
+            .as_ref()
+            .and_then(|s| s.active_destination_port(tracked_key))
+            .is_some()
+        {
             return Some("bridge");
         }
-        if let Some(next) = self.next_guided_offer() {
+        if self.active.is_empty()
+            && let Some(next) = self.next_guided_offer()
+        {
             if let Some(docked) = docked_station
                 && let Some(target_port) = infer_station_port_from_room_entry(next.giver_room_entry)
                 && target_port.eq_ignore_ascii_case(docked)
@@ -1750,6 +1786,18 @@ impl QuestOverlayState {
         self.confirm_abandon = false;
     }
 
+    /// Ensure `tracked_key` points at an active quest, preferring the active Guided Tour
+    /// quest whenever no manual selection is active (or after the tracked quest completes).
+    pub fn sync_tracked_for(&mut self, snap: &QuestsSnapshot) {
+        let still_active = self
+            .tracked_key
+            .as_deref()
+            .is_some_and(|k| snap.active.iter().any(|q| q.key == k));
+        if !still_active {
+            self.tracked_key = snap.default_tracked_key().map(ToOwned::to_owned);
+        }
+    }
+
     /// Cycle the HUD-tracked active quest across `snap.active` in a single action.
     pub fn cycle_tracked(&mut self, snap: &QuestsSnapshot) -> Option<&str> {
         if snap.active.is_empty() {
@@ -1912,9 +1960,7 @@ pub fn render_quest_tracker_lines_with_route_and_stowage(
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let tour = snap.guided_tour_progress();
-    let tracked = tracked_key
-        .and_then(|k| snap.active.iter().find(|q| q.key == k))
-        .or_else(|| snap.active.first());
+    let tracked = snap.ordered_active(tracked_key).into_iter().next();
 
     if let Some(q) = tracked {
         if let Some(ref t) = tour {
@@ -3818,5 +3864,238 @@ mod tests {
         let (offer_badge, offer_color) = offer_only.status_bar_quest_badge().expect("offer badge");
         assert_eq!(offer_badge, "[!] Maren Halvorsen: Offer (F11)");
         assert_eq!(offer_color, Color::Yellow);
+    }
+
+    #[test]
+    fn guided_auto_track_priority_and_tracked_scope_ship_routing_isolation() {
+        let snap = parse_frame(&json!({
+            "schema": 1,
+            "active": [
+                {
+                    "key": "q.side_deimos",
+                    "title": "Deliver Water Ice to Deimos",
+                    "category": "optional",
+                    "next_room_entry": "room.d02_concourse",
+                    "checkpoints": [{
+                        "id": "deliver_water_ice",
+                        "title": "Deliver 3t water ice to Voltaire Anchorage",
+                        "instructions": "Run +ship/plan deimos and +market/sell water_ice.",
+                        "room_entry": "room.d02_concourse",
+                        "checked": false,
+                        "live_ready": false
+                    }]
+                },
+                {
+                    "key": GUIDED_TOUR_KEYS[5],
+                    "title": "Scan, Sound, and Mine a Landing Site",
+                    "category": "guided",
+                    "next_room_entry": "room.c07_exchange",
+                    "checkpoints": [
+                        { "id": "scan_landing_site", "title": "Surface scan", "instructions": "+tv/1 scan go", "checked": false, "live_ready": false },
+                        { "id": "mine_carbon_ore", "title": "Mine 1t carbon_ore", "instructions": "+tv/1 mine go", "checked": false, "live_ready": false }
+                    ]
+                }
+            ]
+        }));
+
+        let mut overlay = QuestOverlayState::default();
+        overlay.sync_tracked_for(&snap);
+        assert_eq!(overlay.tracked_key.as_deref(), Some(GUIDED_TOUR_KEYS[5]));
+        // Tracking Step 6 on settled pad -> Vehicle Bay
+        assert_eq!(
+            snap.active_ship_target_compartment_for_location(
+                overlay.tracked_key.as_deref(),
+                None,
+                true
+            ),
+            Some("bay")
+        );
+
+        // Tracking side Deimos delivery -> Bridge (never leaks Step 6 bay routing!), Airlock when docked at Deimos
+        assert_eq!(
+            snap.active_ship_target_compartment_for_location(
+                Some("q.side_deimos"),
+                Some("ceres"),
+                false
+            ),
+            Some("bridge")
+        );
+        assert_eq!(
+            snap.active_ship_target_compartment_for_location(
+                Some("q.side_deimos"),
+                Some("deimos"),
+                false
+            ),
+            Some("airlock")
+        );
+    }
+
+    #[test]
+    fn full_seven_step_guided_onboarding_walkthrough_to_corridor_captain() {
+        let mut completed: Vec<Value> = Vec::new();
+        let mut milestones = QuestMilestoneTracker::default();
+
+        // Step 1: Maren offer -> enroll Co-op -> Ilse turn-in
+        let s1_offer = parse_frame(&json!({
+            "schema": 1,
+            "room_markers": [{ "npc_id": "#11", "npc_name": "Maren Halvorsen", "marker": "available", "quest_key": GUIDED_TOUR_KEYS[0] }],
+            "available": [{ "key": GUIDED_TOUR_KEYS[0], "title": "First Papers at the Registry", "giver_name": "Maren Halvorsen", "accept_cmd": "+quest/accept #11 tok1" }],
+            "completed": completed
+        }));
+        let _ = milestones.observe(&s1_offer);
+        assert_eq!(
+            s1_offer.status_bar_quest_badge().map(|(b, _)| b).as_deref(),
+            Some("[!] Maren Halvorsen: Offer (F11)")
+        );
+
+        let s1_active = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[0],
+                "title": "First Papers at the Registry",
+                "category": "guided",
+                "next_room_entry": "room.c05_registry",
+                "checkpoints": [{ "id": "enroll_coop", "title": "Enroll Co-op", "instructions": "+coop/enroll", "room_entry": "room.c05_registry", "checked": false, "live_ready": false }]
+            }],
+            "completed": completed
+        }));
+        assert!(
+            milestones
+                .observe(&s1_active)
+                .iter()
+                .any(|m| m.kind == QuestMilestoneKind::Accepted)
+        );
+        assert_eq!(
+            QuestsSnapshot::suggested_action_for(&s1_active.active[0])
+                .map(|a| a.command)
+                .as_deref(),
+            Some("+coop/enroll ")
+        );
+        completed.push(json!({ "key": GUIDED_TOUR_KEYS[0], "title": "Step 1" }));
+
+        // Between Step 1 and Step 2 -> Next Guided points to Ilse at Registry
+        let between12 = parse_frame(&json!({ "schema": 1, "completed": completed }));
+        assert_eq!(between12.next_guided_offer().map(|n| n.step), Some(2));
+
+        // Step 2: Buy 10 provisions & 5t propellant
+        let s2 = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[1],
+                "title": "Stock the Locker and Tanks",
+                "checkpoints": [
+                    { "id": "buy_provisions", "title": "Buy 10 provisions", "instructions": "Buy 10 provisions.", "checked": false, "live_ready": false },
+                    { "id": "buy_propellant", "title": "Buy 5t propellant", "instructions": "Buy 5t propellant.", "checked": false, "live_ready": false }
+                ]
+            }],
+            "completed": completed
+        }));
+        assert_eq!(s2.active_trade_needs(None).len(), 2);
+        completed.push(json!({ "key": GUIDED_TOUR_KEYS[1], "title": "Step 2" }));
+
+        // Step 3: Metals to Stickney Yards
+        let s3 = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[2],
+                "title": "Metals Down the Corridor",
+                "next_room_entry": "room.p07_receiving",
+                "checkpoints": [{ "id": "deliver_metals", "title": "Deliver 5t metals to Stickney", "instructions": "Buy 5t metals, +ship/plan stickney, +market/sell.", "room_entry": "room.p07_receiving", "checked": false, "live_ready": false }]
+            }],
+            "completed": completed
+        }));
+        assert_eq!(
+            s3.active_destination_port(None).map(|d| d.port_id),
+            Some("stickney".to_string())
+        );
+        assert_eq!(
+            s3.active_ship_target_compartment_for_location(None, Some("stickney"), false),
+            Some("airlock")
+        );
+        completed.push(json!({ "key": GUIDED_TOUR_KEYS[2], "title": "Step 3" }));
+
+        // Step 4: Return 2t industrial_parts to Ceres
+        let s4 = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[3],
+                "title": "A Return Load for Ceres",
+                "next_room_entry": "room.c08_chandlery",
+                "checkpoints": [{ "id": "return_industrial_parts", "title": "Return 2t industrial parts to Ceres", "instructions": "Buy 2t industrial_parts, +ship/plan ceres, +market/sell.", "room_entry": "room.c08_chandlery", "checked": false, "live_ready": false }]
+            }],
+            "completed": completed
+        }));
+        assert_eq!(
+            s4.active_destination_port(None).map(|d| d.port_id),
+            Some("ceres".to_string())
+        );
+        completed.push(json!({ "key": GUIDED_TOUR_KEYS[3], "title": "Step 4" }));
+
+        // Step 5: Refit Dray to Dray-P prospector
+        let s5 = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[4],
+                "title": "Refit the Dray for Surface Mining",
+                "checkpoints": [{ "id": "refit_dray_p", "title": "Refit Dray-P", "instructions": "+coop/refit prospector", "checked": false, "live_ready": false }]
+            }],
+            "completed": completed
+        }));
+        assert_eq!(
+            QuestsSnapshot::suggested_action_for(&s5.active[0])
+                .map(|a| a.command)
+                .as_deref(),
+            Some("+coop/refit prospector")
+        );
+        completed.push(json!({ "key": GUIDED_TOUR_KEYS[4], "title": "Step 5" }));
+
+        // Step 6: Surface scan/sound/mine carbon_ore -> return to Ceres
+        let s6 = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[5],
+                "title": "Scan, Sound, and Mine a Landing Site",
+                "next_room_entry": "room.c07_exchange",
+                "checkpoints": [
+                    { "id": "scan_landing_site", "title": "Surface scan", "instructions": "+tv/1 scan go", "checked": false, "live_ready": false },
+                    { "id": "mine_carbon_ore", "title": "Mine 1t carbon_ore", "instructions": "+tv/1 mine go", "checked": false, "live_ready": false }
+                ]
+            }],
+            "completed": completed
+        }));
+        assert_eq!(
+            s6.surface_mining_status(None).map(|m| m.recommended_family),
+            Some("carbon".to_string())
+        );
+        assert_eq!(
+            s6.active_ship_target_compartment_for_location(None, None, true),
+            Some("bay")
+        );
+        completed.push(json!({ "key": GUIDED_TOUR_KEYS[5], "title": "Step 6" }));
+
+        // Step 7: Sell mined carbon_ore at Stickney -> 7/7 Corridor Captain mastery
+        let s7 = parse_frame(&json!({
+            "schema": 1,
+            "active": [{
+                "key": GUIDED_TOUR_KEYS[6],
+                "title": "Deliver Your Mined Ore to Market",
+                "next_room_entry": "room.p11_service",
+                "checkpoints": [{ "id": "sell_carbon_ore", "title": "Sell 1t carbon_ore at Stickney", "instructions": "+ship/plan stickney and +market/sell carbon_ore.", "room_entry": "room.p11_service", "checked": false, "live_ready": false }]
+            }],
+            "completed": completed
+        }));
+        assert_eq!(
+            s7.active_destination_port(None).map(|d| d.port_id),
+            Some("stickney".to_string())
+        );
+        completed.push(json!({ "key": GUIDED_TOUR_KEYS[6], "title": "Step 7" }));
+
+        let mastered = parse_frame(&json!({ "schema": 1, "completed": completed }));
+        let prog = mastered
+            .guided_tour_progress()
+            .expect("guided tour progress");
+        assert!(prog.all_done);
+        assert_eq!(prog.completed, 7);
+        assert!(mastered.next_guided_offer().is_none());
     }
 }
