@@ -402,9 +402,12 @@ export interface QuestSurfaceMiningStatus {
 }
 
 export interface QuestMilestone {
-  kind: "accepted" | "ready" | "completed";
+  kind: "accepted" | "checkpoint" | "ready" | "completed" | "abandoned";
   key: string;
   title: string;
+  detail?: string;
+  tourAllDone?: boolean;
+  restartable?: boolean;
 }
 
 export interface GuidedTourProgress {
@@ -1217,8 +1220,11 @@ export class QuestsStore {
 
   #hydrated = false;
   #seenActive = new Set<string>();
+  #seenActiveMeta = new Map<string, { title: string; allowRestart: boolean }>();
+  #seenCheckpoints = new Set<string>();
   #seenReady = new Set<string>();
   #seenCompleted = new Set<string>();
+  #seenTourAllDone = false;
 
   get trackedQuest(): ActiveQuestView | null {
     if (this.active.length === 0) return null;
@@ -1295,11 +1301,32 @@ export class QuestsStore {
     const nextAvailable = parseAvailable(o["available"]);
     const nextCompleted = parseCompleted(o["completed"]);
 
+    const nextActiveKeys = new Set(nextActive.map((a) => a.key).filter(Boolean));
+    const nextCompletedKeys = new Set(nextCompleted.map((c) => c.key).filter(Boolean));
+    const nextTourAllDone = GUIDED_TOUR_KEYS.every((k) => nextCompletedKeys.has(k));
+
     const milestones: QuestMilestone[] = [];
     if (this.#hydrated) {
+      const newlyCompletedTour = nextTourAllDone && !this.#seenTourAllDone;
       for (const c of nextCompleted) {
         if (c.key && !this.#seenCompleted.has(c.key)) {
-          milestones.push({ kind: "completed", key: c.key, title: c.title });
+          const isMasteryCompletion = newlyCompletedTour && GUIDED_TOUR_KEYS.includes(c.key);
+          milestones.push({
+            kind: "completed",
+            key: c.key,
+            title: c.title,
+            ...(isMasteryCompletion ? { tourAllDone: true } : {}),
+          });
+        }
+      }
+      for (const [prevKey, prevMeta] of this.#seenActiveMeta) {
+        if (!nextActiveKeys.has(prevKey) && !nextCompletedKeys.has(prevKey)) {
+          milestones.push({
+            kind: "abandoned",
+            key: prevKey,
+            title: prevMeta.title,
+            restartable: prevMeta.allowRestart,
+          });
         }
       }
       for (const a of nextActive) {
@@ -1309,18 +1336,47 @@ export class QuestsStore {
           milestones.push({ kind: "accepted", key: a.key, title: a.title });
         } else if (isReady && !this.#seenReady.has(a.key)) {
           milestones.push({ kind: "ready", key: a.key, title: a.title });
+        } else {
+          for (const cp of a.checkpoints) {
+            if (!cp.id || (!cp.checked && !cp.liveReady)) continue;
+            const cpKey = `${a.key}::${cp.id}`;
+            if (!this.#seenCheckpoints.has(cpKey)) {
+              milestones.push({
+                kind: "checkpoint",
+                key: a.key,
+                title: a.title,
+                detail: cp.title,
+              });
+            }
+          }
         }
       }
     }
 
     this.#hydrated = true;
-    this.#seenActive = new Set(nextActive.map((a) => a.key).filter(Boolean));
+    this.#seenActive = nextActiveKeys;
+    this.#seenActiveMeta = new Map(
+      nextActive
+        .filter((a) => Boolean(a.key))
+        .map((a) => [a.key, { title: a.title, allowRestart: a.allowRestart }]),
+    );
+    const nextCheckpoints = new Set<string>();
+    for (const a of nextActive) {
+      if (!a.key) continue;
+      for (const cp of a.checkpoints) {
+        if (cp.id && (cp.checked || cp.liveReady)) {
+          nextCheckpoints.add(`${a.key}::${cp.id}`);
+        }
+      }
+    }
+    this.#seenCheckpoints = nextCheckpoints;
     this.#seenReady = new Set(
       nextActive.filter((a) => a.readyToFinish || a.canFinishNow).map((a) => a.key).filter(Boolean),
     );
     for (const c of nextCompleted) {
       if (c.key) this.#seenCompleted.add(c.key);
     }
+    this.#seenTourAllDone = nextTourAllDone;
 
     this.loaded = true;
     this.roomId = asStr(o["room_id"]);
@@ -1413,7 +1469,10 @@ export class QuestsStore {
     this.logOpen = false;
     this.#hydrated = false;
     this.#seenActive.clear();
+    this.#seenActiveMeta.clear();
+    this.#seenCheckpoints.clear();
     this.#seenReady.clear();
     this.#seenCompleted.clear();
+    this.#seenTourAllDone = false;
   }
 }

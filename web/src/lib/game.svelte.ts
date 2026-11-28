@@ -1280,8 +1280,14 @@ export class GameApp {
         const milestones = this.quests.applyFrame(d.data);
         const ts = Date.now();
         for (const m of milestones) {
-          this.notifications.fromQuestMilestone(m.kind, m.title, ts);
-          tacsimAudio.play(m.kind === "accepted" ? "ui_chime" : "market_fill");
+          this.notifications.fromQuestMilestone(m.kind, m.title, ts, {
+            detail: m.detail,
+            tourAllDone: m.tourAllDone,
+            restartable: m.restartable,
+          });
+          tacsimAudio.play(
+            m.kind === "completed" || m.kind === "ready" ? "market_fill" : "ui_chime",
+          );
         }
       }
     } else if (isViewFeed(d.feed)) {

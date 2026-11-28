@@ -103,19 +103,31 @@ export class NotificationStore {
     });
   }
 
-  /** Surface a post-hydration quest milestone (`accepted` / `ready` / `completed`) in the unified toast tray. */
+  /** Surface a post-hydration quest milestone in the unified toast tray. */
   fromQuestMilestone(
-    kind: "accepted" | "ready" | "completed",
+    kind: "accepted" | "checkpoint" | "ready" | "completed" | "abandoned",
     title: string,
     ts: number,
+    opts?: { detail?: string; tourAllDone?: boolean; restartable?: boolean },
   ): Notification | null {
     const label = title.trim() || "Quest";
+    const detail = opts?.detail?.trim() || "";
     const text =
       kind === "completed"
-        ? `Quest Completed: ${label}`
+        ? opts?.tourAllDone
+          ? `★ Corridor Captain (7/7) — Guided Tour Complete: ${label}`
+          : `Quest Completed: ${label}`
         : kind === "ready"
           ? `Ready to Turn In [?]: ${label}`
-          : `Quest Accepted: ${label}`;
+          : kind === "checkpoint"
+            ? detail
+              ? `Objective Complete: ${detail}`
+              : `Objective Updated: ${label}`
+            : kind === "abandoned"
+              ? opts?.restartable
+                ? `Quest Abandoned (restartable anytime): ${label}`
+                : `Quest Abandoned: ${label}`
+              : `Quest Accepted: ${label}`;
     return this.add({
       serverId: this.#nextQuestNoticeId--,
       severity: "info",
