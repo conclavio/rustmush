@@ -2522,6 +2522,9 @@ impl TuiApp {
                         self.port_walk.observe_quest_coop_action(
                             self.quests_snap.active_coop_action(tracked),
                         );
+                        self.port_walk.observe_quest_mining_status(
+                            self.quests_snap.surface_mining_status(tracked),
+                        );
                         let milestones = self.quest_milestones.observe(&self.quests_snap);
                         for m in &milestones {
                             self.push_local_line(&m.notice_text());
