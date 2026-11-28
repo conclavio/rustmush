@@ -45,7 +45,13 @@
 
   const npcActiveQuests = $derived(
     q.dialogNpcId
-      ? q.active.filter((item) => item.turnInId === q.dialogNpcId || item.giverId === q.dialogNpcId)
+      ? q.active
+          .filter((item) => item.turnInId === q.dialogNpcId || item.giverId === q.dialogNpcId)
+          .sort((a, b) => {
+            const ra = a.canFinishNow || a.readyToFinish || a.canCheckNow ? 0 : 1;
+            const rb = b.canFinishNow || b.readyToFinish || b.canCheckNow ? 0 : 1;
+            return ra - rb;
+          })
       : [],
   );
 
@@ -67,6 +73,18 @@
         ? q.available.find((item) => item.key === q.dialogQuestKey) ?? null
         : npcAvailableQuests[0] ?? null,
   );
+
+  function selectDialogQuest(key: string): void {
+    confirmAbandonKey = null;
+    confirmDeclineKey = null;
+    q.dialogQuestKey = key;
+  }
+
+  function switchLogTab(tab: "active" | "available" | "completed"): void {
+    confirmAbandonKey = null;
+    confirmDeclineKey = null;
+    q.logTab = tab;
+  }
 
   function runAndReset(cmd: string, closeDialog = false): void {
     confirmAbandonKey = null;
@@ -104,12 +122,14 @@
     >
       <header class="qhdr">
         <div class="qhdr-title">
-          {#if npcMarker}
-            <span class="qbadge" data-marker={npcMarker.marker}>{npcMarker.symbol}</span>
-          {:else if selectedOffer}
+          {#if selectedOffer}
             <span class="qbadge" data-marker="available">!</span>
-          {:else if selectedActive?.canFinishNow || selectedActive?.readyToFinish}
+          {:else if selectedActive?.canFinishNow || selectedActive?.readyToFinish || selectedActive?.canCheckNow}
             <span class="qbadge" data-marker="turn_in">?</span>
+          {:else if selectedActive}
+            <span class="qbadge" data-marker="in_progress">?</span>
+          {:else if npcMarker}
+            <span class="qbadge" data-marker={npcMarker.marker}>{npcMarker.symbol}</span>
           {:else}
             <span class="qbadge" data-marker="in_progress">?</span>
           {/if}
@@ -142,9 +162,9 @@
               type="button"
               class="qpick"
               class:selected={selectedActive?.key === item.key}
-              onclick={() => (q.dialogQuestKey = item.key)}
+              onclick={() => selectDialogQuest(item.key)}
             >
-              <span class="mini-sym" data-marker={item.readyToFinish || item.canCheckNow ? "turn_in" : "in_progress"}>?</span>
+              <span class="mini-sym" data-marker={item.canFinishNow || item.readyToFinish || item.canCheckNow ? "turn_in" : "in_progress"}>?</span>
               {item.title}
             </button>
           {/each}
@@ -153,7 +173,7 @@
               type="button"
               class="qpick"
               class:selected={selectedOffer?.key === item.key}
-              onclick={() => (q.dialogQuestKey = item.key)}
+              onclick={() => selectDialogQuest(item.key)}
             >
               <span class="mini-sym" data-marker="available">!</span>
               {item.title}
@@ -481,13 +501,13 @@
       {/if}
 
       <div class="log-tabs" role="tablist">
-        <button type="button" class="ltab" class:active={q.logTab === "active"} onclick={() => (q.logTab = "active")}>
+        <button type="button" class="ltab" class:active={q.logTab === "active"} onclick={() => switchLogTab("active")}>
           Active ({q.active.length})
         </button>
-        <button type="button" class="ltab" class:active={q.logTab === "available"} onclick={() => (q.logTab = "available")}>
+        <button type="button" class="ltab" class:active={q.logTab === "available"} onclick={() => switchLogTab("available")}>
           Available Here ({q.available.length})
         </button>
-        <button type="button" class="ltab" class:active={q.logTab === "completed"} onclick={() => (q.logTab = "completed")}>
+        <button type="button" class="ltab" class:active={q.logTab === "completed"} onclick={() => switchLogTab("completed")}>
           Completed ({q.completed.length})
         </button>
       </div>
@@ -597,6 +617,25 @@
                 <div class="qcard-actions">
                   <button type="button" class="btn sm primary" onclick={() => runAndReset(offer.acceptCmd, false)}>Accept</button>
                   <button type="button" class="btn sm" onclick={() => q.openQuestDialog(offer.key)}>Read Full Offer</button>
+                  {#if !offer.allowRestart && offer.declineCmd}
+                    {#if confirmDeclineKey === offer.key}
+                      <button
+                        type="button"
+                        class="btn sm danger"
+                        onclick={() => runAndReset(offer.declineCmd, false)}
+                      >
+                        Confirm Permanent Decline
+                      </button>
+                    {:else}
+                      <button
+                        type="button"
+                        class="btn sm ghost-danger"
+                        onclick={() => (confirmDeclineKey = offer.key)}
+                      >
+                        Decline Permanently
+                      </button>
+                    {/if}
+                  {/if}
                 </div>
               </article>
             {/each}
