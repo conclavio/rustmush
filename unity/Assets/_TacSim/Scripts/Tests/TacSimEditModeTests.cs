@@ -15126,5 +15126,73 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ExchangeModal_SortsQuestMatchingListingsFirst()
+        {
+            var rootGo = new UnityEngine.GameObject("ExchangeQuestSortFirstTest");
+            try
+            {
+                var tradeState = new TacSim.World.TacSimTradeAndShipState();
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.BindTradeState(tradeState);
+
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""balance_text"": ""5,000 cr"",
+                    ""listings"": [
+                        { ""id"": 101, ""side"": ""ask"", ""good"": ""tacsim:silicates"", ""good_label"": ""Silicates"", ""available_qty"": 30, ""unit_price_minor"": 500, ""price_text"": ""5.00 cr"", ""funded"": true, ""vendor_name"": ""Ceres Depot"" },
+                        { ""id"": 102, ""side"": ""ask"", ""good"": ""tacsim:metals"", ""good_label"": ""Metals"", ""available_qty"": 25, ""unit_price_minor"": 1500, ""price_text"": ""15.00 cr"", ""funded"": true, ""vendor_name"": ""Ceres Exchange"" },
+                        { ""id"": 103, ""side"": ""bid"", ""good"": ""tacsim:carbon_ore"", ""good_label"": ""Carbon Ore"", ""available_qty"": 20, ""unit_price_minor"": 4500, ""price_text"": ""45.00 cr"", ""funded"": true, ""vendor_name"": ""Kasei Receiving"" }
+                    ]
+                }"));
+
+                // 1. Without active quest -> raw order preserved (Silicates #101 first)
+                hud.OpenTradeAndSailingModal("CERES EXCHANGE", openSailingTab: false);
+                Assert.AreEqual(101UL, hud.FirstExchangeListingIdSnapshot);
+
+                // 2. Activate Step 3 metals haul -> Metals ASK #102 floats to card 0
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"",
+                        ""title"": ""Metals Down the Corridor"",
+                        ""checkpoints"": [{
+                            ""id"": ""deliver_metals"",
+                            ""title"": ""Buy 5t metals and deliver to Stickney"",
+                            ""instructions"": ""Buy 5t metals at Exchange and +market/sell at Stickney."",
+                            ""checked"": false, ""live_ready"": false
+                        }]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                Assert.AreEqual(102UL, hud.FirstExchangeListingIdSnapshot);
+
+                // 3. Activate Step 7 sell carbon_ore -> Carbon Ore BID #103 floats to card 0
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore"",
+                        ""title"": ""Deliver Your Mined Ore to Market"",
+                        ""checkpoints"": [{
+                            ""id"": ""sell_carbon_ore"",
+                            ""title"": ""Sell 1t carbon_ore at Stickney"",
+                            ""instructions"": ""Run +market/sell for carbon_ore."",
+                            ""checked"": false, ""live_ready"": false
+                        }]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                Assert.AreEqual(103UL, hud.FirstExchangeListingIdSnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
