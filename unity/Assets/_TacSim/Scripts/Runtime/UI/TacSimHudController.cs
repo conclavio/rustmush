@@ -2568,6 +2568,16 @@ namespace TacSim.UI
             SwitchTradeTerminalTab(sailingTab ? TradeTerminalTab.Sailing : TradeTerminalTab.Exchange, autoQuery: false);
         }
 
+        private string ResolveActiveQuestStepTag()
+        {
+            if (QuestJournal == null) return string.Empty;
+            var tracked = QuestJournal.GetTrackedActiveQuest();
+            int step = tracked != null ? TacSimQuestJournal.GuidedStepNumber(tracked.Key) : 0;
+            if (step <= 0 && QuestJournal.TryGetNextGuidedOffer(out var nextOffer))
+                step = nextOffer.Step;
+            return step > 0 ? $"[Step {step}/7]" : string.Empty;
+        }
+
         private void RefreshEconomyPanelsQuestGuidance()
         {
             if (EconomyPanels == null || QuestJournal == null) return;
@@ -2603,7 +2613,8 @@ namespace TacSim.UI
                 refitSummary,
                 refitReady,
                 questDestPortLabel: destPortLabel,
-                hasSurfaceMiningQuest: hasMining);
+                hasSurfaceMiningQuest: hasMining,
+                questStepTag: ResolveActiveQuestStepTag());
         }
 
         public void SwitchTradeTerminalTab(TradeTerminalTab tab, bool autoQuery = true)
@@ -2804,9 +2815,11 @@ namespace TacSim.UI
             {
                 SetRect(_sailingQuestBannerText.rectTransform, new Vector2(0f, 0f), new Vector2(1f, 1f),
                     new Vector2(10f, 0f), new Vector2(showExchangeJump ? -270f : -180f, 0f));
+                string stepTag = ResolveActiveQuestStepTag();
+                string stepSuffix = string.IsNullOrEmpty(stepTag) ? string.Empty : $" {stepTag}";
                 _sailingQuestBannerText.text = hasPreflight
-                    ? $"[QUEST] Dest: {hint.PortLabel.ToUpperInvariant()}  |  {SailingPreflightSummarySnapshot}"
-                    : $"[QUEST] Destination: {hint.PortLabel.ToUpperInvariant()} — {hint.QuestTitle}";
+                    ? $"[QUEST] Dest: {hint.PortLabel.ToUpperInvariant()}  |  {SailingPreflightSummarySnapshot}{stepSuffix}"
+                    : $"[QUEST] Destination: {hint.PortLabel.ToUpperInvariant()} — {hint.QuestTitle}{stepSuffix}";
             }
 
             float shift = hasDest ? -32f : 0f;
@@ -3111,7 +3124,9 @@ namespace TacSim.UI
                                 extraPart = esb.ToString();
                             }
                         }
-                        _exchangeQuestBannerText.text = $"<color=#FFDD44>[QUEST]</color> {verb} <b>{questNeed.TargetQuantity}</b> × <b>{MushProtocol.EscapeUnityRichText(itemLabel)}</b>  <color=#BBD4E6>— {MushProtocol.EscapeUnityRichText(questNeed.QuestTitle)}</color>{holdPart}{extraPart}";
+                        string stepTag = ResolveActiveQuestStepTag();
+                        string stepSuffix = string.IsNullOrEmpty(stepTag) ? string.Empty : $" <color=#FFDD44>{stepTag}</color>";
+                        _exchangeQuestBannerText.text = $"<color=#FFDD44>[QUEST]</color> {verb} <b>{questNeed.TargetQuantity}</b> × <b>{MushProtocol.EscapeUnityRichText(itemLabel)}</b>  <color=#BBD4E6>— {MushProtocol.EscapeUnityRichText(questNeed.QuestTitle)}</color>{holdPart}{extraPart}{stepSuffix}";
                     }
                     if (_exchangeQuestQtyBtnLbl != null)
                         _exchangeQuestQtyBtnLbl.text = $"SET QUEST QTY ({questNeed.TargetQuantity})";
@@ -3443,17 +3458,6 @@ namespace TacSim.UI
                     : (offer != null ? offer.Title : (active != null ? active.Title : string.Empty));
             }
 
-            int extraQuests = Math.Max(0, distinctKeys.Count - 1);
-            string moreSuffix = extraQuests > 0 ? $" (+{extraQuests} more)" : string.Empty;
-            string titleSuffix = !string.IsNullOrEmpty(title) ? $": {title}" : string.Empty;
-            string dlgLabel;
-            if (turnInUrgent)
-                dlgLabel = $"[?] TURN IN QUEST{titleSuffix}{moreSuffix}";
-            else if ((marker != null && string.Equals(marker.Marker, "available", StringComparison.OrdinalIgnoreCase)) || offer != null)
-                dlgLabel = $"[!] QUEST DIALOG{titleSuffix}{moreSuffix}";
-            else
-                dlgLabel = $"[?] QUEST DIALOG{titleSuffix}{moreSuffix}";
-
             string targetNpcId = marker != null && !string.IsNullOrEmpty(marker.NpcId)
                 ? marker.NpcId
                 : (turnInUrgent && active != null && !string.IsNullOrEmpty(active.TurnInId)
@@ -3464,6 +3468,19 @@ namespace TacSim.UI
             string targetKey = turnInUrgent
                 ? (active != null ? active.Key : marker?.QuestKey)
                 : (offer != null ? offer.Key : (active != null ? active.Key : marker?.QuestKey));
+
+            int extraQuests = Math.Max(0, distinctKeys.Count - 1);
+            string moreSuffix = extraQuests > 0 ? $" (+{extraQuests} more)" : string.Empty;
+            int targetStep = TacSimQuestJournal.GuidedStepNumber(targetKey);
+            string stepSuffix = targetStep > 0 ? $" [Step {targetStep}/7]" : string.Empty;
+            string titleSuffix = !string.IsNullOrEmpty(title) ? $": {title}" : string.Empty;
+            string dlgLabel;
+            if (turnInUrgent)
+                dlgLabel = $"[?] TURN IN QUEST{titleSuffix}{moreSuffix}{stepSuffix}";
+            else if ((marker != null && string.Equals(marker.Marker, "available", StringComparison.OrdinalIgnoreCase)) || offer != null)
+                dlgLabel = $"[!] QUEST DIALOG{titleSuffix}{moreSuffix}{stepSuffix}";
+            else
+                dlgLabel = $"[?] QUEST DIALOG{titleSuffix}{moreSuffix}{stepSuffix}";
 
             CreateButton(_modalButtonsRoot, dlgLabel, new Color(0.68f, 0.48f, 0.12f), () =>
             {

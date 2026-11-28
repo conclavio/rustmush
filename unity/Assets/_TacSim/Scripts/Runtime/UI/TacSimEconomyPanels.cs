@@ -243,10 +243,12 @@ namespace TacSim.UI
             string refitReadinessSummary,
             bool refitReady,
             string questDestPortLabel = null,
-            bool hasSurfaceMiningQuest = false)
+            bool hasSurfaceMiningQuest = false,
+            string questStepTag = null)
         {
             _questHistorySlug = (tradeCommoditySlug ?? string.Empty).Trim().ToLowerInvariant();
             _questHistoryTitle = (tradeQuestTitle ?? string.Empty).Trim();
+            string stepSuffix = string.IsNullOrWhiteSpace(questStepTag) ? string.Empty : $" {questStepTag.Trim()}";
 
             bool showHist = !string.IsNullOrEmpty(_questHistorySlug);
             if (_historyQuestBanner != null)
@@ -256,7 +258,7 @@ namespace TacSim.UI
                 {
                     string lbl = _questHistorySlug.Replace('_', ' ').ToUpperInvariant();
                     string titleSuffix = string.IsNullOrEmpty(_questHistoryTitle) ? string.Empty : $" — {_questHistoryTitle}";
-                    _historyQuestLabel.text = $"[QUEST] 24-WEEK TREND: {lbl}{titleSuffix}";
+                    _historyQuestLabel.text = $"[QUEST] 24-WEEK TREND: {lbl}{titleSuffix}{stepSuffix}";
                 }
             }
             if (_historyViewportRect != null)
@@ -275,7 +277,7 @@ namespace TacSim.UI
                     {
                         string hdr = string.IsNullOrEmpty(coopActionLabel) ? "REFIT DRAY-P" : coopActionLabel.ToUpperInvariant();
                         string detail = string.IsNullOrEmpty(refitReadinessSummary) ? _industryQuestCommand : refitReadinessSummary;
-                        _industryQuestLabel.text = $"[QUEST] {hdr} — {detail}";
+                        _industryQuestLabel.text = $"[QUEST] {hdr} — {detail}{stepSuffix}";
                     }
                     if (_industryQuestBtnLabel != null)
                         _industryQuestBtnLabel.text = $"Run {_industryQuestCommand}";
@@ -300,8 +302,8 @@ namespace TacSim.UI
                     if (_jobsQuestLabel != null)
                     {
                         _jobsQuestLabel.text = hasSurfaceMiningQuest
-                            ? "[QUEST] Surface Survey Commissions — check open Ceres survey contracts (+market/jobs survey)"
-                            : $"[QUEST] Corridor Haulage -> {questDestPortLabel.Trim()} — stack bonus freight (+market/jobs haul)";
+                            ? $"[QUEST] Surface Survey Commissions — check open Ceres survey contracts (+market/jobs survey){stepSuffix}"
+                            : $"[QUEST] Corridor Haulage -> {questDestPortLabel.Trim()} — stack bonus freight (+market/jobs haul){stepSuffix}";
                     }
                     if (_jobsQuestBtnLabel != null)
                         _jobsQuestBtnLabel.text = hasSurfaceMiningQuest ? "Filter Surveys" : "Filter Haulage";
