@@ -4962,10 +4962,12 @@ impl TuiApp {
         self.port_walk
             .observe_quest_objective_room(self.quests_snap.active_objective_room(tracked));
         self.port_walk.observe_quest_ship_target(
-            self.quests_snap.active_ship_target_compartment_for_port(
-                tracked,
-                self.port_walk.docked_port_slug(),
-            ),
+            self.quests_snap
+                .active_ship_target_compartment_for_location(
+                    tracked,
+                    self.port_walk.docked_port_slug(),
+                    self.port_walk.settled_pad(),
+                ),
         );
         self.port_walk
             .observe_quest_coop_action(self.quests_snap.active_coop_action(tracked));

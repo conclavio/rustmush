@@ -477,6 +477,7 @@ pub struct PortWalkState {
     berth_docked_hulls: Vec<DockedHullInfo>,
     simulator: Option<SimulatorState>,
     docked: bool,
+    settled_pad: bool,
     docked_port: Option<String>,
     server_location_key: String,
     active_location_key: String,
@@ -590,6 +591,7 @@ impl PortWalkState {
             berth_docked_hulls: Vec::new(),
             simulator: None,
             docked: true,
+            settled_pad: false,
             docked_port: None,
             server_location_key: "room.c03_arrivals".to_string(),
             active_location_key: "room.c03_arrivals".to_string(),
@@ -1109,14 +1111,32 @@ impl PortWalkState {
         self.quest_stowage_readiness().is_some_and(|r| !r.ready)
     }
 
-    /// Normalized corridor port slug while aboard a docked ship (e.g. `"ceres"`, `"stickney"`).
+    /// Normalized corridor port slug while aboard a station-docked ship (e.g. `"ceres"`, `"stickney"`).
+    /// Returns `None` while settled on a planetary surface landing pad.
     #[must_use]
     pub fn docked_port_slug(&self) -> Option<&str> {
-        if self.aboard_ship && self.docked {
+        if self.aboard_ship && self.docked && !self.settled_pad {
             self.docked_port.as_deref()
         } else {
             None
         }
+    }
+
+    /// True while aboard a ship settled on a planetary surface landing pad (not docked at a station).
+    #[must_use]
+    pub fn settled_pad(&self) -> bool {
+        self.aboard_ship && self.settled_pad
+    }
+
+    /// True when the tracked quest requires an active surface mining expedition (`!mine_done`),
+    /// so a player ashore in a station should head to Berth Gallery to board their Dray-P.
+    #[must_use]
+    pub fn needs_surface_expedition_boarding(&self) -> bool {
+        !self.quest_room_turn_in
+            && self
+                .quest_mining_status
+                .as_ref()
+                .is_some_and(|m| !m.mine_done)
     }
 
     fn normalize_port_slug(raw: &str) -> Option<String> {
@@ -1153,8 +1173,8 @@ impl PortWalkState {
 
     /// Compute the immediate next station exit OR ship interior compartment hatch
     /// along the shortest BFS path to the tracked quest's objective room/compartment.
-    /// Supports cross-port Berth Gallery boarding (`+ship/board`) and docked Airlock
-    /// disembark (`+ship/leave`).
+    /// Supports cross-port Berth Gallery boarding (`+ship/board`), docked Airlock
+    /// disembark (`+ship/leave`), and Step 6 surface expedition / settled-pad routing.
     #[must_use]
     pub fn next_quest_hop(&self) -> Option<QuestExitBreadcrumb> {
         let mut extra_step_label: Option<&'static str> = None;
@@ -1162,6 +1182,7 @@ impl PortWalkState {
             if self.seated_at_helm {
                 return None;
             }
+            let docked_at_station = self.docked_port_slug().is_some();
             let docked_at_objective_port = self
                 .docked_port_slug()
                 .zip(
@@ -1170,10 +1191,22 @@ impl PortWalkState {
                         .and_then(infer_station_port_from_room_entry),
                 )
                 .is_some_and(|(docked, want)| docked.eq_ignore_ascii_case(want));
-            let raw_target = if self.quest_ship_target.as_deref() == Some("airlock")
-                || (docked_at_objective_port && self.quest_ship_target.as_deref() != Some("bay"))
+            let mining_blocking = self
+                .quest_mining_status
+                .as_ref()
+                .is_some_and(|m| !m.mine_done);
+            let raw_target = if mining_blocking {
+                if docked_at_station && !self.settled_pad {
+                    "bridge"
+                } else {
+                    "bay"
+                }
+            } else if self.quest_ship_target.as_deref() == Some("airlock")
+                || docked_at_objective_port
             {
                 "airlock"
+            } else if self.quest_mining_status.is_some() {
+                "bridge"
             } else {
                 self.quest_ship_target
                     .as_deref()
@@ -1199,6 +1232,22 @@ impl PortWalkState {
                 extra_step_label = Some("Cycle Ashore");
             }
             (resolved.to_string(), &self.ship_portals)
+        } else if self.needs_surface_expedition_boarding() {
+            let berth = self
+                .rooms
+                .iter()
+                .find(|r| r.entry_id.to_ascii_lowercase().contains("berth_gallery"))?;
+            if self.active_location_key == berth.entry_id {
+                return Some(QuestExitBreadcrumb {
+                    next_room_entry: "ship".into(),
+                    next_room_name: "Board Ship".into(),
+                    next_exit_command: "+ship/board".into(),
+                    target_room_name: "Board Ship".into(),
+                    hops: 1,
+                });
+            }
+            extra_step_label = Some("Board Ship");
+            (berth.entry_id.clone(), &self.portals)
         } else {
             let raw_target = self.quest_room_entry.as_deref()?;
             if self.rooms.iter().any(|r| r.entry_id == raw_target) {
@@ -1509,7 +1558,11 @@ impl PortWalkState {
                 .and_then(|t| t.get("docked"))
                 .and_then(Value::as_bool)
                 .unwrap_or(true);
-            if !self.docked {
+            self.settled_pad = tac
+                .and_then(|t| t.get("settled_pad"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if !self.docked || self.settled_pad {
                 self.docked_port = None;
             } else if let Some(raw_port) = tac
                 .and_then(|t| t.get("port").or_else(|| t.get("port_entry")))
@@ -3086,7 +3139,13 @@ impl PortWalkState {
             format!(
                 "{}  |  {}",
                 self.hull_name,
-                if self.docked { "Docked" } else { "Under Way" }
+                if self.settled_pad {
+                    "Settled Pad"
+                } else if self.docked {
+                    "Docked"
+                } else {
+                    "Under Way"
+                }
             )
         } else if !self.own_hull_name.is_empty() {
             format!("Deck {:+}  |  Hull: {}", self.you_floor, self.own_hull_name)
@@ -9293,5 +9352,112 @@ mod tests {
             "expected Berth Gallery (Board Ship) route: {:?}",
             to_berth
         );
+    }
+
+    #[test]
+    fn step6_surface_expedition_routes_berth_bridge_bay_bridge_airlock() {
+        let mut st = PortWalkState::new();
+        let make_station_room = |entry: &str, name: &str| {
+            let mut ambient = std::collections::BTreeMap::new();
+            ambient.insert(
+                "atlas".into(),
+                json!({ "pack": "neighborhood.ceres_freeport", "entry": entry }),
+            );
+            RoomView {
+                id: "#17".into(),
+                name: name.into(),
+                desc: mush_proto::RichText::plain("Station deck."),
+                exits: Vec::new(),
+                contents: Vec::new(),
+                zone: None,
+                ambient,
+            }
+        };
+        let make_ship_room = |comp: &str, docked: bool, settled_pad: bool, port: &str| {
+            let mut ambient = std::collections::BTreeMap::new();
+            ambient.insert(
+                "tacsim".into(),
+                json!({
+                    "mode": "interior",
+                    "unit": "tacsim.unit.dray_p",
+                    "room": comp,
+                    "hull_name": "M/V Starling",
+                    "docked": docked,
+                    "settled_pad": settled_pad,
+                    "port": port
+                }),
+            );
+            RoomView {
+                id: "#50".into(),
+                name: format!("M/V Starling - {comp}"),
+                desc: mush_proto::RichText::plain("Ship deck."),
+                exits: Vec::new(),
+                contents: Vec::new(),
+                zone: None,
+                ambient,
+            }
+        };
+
+        st.observe_quest_objective_room(Some(("room.c07_exchange".into(), false)));
+        st.observe_quest_mining_status(Some(QuestSurfaceMiningStatus {
+            quest_title: "Scan, Sound, and Mine a Landing Site".into(),
+            target_ore_slug: "carbon_ore".into(),
+            recommended_family: "carbon".into(),
+            scan_done: false,
+            sound_done: false,
+            mine_done: false,
+        }));
+
+        // 1. Standing right in Rosalind's Exchange Hall ashore -> routes to Berth Gallery (Board Ship)
+        st.observe_room(
+            &make_station_room("room.c07_exchange", "Exchange Hall"),
+            Some("Pilot"),
+        );
+        assert!(st.needs_surface_expedition_boarding());
+        let to_berth = st.next_quest_hop().expect("expected Berth Gallery route");
+        assert!(to_berth.target_room_name.contains("Board Ship"));
+
+        // 2. Aboard Dray-P still docked at Ceres station -> routes to Bridge (fly down to surface site)
+        st.observe_room(
+            &make_ship_room("passage", true, false, "ceres"),
+            Some("Pilot"),
+        );
+        let to_bridge = st
+            .next_quest_hop()
+            .expect("expected Bridge route while docked");
+        assert_eq!(to_bridge.next_room_entry, "bridge");
+
+        // 3. Settled on a surface landing pad -> routes to Vehicle Bay / Hold
+        st.observe_room(
+            &make_ship_room("passage", false, true, "commons"),
+            Some("Pilot"),
+        );
+        assert!(st.settled_pad());
+        let to_bay = st
+            .next_quest_hop()
+            .expect("expected Bay route on settled pad");
+        assert_eq!(to_bay.next_room_entry, "hold");
+
+        // 4. Mining complete while still on surface pad -> routes to Bridge (lift off & return to Ceres)
+        st.observe_quest_mining_status(Some(QuestSurfaceMiningStatus {
+            quest_title: "Scan, Sound, and Mine a Landing Site".into(),
+            target_ore_slug: "carbon_ore".into(),
+            recommended_family: "carbon".into(),
+            scan_done: true,
+            sound_done: true,
+            mine_done: true,
+        }));
+        let lift_off = st.next_quest_hop().expect("expected Bridge lift-off route");
+        assert_eq!(lift_off.next_room_entry, "bridge");
+
+        // 5. Docked back at Ceres Freeport -> routes to Airlock (+ship/leave to turn in to Rosalind)
+        st.observe_room(
+            &make_ship_room("airlock", true, false, "ceres"),
+            Some("Pilot"),
+        );
+        let ashore = st
+            .next_quest_hop()
+            .expect("expected Cycle Ashore at Ceres airlock");
+        assert_eq!(ashore.next_exit_command, "+ship/leave");
     }
 }
