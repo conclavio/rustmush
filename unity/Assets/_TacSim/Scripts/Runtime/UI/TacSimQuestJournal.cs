@@ -1762,6 +1762,38 @@ namespace TacSim.UI
             return false;
         }
 
+        public bool TryGetRefitHoldClearingRoom(MushActiveQuest active, out string roomEntry)
+        {
+            roomEntry = string.Empty;
+            if (active == null || active.ReadyToFinish || active.CanFinishNow) return false;
+            if (_boundTradeState == null || string.IsNullOrEmpty(_boundTradeState.ShipHullId)) return false;
+            if (!TryGetSuggestedCommand(active, out _, out string sugCmd) ||
+                !sugCmd.StartsWith("+coop/refit", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+            bool hasCargoLots = false;
+            for (int i = 0; i < _boundTradeState.CargoLots.Count; i++)
+            {
+                if (_boundTradeState.CargoLots[i] != null && _boundTradeState.CargoLots[i].Quantity > 0)
+                {
+                    hasCargoLots = true;
+                    break;
+                }
+            }
+            if (_boundTradeState.HoldMassTonnes > 0 || hasCargoLots)
+            {
+                roomEntry = "room.c07_exchange";
+                return true;
+            }
+            if (_boundTradeState.StoresCrewDays > 0)
+            {
+                roomEntry = "room.c08_chandlery";
+                return true;
+            }
+            return false;
+        }
+
         public bool TryGetMinimapObjective(out string roomEntry, out bool isTurnIn, out bool currentRoomHasOffer)
         {
             roomEntry = string.Empty;
@@ -1774,6 +1806,11 @@ namespace TacSim.UI
             if (active != null)
             {
                 isTurnIn = active.ReadyToFinish || active.CanFinishNow;
+                if (!isTurnIn && TryGetRefitHoldClearingRoom(active, out string clearRoom))
+                {
+                    roomEntry = clearRoom;
+                    return true;
+                }
                 roomEntry = active.NextRoomEntry ?? string.Empty;
                 if (string.IsNullOrEmpty(roomEntry))
                 {
@@ -2483,9 +2520,14 @@ namespace TacSim.UI
             if (_trackerNavBtn != null) _trackerNavBtn.gameObject.SetActive(false);
         }
 
-        private static string ResolveObjectiveRoomEntry(MushActiveQuest active)
+        public string ResolveObjectiveRoomEntry(MushActiveQuest active)
         {
             if (active == null) return string.Empty;
+            if (!active.ReadyToFinish && !active.CanFinishNow &&
+                TryGetRefitHoldClearingRoom(active, out string clearRoom))
+            {
+                return clearRoom;
+            }
             if (!string.IsNullOrEmpty(active.NextRoomEntry))
                 return active.NextRoomEntry;
             for (int i = 0; i < active.Checkpoints.Count; i++)
