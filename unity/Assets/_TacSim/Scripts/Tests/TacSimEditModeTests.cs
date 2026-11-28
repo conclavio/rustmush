@@ -12361,6 +12361,32 @@ namespace TacSim.Tests
                 Assert.AreEqual("bridge", liftOffTarget);
                 Assert.IsTrue(hud.QuestJournal.TryGetActiveShipTargetCompartment("ceres", out string returnTarget, settledPad: false));
                 Assert.AreEqual("airlock", returnTarget);
+
+                // 5. Post-mine off-world destination fallback routes Sailing Plan / Space HUD back to Ceres Freeport
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveDestinationPort(out var homeHint));
+                Assert.AreEqual("ceres", homeHint.PortId);
+                Assert.AreEqual("Ceres Freeport", homeHint.PortLabel);
+
+                // Once standing at the turn-in room, destination hint clears
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#17"",
+                    ""room_name"": ""Exchange Hall"",
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""next_room_entry"": ""room.c07_exchange"",
+                        ""turn_in_here"": true,
+                        ""ready_to_finish"": true,
+                        ""can_finish_now"": true,
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Surface scan"", ""instructions"": ""+tv/1 scan go"", ""room_entry"": ""room.c07_exchange"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""instructions"": ""+tv/1 mine go"", ""room_entry"": ""room.c07_exchange"", ""checked"": true, ""live_ready"": true }
+                        ]
+                    }],
+                    ""available"": []
+                }")));
+                Assert.IsFalse(hud.QuestJournal.TryGetActiveDestinationPort(out _));
             }
             finally
             {
