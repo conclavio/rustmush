@@ -12945,5 +12945,73 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestJournalAndDialog_ShowOptionalRestartableAndCompletedTourMastery()
+        {
+            var rootGo = new UnityEngine.GameObject("QuestCompletedAndRestartTestRoot");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_id"": ""#15"",
+                    ""room_name"": ""Registry & Co-op Desk"",
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"",
+                        ""title"": ""First Papers at the Registry"",
+                        ""giver_name"": ""Maren Halvorsen"",
+                        ""turn_in_name"": ""Ilse Oduya-Brandt"",
+                        ""allow_restart"": true,
+                        ""reward_summary"": ""Guided Tour Step 1/7"",
+                        ""next_step"": ""Enroll with Ilse""
+                    }],
+                    ""available"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"",
+                        ""title"": ""Stock the Locker and Tanks"",
+                        ""giver_name"": ""Ilse Oduya-Brandt"",
+                        ""turn_in_name"": ""Ilse Oduya-Brandt"",
+                        ""allow_restart"": true,
+                        ""reward_summary"": ""Guided Tour Step 2/7""
+                    }],
+                    ""completed"": [
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll"", ""title"": ""S1"", ""turn_in_name"": ""Ilse"", ""completion"": ""Done 1."", ""reward_summary"": ""Step 1 Reward"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"", ""title"": ""S2"", ""turn_in_name"": ""Ilse"", ""completion"": ""Done 2."", ""reward_summary"": ""Step 2 Reward"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"", ""title"": ""S3"", ""turn_in_name"": ""Jonas"", ""completion"": ""Done 3."", ""reward_summary"": ""Step 3 Reward"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_04_return_haul"", ""title"": ""S4"", ""turn_in_name"": ""Ilse"", ""completion"": ""Done 4."", ""reward_summary"": ""Step 4 Reward"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"", ""title"": ""S5"", ""turn_in_name"": ""Rosalind"", ""completion"": ""Done 5."", ""reward_summary"": ""Step 5 Reward"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"", ""title"": ""S6"", ""turn_in_name"": ""Rosalind"", ""completion"": ""Done 6."", ""reward_summary"": ""Step 6 Reward"" },
+                        { ""key"": ""tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore"", ""title"": ""S7"", ""turn_in_name"": ""Wren"", ""completion"": ""Done 7."", ""reward_summary"": ""Step 7 Reward"" }
+                    ]
+                }")));
+
+                // Active & Available Journal sub-tabs + NPC Dialog display Optional · Restartable
+                hud.QuestJournal.SetOpen(true, TacSim.UI.QuestJournalTab.Quests);
+                hud.QuestJournal.SelectQuestSubTab("active");
+                StringAssert.Contains("Optional · Restartable", hud.QuestJournal.JournalBodySnapshot);
+
+                hud.QuestJournal.SelectQuestSubTab("available");
+                StringAssert.Contains("Optional · Restartable", hud.QuestJournal.JournalBodySnapshot);
+
+                hud.QuestJournal.OpenQuestDialogByKey("tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll");
+                StringAssert.Contains("Optional · Restartable", hud.QuestJournal.DialogBodySnapshot);
+
+                hud.QuestJournal.OpenQuestDialogByKey("tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel");
+                StringAssert.Contains("Optional · Restartable", hud.QuestJournal.DialogBodySnapshot);
+
+                // Completed sub-tab displays 7/7 Corridor Captain banner, [Step N/7], and REWARD
+                hud.QuestJournal.SelectQuestSubTab("completed");
+                string doneBody = hud.QuestJournal.JournalBodySnapshot;
+                StringAssert.Contains("GUIDED CORRIDOR TOUR COMPLETE (7/7) — CORRIDOR CAPTAIN", doneBody);
+                StringAssert.Contains("[Step 1/7]", doneBody);
+                StringAssert.Contains("REWARD: Step 1 Reward", doneBody);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

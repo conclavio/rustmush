@@ -2316,6 +2316,8 @@ namespace TacSim.UI
                             sb.Append(" <color=#77DDFF>(").Append(MushProtocol.EscapeUnityRichText(cp.RoomName)).Append(")</color>");
                         sb.Append('\n').Append("<color=#99B8CC>  ").Append(MushProtocol.EscapeUnityRichText(cp.Instructions)).Append("</color>\n");
                     }
+                    if (offer.AllowRestart)
+                        sb.Append("\n<color=#88AAC8>Optional · Restartable (abandon and restart any time without penalty)</color>");
                     _dlgBodyText.text = sb.ToString();
                 }
                 if (_dlgRewardText != null)
@@ -2369,6 +2371,8 @@ namespace TacSim.UI
                     {
                         sb.Append($"<color=#FFDD44><b>PROSPECTING:</b></color> <color=#77DDFF>{MushProtocol.EscapeUnityRichText(dlgMining.FormatPrepHintLine())}</color>\n");
                     }
+                    if (active.AllowRestart)
+                        sb.Append("\n<color=#88AAC8>Optional · Restartable (abandon and restart any time without penalty)</color>");
                     _dlgBodyText.text = sb.ToString();
                 }
                 if (_dlgRewardText != null)
@@ -2585,6 +2589,8 @@ namespace TacSim.UI
                             sb.Append($"\n<color={holdCol}><b>{MushProtocol.EscapeUnityRichText(jHoldSummary)}</b></color>");
                         }
                         sb.Append($"\n<color=#FFDF77><b>REWARD:</b> {MushProtocol.EscapeUnityRichText(q.RewardSummary)}</color>");
+                        if (q.AllowRestart)
+                            sb.Append("\n<color=#88AAC8>Optional · Restartable (abandon and restart any time without penalty)</color>");
                         if (_qNextBtn != null) _qNextBtn.gameObject.SetActive(LatestPanel.Active.Count > 1);
                         if (_qPrimaryBtn != null) _qPrimaryBtn.gameObject.SetActive(true);
                         if (_qPrimaryLbl != null)
@@ -2630,6 +2636,8 @@ namespace TacSim.UI
                             sb.Append($"<color=#99B8CC>  {MushProtocol.EscapeUnityRichText(cp.Instructions)}</color>\n");
                         }
                         sb.Append($"\n<color=#FFDF77><b>REWARD:</b> {MushProtocol.EscapeUnityRichText(q.RewardSummary)}</color>");
+                        if (q.AllowRestart)
+                            sb.Append("\n<color=#88AAC8>Optional · Restartable (abandon and restart any time without penalty)</color>");
                         if (_qNextBtn != null) _qNextBtn.gameObject.SetActive(LatestPanel.Available.Count > 1);
                         if (_qPrimaryBtn != null) _qPrimaryBtn.gameObject.SetActive(true);
                         if (_qPrimaryLbl != null) _qPrimaryLbl.text = "ACCEPT QUEST";
@@ -2644,6 +2652,10 @@ namespace TacSim.UI
                     if (_qWayfinderBtn != null) _qWayfinderBtn.gameObject.SetActive(false);
                     if (_qAbandonBtn != null) _qAbandonBtn.gameObject.SetActive(false);
                     if (_qNextBtn != null) _qNextBtn.gameObject.SetActive(false);
+                    if (TryGetGuidedTourProgress(out _, out _, out _, out bool allTourDone) && allTourDone)
+                    {
+                        sb.Append("<color=#55EE99><b>★ GUIDED CORRIDOR TOUR COMPLETE (7/7) — CORRIDOR CAPTAIN ★</b></color>\n\n");
+                    }
                     if (LatestPanel.Completed.Count == 0)
                     {
                         sb.Append("<color=#88AAC8>No completed quests recorded yet.</color>");
@@ -2653,8 +2665,12 @@ namespace TacSim.UI
                         for (int i = 0; i < LatestPanel.Completed.Count; i++)
                         {
                             var c = LatestPanel.Completed[i];
-                            sb.Append($"<color=#55EE99>[✓]</color> <b>{MushProtocol.EscapeUnityRichText(c.Title)}</b> <color=#77DDFF>({MushProtocol.EscapeUnityRichText(c.TurnInName)})</color>\n");
+                            int stepNo = GuidedStepNumber(c.Key);
+                            string stepTag = stepNo > 0 ? $" <color=#66EEAA>[Step {stepNo}/7]</color>" : string.Empty;
+                            sb.Append($"<color=#55EE99>[✓]</color> <b>{MushProtocol.EscapeUnityRichText(c.Title)}</b>{stepTag} <color=#77DDFF>({MushProtocol.EscapeUnityRichText(c.TurnInName)})</color>\n");
                             sb.Append($"<color=#99B8CC>  {MushProtocol.EscapeUnityRichText(c.Completion)}</color>\n");
+                            if (!string.IsNullOrEmpty(c.RewardSummary))
+                                sb.Append($"<color=#FFDF77>  REWARD: {MushProtocol.EscapeUnityRichText(c.RewardSummary)}</color>\n");
                         }
                     }
                 }
