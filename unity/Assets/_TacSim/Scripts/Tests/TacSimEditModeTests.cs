@@ -13604,5 +13604,220 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void GuidedAutoTrackAndCycleTracked_IsolatesShipRoutingAndSyncsAllSurfaces()
+        {
+            var rootGo = new UnityEngine.GameObject("GuidedAutoTrackIsolationRoot");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [
+                        {
+                            ""key"": ""q.side_deimos"",
+                            ""title"": ""Deliver Water Ice to Deimos"",
+                            ""category"": ""optional"",
+                            ""next_room_entry"": ""room.d02_concourse"",
+                            ""checkpoints"": [{
+                                ""id"": ""deliver_water_ice"",
+                                ""title"": ""Deliver 3t water ice to Voltaire Anchorage"",
+                                ""instructions"": ""Run +ship/plan deimos and +market/sell water_ice."",
+                                ""room_entry"": ""room.d02_concourse"",
+                                ""checked"": false,
+                                ""live_ready"": false
+                            }]
+                        },
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                            ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                            ""category"": ""guided"",
+                            ""next_room_entry"": ""room.c07_exchange"",
+                            ""checkpoints"": [
+                                { ""id"": ""scan_landing_site"", ""title"": ""Surface scan"", ""instructions"": ""+tv/1 scan go"", ""checked"": false, ""live_ready"": false },
+                                { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""instructions"": ""+tv/1 mine go"", ""checked"": false, ""live_ready"": false }
+                            ]
+                        }
+                    ]
+                }")));
+
+                // Auto-track prefers Guided Step 6 even though side job is at index 0
+                Assert.AreEqual("tacsim.quests.guided_onboarding/quest.guide_06_surface_mining", hud.QuestJournal.TrackedQuestKey);
+                Assert.IsTrue(hud.QuestJournal.NeedsSurfaceExpeditionBoarding());
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveShipTargetCompartment(null, out string compStep6, settledPad: true));
+                Assert.AreEqual("bay", compStep6);
+
+                // Cycling to side Deimos job isolates ship routing & expedition checks (zero Step 6 leakage!)
+                Assert.AreEqual("q.side_deimos", hud.QuestJournal.CycleTrackedQuest());
+                Assert.IsFalse(hud.QuestJournal.NeedsSurfaceExpeditionBoarding());
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveShipTargetCompartment("ceres", out string compBridge, settledPad: false));
+                Assert.AreEqual("bridge", compBridge);
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveShipTargetCompartment("deimos", out string compAirlock, settledPad: false));
+                Assert.AreEqual("airlock", compAirlock);
+
+                // Cycling again returns cleanly to Step 6
+                Assert.AreEqual("tacsim.quests.guided_onboarding/quest.guide_06_surface_mining", hud.QuestJournal.CycleTrackedQuest());
+                Assert.IsTrue(hud.QuestJournal.NeedsSurfaceExpeditionBoarding());
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
+
+        [Test]
+        public void GuidedOnboarding_FullSevenStepWalkthroughFromMarenToCorridorCaptain()
+        {
+            var rootGo = new UnityEngine.GameObject("GuidedSevenStepWalkthroughRoot");
+            try
+            {
+                var trade = new TacSimTradeAndShipState();
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.BindTradeState(trade);
+
+                string[] keys =
+                {
+                    "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+                    "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel",
+                    "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+                    "tacsim.quests.guided_onboarding/quest.guide_04_return_haul",
+                    "tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector",
+                    "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+                    "tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore"
+                };
+
+                string CompletedJson(int count)
+                {
+                    var parts = new List<string>();
+                    for (int i = 0; i < count; i++)
+                        parts.Add($"{{\"key\":\"{keys[i]}\",\"title\":\"Step {i + 1}\"}}");
+                    return "[" + string.Join(",", parts) + "]";
+                }
+
+                // Step 1: Maren offer at Arrivals -> Enroll Co-op -> Between-steps Step 2 locator
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""room_markers"": [{ ""npc_id"": ""#11"", ""npc_name"": ""Maren Halvorsen"", ""marker"": ""available"", ""symbol"": ""!"", ""quest_key"": """ + keys[0] + @""", ""quest_title"": ""First Papers"" }],
+                    ""available"": [{ ""key"": """ + keys[0] + @""", ""title"": ""First Papers"", ""giver_id"": ""#11"", ""giver_name"": ""Maren Halvorsen"", ""accept_cmd"": ""+quest/accept #11 tok1"" }],
+                    ""active"": [], ""completed"": []
+                }")));
+                Assert.AreEqual("[J] !", hud.QuestTopButtonLabelForTests);
+                Assert.IsTrue(hud.IsRoomQuestBannerVisible);
+
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1, ""active"": [], ""available"": [], ""completed"": " + CompletedJson(1) + @"
+                }")));
+                Assert.IsTrue(hud.QuestJournal.TryGetNextGuidedOffer(out var next2));
+                Assert.AreEqual(2, next2.Step);
+
+                // Step 2: Provisions + Propellant dual-item hold readiness
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": """ + keys[1] + @""",
+                        ""title"": ""Stock the Locker and Tanks"",
+                        ""checkpoints"": [
+                            { ""id"": ""buy_provisions"", ""title"": ""Buy 10 provisions"", ""instructions"": ""Buy 10 provisions."", ""checked"": false, ""live_ready"": false },
+                            { ""id"": ""buy_propellant"", ""title"": ""Buy 5t propellant"", ""instructions"": ""Buy 5t propellant."", ""checked"": false, ""live_ready"": false }
+                        ]
+                    }],
+                    ""completed"": " + CompletedJson(1) + @"
+                }")));
+                Assert.AreEqual(2, hud.QuestJournal.GetActiveTradeNeeds().Count);
+
+                // Step 3: Buy 5t metals -> Sail Stickney -> Airlock on arrival
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": """ + keys[2] + @""",
+                        ""title"": ""Metals Down the Corridor"",
+                        ""next_room_entry"": ""room.p07_receiving"",
+                        ""checkpoints"": [{ ""id"": ""deliver_metals"", ""title"": ""Deliver 5t metals to Stickney"", ""instructions"": ""Buy 5t metals, +ship/plan stickney, +market/sell."", ""room_entry"": ""room.p07_receiving"", ""checked"": false, ""live_ready"": false }]
+                    }],
+                    ""completed"": " + CompletedJson(2) + @"
+                }")));
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveDestinationPort(out var d3));
+                Assert.AreEqual("stickney", d3.PortId);
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveShipTargetCompartment("stickney", out string c3, settledPad: false));
+                Assert.AreEqual("airlock", c3);
+
+                // Step 4: Return 2t industrial_parts to Ceres
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": """ + keys[3] + @""",
+                        ""title"": ""A Return Load for Ceres"",
+                        ""next_room_entry"": ""room.c08_chandlery"",
+                        ""checkpoints"": [{ ""id"": ""return_industrial_parts"", ""title"": ""Return 2t industrial parts to Ceres"", ""instructions"": ""Buy 2t industrial_parts, +ship/plan ceres, +market/sell."", ""room_entry"": ""room.c08_chandlery"", ""checked"": false, ""live_ready"": false }]
+                    }],
+                    ""completed"": " + CompletedJson(3) + @"
+                }")));
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveDestinationPort(out var d4));
+                Assert.AreEqual("ceres", d4.PortId);
+
+                // Step 5: Refit Dray into Dray-P prospector
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": """ + keys[4] + @""",
+                        ""title"": ""Refit the Dray for Surface Mining"",
+                        ""checkpoints"": [{ ""id"": ""refit_dray_p"", ""title"": ""Refit Dray-P"", ""instructions"": ""+coop/refit prospector"", ""checked"": false, ""live_ready"": false }]
+                    }],
+                    ""completed"": " + CompletedJson(4) + @"
+                }")));
+                Assert.IsTrue(hud.QuestJournal.TryGetSuggestedCommand(hud.QuestJournal.GetTrackedActiveQuest(), out _, out string refitCmd));
+                Assert.AreEqual("+coop/refit prospector", refitCmd);
+
+                // Step 6: Scan, sound, mine carbon_ore on surface pad
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": """ + keys[5] + @""",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""next_room_entry"": ""room.c07_exchange"",
+                        ""checkpoints"": [
+                            { ""id"": ""scan_landing_site"", ""title"": ""Surface scan"", ""instructions"": ""+tv/1 scan go"", ""checked"": false, ""live_ready"": false },
+                            { ""id"": ""mine_carbon_ore"", ""title"": ""Mine 1t carbon_ore"", ""instructions"": ""+tv/1 mine go"", ""checked"": false, ""live_ready"": false }
+                        ]
+                    }],
+                    ""completed"": " + CompletedJson(5) + @"
+                }")));
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveSurfaceMiningStatus(out var m6));
+                Assert.AreEqual("carbon", m6.RecommendedFamily);
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveShipTargetCompartment(null, out string c6, settledPad: true));
+                Assert.AreEqual("bay", c6);
+
+                // Step 7: Sell mined carbon_ore at Stickney -> 7/7 Corridor Captain mastery
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": """ + keys[6] + @""",
+                        ""title"": ""Deliver Your Mined Ore to Market"",
+                        ""next_room_entry"": ""room.p11_service"",
+                        ""checkpoints"": [{ ""id"": ""sell_carbon_ore"", ""title"": ""Sell 1t carbon_ore at Stickney"", ""instructions"": ""+ship/plan stickney and +market/sell carbon_ore."", ""room_entry"": ""room.p11_service"", ""checked"": false, ""live_ready"": false }]
+                    }],
+                    ""completed"": " + CompletedJson(6) + @"
+                }")));
+                Assert.IsTrue(hud.QuestJournal.TryGetActiveDestinationPort(out var d7));
+                Assert.AreEqual("stickney", d7.PortId);
+
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1, ""active"": [], ""available"": [], ""completed"": " + CompletedJson(7) + @"
+                }")));
+                Assert.IsTrue(hud.QuestJournal.TryGetGuidedTourProgress(out int done, out int total, out _, out bool allDone));
+                Assert.AreEqual(7, done);
+                Assert.AreEqual(7, total);
+                Assert.IsTrue(allDone);
+                Assert.IsFalse(hud.QuestJournal.TryGetNextGuidedOffer(out _));
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
