@@ -13404,5 +13404,97 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void QuestTrackerCard_ReactivelyUpdatesStep2MultiItemHoldAndStep5RefitReadinessOnTradeStateChange()
+        {
+            var rootGo = new UnityEngine.GameObject("TrackerLiveHoldTestRoot");
+            try
+            {
+                var trade = new TacSimTradeAndShipState();
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                hud.BindTradeState(trade);
+
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"",
+                            ""title"": ""Stock the Locker and Tanks"",
+                            ""next_step"": ""Buy 5t propellant at Exchange"",
+                            ""checkpoints"": [
+                                { ""id"": ""buy_provisions"", ""title"": ""Buy 10 provisions"", ""instructions"": ""Buy 10 provisions."", ""checked"": false, ""live_ready"": false },
+                                { ""id"": ""buy_propellant"", ""title"": ""Buy 5t propellant"", ""instructions"": ""Buy 5 tonnes of propellant."", ""checked"": false, ""live_ready"": false }
+                            ]
+                        },
+                        {
+                            ""key"": ""tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector"",
+                            ""title"": ""Refit the Dray for Surface Mining"",
+                            ""next_step"": ""Run +coop/refit prospector"",
+                            ""checkpoints"": [
+                                { ""id"": ""refit_dray_p"", ""title"": ""Refit Dray into Dray-P"", ""instructions"": ""Empty hold and run +coop/refit prospector."", ""checked"": false, ""live_ready"": false }
+                            ]
+                        }
+                    ]
+                }")));
+
+                // 1. Step 2 with 10d provisions + 2t propellant -> shows PROPELLANT 2/5 t | PROVISIONS 10/10d OK
+                trade.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 0, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 2000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": []
+                        }
+                    }
+                }"));
+                StringAssert.Contains("[HOLD] PROPELLANT: 2/5 t | PROVISIONS 10/10d OK", hud.QuestJournal.TrackerDetailSnapshot);
+
+                // 2. Top off propellant to 5t -> reactively flips to [HOLD READY] without re-applying quest panel
+                trade.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 0, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 5000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 10, ""stores_limit_days"": 120,
+                            ""items"": []
+                        }
+                    }
+                }"));
+                StringAssert.Contains("[HOLD READY]", hud.QuestJournal.TrackerDetailSnapshot);
+                StringAssert.Contains("PROPELLANT 5/5t OK", hud.QuestJournal.TrackerDetailSnapshot);
+
+                // 3. Switch tracked quest to Step 5 refit with stores still loaded -> [REFIT CHECK], then empty -> [READY]
+                hud.QuestJournal.TrackQuest("tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector");
+                StringAssert.Contains("[REFIT CHECK] Cargo empty | Stores 10d | Tank 5t OK", hud.QuestJournal.TrackerDetailSnapshot);
+
+                trade.ApplyPortTradeFeed(JsonNode.Parse(@"{
+                    ""enabled"": true,
+                    ""venue"": ""ceres"",
+                    ""ship"": {
+                        ""hull_id"": ""#99"",
+                        ""stowage"": {
+                            ""cargo_kg"": 0, ""cargo_limit_kg"": 100000,
+                            ""tank_kg"": 5000, ""tank_limit_kg"": 80000,
+                            ""stores_days"": 0, ""stores_limit_days"": 120,
+                            ""items"": []
+                        }
+                    }
+                }"));
+                StringAssert.Contains("[READY] Cargo empty | Stores empty | Tank 5t OK", hud.QuestJournal.TrackerDetailSnapshot);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }
