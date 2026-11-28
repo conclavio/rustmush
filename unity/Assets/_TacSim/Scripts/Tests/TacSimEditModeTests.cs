@@ -16960,5 +16960,93 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void ExchangeModal_ShowsQuestReadyTurnInAndWayfinderHandoffOnceTradeCompletes()
+        {
+            var rootGo = new UnityEngine.GameObject("Wave95PR3_ExchangeReadyTurnInTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+                var tradeState = new TacSimTradeAndShipState();
+                hud.BindTradeState(tradeState);
+                hud.QuestJournal.BindTradeState(tradeState);
+
+                var submitted = new System.Collections.Generic.List<string>();
+                string wayfinderRoom = null;
+                hud.OnCommandSubmitted += submitted.Add;
+                hud.QuestJournal.OnWayfinderRoomRequested += r => wayfinderRoom = r;
+
+                tradeState.ApplyPortTradeFeed(JsonNode.Parse(@"{""enabled"":true,""venue"":""stickney"",""listings"":[],""ship"":{""hull_id"":""#99"",""stowage"":{""cargo_kg"":0,""cargo_limit_kg"":100000,""tank_kg"":10000,""tank_limit_kg"":80000,""stores_days"":10,""stores_limit_days"":120,""items"":[]}}}"));
+
+                // 1. Same-room turn-in (Step 3 sold metals at Stickney Receiving -> Jonas right here)
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery"",
+                        ""title"": ""Metals Down the Corridor"",
+                        ""turn_in_name"": ""Jonas Achterberg-Nkemelu"",
+                        ""next_room_entry"": ""room.p07_receiving"",
+                        ""next_room_name"": ""Receiving Counter"",
+                        ""ready_to_finish"": true,
+                        ""can_finish_now"": true,
+                        ""finish_cmd"": ""+quest/finish #77=tok-step3"",
+                        ""checkpoints"": [{
+                            ""id"": ""deliver_metals"",
+                            ""title"": ""Deliver 5t metals"",
+                            ""checked"": true,
+                            ""live_ready"": true
+                        }]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                hud.OpenTradeAndSailingModal("STICKNEY EXCHANGE", openSailingTab: false);
+
+                Assert.IsTrue(hud.IsExchangeQuestBannerVisible);
+                StringAssert.Contains("[QUEST READY]", hud.ExchangeQuestBannerText);
+                StringAssert.Contains("Jonas Achterberg-Nkemelu", hud.ExchangeQuestBannerText);
+                Assert.IsTrue(hud.IsExchangeSailJumpVisible);
+                Assert.AreEqual("TURN IN (?)", hud.ExchangeSailJumpLabelSnapshot);
+                Assert.IsTrue(hud.TriggerExchangeQuestTurnIn());
+                CollectionAssert.AreEqual(new[] { "+quest/finish #77=tok-step3" }, submitted);
+
+                // 2. Remote-room turn-in (Step 2 bought provisions & propellant -> return to Ilse at Co-op Registry)
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel"",
+                        ""title"": ""Stock the Locker and Tanks"",
+                        ""turn_in_name"": ""Ilse Oduya-Brandt"",
+                        ""next_room_entry"": ""room.c05_registry"",
+                        ""next_room_name"": ""Co-op Registry"",
+                        ""ready_to_finish"": true,
+                        ""can_finish_now"": false,
+                        ""checkpoints"": [{
+                            ""id"": ""buy_provisions"",
+                            ""title"": ""Buy 10 provisions"",
+                            ""checked"": true,
+                            ""live_ready"": true
+                        }]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+                hud.OpenTradeAndSailingModal("CERES EXCHANGE", openSailingTab: false);
+
+                Assert.IsTrue(hud.IsExchangeQuestBannerVisible);
+                StringAssert.Contains("[QUEST READY]", hud.ExchangeQuestBannerText);
+                StringAssert.Contains("Ilse Oduya-Brandt (Co-op Registry)", hud.ExchangeQuestBannerText);
+                Assert.IsTrue(hud.IsExchangeSailJumpVisible);
+                Assert.AreEqual("WAYFINDER", hud.ExchangeSailJumpLabelSnapshot);
+                Assert.IsTrue(hud.TriggerExchangeQuestWayfinder());
+                Assert.AreEqual("room.c05_registry", wayfinderRoom);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

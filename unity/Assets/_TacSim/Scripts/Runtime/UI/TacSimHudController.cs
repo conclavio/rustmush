@@ -324,7 +324,9 @@ namespace TacSim.UI
         private Text _exchangeQuestQtyBtnLbl;
         private Button _exchangeSailJumpBtn;
         private Text _exchangeSailJumpBtnLbl;
-        private bool _exchangeJumpIsRefit;
+        private enum ExchangeQuestJumpMode { Sail, RefitYard, TurnInNow, TurnInWayfinder }
+        private ExchangeQuestJumpMode _exchangeJumpMode;
+        private string _exchangeTurnInCmd = string.Empty;
         private RectTransform _listingsViewportRect;
         private GameObject _sailingQuestBanner;
         private Text _sailingQuestBannerText;
@@ -1075,7 +1077,9 @@ namespace TacSim.UI
             SetRect(_exchangeQuestBannerText.rectTransform, Vector2.zero, Vector2.one, new Vector2(12f, 0f), new Vector2(-176f, 0f));
             _exchangeSailJumpBtn = CreateButton(_exchangeQuestBanner.transform, "SAIL TO BUYER", new Color(0.14f, 0.50f, 0.32f), () =>
             {
-                if (_exchangeJumpIsRefit) JumpFromExchangeToRefitYard();
+                if (_exchangeJumpMode == ExchangeQuestJumpMode.RefitYard) JumpFromExchangeToRefitYard();
+                else if (_exchangeJumpMode == ExchangeQuestJumpMode.TurnInNow) TriggerExchangeQuestTurnIn();
+                else if (_exchangeJumpMode == ExchangeQuestJumpMode.TurnInWayfinder) TriggerExchangeQuestWayfinder();
                 else JumpFromExchangeToQuestSailing();
             });
             SetRect(_exchangeSailJumpBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-318f, 3f), new Vector2(-174f, -3f));
@@ -2837,6 +2841,24 @@ namespace TacSim.UI
             SwitchTradeTerminalTab(TradeTerminalTab.Industry, autoQuery: false);
         }
 
+        public bool TriggerExchangeQuestTurnIn()
+        {
+            if (_exchangeJumpMode != ExchangeQuestJumpMode.TurnInNow || string.IsNullOrEmpty(_exchangeTurnInCmd))
+                return false;
+            string cmd = _exchangeTurnInCmd;
+            if (_tradePanel != null) _tradePanel.SetActive(false);
+            OnCommandSubmitted?.Invoke(cmd);
+            return true;
+        }
+
+        public bool TriggerExchangeQuestWayfinder()
+        {
+            if (_exchangeJumpMode != ExchangeQuestJumpMode.TurnInWayfinder || QuestJournal == null)
+                return false;
+            if (_tradePanel != null) _tradePanel.SetActive(false);
+            return QuestJournal.TriggerTrackerWayfinder();
+        }
+
         private bool IsRefitClearBid(MarketListingRow row, QuestRefitHoldReadiness refit)
         {
             if (row == null || !row.IsWantedBid || refit.Ready || _boundTradeState == null)
@@ -3078,6 +3100,17 @@ namespace TacSim.UI
                   .Append(':').Append(qRefit.CargoTonnes)
                   .Append(':').Append(qRefit.ProvisionsDays);
             }
+            else if (QuestJournal != null)
+            {
+                var qReady = QuestJournal.GetTrackedActiveQuest();
+                if (qReady != null && (qReady.CanFinishNow || qReady.ReadyToFinish))
+                {
+                    sb.Append("|F:").Append(qReady.Key)
+                      .Append(':').Append(qReady.CanFinishNow ? '1' : '0')
+                      .Append(':').Append(qReady.FinishCmd ?? string.Empty)
+                      .Append(':').Append(qReady.NextRoomName ?? string.Empty);
+                }
+            }
             for (int i = 0; i < _boundTradeState.Listings.Count; i++)
             {
                 var r = _boundTradeState.Listings[i];
@@ -3165,8 +3198,11 @@ namespace TacSim.UI
             bool hasQuestNeed = QuestJournal != null && QuestJournal.TryResolveContextualTradeNeed(_boundTradeState, out questNeed, out allQuestNeeds);
             QuestRefitHoldReadiness refitReadiness = default;
             bool hasRefitPrep = !hasQuestNeed && QuestJournal != null && QuestJournal.TryGetRefitHoldReadiness(_boundTradeState, out refitReadiness);
-            bool showBanner = hasQuestNeed || hasRefitPrep;
-            _exchangeJumpIsRefit = false;
+            MushActiveQuest readyQuest = (!hasQuestNeed && !hasRefitPrep && QuestJournal != null) ? QuestJournal.GetTrackedActiveQuest() : null;
+            bool hasReadyTurnIn = readyQuest != null && (readyQuest.CanFinishNow || readyQuest.ReadyToFinish);
+            bool showBanner = hasQuestNeed || hasRefitPrep || hasReadyTurnIn;
+            _exchangeJumpMode = ExchangeQuestJumpMode.Sail;
+            _exchangeTurnInCmd = string.Empty;
             if (_exchangeQuestBanner != null)
             {
                 _exchangeQuestBanner.SetActive(showBanner);
@@ -3236,7 +3272,7 @@ namespace TacSim.UI
                     if (_exchangeQuestQtyBtn != null)
                         _exchangeQuestQtyBtn.gameObject.SetActive(false);
                     bool showRefitJump = refitReadiness.Ready;
-                    _exchangeJumpIsRefit = showRefitJump;
+                    _exchangeJumpMode = showRefitJump ? ExchangeQuestJumpMode.RefitYard : ExchangeQuestJumpMode.Sail;
                     if (_exchangeSailJumpBtn != null)
                     {
                         _exchangeSailJumpBtn.gameObject.SetActive(showRefitJump);
@@ -3262,6 +3298,41 @@ namespace TacSim.UI
                                     ? $"Cargo {refitReadiness.CargoTonnes}t"
                                     : $"Stores {refitReadiness.ProvisionsDays}d");
                             _exchangeQuestBannerText.text = $"<color=#FFDD44>[QUEST]</color> <b>[REFIT PREP] EMPTY HOLD BEFORE REFIT</b> — {rem} remaining (propellant OK) · Sell stowed lots below before +coop/refit prospector{stepSuffix}";
+                        }
+                    }
+                }
+                else if (hasReadyTurnIn)
+                {
+                    if (_exchangeQuestQtyBtn != null)
+                        _exchangeQuestQtyBtn.gameObject.SetActive(false);
+                    bool canFinishHere = readyQuest.CanFinishNow && !string.IsNullOrEmpty(readyQuest.FinishCmd);
+                    _exchangeJumpMode = canFinishHere ? ExchangeQuestJumpMode.TurnInNow : ExchangeQuestJumpMode.TurnInWayfinder;
+                    _exchangeTurnInCmd = canFinishHere ? readyQuest.FinishCmd : string.Empty;
+                    if (_exchangeSailJumpBtn != null)
+                    {
+                        _exchangeSailJumpBtn.gameObject.SetActive(true);
+                        SetRect(_exchangeSailJumpBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-176f, 3f), new Vector2(-6f, -3f));
+                    }
+                    if (_exchangeSailJumpBtnLbl != null)
+                        _exchangeSailJumpBtnLbl.text = canFinishHere ? "TURN IN (?)" : "WAYFINDER";
+                    if (_exchangeQuestBannerText != null)
+                    {
+                        SetRect(_exchangeQuestBannerText.rectTransform, Vector2.zero, Vector2.one,
+                            new Vector2(12f, 0f), new Vector2(-184f, 0f));
+                        string stepTag = ResolveActiveQuestStepTag();
+                        string stepSuffix = string.IsNullOrEmpty(stepTag) ? string.Empty : $" <color=#FFDD44>{stepTag}</color>";
+                        string safeTitle = MushProtocol.EscapeUnityRichText(readyQuest.Title);
+                        string safeNpc = MushProtocol.EscapeUnityRichText(string.IsNullOrEmpty(readyQuest.TurnInName) ? "quest contact" : readyQuest.TurnInName);
+                        if (canFinishHere)
+                        {
+                            _exchangeQuestBannerText.text = $"<color=#55EE99><b>[QUEST READY]</b></color> <b>{safeTitle}</b>  <color=#BBD4E6>— Ready to turn in to {safeNpc} here</color>{stepSuffix}";
+                        }
+                        else
+                        {
+                            string roomPart = string.IsNullOrEmpty(readyQuest.NextRoomName)
+                                ? string.Empty
+                                : $" ({MushProtocol.EscapeUnityRichText(readyQuest.NextRoomName)})";
+                            _exchangeQuestBannerText.text = $"<color=#FFDD44><b>[QUEST READY]</b></color> <b>{safeTitle}</b>  <color=#BBD4E6>— Return to {safeNpc}{roomPart}</color>{stepSuffix}";
                         }
                     }
                 }
