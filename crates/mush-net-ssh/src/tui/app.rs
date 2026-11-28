@@ -5838,6 +5838,14 @@ impl TuiApp {
                 }
             };
             let tracked_q = self.quests_overlay.tracked_key.as_deref();
+            let tracked_quest = self
+                .quests_snap
+                .ordered_active(tracked_q)
+                .into_iter()
+                .next();
+            let step_badge = tracked_quest
+                .map(|q| super::quests::guided_step_badge(&q.key))
+                .unwrap_or_default();
             let mut spans = vec![
                 Span::styled(
                     " [QUEST] ",
@@ -5846,7 +5854,7 @@ impl TuiApp {
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!("{}  ", qm.quest_title),
+                    format!("{}{step_badge}  ", qm.quest_title),
                     Style::default()
                         .fg(Color::White)
                         .add_modifier(Modifier::BOLD),
@@ -5875,11 +5883,25 @@ impl TuiApp {
                         Color::Gray
                     }),
                 ),
-                Span::styled(
-                    format!(" (l: {} wash)  |  ", qm.recommended_family),
-                    Style::default().fg(Color::Cyan),
-                ),
             ];
+            if self.port_walk.has_stowage_loaded() {
+                let ore_qty = self.port_walk.hold_commodity_quantity(&qm.target_ore_slug);
+                spans.push(Span::styled(
+                    format!(
+                        "Hold: {ore_qty}t {}  ",
+                        qm.target_ore_slug.replace('_', " ")
+                    ),
+                    Style::default().fg(if ore_qty > 0 {
+                        Color::Green
+                    } else {
+                        Color::Gray
+                    }),
+                ));
+            }
+            spans.push(Span::styled(
+                format!(" (l: {} wash)  |  ", qm.recommended_family),
+                Style::default().fg(Color::Cyan),
+            ));
             let next_key_hint = if !qm.scan_done {
                 "Next: s(scan)  |  "
             } else if !qm.sound_done {
@@ -5910,14 +5932,28 @@ impl TuiApp {
                         .add_modifier(Modifier::BOLD),
                 ));
             }
-            if qm.mine_done
-                && let Some(dest) = self.quests_snap.active_destination_port(tracked_q)
-            {
+            if qm.mine_done {
+                let (ret_id, ret_label) = if let Some(dest) =
+                    self.quests_snap.active_destination_port(tracked_q)
+                {
+                    (dest.port_id, dest.port_label)
+                } else {
+                    let slug = tracked_quest
+                        .and_then(|q| {
+                            super::quests::infer_station_port_from_room_entry(&q.next_room_entry)
+                        })
+                        .unwrap_or("ceres");
+                    let lbl = match slug {
+                        "stickney" => "Stickney Yards",
+                        "luna" => "Aitken Basin",
+                        "deimos" => "Voltaire Base",
+                        "titan" => "Ligeia Dock",
+                        _ => "Ceres Freeport",
+                    };
+                    (slug.to_string(), lbl.to_string())
+                };
                 spans.push(Span::styled(
-                    format!(
-                        "Return: {} (+ship/plan {})  |  ",
-                        dest.port_label, dest.port_id
-                    ),
+                    format!("Return: {ret_label} (+ship/plan {ret_id})  |  "),
                     Style::default()
                         .fg(Color::Green)
                         .add_modifier(Modifier::BOLD),
@@ -14663,7 +14699,21 @@ mod tests {
             "{text}"
         );
 
-        // Post-mine -> switches to Return: Ceres Freeport (+ship/plan ceres) + Recover
+        // Post-mine (even before ready_to_finish flips) -> shows [Step 6/7], live Hold ore, Return: Ceres Freeport (+ship/plan ceres) + Recover
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(PORT_TRADE_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "ship": {
+                    "stowage": {
+                        "cargo_kg": 2000,
+                        "items": [
+                            { "good": "tacsim:carbon_ore", "label": "Carbon Ore", "qty": 2 }
+                        ]
+                    }
+                }
+            }),
+        });
         app.apply_event(&OutputEvent::Panel {
             feed: SmolStr::new_static(QUESTS_FEED),
             kind: PanelFrameKind::Keyframe,
@@ -14673,7 +14723,7 @@ mod tests {
                     "key": "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
                     "title": "Scan, Sound, and Mine a Landing Site",
                     "next_room_entry": "room.c07_exchange",
-                    "ready_to_finish": true,
+                    "ready_to_finish": false,
                     "checkpoints": [
                         { "id": "scan_landing_site", "title": "Surface scan", "instructions": "+tv/1 scan go", "checked": true, "live_ready": true },
                         { "id": "sound_mineral_pocket", "title": "Sound pocket", "instructions": "+tv/1 sound go", "checked": true, "live_ready": true },
@@ -14682,8 +14732,10 @@ mod tests {
                 }]
             }),
         });
-        let qbuf2 = painted(&mut app, 220, 32);
+        let qbuf2 = painted(&mut app, 240, 32);
         let text2 = dump(&qbuf2);
+        assert!(text2.contains("[Step 6/7]"), "{text2}");
+        assert!(text2.contains("Hold: 2t carbon ore"), "{text2}");
         assert!(
             text2.contains("Return: Ceres Freeport (+ship/plan ceres)"),
             "{text2}"
