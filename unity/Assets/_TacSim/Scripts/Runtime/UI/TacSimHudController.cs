@@ -2387,6 +2387,7 @@ namespace TacSim.UI
             if (_boundTradeState != null)
                 _boundTradeState.OnStateChanged -= RefreshTradeTerminal;
             _boundTradeState = state;
+            QuestJournal?.BindTradeState(state);
             _lastListingsSignature = null;
             if (_boundTradeState != null)
                 _boundTradeState.OnStateChanged += RefreshTradeTerminal;

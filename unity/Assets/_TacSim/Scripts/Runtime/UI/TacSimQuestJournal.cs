@@ -348,9 +348,40 @@ namespace TacSim.UI
         private int _selectedQuestIndex;
         private string _confirmAbandonKey = string.Empty;
         private bool _hasHydratedPanel;
+        private TacSimTradeAndShipState _boundTradeState;
         private readonly HashSet<string> _seenActiveKeys = new HashSet<string>(StringComparer.Ordinal);
         private readonly HashSet<string> _seenReadyKeys = new HashSet<string>(StringComparer.Ordinal);
         private readonly HashSet<string> _seenCompletedKeys = new HashSet<string>(StringComparer.Ordinal);
+
+        public void BindTradeState(TacSimTradeAndShipState trade)
+        {
+            if (_boundTradeState != null)
+                _boundTradeState.OnStateChanged -= HandleBoundTradeStateChanged;
+            _boundTradeState = trade;
+            if (_boundTradeState != null)
+                _boundTradeState.OnStateChanged += HandleBoundTradeStateChanged;
+            HandleBoundTradeStateChanged();
+        }
+
+        private void OnDestroy()
+        {
+            if (_boundTradeState != null)
+            {
+                _boundTradeState.OnStateChanged -= HandleBoundTradeStateChanged;
+                _boundTradeState = null;
+            }
+        }
+
+        private void HandleBoundTradeStateChanged()
+        {
+            if (LatestPanel == null) return;
+            RefreshJournalBody();
+            if (IsQuestDialogOpen)
+                RefreshQuestDialogUi();
+        }
+
+        public string JournalBodySnapshot => _bodyText != null ? _bodyText.text : string.Empty;
+        public string DialogBodySnapshot => _dlgBodyText != null ? _dlgBodyText.text : string.Empty;
 
         public bool IsOpen => _modalRoot != null && _modalRoot.activeSelf;
         public bool IsQuestDialogOpen => _questDialogRoot != null && _questDialogRoot.activeSelf;
@@ -505,6 +536,59 @@ namespace TacSim.UI
                 return false;
             }
             return trade.GetHoldCommodityQuantity(need.CommoditySlug) < Mathf.Max(1, need.TargetQuantity);
+        }
+
+        public bool TryGetQuestHoldReadinessSummary(MushActiveQuest q, out string summary, out bool ready)
+        {
+            summary = string.Empty;
+            ready = false;
+            if (q == null || _boundTradeState == null || string.IsNullOrEmpty(_boundTradeState.ShipHullId))
+                return false;
+
+            if (TryGetSuggestedCommand(q, out _, out string sugCmd) &&
+                sugCmd.StartsWith("+coop/refit", StringComparison.OrdinalIgnoreCase))
+            {
+                bool hasCargoLots = false;
+                for (int i = 0; i < _boundTradeState.CargoLots.Count; i++)
+                {
+                    if (_boundTradeState.CargoLots[i] != null && _boundTradeState.CargoLots[i].Quantity > 0)
+                    {
+                        hasCargoLots = true;
+                        break;
+                    }
+                }
+                bool cargoEmpty = _boundTradeState.HoldMassTonnes <= 0 && !hasCargoLots;
+                bool storesEmpty = _boundTradeState.StoresCrewDays <= 0;
+                int tankT = Mathf.Max(0, _boundTradeState.TankTonnes);
+                ready = cargoEmpty && storesEmpty;
+                string cargoTxt = cargoEmpty ? "Cargo empty" : $"Cargo {_boundTradeState.HoldMassTonnes}t";
+                string storesTxt = storesEmpty ? "Stores empty" : $"Stores {_boundTradeState.StoresCrewDays}d";
+                string tag = ready ? "[READY]" : "[REFIT CHECK]";
+                summary = $"{tag} {cargoTxt} | {storesTxt} | Tank {tankT}t OK";
+                return true;
+            }
+
+            for (int cIdx = 0; cIdx < q.Checkpoints.Count; cIdx++)
+            {
+                var cp = q.Checkpoints[cIdx];
+                if (cp.Checked || cp.LiveReady) continue;
+                if (TryExtractTradeNeedFromCheckpoint(q.Title, cp, out var need))
+                {
+                    int current = _boundTradeState.GetHoldCommodityQuantity(need.CommoditySlug);
+                    int target = Mathf.Max(1, need.TargetQuantity);
+                    string unit = string.Equals(need.CommoditySlug, "propellant", StringComparison.OrdinalIgnoreCase)
+                        ? "t"
+                        : string.Equals(need.CommoditySlug, "provisions", StringComparison.OrdinalIgnoreCase)
+                            ? "d"
+                            : "u";
+                    string label = need.CommoditySlug.Replace('_', ' ').ToUpperInvariant();
+                    ready = current >= target;
+                    string tag = ready ? "[HOLD READY]" : "[HOLD]";
+                    summary = $"{tag} {label}: {current}/{target} {unit}";
+                    return true;
+                }
+            }
+            return false;
         }
 
         public static string InferStationPortFromRoomEntry(string roomEntry)
@@ -2237,6 +2321,11 @@ namespace TacSim.UI
                         else
                             sb.Append("<color=#99B8CC>  ").Append(MushProtocol.EscapeUnityRichText(cp.Instructions)).Append("</color>\n");
                     }
+                    if (TryGetQuestHoldReadinessSummary(active, out string holdSummary, out bool holdReady))
+                    {
+                        string holdCol = holdReady ? "#55EE99" : "#FFDD44";
+                        sb.Append($"\n<color={holdCol}><b>{MushProtocol.EscapeUnityRichText(holdSummary)}</b></color>\n");
+                    }
                     if (TryGetSuggestedCommand(active, out string sugLbl, out string sugCmd))
                     {
                         sb.Append($"\n<color=#FFDD44><b>SUGGESTED CMD:</b></color> <color=#66EEAA>{MushProtocol.EscapeUnityRichText(sugCmd.Trim())}</color> ({MushProtocol.EscapeUnityRichText(sugLbl)})\n");
@@ -2454,6 +2543,11 @@ namespace TacSim.UI
                                 sb.Append($"<color=#66EEAA>  {MushProtocol.EscapeUnityRichText(cp.DetailText)}</color>\n");
                             else
                                 sb.Append($"<color=#99B8CC>  {MushProtocol.EscapeUnityRichText(cp.Instructions)}</color>\n");
+                        }
+                        if (TryGetQuestHoldReadinessSummary(q, out string jHoldSummary, out bool jHoldReady))
+                        {
+                            string holdCol = jHoldReady ? "#55EE99" : "#FFDD44";
+                            sb.Append($"\n<color={holdCol}><b>{MushProtocol.EscapeUnityRichText(jHoldSummary)}</b></color>");
                         }
                         sb.Append($"\n<color=#FFDF77><b>REWARD:</b> {MushProtocol.EscapeUnityRichText(q.RewardSummary)}</color>");
                         if (_qNextBtn != null) _qNextBtn.gameObject.SetActive(LatestPanel.Active.Count > 1);
