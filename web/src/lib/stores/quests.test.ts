@@ -717,7 +717,23 @@ describe("QuestsStore", () => {
         cargoLines: [{ good: "tacsim:metals", label: "Metals", qty: 2 }],
       }),
     ).toBe(true);
-    // Hold has 5t metals -> ready to head to Berth Gallery & board ship
+    // Aboard ship docked at Ceres (origin port) without 5t metals -> airlock (disembark & buy cargo first!)
+    expect(
+      resolveQuestShipTargetCompartment(store.active, store.trackedKey, "ceres", false, null, {
+        propellantKg: 10_000,
+        provisionsCrewDays: 10,
+        cargoLines: [{ good: "tacsim:metals", label: "Metals", qty: 2 }],
+      }),
+    ).toBe("airlock");
+    // Docked at unrelated port (Deimos) without 5t metals -> bridge (fly to origin/destination, don't disembark at Deimos)
+    expect(
+      resolveQuestShipTargetCompartment(store.active, store.trackedKey, "deimos", false, null, {
+        propellantKg: 10_000,
+        provisionsCrewDays: 10,
+        cargoLines: [{ good: "tacsim:metals", label: "Metals", qty: 2 }],
+      }),
+    ).toBe("bridge");
+    // Hold has 5t metals -> ready to head to Berth Gallery & board ship (and aboard ship -> bridge to fly to Stickney!)
     expect(
       needsOriginPortProcurement(store.active, store.trackedKey, {
         propellantKg: 10_000,
@@ -725,6 +741,13 @@ describe("QuestsStore", () => {
         cargoLines: [{ good: "tacsim:metals", label: "Metals", qty: 5 }],
       }),
     ).toBe(false);
+    expect(
+      resolveQuestShipTargetCompartment(store.active, store.trackedKey, "ceres", false, null, {
+        propellantKg: 10_000,
+        provisionsCrewDays: 10,
+        cargoLines: [{ good: "tacsim:metals", label: "Metals", qty: 5 }],
+      }),
+    ).toBe("bridge");
     // Unloaded stowage -> false (preserves default cross-port berth routing)
     expect(needsOriginPortProcurement(store.active, store.trackedKey, null)).toBe(false);
 
@@ -797,8 +820,24 @@ describe("QuestsStore", () => {
       ],
     });
     expect(needsSurfaceExpeditionBoarding(store.active, store.trackedKey)).toBe(false);
-    // Still on surface pad -> bridge (lift off & fly back to Ceres!)
+    // Still on surface pad without stowage -> bridge (backward-compatible default)
     expect(resolveQuestShipTargetCompartment(store.active, store.trackedKey, null, true)).toBe("bridge");
+    // Still on surface pad with live stowage showing 0 carbon_ore -> bay (recover rig first!)
+    expect(
+      resolveQuestShipTargetCompartment(store.active, store.trackedKey, null, true, null, {
+        propellantKg: 10_000,
+        provisionsCrewDays: 6,
+        cargoLines: [],
+      }),
+    ).toBe("bay");
+    // Once rig is recovered and 1t carbon_ore is stowed -> flips to bridge!
+    expect(
+      resolveQuestShipTargetCompartment(store.active, store.trackedKey, null, true, null, {
+        propellantKg: 10_000,
+        provisionsCrewDays: 6,
+        cargoLines: [{ good: "tacsim:carbon_ore", label: "Carbon Ore", qty: 1 }],
+      }),
+    ).toBe("bridge");
     // Docked back at Ceres Freeport -> airlock (+ship/leave to turn in to Rosalind!)
     expect(resolveQuestShipTargetCompartment(store.active, store.trackedKey, "ceres", false)).toBe("airlock");
     // Turn-in port destination fallback guides Sailing Plan / Solar Orrery back to Ceres Freeport until standing with Rosalind
