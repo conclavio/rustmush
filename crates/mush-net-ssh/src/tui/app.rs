@@ -6413,9 +6413,42 @@ impl TuiApp {
                         .map(|o| guided_step_badge(o.key))
                 })
                 .unwrap_or_default();
+            let stowage = self.port_walk.quest_stowage_telemetry();
+            let docked_port = self.port_walk.docked_port_slug();
+            let qm_post_mine = self
+                .quests_snap
+                .surface_mining_status(tracked_key)
+                .filter(|m| m.mine_done);
+            let step6_ore_held = qm_post_mine.as_ref().and_then(|qm| {
+                stowage
+                    .as_ref()
+                    .map(|st| st.commodity_qty(&qm.target_ore_slug))
+            });
             if let Some(dest) = self.port_walk.quest_dest_hint() {
-                let text = if self.pixel.kind() == PictureKind::Docking {
-                    if self.pixel.docking_active() {
+                let arrived_docked = self.pixel.kind() != PictureKind::Docking
+                    && !self.pixel.docking_active()
+                    && step6_ore_held != Some(0)
+                    && docked_port.is_some_and(|dp| dp.eq_ignore_ascii_case(&dest.port_id))
+                    && (qm_post_mine.is_none()
+                        || step6_ore_held.is_some_and(|n| n > 0)
+                        || tracked_q.is_some_and(|q| q.ready_to_finish || q.can_finish_now));
+                let (text, col) = if step6_ore_held == Some(0) && !self.pixel.docking_active() {
+                    (
+                        format!(
+                            "  |  [RECOVER RIG FIRST] Recover Rig (+tv/1 recover go){step_badge}"
+                        ),
+                        Color::LightRed,
+                    )
+                } else if arrived_docked {
+                    (
+                        format!(
+                            "  |  [QUEST ARRIVED] At {} (+ship/leave){step_badge}",
+                            dest.port_label
+                        ),
+                        Color::Green,
+                    )
+                } else if self.pixel.kind() == PictureKind::Docking {
+                    let s = if self.pixel.docking_active() {
                         format!(
                             "  |  [QUEST DOCK]{step_badge} {} — {} (+ship/leave once docked)",
                             dest.port_label, dest.quest_title
@@ -6425,24 +6458,50 @@ impl TuiApp {
                             "  |  [QUEST DOCK] {} (+helm/dock {}){step_badge}",
                             dest.port_label, dest.port_id
                         )
-                    }
+                    };
+                    (s, Color::Yellow)
+                } else if step6_ore_held.is_some_and(|n| n > 0) {
+                    (
+                        format!(
+                            "  |  [ORE HOLD READY] Return: {} (+ship/plan {}){step_badge}",
+                            dest.port_label, dest.port_id
+                        ),
+                        Color::Green,
+                    )
                 } else {
-                    format!(
-                        "  |  [QUEST] Dest: {} (+ship/plan {}){step_badge}",
-                        dest.port_label, dest.port_id
+                    let pf_tag = tracked_q
+                        .zip(stowage.as_ref())
+                        .and_then(|(q, st)| {
+                            super::quests::QuestsSnapshot::preflight_readiness_line_for(q, st)
+                        })
+                        .map(|(_, ok)| {
+                            if ok {
+                                " [PRE-FLIGHT OK]"
+                            } else {
+                                " [CHECK HOLD]"
+                            }
+                        })
+                        .unwrap_or("");
+                    (
+                        format!(
+                            "  |  [QUEST] Dest: {} (+ship/plan {}){step_badge}{pf_tag}",
+                            dest.port_label, dest.port_id
+                        ),
+                        Color::Yellow,
                     )
                 };
                 status_spans.push(Span::styled(
                     text,
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
+                    Style::default().fg(col).add_modifier(Modifier::BOLD),
                 ));
             } else if let Some(qm) = self.quests_snap.surface_mining_status(tracked_key) {
-                let text = if !qm.mine_done {
-                    format!(
-                        "  |  [QUEST] Mine {} (Alt+q quarry, z: ground, l: {}){step_badge}",
-                        qm.target_ore_slug, qm.recommended_family
+                let (text, col) = if !qm.mine_done {
+                    (
+                        format!(
+                            "  |  [QUEST] Mine {} (Alt+q quarry, z: ground, l: {}){step_badge}",
+                            qm.target_ore_slug, qm.recommended_family
+                        ),
+                        Color::Yellow,
                     )
                 } else {
                     let slug = tracked_q
@@ -6457,24 +6516,52 @@ impl TuiApp {
                         "titan" => "Ligeia Dock",
                         _ => "Ceres Freeport",
                     };
-                    if self.pixel.kind() == PictureKind::Docking {
-                        if self.pixel.docking_active() {
+                    let ore_held = stowage
+                        .as_ref()
+                        .map(|st| st.commodity_qty(&qm.target_ore_slug));
+                    if ore_held == Some(0) && !self.pixel.docking_active() {
+                        (
+                            format!(
+                                "  |  [RECOVER RIG FIRST] Recover Rig (+tv/1 recover go){step_badge}"
+                            ),
+                            Color::LightRed,
+                        )
+                    } else if self.pixel.kind() != PictureKind::Docking
+                        && docked_port.is_some_and(|dp| dp.eq_ignore_ascii_case(slug))
+                        && (ore_held.is_none_or(|n| n > 0)
+                            || tracked_q.is_some_and(|q| q.ready_to_finish || q.can_finish_now))
+                    {
+                        (
+                            format!("  |  [QUEST ARRIVED] At {lbl} (+ship/leave){step_badge}"),
+                            Color::Green,
+                        )
+                    } else if self.pixel.kind() == PictureKind::Docking {
+                        let s = if self.pixel.docking_active() {
                             format!(
                                 "  |  [QUEST DOCK]{step_badge} {lbl} — {} (+ship/leave once docked)",
                                 qm.quest_title
                             )
                         } else {
                             format!("  |  [QUEST DOCK] {lbl} (+helm/dock {slug}){step_badge}")
-                        }
+                        };
+                        (s, Color::Yellow)
+                    } else if ore_held.is_some_and(|n| n > 0) {
+                        (
+                            format!(
+                                "  |  [ORE HOLD READY] Return: {lbl} (+ship/plan {slug}){step_badge}"
+                            ),
+                            Color::Green,
+                        )
                     } else {
-                        format!("  |  [QUEST] Return: {lbl} (+ship/plan {slug}){step_badge}")
+                        (
+                            format!("  |  [QUEST] Return: {lbl} (+ship/plan {slug}){step_badge}"),
+                            Color::Yellow,
+                        )
                     }
                 };
                 status_spans.push(Span::styled(
                     text,
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD),
+                    Style::default().fg(col).add_modifier(Modifier::BOLD),
                 ));
             }
         }
@@ -15544,5 +15631,216 @@ mod tests {
         assert!(txt2.contains("[QUEST ARRIVED]"), "{txt2}");
         assert!(txt2.contains("At Stickney Yards"), "{txt2}");
         assert!(!txt2.contains("[CHECK BEFORE UNDOCK]"), "{txt2}");
+    }
+
+    #[test]
+    fn space_cockpit_status_bar_shows_preflight_arrived_and_step6_rig_recovery() {
+        let mut app = app();
+        let dump = |b: &ratatui::buffer::Buffer| -> String {
+            (0..b.area.height)
+                .map(|y| {
+                    (0..b.area.width)
+                        .map(|x| b[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        // Enter ship Bridge and switch to Kitty SpaceCockpit picture on Screen 1
+        app.apply_event(&OutputEvent::Room(mush_proto::RoomView {
+            id: "#20".into(),
+            name: "Bridge".into(),
+            zone: None,
+            desc: mush_proto::RichText::plain("Bridge."),
+            contents: Vec::new(),
+            exits: Vec::new(),
+            ambient: std::collections::BTreeMap::from([(
+                "tacsim".into(),
+                serde_json::json!({
+                    "mode": "interior",
+                    "unit": "dray",
+                    "room": "bridge",
+                    "hull_name": "Salt Moth",
+                    "docked": true,
+                    "port": "ceres"
+                }),
+            )]),
+        }));
+        app.pixel.probe_sent(Instant::now());
+        app.pixel.graphics_reply(true);
+        app.active = CHART_SCREEN;
+        let _ = app.feed_input(b"\x07");
+        let _ = app.feed_input(b"v");
+        let _ = app.feed_input(b"v");
+        assert_eq!(app.pixel.kind(), PictureKind::SpaceCockpit);
+
+        // 1. Step 3 with 0t metals at Ceres -> [CHECK HOLD]; 5t metals -> [PRE-FLIGHT OK]
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(PORT_TRADE_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "enabled": true,
+                "venue": "ceres",
+                "ship": {
+                    "hull_id": "#99",
+                    "stowage": { "cargo_kg": 0, "tank_kg": 10000, "stores_days": 12, "items": [] }
+                }
+            }),
+        });
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "active": [{
+                    "key": "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+                    "title": "Metals Down the Corridor",
+                    "next_room_entry": "room.p07_receiving",
+                    "checkpoints": [{
+                        "id": "deliver_metals",
+                        "title": "Buy 5t metals and deliver to Stickney Yards",
+                        "instructions": "+ship/plan stickney and sell 5t metals.",
+                        "checked": false,
+                        "live_ready": false
+                    }]
+                }]
+            }),
+        });
+        let s3_missing = dump(&painted(&mut app, 220, 28));
+        assert!(
+            s3_missing
+                .contains("Dest: Stickney Yards (+ship/plan stickney) [Step 3/7] [CHECK HOLD]"),
+            "{s3_missing}"
+        );
+
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(PORT_TRADE_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "enabled": true,
+                "venue": "ceres",
+                "ship": {
+                    "hull_id": "#99",
+                    "stowage": {
+                        "cargo_kg": 5000,
+                        "tank_kg": 10000,
+                        "stores_days": 12,
+                        "items": [{ "good": "tacsim:metals", "label": "Metals", "qty": 5 }]
+                    }
+                }
+            }),
+        });
+        let s3_ok = dump(&painted(&mut app, 220, 28));
+        assert!(
+            s3_ok.contains("Dest: Stickney Yards (+ship/plan stickney) [Step 3/7] [PRE-FLIGHT OK]"),
+            "{s3_ok}"
+        );
+
+        // 2. Docked at Stickney Yards -> [QUEST ARRIVED] At Stickney Yards (+ship/leave)
+        app.apply_event(&OutputEvent::Room(mush_proto::RoomView {
+            id: "#20".into(),
+            name: "Bridge".into(),
+            zone: None,
+            desc: mush_proto::RichText::plain("Bridge."),
+            contents: Vec::new(),
+            exits: Vec::new(),
+            ambient: std::collections::BTreeMap::from([(
+                "tacsim".into(),
+                serde_json::json!({
+                    "mode": "interior",
+                    "unit": "dray",
+                    "room": "bridge",
+                    "hull_name": "Salt Moth",
+                    "docked": true,
+                    "port": "stickney"
+                }),
+            )]),
+        }));
+        let s3_arrived = dump(&painted(&mut app, 220, 28));
+        assert!(
+            s3_arrived.contains("[QUEST ARRIVED] At Stickney Yards (+ship/leave) [Step 3/7]"),
+            "{s3_arrived}"
+        );
+
+        // 3. Step 6 post-mine on landing pad: 0t carbon_ore -> [RECOVER RIG FIRST]; 1t stowed -> [ORE HOLD READY]
+        app.apply_event(&OutputEvent::Room(mush_proto::RoomView {
+            id: "#20".into(),
+            name: "Bridge".into(),
+            zone: None,
+            desc: mush_proto::RichText::plain("Bridge."),
+            contents: Vec::new(),
+            exits: Vec::new(),
+            ambient: std::collections::BTreeMap::from([(
+                "tacsim".into(),
+                serde_json::json!({
+                    "mode": "interior",
+                    "unit": "dray_p",
+                    "room": "bridge",
+                    "hull_name": "Salt Moth",
+                    "docked": false,
+                    "settled_pad": true,
+                    "port": "ceres"
+                }),
+            )]),
+        }));
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(PORT_TRADE_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "enabled": true,
+                "venue": "commons",
+                "ship": {
+                    "hull_id": "#99",
+                    "stowage": { "cargo_kg": 0, "tank_kg": 10000, "stores_days": 12, "items": [] }
+                }
+            }),
+        });
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "active": [{
+                    "key": "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+                    "title": "Scan, Sound, and Mine a Landing Site",
+                    "next_room_entry": "room.c07_exchange",
+                    "checkpoints": [
+                        { "id": "scan_landing_site", "title": "Scan", "instructions": "+tv/1 scan go", "checked": true, "live_ready": true },
+                        { "id": "sound_mineral_pocket", "title": "Sound", "instructions": "+tv/1 sound go", "checked": true, "live_ready": true },
+                        { "id": "mine_carbon_ore", "title": "Mine 1t carbon_ore", "instructions": "+tv/1 mine go", "checked": true, "live_ready": true }
+                    ]
+                }]
+            }),
+        });
+        let s6_recover = dump(&painted(&mut app, 220, 28));
+        assert!(
+            s6_recover.contains("[RECOVER RIG FIRST] Recover Rig (+tv/1 recover go) [Step 6/7]"),
+            "{s6_recover}"
+        );
+
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(PORT_TRADE_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "enabled": true,
+                "venue": "commons",
+                "ship": {
+                    "hull_id": "#99",
+                    "stowage": {
+                        "cargo_kg": 1000,
+                        "tank_kg": 10000,
+                        "stores_days": 12,
+                        "items": [{ "good": "tacsim:carbon_ore", "label": "Carbon Ore", "qty": 1 }]
+                    }
+                }
+            }),
+        });
+        let s6_ready = dump(&painted(&mut app, 220, 28));
+        assert!(
+            s6_ready
+                .contains("[ORE HOLD READY] Return: Ceres Freeport (+ship/plan ceres) [Step 6/7]"),
+            "{s6_ready}"
+        );
     }
 }
