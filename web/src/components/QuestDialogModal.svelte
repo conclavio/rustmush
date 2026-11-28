@@ -55,8 +55,36 @@
       : [],
   );
 
+  function isGuidedQuest(item: { key: string; category?: string }): boolean {
+    return item.category === "guided" || guidedStepNum(item.key) !== null;
+  }
+
   const npcAvailableQuests = $derived(
-    q.dialogNpcId ? q.available.filter((item) => item.giverId === q.dialogNpcId) : [],
+    q.dialogNpcId
+      ? q.available
+          .filter((item) => item.giverId === q.dialogNpcId)
+          .sort((a, b) => (isGuidedQuest(a) ? 0 : 1) - (isGuidedQuest(b) ? 0 : 1))
+      : [],
+  );
+
+  const orderedActiveLog = $derived(
+    [...q.active].sort((a, b) => {
+      const rank = (item: ActiveQuestView) =>
+        item.canFinishNow
+          ? 0
+          : item.canCheckNow || item.readyToFinish
+            ? 1
+            : isGuidedQuest(item)
+              ? 2
+              : 3;
+      return rank(a) - rank(b);
+    }),
+  );
+
+  const orderedAvailableLog = $derived(
+    [...q.available].sort(
+      (a, b) => (isGuidedQuest(a) ? 0 : 1) - (isGuidedQuest(b) ? 0 : 1),
+    ),
   );
 
   const selectedActive = $derived<ActiveQuestView | null>(
@@ -183,12 +211,18 @@
       {/if}
 
       {#if selectedOffer}
+        {@const offerStepNo = guidedStepNum(selectedOffer.key)}
         <div class="qbody">
-          {#if selectedOffer.category === "guided"}
-            <span class="cat-pill guided">Optional Guided Tour</span>
-          {:else}
-            <span class="cat-pill">Optional Quest</span>
-          {/if}
+          <div class="row-tags">
+            {#if selectedOffer.category === "guided"}
+              <span class="cat-pill guided">Optional Guided Tour</span>
+            {:else}
+              <span class="cat-pill">Optional Quest</span>
+            {/if}
+            {#if offerStepNo !== null}
+              <span class="step-pill">Step {offerStepNo}/7</span>
+            {/if}
+          </div>
           <p class="prose">{selectedOffer.introduction}</p>
 
           <h3>Requirements &amp; Steps</h3>
@@ -244,6 +278,7 @@
           {/if}
         </footer>
       {:else if selectedActive}
+        {@const activeStepNo = guidedStepNum(selectedActive.key)}
         {@const activeMining = extractActiveSurfaceMiningStatus([selectedActive], selectedActive.key)}
         {@const miningPrep = extractSurfaceMiningPrepActions(activeMining)}
         {@const activeHoldSummary = formatQuestHoldReadinessSummary(selectedActive, liveStowage)}
@@ -253,6 +288,9 @@
               <span class="cat-pill guided">Optional Guided Tour</span>
             {:else}
               <span class="cat-pill">Optional Quest</span>
+            {/if}
+            {#if activeStepNo !== null}
+              <span class="step-pill">Step {activeStepNo}/7</span>
             {/if}
             {#if selectedActive.canFinishNow}
               <span class="cat-pill ready">Ready to Complete</span>
@@ -523,14 +561,25 @@
               <p class="empty">No active quests. Look for NPCs with a golden <strong>!</strong> badge (like Maren Halvorsen in Port Watch Arrivals).</p>
             {/if}
           {:else}
-            {#each q.active as item (item.key)}
+            {#each orderedActiveLog as item (item.key)}
+              {@const activeLogStepNo = guidedStepNum(item.key)}
               {@const itemSuggested = extractQuestSuggestedAction(item)}
               {@const itemHoldSummary = formatQuestHoldReadinessSummary(item, liveStowage)}
               <article class="qcard" class:tracked={q.trackedQuest?.key === item.key}>
                 <div class="qcard-top">
-                  <strong>{item.title}</strong>
-                  <span class="cat-pill" class:guided={item.category === "guided"}>
-                    {item.category === "guided" ? "Guided" : "Optional"}{item.allowRestart ? " · Restartable" : ""}
+                  <strong>
+                    {#if item.canFinishNow || item.readyToFinish}
+                      <span class="mini-sym" data-marker="turn_in">?</span>{" "}
+                    {/if}
+                    {item.title}
+                  </strong>
+                  <span class="qcard-meta">
+                    {#if activeLogStepNo !== null}
+                      <span class="step-pill">Step {activeLogStepNo}/7</span>
+                    {/if}
+                    <span class="cat-pill" class:guided={item.category === "guided"}>
+                      {item.category === "guided" ? "Guided" : "Optional"}{item.allowRestart ? " · Restartable" : ""}
+                    </span>
                   </span>
                 </div>
                 <p class="next-line">Next: {item.nextStep}{#if item.nextRoomName} · <em>{item.nextRoomName}</em>{/if}</p>
@@ -601,11 +650,15 @@
           {#if q.available.length === 0}
             <p class="empty">No quests are available in {q.roomName || "this room"} right now.</p>
           {:else}
-            {#each q.available as offer (offer.key)}
+            {#each orderedAvailableLog as offer (offer.key)}
+              {@const availStepNo = guidedStepNum(offer.key)}
               <article class="qcard">
                 <div class="qcard-top">
                   <strong><span class="mini-sym" data-marker="available">!</span> {offer.title}</strong>
                   <span class="qcard-meta">
+                    {#if availStepNo !== null}
+                      <span class="step-pill">Step {availStepNo}/7</span>
+                    {/if}
                     {#if offer.allowRestart}
                       <span class="cat-pill guided">Optional · Restartable</span>
                     {/if}

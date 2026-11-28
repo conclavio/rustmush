@@ -412,4 +412,92 @@ describe("QuestDialogModal guided corridor tour roadmap", () => {
     await fireEvent.click(confirmDecline);
     expect(sent).toContain("+quest/decline #18 tok_side");
   });
+
+  it("sorts ready turn-ins first in Active tab, prioritizes guided offers first in Available tab, and renders Step n/7 badges across Dialog and Log", () => {
+    const quests = new QuestsStore();
+    quests.applyFrame({
+      schema: 1,
+      room_id: "#15",
+      room_name: "Registry & Co-op Desk",
+      active: [
+        {
+          key: "side.delivery",
+          title: "Side Hauler Favor",
+          category: "optional",
+          giver_id: "#30",
+          giver_name: "Dock Clerk",
+          turn_in_id: "#30",
+          turn_in_name: "Dock Clerk",
+          can_finish_now: false,
+          ready_to_finish: false,
+          next_step: "Deliver parcel",
+          checkpoints: [],
+        },
+        {
+          key: GUIDED_TOUR_KEYS[1],
+          title: "Stock the Locker and Tanks",
+          category: "guided",
+          giver_id: "#18",
+          giver_name: "Ilse Oduya-Brandt",
+          turn_in_id: "#18",
+          turn_in_name: "Ilse Oduya-Brandt",
+          can_finish_now: true,
+          ready_to_finish: true,
+          finish_cmd: "+quest/complete #18 tok2",
+          next_step: "Turn in to Ilse",
+          checkpoints: [],
+        },
+      ],
+      available: [
+        {
+          key: "side.audit",
+          title: "Optional Ledger Audit",
+          category: "optional",
+          giver_id: "#18",
+          giver_name: "Ilse Oduya-Brandt",
+          turn_in_id: "#18",
+          turn_in_name: "Ilse Oduya-Brandt",
+          accept_cmd: "+quest/accept #18 side_tok",
+          checkpoints: [],
+        },
+        {
+          key: GUIDED_TOUR_KEYS[2],
+          title: "Metals Down the Corridor",
+          category: "guided",
+          giver_id: "#18",
+          giver_name: "Ilse Oduya-Brandt",
+          turn_in_id: "#40",
+          turn_in_name: "Jonas Achterberg-Nkemelu",
+          accept_cmd: "+quest/accept #18 g3_tok",
+          checkpoints: [],
+        },
+      ],
+      completed: [],
+    });
+
+    const app = { quests, tacsim: { trade: null }, focusComposer: vi.fn() } as unknown as GameApp;
+
+    // 1. Active tab sorts ready turn-in Step 2/7 first and shows Step 2/7 pill
+    quests.openLog("active");
+    const activeView = render(QuestDialogModal, { app, onCmd: vi.fn() });
+    const activeCards = [...activeView.container.querySelectorAll("article.qcard")];
+    expect(activeCards).toHaveLength(2);
+    expect(activeCards[0]!.textContent).toContain("Stock the Locker and Tanks");
+    expect(activeCards[0]!.textContent).toContain("Step 2/7");
+    activeView.unmount();
+
+    // 2. Available tab sorts Guided Step 3/7 ahead of optional audit and shows Step 3/7 pill
+    quests.openLog("available");
+    const availView = render(QuestDialogModal, { app, onCmd: vi.fn() });
+    const availCards = [...availView.container.querySelectorAll("article.qcard")];
+    expect(availCards).toHaveLength(2);
+    expect(availCards[0]!.textContent).toContain("Metals Down the Corridor");
+    expect(availCards[0]!.textContent).toContain("Step 3/7");
+    availView.unmount();
+
+    // 3. NPC Dialog for Step 3 offer also shows Step 3/7 pill
+    quests.openQuestDialog(GUIDED_TOUR_KEYS[2]!);
+    render(QuestDialogModal, { app, onCmd: vi.fn() });
+    expect(screen.getByText("Step 3/7")).toBeTruthy();
+  });
 });
