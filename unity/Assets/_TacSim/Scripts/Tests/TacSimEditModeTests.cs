@@ -15789,5 +15789,56 @@ namespace TacSim.Tests
                 UnityEngine.Object.DestroyImmediate(rootGo);
             }
         }
+
+        [Test]
+        public void GroundChartModal_ShowsStep6BadgeLiveOreHoldAndPostMineReturnAction()
+        {
+            var rootGo = new UnityEngine.GameObject("GroundChartStep6ReturnTest");
+            try
+            {
+                var hud = rootGo.AddComponent<TacSim.UI.TacSimHudController>();
+                hud.BuildHud();
+
+                var tradeState = new TacSimTradeAndShipState();
+                tradeState.CargoLots.Add(new TacSim.World.HoldCargoLot
+                {
+                    GoodId = "tacsim:carbon_ore",
+                    Label = "Carbon Ore",
+                    Quantity = 2
+                });
+                hud.BindTradeState(tradeState);
+
+                hud.QuestJournal.ApplyQuestsPanel(MushProtocol.ParseQuestsPanel(JsonNode.Parse(@"{
+                    ""schema"": 1,
+                    ""active"": [{
+                        ""key"": ""tacsim.quests.guided_onboarding/quest.guide_06_surface_mining"",
+                        ""title"": ""Scan, Sound, and Mine a Landing Site"",
+                        ""next_room_entry"": ""room.c07_exchange"",
+                        ""checkpoints"": [
+                            { ""id"": ""scan"", ""title"": ""Scan site"", ""instructions"": ""+tv/1 scan go"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""sound"", ""title"": ""Sound pocket"", ""instructions"": ""+tv/1 sound go"", ""checked"": true, ""live_ready"": true },
+                            { ""id"": ""mine"", ""title"": ""Mine 1t carbon_ore"", ""instructions"": ""+tv/1 mine go"", ""checked"": true, ""live_ready"": true }
+                        ]
+                    }],
+                    ""available"": [],
+                    ""completed"": []
+                }")));
+
+                Assert.IsTrue(hud.GroundChart.HasQuestMiningBanner);
+                StringAssert.Contains("[Step 6/7]", hud.GroundChart.QuestMiningBannerText);
+                StringAssert.Contains("Hold: 2t", hud.GroundChart.QuestMiningBannerText);
+                StringAssert.Contains("Return: Ceres Freeport (+ship/plan ceres)", hud.GroundChart.QuestMiningBannerText);
+                Assert.AreEqual("RETURN: CERES", hud.GroundChart.QuestBannerButtonLabelSnapshot);
+
+                string emitted = null;
+                hud.GroundChart.OnCommandRequested += c => emitted = c;
+                Assert.IsTrue(hud.GroundChart.TriggerQuestBannerAction());
+                Assert.AreEqual("+ship/plan ceres", emitted);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(rootGo);
+            }
+        }
     }
 }

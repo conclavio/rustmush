@@ -242,7 +242,9 @@ namespace TacSim.UI
         private Text _questWashBtnLbl;
         private RectTransform _sitesListBoxRect;
         private TacSimQuestJournal _questJournal;
+        private TacSimTradeAndShipState _tradeState;
         private string _questRecommendedFamily = string.Empty;
+        private string _questReturnPortId = string.Empty;
         private RawImage _mapImage;
         private RectTransform _mapRect;
         private Texture2D _mapTex;
@@ -253,6 +255,7 @@ namespace TacSim.UI
         public bool IsOpen => _overlay != null && _overlay.activeSelf;
         public bool HasQuestMiningBanner => _questBanner != null && _questBanner.activeSelf;
         public string QuestMiningBannerText => _questBannerText != null ? _questBannerText.text : string.Empty;
+        public string QuestBannerButtonLabelSnapshot => _questWashBtnLbl != null ? _questWashBtnLbl.text : string.Empty;
         public GroundChartFrame CurrentFrame { get; private set; }
         public string ActiveFamily { get; private set; } = "volatiles";
         public string SelectedSiteVenue { get; private set; } = string.Empty;
@@ -371,7 +374,7 @@ namespace TacSim.UI
             _questBannerText = CreateText(_questBanner.transform, string.Empty, 11, FontStyle.Bold, TextAnchor.MiddleLeft, new Color(1f, 0.88f, 0.44f));
             _questBannerText.supportRichText = true;
             SetRect(_questBannerText.rectTransform, Vector2.zero, Vector2.one, new Vector2(8f, 0f), new Vector2(-112f, 0f));
-            _questWashBtn = CreateButton(_questBanner.transform, "CARBON WASH", new Color(0.62f, 0.44f, 0.12f), () => ApplyQuestWashFilter());
+            _questWashBtn = CreateButton(_questBanner.transform, "CARBON WASH", new Color(0.62f, 0.44f, 0.12f), () => TriggerQuestBannerAction());
             SetRect(_questWashBtn.GetComponent<RectTransform>(), new Vector2(1f, 0f), new Vector2(1f, 1f), new Vector2(-106f, 3f), new Vector2(-4f, -3f));
             _questWashBtnLbl = _questWashBtn.GetComponentInChildren<Text>();
             _questBanner.SetActive(false);
@@ -434,6 +437,11 @@ namespace TacSim.UI
                 _questJournal.OnQuestsPanelUpdated -= RefreshQuestMiningBanner;
                 _questJournal = null;
             }
+            if (_tradeState != null)
+            {
+                _tradeState.OnStateChanged -= RefreshQuestMiningBanner;
+                _tradeState = null;
+            }
             if (_mapTex != null)
             {
                 if (Application.isPlaying) Destroy(_mapTex);
@@ -450,6 +458,26 @@ namespace TacSim.UI
             if (_questJournal != null)
                 _questJournal.OnQuestsPanelUpdated += RefreshQuestMiningBanner;
             RefreshQuestMiningBanner();
+        }
+
+        public void BindTradeState(TacSimTradeAndShipState trade)
+        {
+            if (_tradeState != null)
+                _tradeState.OnStateChanged -= RefreshQuestMiningBanner;
+            _tradeState = trade;
+            if (_tradeState != null)
+                _tradeState.OnStateChanged += RefreshQuestMiningBanner;
+            RefreshQuestMiningBanner();
+        }
+
+        public bool TriggerQuestBannerAction()
+        {
+            if (!string.IsNullOrEmpty(_questReturnPortId))
+            {
+                OnCommandRequested?.Invoke($"+ship/plan {_questReturnPortId}");
+                return true;
+            }
+            return ApplyQuestWashFilter();
         }
 
         public bool ApplyQuestWashFilter()
@@ -523,25 +551,57 @@ namespace TacSim.UI
         private void RefreshQuestMiningBanner()
         {
             if (_questBanner == null) return;
+            _questReturnPortId = string.Empty;
             if (_questJournal != null && _questJournal.TryGetActiveSurfaceMiningStatus(out var qMine))
             {
                 _questRecommendedFamily = qMine.RecommendedFamily;
+                var tracked = _questJournal.GetTrackedActiveQuest();
+                int stepNo = TacSimQuestJournal.GuidedStepNumber(tracked?.Key);
+                string stepTag = stepNo > 0 ? $" [Step {stepNo}/7]" : string.Empty;
                 string scanMark = qMine.ScanDone ? "<color=#55EE99>[✓]</color>" : "<color=#99BBCC>[ ]</color>";
                 string soundMark = qMine.SoundDone ? "<color=#55EE99>[✓]</color>" : "<color=#99BBCC>[ ]</color>";
                 string mineMark = qMine.MineDone ? "<color=#55EE99>[✓]</color>" : "<color=#99BBCC>[ ]</color>";
+                string holdTxt = _tradeState != null
+                    ? $"  ·  Hold: {_tradeState.GetHoldCommodityQuantity(qMine.TargetOreSlug)}t"
+                    : string.Empty;
                 string extra = string.Empty;
-                if (qMine.MineDone && _questJournal.TryGetActiveDestinationPort(out var returnDest))
+                if (qMine.MineDone)
                 {
-                    extra = $"  ·  <color=#55EE99>Return: {MushProtocol.EscapeUnityRichText(returnDest.PortLabel)} (+ship/plan {MushProtocol.EscapeUnityRichText(returnDest.PortId)})</color>";
+                    string retPortId;
+                    string retPortLabel;
+                    if (_questJournal.TryGetActiveDestinationPort(out var returnDest))
+                    {
+                        retPortId = returnDest.PortId;
+                        retPortLabel = returnDest.PortLabel;
+                    }
+                    else
+                    {
+                        retPortId = TacSimQuestJournal.InferStationPortFromRoomEntry(tracked?.NextRoomEntry);
+                        if (string.IsNullOrEmpty(retPortId)) retPortId = "ceres";
+                        retPortLabel = retPortId switch
+                        {
+                            "stickney" => "Stickney Yards",
+                            "luna" => "Aitken Basin",
+                            "deimos" => "Voltaire Base",
+                            "titan" => "Ligeia Dock",
+                            _ => "Ceres Freeport"
+                        };
+                    }
+                    _questReturnPortId = retPortId;
+                    extra = $"  ·  <color=#55EE99>Return: {MushProtocol.EscapeUnityRichText(retPortLabel)} (+ship/plan {MushProtocol.EscapeUnityRichText(retPortId)})</color>";
                 }
-                else if (!qMine.MineDone && TryGetRecommendedQuestSite(out var recSite))
+                else if (TryGetRecommendedQuestSite(out var recSite))
                 {
                     extra = $"  ·  <color=#FFDD44>Site: [!]{MushProtocol.EscapeUnityRichText(recSite.Site)} (+ship/plan {MushProtocol.EscapeUnityRichText(recSite.Venue)})</color>";
                 }
                 if (_questBannerText != null)
-                    _questBannerText.text = $"[QUEST] {scanMark} Scan  {soundMark} Sound  {mineMark} Mine {MushProtocol.EscapeUnityRichText(qMine.TargetOreSlug)}{extra}";
+                    _questBannerText.text = $"[QUEST]{stepTag} {scanMark} Scan  {soundMark} Sound  {mineMark} Mine {MushProtocol.EscapeUnityRichText(qMine.TargetOreSlug)}{holdTxt}{extra}";
                 if (_questWashBtnLbl != null)
-                    _questWashBtnLbl.text = $"{qMine.RecommendedFamily.ToUpperInvariant()} WASH";
+                {
+                    _questWashBtnLbl.text = !string.IsNullOrEmpty(_questReturnPortId)
+                        ? $"RETURN: {_questReturnPortId.ToUpperInvariant()}"
+                        : $"{qMine.RecommendedFamily.ToUpperInvariant()} WASH";
+                }
                 _questBanner.SetActive(true);
                 if (_sitesListBoxRect != null)
                     _sitesListBoxRect.offsetMax = new Vector2(-10f, -68f);
