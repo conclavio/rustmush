@@ -399,10 +399,12 @@ namespace TacSim.UI
         private bool _hasHydratedPanel;
         private TacSimTradeAndShipState _boundTradeState;
         private readonly HashSet<string> _seenActiveKeys = new HashSet<string>(StringComparer.Ordinal);
-        private readonly Dictionary<string, (string title, bool allowRestart)> _seenActiveMeta = new Dictionary<string, (string, bool)>(StringComparer.Ordinal);
+        private readonly Dictionary<string, (string title, bool allowRestart, string giverName)> _seenActiveMeta = new Dictionary<string, (string, bool, string)>(StringComparer.Ordinal);
         private readonly HashSet<string> _seenReadyKeys = new HashSet<string>(StringComparer.Ordinal);
         private readonly HashSet<string> _seenCheckpointKeys = new HashSet<string>(StringComparer.Ordinal);
         private readonly HashSet<string> _seenCompletedKeys = new HashSet<string>(StringComparer.Ordinal);
+
+        public string LastCompletedNextStepHint { get; private set; } = string.Empty;
 
         public void BindTradeState(TacSimTradeAndShipState trade)
         {
@@ -1308,6 +1310,9 @@ namespace TacSim.UI
                     var c = panel.Completed[i];
                     if (!string.IsNullOrEmpty(c.Key) && !_seenCompletedKeys.Contains(c.Key))
                     {
+                        LastCompletedNextStepHint = TryGetFollowingGuidedStepHint(c.Key, out string nextHint)
+                            ? nextHint
+                            : string.Empty;
                         milestones ??= new List<(string, string)>(4);
                         milestones.Add(("completed", c.Title));
                     }
@@ -1342,7 +1347,12 @@ namespace TacSim.UI
                     if (becameReady)
                     {
                         milestones ??= new List<(string, string)>(4);
-                        milestones.Add(("ready", a.Title));
+                        string readyLabel = !string.IsNullOrEmpty(a.TurnInName)
+                            ? (!string.IsNullOrEmpty(a.NextRoomName)
+                                ? $"{a.Title} -> {a.TurnInName} ({a.NextRoomName})"
+                                : $"{a.Title} -> {a.TurnInName}")
+                            : a.Title;
+                        milestones.Add(("ready", readyLabel));
                     }
                 }
                 foreach (var prev in _seenActiveMeta)
@@ -1350,9 +1360,25 @@ namespace TacSim.UI
                     if (!currentActiveKeys.Contains(prev.Key) && !currentCompletedKeys.Contains(prev.Key))
                     {
                         milestones ??= new List<(string, string)>(4);
-                        string abandonedLabel = prev.Value.allowRestart
-                            ? $"{prev.Value.title} (restartable)"
-                            : prev.Value.title;
+                        int guidedStep = GuidedStepNumber(prev.Key);
+                        string abandonedLabel;
+                        if (guidedStep > 0 && guidedStep <= GuidedTourRoadmapMeta.Length)
+                        {
+                            var meta = GuidedTourRoadmapMeta[guidedStep - 1];
+                            abandonedLabel = $"{prev.Value.title} (restartable — {meta.giverLabel} in {meta.giverRoomName})";
+                        }
+                        else if (prev.Value.allowRestart && !string.IsNullOrEmpty(prev.Value.giverName))
+                        {
+                            abandonedLabel = $"{prev.Value.title} (restartable — {prev.Value.giverName})";
+                        }
+                        else if (prev.Value.allowRestart)
+                        {
+                            abandonedLabel = $"{prev.Value.title} (restartable)";
+                        }
+                        else
+                        {
+                            abandonedLabel = prev.Value.title;
+                        }
                         milestones.Add(("abandoned", abandonedLabel));
                     }
                 }
@@ -1368,7 +1394,7 @@ namespace TacSim.UI
                 var a = panel.Active[i];
                 if (string.IsNullOrEmpty(a.Key)) continue;
                 _seenActiveKeys.Add(a.Key);
-                _seenActiveMeta[a.Key] = (a.Title ?? string.Empty, a.AllowRestart);
+                _seenActiveMeta[a.Key] = (a.Title ?? string.Empty, a.AllowRestart, a.GiverName ?? string.Empty);
                 if (a.ReadyToFinish || a.CanFinishNow)
                     _seenReadyKeys.Add(a.Key);
                 if (a.Checkpoints != null)
@@ -2224,6 +2250,7 @@ namespace TacSim.UI
             _seenReadyKeys.Clear();
             _seenCheckpointKeys.Clear();
             _seenCompletedKeys.Clear();
+            LastCompletedNextStepHint = string.Empty;
             _manualPinActive = false;
             _capturingTab = null;
             _captureExpiresAt = 0f;
@@ -2986,6 +3013,40 @@ namespace TacSim.UI
                 }
             }
             return false;
+        }
+
+        public bool TryGetFollowingGuidedStepHint(string completedQuestKey, out string nextHint)
+        {
+            nextHint = string.Empty;
+            int stepNo = GuidedStepNumber(completedQuestKey);
+            if (stepNo <= 0 || stepNo >= GuidedTourRoadmapMeta.Length || LatestPanel == null)
+                return false;
+
+            var nextMeta = GuidedTourRoadmapMeta[stepNo];
+            for (int i = 0; i < LatestPanel.Completed.Count; i++)
+            {
+                if (string.Equals(LatestPanel.Completed[i].Key, nextMeta.key, StringComparison.Ordinal))
+                    return false;
+            }
+            for (int i = 0; i < LatestPanel.Active.Count; i++)
+            {
+                if (string.Equals(LatestPanel.Active[i].Key, nextMeta.key, StringComparison.Ordinal))
+                    return false;
+            }
+            bool offeredHere = false;
+            for (int i = 0; i < LatestPanel.Available.Count; i++)
+            {
+                if (string.Equals(LatestPanel.Available[i].Key, nextMeta.key, StringComparison.Ordinal))
+                {
+                    offeredHere = true;
+                    break;
+                }
+            }
+            int nextStepNo = stepNo + 1;
+            nextHint = offeredHere
+                ? $"Next ({nextStepNo}/{GuidedTourRoadmapMeta.Length}): Speak with {nextMeta.giverLabel} here"
+                : $"Next ({nextStepNo}/{GuidedTourRoadmapMeta.Length}): {nextMeta.giverLabel} in {nextMeta.giverRoomName}";
+            return true;
         }
 
         public static int GuidedStepNumber(string key)
