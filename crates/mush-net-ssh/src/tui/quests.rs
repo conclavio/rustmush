@@ -146,6 +146,49 @@ pub struct QuestSurfaceMiningStatus {
     pub mine_done: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GuidedTourProgress {
+    pub completed: usize,
+    pub total: usize,
+    pub current_step: Option<usize>,
+    pub all_done: bool,
+}
+
+impl GuidedTourProgress {
+    #[must_use]
+    pub fn progress_bar(&self) -> String {
+        let mut bar = String::with_capacity(self.total + 2);
+        bar.push('[');
+        for step in 1..=self.total {
+            if step <= self.completed {
+                bar.push('#');
+            } else if !self.all_done && self.current_step == Some(step) {
+                bar.push('>');
+            } else {
+                bar.push('-');
+            }
+        }
+        bar.push(']');
+        bar
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuestSuggestedAction {
+    pub label: String,
+    pub command: String,
+}
+
+pub const GUIDED_TOUR_KEYS: [&str; 7] = [
+    "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll",
+    "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel",
+    "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery",
+    "tacsim.quests.guided_onboarding/quest.guide_04_return_haul",
+    "tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector",
+    "tacsim.quests.guided_onboarding/quest.guide_06_surface_mining",
+    "tacsim.quests.guided_onboarding/quest.guide_07_sell_mined_ore",
+];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QuestMilestoneKind {
     Accepted,
@@ -590,6 +633,104 @@ impl QuestsSnapshot {
         }
         None
     }
+
+    /// Compute 7-step guided onboarding progress across active, available, and completed quests.
+    #[must_use]
+    pub fn guided_tour_progress(&self) -> Option<GuidedTourProgress> {
+        let step_of = |key: &str| {
+            GUIDED_TOUR_KEYS
+                .iter()
+                .position(|&k| k == key)
+                .map(|i| i + 1)
+        };
+        let completed_keys: HashSet<&str> = self
+            .completed
+            .iter()
+            .map(|c| c.key.as_str())
+            .filter(|k| step_of(k).is_some())
+            .collect();
+        let active_step = self.active.iter().find_map(|q| step_of(&q.key));
+        let avail_step = self.available.iter().find_map(|q| step_of(&q.key));
+        if completed_keys.is_empty() && active_step.is_none() && avail_step.is_none() {
+            return None;
+        }
+        let completed = completed_keys.len();
+        let total = GUIDED_TOUR_KEYS.len();
+        Some(GuidedTourProgress {
+            completed,
+            total,
+            current_step: active_step.or(avail_step),
+            all_done: completed >= total,
+        })
+    }
+
+    /// Extract a verified, registered next command to prefill for an active quest's next step.
+    #[must_use]
+    pub fn suggested_action_for(q: &ActiveQuest) -> Option<QuestSuggestedAction> {
+        if q.can_finish_now || q.can_check_now || q.ready_to_finish {
+            return None;
+        }
+        let pending = q
+            .checkpoints
+            .iter()
+            .find(|cp| !cp.checked && !cp.live_ready);
+        let id_low = pending.map(|cp| cp.id.to_lowercase()).unwrap_or_default();
+        let text_low = format!(
+            "{id_low} {} {} {}",
+            pending.map(|cp| cp.title.as_str()).unwrap_or(""),
+            pending.map(|cp| cp.instructions.as_str()).unwrap_or(""),
+            q.next_step
+        )
+        .to_lowercase();
+
+        if text_low.contains("+coop/refit") || id_low.contains("refit_dray") {
+            return Some(QuestSuggestedAction {
+                label: "Refit Dray-P".into(),
+                command: "+coop/refit prospector".into(),
+            });
+        }
+        if text_low.contains("+coop/enroll") || id_low.contains("enroll_coop") {
+            return Some(QuestSuggestedAction {
+                label: "Enroll Co-op".into(),
+                command: "+coop/enroll ".into(),
+            });
+        }
+        if id_low.contains("scan") || text_low.contains("scan go") {
+            return Some(QuestSuggestedAction {
+                label: "Scan Site".into(),
+                command: "+tv/1 scan go".into(),
+            });
+        }
+        if id_low.contains("sound") || text_low.contains("sound go") {
+            return Some(QuestSuggestedAction {
+                label: "Sound Pocket".into(),
+                command: "+tv/1 sound go".into(),
+            });
+        }
+        if id_low.starts_with("mine_") || text_low.contains("mine go") {
+            return Some(QuestSuggestedAction {
+                label: "Mine Ore".into(),
+                command: "+tv/1 mine go".into(),
+            });
+        }
+        let single = QuestsSnapshot {
+            active: vec![q.clone()],
+            ..Default::default()
+        };
+        if let Some(dest) = single.active_destination_port(Some(&q.key)) {
+            return Some(QuestSuggestedAction {
+                label: format!("Plan {}", dest.port_label),
+                command: format!("+ship/plan {}", dest.port_id),
+            });
+        }
+        if text_low.contains("+market/") {
+            return Some(QuestSuggestedAction {
+                label: "Market Board".into(),
+                command: "+market/list".into(),
+            });
+        }
+        None
+    }
 }
 
 fn str_field(v: &Value, key: &str) -> String {
@@ -817,6 +958,7 @@ impl QuestTab {
 pub enum QuestOverlayAction {
     None,
     Close,
+    Prefill(String),
     Submit(String),
 }
 
@@ -1005,6 +1147,16 @@ impl QuestOverlayState {
                 }
                 QuestOverlayAction::None
             }
+            Key::Char('p') if self.tab == QuestTab::Active => {
+                self.confirm_abandon = false;
+                if let Some(item) = snap.active.get(self.selected)
+                    && let Some(act) = QuestsSnapshot::suggested_action_for(item)
+                {
+                    self.close();
+                    return QuestOverlayAction::Prefill(act.command);
+                }
+                QuestOverlayAction::None
+            }
             Key::Char('x') if self.tab == QuestTab::Active => {
                 if let Some(item) = snap.active.get(self.selected)
                     && !item.abandon_cmd.is_empty()
@@ -1112,10 +1264,20 @@ pub fn render_quest_sheet_lines(
     if snap.active.is_empty() && snap.available.is_empty() && snap.completed.is_empty() {
         return Vec::new();
     }
+    let header = if let Some(tour) = snap.guided_tour_progress() {
+        format!(
+            "Guided Quests  —  Tour {} {}/{}",
+            tour.progress_bar(),
+            tour.completed,
+            tour.total
+        )
+    } else {
+        "Guided Quests".to_string()
+    };
     let mut lines: Vec<Line<'static>> = vec![
         Line::from(""),
         Line::from(Span::styled(
-            "Guided Quests",
+            header,
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
@@ -1224,23 +1386,38 @@ pub fn render_quest_overlay(
             )
         }
     };
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            tab_span(
-                format!("Active ({})", snap.active.len()),
-                state.tab == QuestTab::Active,
+    let mut tab_spans = vec![
+        tab_span(
+            format!("Active ({})", snap.active.len()),
+            state.tab == QuestTab::Active,
+        ),
+        tab_span(
+            format!("Available Here ({})", snap.available.len()),
+            state.tab == QuestTab::Available,
+        ),
+        tab_span(
+            format!("Completed ({})", snap.completed.len()),
+            state.tab == QuestTab::Completed,
+        ),
+    ];
+    if let Some(tour) = snap.guided_tour_progress() {
+        tab_spans.push(Span::styled(
+            format!(
+                "  Tour {} {}/{}",
+                tour.progress_bar(),
+                tour.completed,
+                tour.total
             ),
-            tab_span(
-                format!("Available Here ({})", snap.available.len()),
-                state.tab == QuestTab::Available,
-            ),
-            tab_span(
-                format!("Completed ({})", snap.completed.len()),
-                state.tab == QuestTab::Completed,
-            ),
-        ])),
-        chunks[0],
-    );
+            Style::default()
+                .fg(if tour.all_done {
+                    Color::Green
+                } else {
+                    Color::Yellow
+                })
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    f.render_widget(Paragraph::new(Line::from(tab_spans)), chunks[0]);
 
     let cols = Layout::default()
         .direction(Direction::Horizontal)
@@ -1389,6 +1566,21 @@ pub fn render_quest_overlay(
                     ),
                     Span::raw(q.reward_summary.clone()),
                 ]));
+                if let Some(act) = QuestsSnapshot::suggested_action_for(q) {
+                    detail_lines.push(Line::from(vec![
+                        Span::styled(
+                            "Suggested [p]: ",
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(act.command, Style::default().fg(Color::Green)),
+                        Span::styled(
+                            format!("  ({})", act.label),
+                            Style::default().add_modifier(Modifier::DIM),
+                        ),
+                    ]));
+                }
                 if state.confirm_abandon {
                     detail_lines.push(Line::from(Span::styled(
                         "Press 'x' again to confirm abandoning this quest.",
@@ -1470,7 +1662,7 @@ pub fn render_quest_overlay(
     // Footer legend
     let footer = match state.tab {
         QuestTab::Active => {
-            "Enter/c/f: verify or complete  |  t: track  |  x: abandon  |  Tab: switch tab  |  Esc: close"
+            "Enter/c/f: verify/complete  |  p: prefill cmd  |  t: track  |  x: abandon  |  Tab: tab  |  Esc: close"
         }
         QuestTab::Available => "Enter/a: accept quest  |  Tab: switch tab  |  Esc: close",
         QuestTab::Completed => "Up/Down: browse history  |  Tab: switch tab  |  Esc: close",

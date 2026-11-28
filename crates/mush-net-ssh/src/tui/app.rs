@@ -3596,6 +3596,10 @@ impl TuiApp {
         {
             match self.quests_overlay.handle_key(key, &self.quests_snap) {
                 QuestOverlayAction::None | QuestOverlayAction::Close => {}
+                QuestOverlayAction::Prefill(cmd) => {
+                    self.mode = Mode::Input;
+                    self.line.set(&cmd);
+                }
                 QuestOverlayAction::Submit(cmd) => {
                     r.push_submit(cmd);
                     if self.manifest.panels.iter().any(|p| p == QUESTS_FEED) {
@@ -3679,6 +3683,10 @@ impl TuiApp {
         {
             match self.quests_overlay.handle_key(key, &self.quests_snap) {
                 QuestOverlayAction::None | QuestOverlayAction::Close => {}
+                QuestOverlayAction::Prefill(cmd) => {
+                    self.mode = Mode::Input;
+                    self.line.set(&cmd);
+                }
                 QuestOverlayAction::Submit(cmd) => {
                     r.push_submit(cmd);
                     if self.manifest.panels.iter().any(|p| p == QUESTS_FEED) {
@@ -13240,5 +13248,65 @@ mod tests {
             }),
             "moving into tracked quest objective room must emit [QUEST] arrival notice"
         );
+    }
+
+    #[test]
+    fn quest_overlay_shows_guided_tour_progress_and_prefills_suggested_command() {
+        let mut app = app();
+        let dump = |b: &ratatui::buffer::Buffer| -> String {
+            (0..b.area.height)
+                .map(|y| {
+                    (0..b.area.width)
+                        .map(|x| b[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        app.apply_event(&OutputEvent::Panel {
+            feed: SmolStr::new_static(QUESTS_FEED),
+            kind: PanelFrameKind::Keyframe,
+            data: serde_json::json!({
+                "schema": 1,
+                "active": [{
+                    "key": "tacsim.quests.guided_onboarding/quest.guide_05_refit_prospector",
+                    "title": "Refit the Dray for Surface Mining",
+                    "giver_name": "Ilse Oduya-Brandt",
+                    "turn_in_name": "Rosalind Qureshi-Mbeki",
+                    "next_step": "Run +coop/refit prospector at Registry",
+                    "checkpoints": [{
+                        "id": "refit_dray_p",
+                        "title": "Refit your Dray into a Dray-P prospector",
+                        "instructions": "Run +coop/refit prospector.",
+                        "checked": false,
+                        "live_ready": false
+                    }]
+                }],
+                "completed": [
+                    { "key": "tacsim.quests.guided_onboarding/quest.guide_01_coop_enroll", "title": "Step 1" },
+                    { "key": "tacsim.quests.guided_onboarding/quest.guide_02_provisions_fuel", "title": "Step 2" },
+                    { "key": "tacsim.quests.guided_onboarding/quest.guide_03_metals_delivery", "title": "Step 3" },
+                    { "key": "tacsim.quests.guided_onboarding/quest.guide_04_return_haul", "title": "Step 4" }
+                ]
+            }),
+        });
+
+        app.feed_input(b"\x1b[23~"); // F11 opens Quest Overlay
+        assert!(app.quests_overlay.open);
+        let qbuf = painted(&mut app, 130, 36);
+        assert!(
+            find_in(&qbuf, "Tour [####>--] 4/7", 0).is_some()
+                && find_in(&qbuf, "+coop/refit prospector", 0).is_some(),
+            "quest overlay must display 7-step guided tour progress bar and suggested command:\n{}",
+            dump(&qbuf)
+        );
+
+        // Pressing 'p' closes overlay, enters Input mode, and prefills +coop/refit prospector
+        let out = app.feed_input(b"p");
+        assert!(out.submit.is_empty(), "prefill must not blind-submit");
+        assert!(!app.quests_overlay.open);
+        assert_eq!(app.mode(), Mode::Input);
+        assert_eq!(app.input_text(), "+coop/refit prospector");
     }
 }
